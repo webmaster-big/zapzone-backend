@@ -1,0 +1,585 @@
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Models\Attraction;
+use App\Models\User;
+use Illuminate\Http\Request;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Validation\Rule;
+use Illuminate\Support\Facades\Log;
+// please fix can't store images of the file
+class AttractionController extends Controller
+{
+    /**
+     * Display a listing of attractions.
+     */
+    public function index(Request $request): JsonResponse
+    {
+        $query = Attraction::with(['location', 'packages']);
+
+        // Role-based filtering
+        if ($request->has('user_id')) {
+            $authUser = User::where('id', $request->user_id)->first();
+            // log the auth user info
+            Log::info('Auth User: ', ['user' => $authUser]);
+            if ($authUser->role === 'location_manager') {
+                $query->byLocation($authUser->location_id);
+            }
+        }
+
+        // Filter by location
+        if ($request->has('location_id')) {
+            $query->byLocation($request->location_id);
+        }
+
+        // Filter by category
+        if ($request->has('category')) {
+            $query->byCategory($request->category);
+        }
+
+        // Filter by pricing type
+        if ($request->has('pricing_type')) {
+            $query->byPricingType($request->pricing_type);
+        }
+
+
+        // Price range filter
+        if ($request->has('min_price')) {
+            $query->where('price', '>=', $request->min_price);
+        }
+        if ($request->has('max_price')) {
+            $query->where('price', '<=', $request->max_price);
+        }
+
+        // Search by name or description
+        if ($request->has('search')) {
+            $search = $request->search;
+            $query->where(function ($q) use ($search) {
+                $q->where('name', 'like', "%{$search}%")
+                  ->orWhere('description', 'like', "%{$search}%");
+            });
+        }
+
+        // Sort
+        $sortBy = $request->get('sort_by', 'name');
+        $sortOrder = $request->get('sort_order', 'asc');
+
+        if (in_array($sortBy, ['name', 'price', 'rating', 'category', 'created_at'])) {
+            $query->orderBy($sortBy, $sortOrder);
+        }
+
+        $perPage = min($request->get('per_page', 15), 100); // Max 100 items per page
+        $attractions = $query->paginate($perPage);
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'attractions' => $attractions->items(),
+                'pagination' => [
+                    'current_page' => $attractions->currentPage(),
+                    'last_page' => $attractions->lastPage(),
+                    'per_page' => $attractions->perPage(),
+                    'total' => $attractions->total(),
+                    'from' => $attractions->firstItem(),
+                    'to' => $attractions->lastItem(),
+                ],
+            ],
+        ]);
+    }
+
+    /**
+     * Store a newly created attraction.
+     */
+    public function store(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'name' => 'required|string|max:255',
+            'description' => 'required|string',
+            'price' => 'required|numeric|min:0',
+            'pricing_type' => 'required|string',
+            'max_capacity' => 'required|integer|min:1',
+            'category' => 'required|string|max:255',
+            'unit' => 'nullable|string|max:50',
+            'duration' => 'nullable|integer|min:1',
+            'duration_unit' => ['nullable', Rule::in(['hours', 'minutes'])],
+            'availability' => 'nullable|array',
+            'image' => 'nullable',
+            'image.*' => 'nullable',
+            'rating' => 'nullable|numeric|between:0,5',
+            'min_age' => 'nullable|integer|min:0',
+            'is_active' => 'boolean',
+        ]);
+
+        $validated['pricing_type'] = $validated['pricing_type'] ?? 'per_person';
+
+        // temp location id
+        $validated['location_id'] = 1 ?? auth()->user()->location_id;
+
+        // Handle file uploads from request
+        $uploadedImages = [];
+
+        if ($request->hasFile('image')) {
+            $files = $request->file('image');
+
+            // Handle single file or array of files
+            if (!is_array($files)) {
+                $files = [$files];
+            }
+
+            foreach ($files as $file) {
+                if ($file && $file->isValid()) {
+                    $uploadedImages[] = $this->handleFileUpload($file);
+                }
+            }
+        } elseif (isset($validated['image'])) {
+            // Handle base64 strings or filenames
+            $images = is_array($validated['image']) ? $validated['image'] : [$validated['image']];
+
+            foreach ($images as $image) {
+                if (!empty($image)) {
+                    // Check if it's a base64 string
+                    if (is_string($image) && strpos($image, 'data:image') === 0) {
+                        $uploadedImages[] = $this->handleBase64Upload($image);
+                    } else {
+                        $uploadedImages[] = $this->handleImageUpload($image);
+                    }
+                }
+            }
+        }
+
+        $validated['image'] = !empty($uploadedImages) ? $uploadedImages : [];
+
+        $attraction = Attraction::create($validated);
+        $attraction->load(['location', 'packages']);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Attraction created successfully',
+            'data' => $attraction,
+        ], 201);
+    }
+
+    /**
+     * Display the specified attraction.
+     */
+    public function show(Attraction $attraction): JsonResponse
+    {
+        $attraction->load(['location', 'packages', 'bookings']);
+
+        return response()->json([
+            'success' => true,
+            'data' => $attraction,
+        ]);
+    }
+
+    /**
+     * Update the specified attraction.
+     */
+    public function update(Request $request, Attraction $attraction): JsonResponse
+    {
+        $validated = $request->validate([
+            'location_id' => 'sometimes|exists:locations,id',
+            'name' => 'sometimes|string|max:255',
+            'description' => 'sometimes|string',
+            'price' => 'sometimes|numeric|min:0',
+            'pricing_type' => 'required|string',
+            'max_capacity' => 'sometimes|integer|min:1',
+            'category' => 'sometimes|string|max:255',
+            'unit' => 'nullable|string|max:50',
+            'duration' => 'nullable|integer|min:1',
+            'duration_unit' => ['nullable', Rule::in(['hours', 'minutes'])],
+            'availability' => 'nullable|array',
+            'image' => 'nullable',
+            'image.*' => 'nullable',
+            'rating' => 'nullable|numeric|between:0,5',
+            'min_age' => 'nullable|integer|min:0',
+            'is_active' => 'boolean',
+        ]);
+
+        $validated['pricing_type'] = $validated['pricing_type'] ?? 'per_person';
+
+        // temp location id
+        $validated['location_id'] = 1 ?? auth()->user()->location_id;
+
+        // Handle image upload
+        if ($request->hasFile('image') || isset($validated['image'])) {
+            // Delete old images if they exist
+            if ($attraction->image && is_array($attraction->image)) {
+                foreach ($attraction->image as $oldImage) {
+                    $imagePath = public_path($oldImage);
+                    if (file_exists($imagePath)) {
+                        unlink($imagePath);
+                    }
+                }
+            }
+
+            $uploadedImages = [];
+
+            if ($request->hasFile('image')) {
+                $files = $request->file('image');
+
+                // Handle single file or array of files
+                if (!is_array($files)) {
+                    $files = [$files];
+                }
+
+                foreach ($files as $file) {
+                    if ($file && $file->isValid()) {
+                        $uploadedImages[] = $this->handleFileUpload($file);
+                    }
+                }
+            } elseif (isset($validated['image'])) {
+                // Handle base64 strings or filenames
+                $images = is_array($validated['image']) ? $validated['image'] : [$validated['image']];
+
+                foreach ($images as $image) {
+                    if (!empty($image)) {
+                        // Check if it's a base64 string
+                        if (is_string($image) && strpos($image, 'data:image') === 0) {
+                            $uploadedImages[] = $this->handleBase64Upload($image);
+                        } else {
+                            $uploadedImages[] = $this->handleImageUpload($image);
+                        }
+                    }
+                }
+            }
+
+            $validated['image'] = !empty($uploadedImages) ? $uploadedImages : [];
+        }
+
+        $attraction->update($validated);
+        $attraction->load(['location', 'packages']);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Attraction updated successfully',
+            'data' => $attraction,
+        ]);
+    }
+
+    /**
+     * Remove the specified attraction.
+     */
+    public function destroy(Attraction $attraction): JsonResponse
+    {
+        // Delete images if they exist
+        if ($attraction->image && is_array($attraction->image)) {
+            foreach ($attraction->image as $image) {
+                $imagePath = public_path($image);
+                if (file_exists($imagePath)) {
+                    unlink($imagePath);
+                }
+            }
+        }
+
+        $attraction->delete();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Attraction deleted successfully',
+        ]);
+    }
+
+    /**
+     * Get attractions by location.
+     */
+    public function getByLocation(int $locationId): JsonResponse
+    {
+        $attractions = Attraction::with(['packages'])
+            ->byLocation($locationId)
+            ->active()
+            ->orderBy('name')
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'data' => $attractions,
+        ]);
+    }
+
+    /**
+     * Get attractions by category.
+     */
+    public function getByCategory(string $category): JsonResponse
+    {
+        $attractions = Attraction::with(['location', 'packages'])
+            ->byCategory($category)
+            ->active()
+            ->orderBy('name')
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'data' => $attractions,
+        ]);
+    }
+
+    /**
+     * Toggle attraction active status.
+     */
+    public function toggleStatus(Attraction $attraction): JsonResponse
+    {
+        $attraction->update(['is_active' => !$attraction->is_active]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Attraction status updated successfully',
+            'data' => $attraction,
+        ]);
+    }
+
+    /**
+     * Activate an attraction.
+     */
+    public function activate(Attraction $attraction): JsonResponse
+    {
+        if ($attraction->is_active) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Attraction is already active',
+                'data' => $attraction,
+            ], 400);
+        }
+
+        $attraction->update(['is_active' => true]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Attraction activated successfully',
+            'data' => $attraction,
+        ]);
+    }
+
+    /**
+     * Deactivate an attraction.
+     */
+    public function deactivate(Attraction $attraction): JsonResponse
+    {
+        if (!$attraction->is_active) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Attraction is already inactive',
+                'data' => $attraction,
+            ], 400);
+        }
+
+        $attraction->update(['is_active' => false]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Attraction deactivated successfully',
+            'data' => $attraction,
+        ]);
+    }
+
+    /**
+     * Get attraction statistics.
+     */
+    public function statistics(Attraction $attraction): JsonResponse
+    {
+        $stats = [
+            'total_bookings' => $attraction->bookings()->count(),
+            'recent_bookings' => $attraction->bookings()->where('created_at', '>=', now()->subDays(30))->count(),
+            'total_revenue' => $attraction->purchases()->where('status', 'completed')->sum('amount'),
+            'average_rating' => $attraction->rating,
+            'packages_count' => $attraction->packages()->count(),
+        ];
+
+        return response()->json([
+            'success' => true,
+            'data' => $stats,
+        ]);
+    }
+
+    /**
+     * Get popular attractions.
+     */
+    public function getPopular(Request $request): JsonResponse
+    {
+        $limit = $request->get('limit', 10);
+
+        $attractions = Attraction::with(['location'])
+            ->withCount('bookings')
+            ->active()
+            ->orderBy('bookings_count', 'desc')
+            ->orderBy('rating', 'desc')
+            ->limit($limit)
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'data' => $attractions,
+        ]);
+    }
+
+    /**
+     * Bulk import attractions
+     */
+    public function bulkImport(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'attractions' => 'required|array|min:1',
+            'attractions.*.location_id' => 'required|exists:locations,id',
+            'attractions.*.name' => 'required|string|max:255',
+            'attractions.*.description' => 'required|string',
+            'attractions.*.price' => 'required|numeric|min:0',
+            'attractions.*.pricing_type' => ['nullable', Rule::in(['per_person', 'per_unit', 'fixed', 'per_lane'])],
+            'attractions.*.max_capacity' => 'required|integer|min:1',
+            'attractions.*.category' => 'required|string|max:255',
+            'attractions.*.unit' => 'nullable|string|max:50',
+            'attractions.*.duration' => 'nullable|integer|min:1',
+            'attractions.*.duration_unit' => ['nullable', Rule::in(['hours', 'minutes'])],
+            'attractions.*.availability' => 'nullable|array',
+            'attractions.*.image' => 'nullable', // Can be string or array
+            'attractions.*.image.*' => 'nullable|string', // For array validation
+            'attractions.*.rating' => 'nullable|numeric|between:0,5',
+            'attractions.*.min_age' => 'nullable|integer|min:0',
+            'attractions.*.is_active' => 'nullable|boolean',
+        ]);
+
+        $importedAttractions = [];
+        $errors = [];
+
+        foreach ($validated['attractions'] as $index => $attractionData) {
+            try {
+                // Set default pricing type
+                $attractionData['pricing_type'] = $attractionData['pricing_type'] ?? 'per_person';
+
+                // Set default is_active
+                $attractionData['is_active'] = $attractionData['is_active'] ?? true;
+
+                // Handle image upload if provided (array of images)
+                if (isset($attractionData['image'])) {
+                    if (is_array($attractionData['image']) && count($attractionData['image']) > 0) {
+                        $uploadedImages = [];
+                        foreach ($attractionData['image'] as $image) {
+                            if (!empty($image)) {
+                                // Check if it's a base64 string
+                                if (is_string($image) && strpos($image, 'data:image') === 0) {
+                                    $uploadedImages[] = $this->handleBase64Upload($image);
+                                } else {
+                                    $uploadedImages[] = $this->handleImageUpload($image);
+                                }
+                            }
+                        }
+                        $attractionData['image'] = !empty($uploadedImages) ? $uploadedImages : [];
+                    } elseif (is_string($attractionData['image']) && !empty($attractionData['image'])) {
+                        // If single image string is provided
+                        if (strpos($attractionData['image'], 'data:image') === 0) {
+                            $uploadedImage = $this->handleBase64Upload($attractionData['image']);
+                        } else {
+                            $uploadedImage = $this->handleImageUpload($attractionData['image']);
+                        }
+                        $attractionData['image'] = [$uploadedImage];
+                    } else {
+                        $attractionData['image'] = [];
+                    }
+                } else {
+                    $attractionData['image'] = [];
+                }
+
+                // Create the attraction with a unique ID
+                $attraction = Attraction::create($attractionData);
+
+                // Load relationships
+                $attraction->load(['location', 'packages']);
+                $importedAttractions[] = $attraction;
+
+            } catch (\Exception $e) {
+                $errors[] = [
+                    'index' => $index,
+                    'name' => $attractionData['name'] ?? 'Unknown',
+                    'error' => $e->getMessage(),
+                ];
+            }
+        }
+
+        $response = [
+            'success' => true,
+            'message' => count($importedAttractions) . ' attractions imported successfully',
+            'data' => [
+                'imported' => $importedAttractions,
+                'imported_count' => count($importedAttractions),
+                'failed_count' => count($errors),
+            ],
+        ];
+
+        if (!empty($errors)) {
+            $response['errors'] = $errors;
+        }
+
+        return response()->json($response, count($errors) > 0 ? 207 : 201);
+    }
+
+    /**
+     * Handle actual file upload from request
+     */
+    private function handleFileUpload($file): string
+    {
+        // Generate unique filename
+        $filename = uniqid() . '.' . $file->getClientOriginalExtension();
+        $path = 'images/attractions';
+        $fullPath = public_path($path);
+
+        // Create directory if it doesn't exist
+        if (!file_exists($fullPath)) {
+            mkdir($fullPath, 0755, true);
+        }
+
+        // Move the uploaded file
+        $file->move($fullPath, $filename);
+
+        // Return the relative path
+        return $path . '/' . $filename;
+    }
+
+    /**
+     * Handle base64 image upload
+     */
+    private function handleBase64Upload($base64String): string
+    {
+        // Check if it's a base64 string
+        if (is_string($base64String) && strpos($base64String, 'data:image') === 0) {
+            // Extract base64 data
+            preg_match('/data:image\/(\w+);base64,/', $base64String, $matches);
+            $imageType = $matches[1] ?? 'png';
+            $imageData = substr($base64String, strpos($base64String, ',') + 1);
+            $imageData = base64_decode($imageData);
+
+            // Generate shorter filename
+            $filename = uniqid() . '.' . $imageType;
+            $path = 'images/attractions';
+            $fullPath = public_path($path);
+
+            // Create directory if it doesn't exist
+            if (!file_exists($fullPath)) {
+                mkdir($fullPath, 0755, true);
+            }
+
+            // Save the file
+            file_put_contents($fullPath . '/' . $filename, $imageData);
+
+            // Return the relative path
+            return $path . '/' . $filename;
+        }
+
+        // If it's already a file path or URL, return as is
+        return $base64String;
+    }
+
+    /**
+     * Handle image upload - stores the filename with path (for string filenames)
+     */
+    private function handleImageUpload($image): string
+    {
+        // Remove any surrounding quotes from the image filename
+        if (is_string($image)) {
+            $image = trim($image, '"\'');
+        }
+
+        // Return the clean path: images/attractions/filename.ext
+        return 'images/attractions/' . basename($image);
+    }
+}

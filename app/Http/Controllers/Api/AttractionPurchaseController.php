@@ -1,0 +1,569 @@
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Models\AttractionPurchase;
+use App\Models\Attraction;
+use App\Mail\AttractionPurchaseReceipt;
+use App\Models\User;
+use Illuminate\Http\Request;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Validation\Rule;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Log;
+
+class AttractionPurchaseController extends Controller
+{
+    /**
+     * Display a listing of attraction purchases.
+     */
+    public function index(Request $request): JsonResponse
+    {
+        $query = AttractionPurchase::with(['attraction', 'customer', 'createdBy']);
+
+        // Role-based filtering
+        if ($request->has('user_id')) {
+            $authUser = User::where('id', $request->user_id)->first();
+            // log the auth user info
+            Log::info('Auth User: ', ['user' => $authUser]);
+            if ($authUser->role === 'location_manager') {
+                // filter by attractions in their location, load attraction ids first
+                $attractionIds = Attraction::where('location_id', $authUser->location_id)->pluck('id');
+                $query->whereIn('attraction_id', $attractionIds);
+            }
+        }
+
+        // Filter by location
+        if ($request->has('location_id')) {
+            $query->byLocation($request->location_id);
+        }
+        // Filter by attraction
+        if ($request->has('attraction_id')) {
+            $query->where('attraction_id', $request->attraction_id);
+        }
+
+        // Filter by customer
+        if ($request->has('customer_id')) {
+            $query->where('customer_id', $request->customer_id);
+        }
+
+        // Filter by status
+        if ($request->has('status')) {
+            $query->where('status', $request->status);
+        }
+
+        // Filter by payment method
+        if ($request->has('payment_method')) {
+            $query->where('payment_method', $request->payment_method);
+        }
+
+        // Filter by date range
+        if ($request->has('start_date')) {
+            $query->where('purchase_date', '>=', $request->start_date);
+        }
+        if ($request->has('end_date')) {
+            $query->where('purchase_date', '<=', $request->end_date);
+        }
+
+        // Search by customer name, guest name, email, or attraction name
+        if ($request->has('search')) {
+            $search = $request->search;
+            $query->where(function ($q) use ($search) {
+                // Search registered customers
+                $q->whereHas('customer', function ($subQ) use ($search) {
+                    $subQ->where('first_name', 'like', "%{$search}%")
+                         ->orWhere('last_name', 'like', "%{$search}%")
+                         ->orWhere('email', 'like', "%{$search}%");
+                })
+                // Search guest customers
+                ->orWhere('guest_name', 'like', "%{$search}%")
+                ->orWhere('guest_email', 'like', "%{$search}%")
+                ->orWhere('guest_phone', 'like', "%{$search}%")
+                // Search attractions
+                ->orWhereHas('attraction', function ($subQ) use ($search) {
+                    $subQ->where('name', 'like', "%{$search}%");
+                });
+            });
+        }
+
+        // Sort
+        $sortBy = $request->get('sort_by', 'purchase_date');
+        $sortOrder = $request->get('sort_order', 'desc');
+
+        if (in_array($sortBy, ['purchase_date', 'total_amount', 'quantity', 'status', 'created_at'])) {
+            $query->orderBy($sortBy, $sortOrder);
+        }
+
+        $perPage = min($request->get('per_page', 15), 100); // Max 100 items per page
+        $purchases = $query->paginate($perPage);
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'purchases' => $purchases->items(),
+                'pagination' => [
+                    'current_page' => $purchases->currentPage(),
+                    'last_page' => $purchases->lastPage(),
+                    'per_page' => $purchases->perPage(),
+                    'total' => $purchases->total(),
+                    'from' => $purchases->firstItem(),
+                    'to' => $purchases->lastItem(),
+                ],
+            ],
+        ]);
+    }
+
+    /**
+     * Store a newly created attraction purchase.
+     */
+    public function store(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'attraction_id' => 'required|exists:attractions,id',
+            'customer_id' => 'nullable|exists:customers,id',
+
+            // Guest customer fields (required if no customer_id)
+            'guest_name' => 'required_without:customer_id|string|max:255',
+            'guest_email' => 'required_without:customer_id|email|max:255',
+            'guest_phone' => 'nullable|string|max:20',
+
+            'quantity' => 'required|integer|min:1',
+            'payment_method' => ['required', Rule::in(['credit', 'debit', 'cash', 'e-wallet', 'bank_transfer'])],
+            'purchase_date' => 'required|date',
+            'notes' => 'nullable|string',
+        ]);
+
+        // Get attraction to calculate total amount
+        $attraction = Attraction::findOrFail($validated['attraction_id']);
+
+        // Calculate total amount based on pricing type
+        $totalAmount = $attraction->price * $validated['quantity'];
+
+        $validated['total_amount'] = $totalAmount;
+        $validated['status'] = 'pending';
+        $validated['created_by'] = auth()->id() ?? null;
+
+        $purchase = AttractionPurchase::create($validated);
+        $purchase->load(['attraction', 'customer', 'createdBy']);
+
+        // Don't send email automatically - let frontend send it with QR code
+        // $this->sendReceiptEmail($purchase);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Attraction purchase created successfully',
+            'data' => $purchase,
+        ], 201);
+    }
+
+    /**
+     * Display the specified attraction purchase.
+     */
+    public function show(AttractionPurchase $attractionPurchase): JsonResponse
+    {
+        $attractionPurchase->load(['attraction', 'customer', 'createdBy']);
+
+        return response()->json([
+            'success' => true,
+            'data' => $attractionPurchase,
+        ]);
+    }
+
+    /**
+     * Update the specified attraction purchase.
+     */
+    public function update(Request $request, AttractionPurchase $attractionPurchase): JsonResponse
+    {
+        $validated = $request->validate([
+            'attraction_id' => 'sometimes|exists:attractions,id',
+            'customer_id' => 'sometimes|nullable|exists:customers,id',
+            'guest_name' => 'sometimes|string|max:255',
+            'guest_email' => 'sometimes|email|max:255',
+            'guest_phone' => 'sometimes|nullable|string|max:20',
+            'quantity' => 'sometimes|integer|min:1',
+            'payment_method' => ['sometimes', Rule::in(['credit', 'debit', 'cash', 'e-wallet', 'bank_transfer'])],
+            'status' => ['sometimes', Rule::in(['pending', 'completed', 'cancelled'])],
+            'purchase_date' => 'sometimes|date',
+            'notes' => 'nullable|string',
+        ]);
+
+        // Recalculate total amount if attraction or quantity changed
+        if (isset($validated['attraction_id']) || isset($validated['quantity'])) {
+            $attractionId = $validated['attraction_id'] ?? $attractionPurchase->attraction_id;
+            $quantity = $validated['quantity'] ?? $attractionPurchase->quantity;
+
+            $attraction = Attraction::findOrFail($attractionId);
+            $validated['total_amount'] = $attraction->price * $quantity;
+        }
+
+        $attractionPurchase->update($validated);
+        $attractionPurchase->load(['attraction', 'customer', 'createdBy']);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Attraction purchase updated successfully',
+            'data' => $attractionPurchase,
+        ]);
+    }
+
+    /**
+     * Remove the specified attraction purchase.
+     */
+    public function destroy(AttractionPurchase $attractionPurchase): JsonResponse
+    {
+        $attractionPurchase->delete();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Attraction purchase deleted successfully',
+        ]);
+    }
+
+    /**
+     * Mark purchase as completed.
+     */
+    public function markAsCompleted(AttractionPurchase $attractionPurchase): JsonResponse
+    {
+        if ($attractionPurchase->status === 'completed') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Purchase is already completed',
+            ], 400);
+        }
+
+        $attractionPurchase->update(['status' => 'completed']);
+        $attractionPurchase->load(['attraction', 'customer', 'createdBy']);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Purchase marked as completed',
+            'data' => $attractionPurchase,
+        ]);
+    }
+
+    /**
+     * Cancel purchase.
+     */
+    public function cancel(AttractionPurchase $attractionPurchase): JsonResponse
+    {
+        if ($attractionPurchase->status === 'cancelled') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Purchase is already cancelled',
+            ], 400);
+        }
+
+        $attractionPurchase->update(['status' => 'cancelled']);
+        $attractionPurchase->load(['attraction', 'customer', 'createdBy']);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Purchase cancelled successfully',
+            'data' => $attractionPurchase,
+        ]);
+    }
+
+    /**
+     * Get purchase statistics.
+     */
+    public function statistics(Request $request): JsonResponse
+    {
+        $query = AttractionPurchase::query();
+
+        // Filter by date range if provided
+        if ($request->has('start_date')) {
+            $query->where('purchase_date', '>=', $request->start_date);
+        }
+        if ($request->has('end_date')) {
+            $query->where('purchase_date', '<=', $request->end_date);
+        }
+
+        $stats = [
+            'total_purchases' => $query->count(),
+            'total_revenue' => $query->where('status', 'completed')->sum('total_amount'),
+            'pending_purchases' => $query->where('status', 'pending')->count(),
+            'completed_purchases' => $query->where('status', 'completed')->count(),
+            'cancelled_purchases' => $query->where('status', 'cancelled')->count(),
+            'total_quantity_sold' => $query->where('status', 'completed')->sum('quantity'),
+            'by_payment_method' => AttractionPurchase::selectRaw('payment_method, COUNT(*) as count, SUM(total_amount) as revenue')
+                ->where('status', 'completed')
+                ->groupBy('payment_method')
+                ->get(),
+            'top_attractions' => AttractionPurchase::with('attraction')
+                ->selectRaw('attraction_id, COUNT(*) as purchase_count, SUM(quantity) as total_quantity, SUM(total_amount) as total_revenue')
+                ->where('status', 'completed')
+                ->groupBy('attraction_id')
+                ->orderBy('total_revenue', 'desc')
+                ->limit(10)
+                ->get(),
+        ];
+
+        return response()->json([
+            'success' => true,
+            'data' => $stats,
+        ]);
+    }
+
+    /**
+     * Get purchases by customer.
+     */
+    public function getByCustomer(int $customerId): JsonResponse
+    {
+        $purchases = AttractionPurchase::with(['attraction', 'createdBy'])
+            ->where('customer_id', $customerId)
+            ->orderBy('purchase_date', 'desc')
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'data' => $purchases,
+        ]);
+    }
+
+    /**
+     * Get purchases by attraction.
+     */
+    public function getByAttraction(int $attractionId): JsonResponse
+    {
+        $purchases = AttractionPurchase::with(['customer', 'createdBy'])
+            ->where('attraction_id', $attractionId)
+            ->orderBy('purchase_date', 'desc')
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'data' => $purchases,
+        ]);
+    }
+
+    /**
+     * Send receipt email with QR code (API endpoint)
+     */
+    public function sendReceipt(Request $request, AttractionPurchase $attractionPurchase): JsonResponse
+    {
+        $validated = $request->validate([
+            'qr_code' => 'nullable|string', // Base64 encoded QR code image
+            'email' => 'nullable|email', // Optional: override email address
+        ]);
+
+        try {
+            // Get recipient email
+            $recipientEmail = $validated['email'] ?? (
+                $attractionPurchase->customer
+                    ? $attractionPurchase->customer->email
+                    : $attractionPurchase->guest_email
+            );
+
+            if (!$recipientEmail) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No email address found for this purchase',
+                ], 400);
+            }
+
+            $qrCodePath = null;
+
+            // If QR code image (base64) is provided, save it temporarily
+            if (isset($validated['qr_code']) && !empty($validated['qr_code'])) {
+                $qrCodeImage = $validated['qr_code'];
+
+                // Handle data URL format
+                if (strpos($qrCodeImage, 'data:image') === 0) {
+                    $qrCodePath = $this->saveQRCodeImage($qrCodeImage, $attractionPurchase->id);
+                }
+            }
+
+            // Load relationships for email
+            $attractionPurchase->load(['attraction', 'customer', 'createdBy']);
+
+            // Send the email
+            Mail::to($recipientEmail)->send(new AttractionPurchaseReceipt($attractionPurchase, $qrCodePath));
+
+            // Clean up temporary QR code file
+            if ($qrCodePath && file_exists($qrCodePath)) {
+                unlink($qrCodePath);
+            }
+
+            Log::info('Receipt email sent successfully for purchase #' . $attractionPurchase->id);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Receipt email sent successfully',
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('Failed to send receipt email for purchase #' . $attractionPurchase->id . ': ' . $e->getMessage());
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to send receipt email: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Save QR code image from base64 string
+     */
+    private function saveQRCodeImage(string $base64Image, int $purchaseId): ?string
+    {
+        try {
+            // Extract base64 data (remove data:image/png;base64, prefix)
+            if (strpos($base64Image, ',') !== false) {
+                $imageData = substr($base64Image, strpos($base64Image, ',') + 1);
+            } else {
+                $imageData = $base64Image;
+            }
+
+            $imageData = base64_decode($imageData);
+
+            if ($imageData === false) {
+                throw new \Exception('Failed to decode base64 image');
+            }
+
+            // Create temporary file path
+            $filename = 'qrcode_' . $purchaseId . '_' . time() . '.png';
+            $tempPath = storage_path('app/temp/' . $filename);
+
+            // Create temp directory if it doesn't exist
+            $tempDir = storage_path('app/temp');
+            if (!file_exists($tempDir)) {
+                mkdir($tempDir, 0755, true);
+            }
+
+            // Save the file
+            file_put_contents($tempPath, $imageData);
+
+            return $tempPath;
+
+        } catch (\Exception $e) {
+            Log::error('Failed to save QR code image: ' . $e->getMessage());
+            return null;
+        }
+    }
+
+/**
+ * Verify a purchase ticket without modifying it
+ * GET /api/attraction-purchases/{id}/verify
+ */
+public function verify(int $id): JsonResponse
+{
+    try {
+        $purchase = AttractionPurchase::with(['attraction', 'customer'])
+            ->findOrFail($id);
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'id' => $purchase->id,
+                'attraction_id' => $purchase->attraction_id,
+                'customer_id' => $purchase->customer_id,
+                'guest_name' => $purchase->guest_name,
+                'guest_email' => $purchase->guest_email,
+                'guest_phone' => $purchase->guest_phone,
+                'quantity' => $purchase->quantity,
+                'total_amount' => $purchase->total_amount,
+                'payment_method' => $purchase->payment_method,
+                'status' => $purchase->status,
+                'purchase_date' => $purchase->purchase_date,
+                'notes' => $purchase->notes,
+                'created_at' => $purchase->created_at,
+                'updated_at' => $purchase->updated_at,
+                'attraction' => $purchase->attraction ? [
+                    'id' => $purchase->attraction->id,
+                    'name' => $purchase->attraction->name,
+                    'price' => $purchase->attraction->price,
+                    'pricing_type' => $purchase->attraction->pricing_type,
+                ] : null,
+                'customer' => $purchase->customer ? [
+                    'id' => $purchase->customer->id,
+                    'first_name' => $purchase->customer->first_name,
+                    'last_name' => $purchase->customer->last_name,
+                    'email' => $purchase->customer->email,
+                ] : null,
+            ],
+        ], 200);
+    } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+        return response()->json([
+            'success' => false,
+            'message' => 'Purchase not found',
+        ], 404);
+    }
+}
+
+/**
+ * Check-in a purchase ticket (mark as used/completed)
+ * PATCH /api/attraction-purchases/{id}/check-in
+ */
+public function checkIn(int $id): JsonResponse
+{
+    try {
+        $purchase = AttractionPurchase::with(['attraction', 'customer'])
+            ->findOrFail($id);
+
+        // Validate ticket status
+        if ($purchase->status === 'completed') {
+            return response()->json([
+                'success' => false,
+                'message' => 'This ticket has already been used',
+                'data' => $purchase,
+            ], 400);
+        }
+
+        if ($purchase->status === 'cancelled') {
+            return response()->json([
+                'success' => false,
+                'message' => 'This ticket has been cancelled',
+                'data' => $purchase,
+            ], 400);
+        }
+
+        // Mark as completed (checked in)
+        $purchase->status = 'completed';
+        $purchase->save();
+
+        // Reload with relationships
+        $purchase->load(['attraction', 'customer']);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Ticket checked in successfully',
+            'data' => [
+                'id' => $purchase->id,
+                'attraction_id' => $purchase->attraction_id,
+                'customer_id' => $purchase->customer_id,
+                'guest_name' => $purchase->guest_name,
+                'guest_email' => $purchase->guest_email,
+                'guest_phone' => $purchase->guest_phone,
+                'quantity' => $purchase->quantity,
+                'total_amount' => $purchase->total_amount,
+                'payment_method' => $purchase->payment_method,
+                'status' => $purchase->status, // Now 'completed'
+                'purchase_date' => $purchase->purchase_date,
+                'notes' => $purchase->notes,
+                'created_at' => $purchase->created_at,
+                'updated_at' => $purchase->updated_at,
+                'attraction' => $purchase->attraction ? [
+                    'id' => $purchase->attraction->id,
+                    'name' => $purchase->attraction->name,
+                    'price' => $purchase->attraction->price,
+                    'pricing_type' => $purchase->attraction->pricing_type,
+                ] : null,
+                'customer' => $purchase->customer ? [
+                    'id' => $purchase->customer->id,
+                    'first_name' => $purchase->customer->first_name,
+                    'last_name' => $purchase->customer->last_name,
+                    'email' => $purchase->customer->email,
+                ] : null,
+            ],
+        ], 200);
+    } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+        return response()->json([
+            'success' => false,
+            'message' => 'Purchase not found',
+        ], 404);
+    }
+}
+}
+
+
