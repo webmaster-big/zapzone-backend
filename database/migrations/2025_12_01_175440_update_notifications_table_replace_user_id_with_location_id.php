@@ -12,12 +12,19 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('notifications', function (Blueprint $table) {
-            // Drop foreign key constraint for customer_id
-            $table->dropForeign(['customer_id']);
+            // Drop indexes first
+            $table->dropIndex(['customer_id']);
+            
+            // Drop foreign key constraint for customer_id if it exists
+            if (Schema::hasColumn('notifications', 'customer_id')) {
+                $table->dropForeign(['customer_id']);
+            }
 
             // Drop old columns
             $table->dropColumn(['customer_id', 'user_type', 'related_user', 'related_location']);
+        });
 
+        Schema::table('notifications', function (Blueprint $table) {
             // Add location_id
             $table->foreignId('location_id')->after('id')->constrained()->onDelete('cascade');
 
