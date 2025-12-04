@@ -30,10 +30,6 @@ return new class extends Migration
             $table->json('available_week_days')->nullable();
             $table->json('available_month_days')->nullable();
             $table->string('image')->nullable();
-            // NEW: Time slot columns
-            $table->time('time_slot_start')->nullable()->after('availability_type');
-            $table->time('time_slot_end')->nullable()->after('time_slot_start');
-            $table->integer('time_slot_interval')->default(30)->after('time_slot_end');
             $table->boolean('is_active')->default(true);
             $table->timestamps();
 
