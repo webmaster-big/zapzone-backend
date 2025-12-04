@@ -13,9 +13,10 @@ return new class extends Migration
     {
         Schema::table('notifications', function (Blueprint $table) {
             // Drop indexes first
+            $table->dropIndex(['user_id', 'user_type']); // Composite index
             $table->dropIndex(['customer_id']);
             
-            // Drop foreign key constraint for customer_id if it exists
+            // Drop foreign key constraints
             if (Schema::hasColumn('notifications', 'customer_id')) {
                 $table->dropForeign(['customer_id']);
             }
