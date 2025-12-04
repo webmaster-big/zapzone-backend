@@ -30,11 +30,12 @@ class Package extends Model
         'available_week_days',
         'available_month_days',
         'image',
-        // NEW: Time slot fields
         'time_slot_start',
         'time_slot_end',
         'time_slot_interval',
         'is_active',
+        'partial_payment_percentage',
+        'partial_payment_fixed',
     ];
 
     protected $casts = [

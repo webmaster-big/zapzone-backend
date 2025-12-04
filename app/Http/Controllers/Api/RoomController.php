@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\ActivityLog;
 use App\Models\Room;
 use App\Models\User;
 use Illuminate\Http\Request;
@@ -148,7 +149,22 @@ class RoomController extends Controller
      */
     public function destroy(Room $room): JsonResponse
     {
+        $roomName = $room->name;
+        $roomId = $room->id;
+        $locationId = $room->location_id;
+
         $room->delete();
+
+        // Log room deletion
+        ActivityLog::log(
+            action: 'Room Deleted',
+            category: 'delete',
+            description: "Room '{$roomName}' was deleted",
+            userId: auth()->id(),
+            locationId: $locationId,
+            entityType: 'room',
+            entityId: $roomId
+        );
 
         return response()->json([
             'success' => true,

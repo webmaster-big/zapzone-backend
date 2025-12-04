@@ -12,11 +12,28 @@ class Company extends Model
 
     protected $fillable = [
         'company_name',
+        'logo_path',
         'email',
+        'website',
         'phone',
+        'tax_id',
+        'registration_number',
         'address',
+        'city',
+        'state',
+        'country',
+        'zip_code',
+        'industry',
+        'company_size',
+        'founded_date',
+        'description',
         'total_locations',
         'total_employees',
+        'status',
+    ];
+
+    protected $casts = [
+        'founded_date' => 'date',
     ];
 
     // Relationships

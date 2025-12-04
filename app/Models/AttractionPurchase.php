@@ -73,4 +73,12 @@ class AttractionPurchase extends Model
     {
         return $this->belongsTo(User::class, 'created_by');
     }
+
+    // by location
+    public function scopeByLocation($query, $locationId)
+    {
+        return $query->whereHas('attraction', function ($q) use ($locationId) {
+            $q->where('location_id', $locationId);
+        });
+    }
 }

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\ActivityLog;
 use App\Models\Attraction;
 use App\Models\User;
 use Illuminate\Http\Request;
@@ -88,6 +89,91 @@ class AttractionController extends Controller
             ],
         ]);
     }
+
+    /**
+     * Get public attractions grouped by name with location-based purchase links
+     * Groups attractions by name and shows all locations where they're available
+     */
+    public function attractionsGroupedByName(Request $request): JsonResponse
+    {
+        // search query
+        $search = $request->get('search', null);
+
+        if ($search) {
+            $attractions = Attraction::with(['location', 'packages'])
+                ->where('is_active', true)
+                ->where(function ($query) use ($search) {
+                    $query->where('name', 'like', "%{$search}%")
+                          ->orWhere('description', 'like', "%{$search}%");
+                })
+                ->orderBy('name')
+                ->get();
+        } else {
+            // Get all active attractions with their locations
+            $attractions = Attraction::with(['location', 'packages'])
+                ->where('is_active', true)
+                ->orderBy('name')
+                ->get();
+        }
+
+        // Group attractions by name
+        $groupedAttractions = [];
+
+        foreach ($attractions as $attraction) {
+            $attractionName = $attraction->name;
+
+            if (!isset($groupedAttractions[$attractionName])) {
+                // Initialize the group with the first attraction's data
+                $groupedAttractions[$attractionName] = [
+                    'name' => $attraction->name,
+                    'description' => $attraction->description,
+                    'price' => $attraction->price,
+                    'pricing_type' => $attraction->pricing_type,
+                    'category' => $attraction->category,
+                    'max_capacity' => $attraction->max_capacity,
+                    'duration' => $attraction->duration,
+                    'duration_unit' => $attraction->duration_unit,
+                    'image' => $attraction->image,
+                    'rating' => $attraction->rating,
+                    'min_age' => $attraction->min_age,
+                    'locations' => [],
+                    'purchase_links' => [],
+                ];
+            }
+
+            // Add this location's information
+            $locationSlug = str_replace(' ', '', $attraction->location->name); // Remove spaces for URL
+
+            $groupedAttractions[$attractionName]['locations'][] = [
+                'location_id' => $attraction->location->id,
+                'location_name' => $attraction->location->name,
+                'location_slug' => $locationSlug,
+                'attraction_id' => $attraction->id,
+                'address' => $attraction->location->address,
+                'city' => $attraction->location->city,
+                'state' => $attraction->location->state,
+                'phone' => $attraction->location->phone,
+            ];
+
+            // Create purchase link for this location
+            $groupedAttractions[$attractionName]['purchase_links'][] = [
+                'location' => $attraction->location->name,
+                'url' => "/purchase/attraction/{$locationSlug}/{$attraction->id}",
+                'attraction_id' => $attraction->id,
+                'location_id' => $attraction->location->id,
+            ];
+        }
+
+        // Convert to indexed array
+        $result = array_values($groupedAttractions);
+
+        return response()->json([
+            'success' => true,
+            'data' => $result,
+            'total' => count($result),
+        ]);
+    }
+
 
     /**
      * Store a newly created attraction.
@@ -274,7 +360,22 @@ class AttractionController extends Controller
             }
         }
 
+        $attractionName = $attraction->name;
+        $attractionId = $attraction->id;
+        $locationId = $attraction->location_id;
+
         $attraction->delete();
+
+        // Log attraction deletion
+        ActivityLog::log(
+            action: 'Attraction Deleted',
+            category: 'delete',
+            description: "Attraction '{$attractionName}' was deleted",
+            userId: auth()->id(),
+            locationId: $locationId,
+            entityType: 'attraction',
+            entityId: $attractionId
+        );
 
         return response()->json([
             'success' => true,

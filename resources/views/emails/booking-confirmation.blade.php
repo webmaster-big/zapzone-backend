@@ -2,77 +2,134 @@
 <html>
 <head>
     <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
         body {
-            font-family: Arial, sans-serif;
-            line-height: 1.6;
-            color: #333;
-            max-width: 600px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            line-height: 1.5;
+            color: #374151;
+            background-color: #f9fafb;
+            padding: 40px 20px;
+        }
+        .email-wrapper {
+            max-width: 520px;
             margin: 0 auto;
-            padding: 20px;
         }
         .header {
-            background: #4CAF50;
+            background: #1e40af;
             color: white;
-            padding: 20px;
+            padding: 24px 32px;
             text-align: center;
             border-radius: 8px 8px 0 0;
         }
+        .header h1 {
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            letter-spacing: -0.01em;
+        }
+        .header p {
+            font-size: 14px;
+            opacity: 0.9;
+            margin: 0;
+        }
         .container {
-            background: #f4f4f4;
-            padding: 30px;
+            background: #ffffff;
+            padding: 32px;
             border-radius: 0 0 8px 8px;
+            border: 1px solid #e5e7eb;
+            border-top: none;
+        }
+        p {
+            font-size: 14px;
+            line-height: 1.6;
+            margin-bottom: 16px;
+            color: #4b5563;
+        }
+        .section-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: #111827;
+            margin: 24px 0 12px 0;
         }
         .booking-details {
-            background: white;
-            padding: 20px;
-            border-radius: 5px;
-            margin: 15px 0;
+            background: #f9fafb;
+            padding: 16px;
+            border-radius: 6px;
+            margin: 16px 0;
+            border: 1px solid #e5e7eb;
         }
         .detail-row {
             display: flex;
-            padding: 10px 0;
-            border-bottom: 1px solid #eee;
+            padding: 8px 0;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+        .detail-row:not(:last-child) {
+            border-bottom: 1px solid #e5e7eb;
         }
         .detail-label {
-            font-weight: bold;
-            width: 150px;
+            font-weight: 500;
+            width: 140px;
+            color: #6b7280;
+            flex-shrink: 0;
         }
         .detail-value {
             flex: 1;
+            color: #111827;
         }
         .qr-section {
             text-align: center;
-            margin: 20px 0;
+            margin: 24px 0;
             padding: 20px;
-            background: white;
-            border-radius: 5px;
+            background: #f9fafb;
+            border-radius: 6px;
+            border: 1px solid #e5e7eb;
+        }
+        .qr-section h3 {
+            font-size: 16px;
+            font-weight: 600;
+            color: #111827;
+            margin-bottom: 8px;
+        }
+        .qr-section p {
+            margin: 8px 0 0 0;
         }
         .amount {
-            font-size: 24px;
-            color: #4CAF50;
-            font-weight: bold;
+            font-size: 20px;
+            color: #1e40af;
+            font-weight: 600;
         }
         .footer {
-            margin-top: 30px;
+            margin-top: 24px;
+            padding-top: 20px;
+            border-top: 1px solid #e5e7eb;
             text-align: center;
-            font-size: 12px;
-            color: #666;
+        }
+        .footer p {
+            font-size: 14px;
+            color: #9ca3af;
+            margin: 4px 0;
         }
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>Booking Confirmation</h1>
-        <p>Reference: {{ $booking->reference_number }}</p>
-    </div>
+    <div class="email-wrapper">
+        <div class="header">
+            <h1>Booking Confirmation</h1>
+            <p>Reference: {{ $booking->reference_number }}</p>
+        </div>
 
-    <div class="container">
-        <p>Dear {{ $customerName }},</p>
+        <div class="container">
+            <p>Dear {{ $customerName }},</p>
 
-        <p>Thank you for your booking! Your reservation has been confirmed.</p>
+            <p>Thank you for your booking! Your reservation has been confirmed.</p>
 
-        <div class="booking-details">
-            <h3>Booking Details</h3>
+            <div class="booking-details">
+            <h3 class="section-title" style="margin-top: 0;">Booking Details</h3>
 
             <div class="detail-row">
                 <div class="detail-label">Reference Number:</div>
@@ -154,6 +211,7 @@
         <div class="footer">
             <p>If you have any questions, please contact us.</p>
             <p>Thank you for choosing Zap Zone!</p>
+        </div>
         </div>
     </div>
 </body>

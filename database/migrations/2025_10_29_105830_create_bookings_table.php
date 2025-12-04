@@ -31,7 +31,7 @@ return new class extends Migration
             $table->decimal('total_amount', 10, 2);
             $table->decimal('amount_paid', 10, 2)->default(0);
             $table->decimal('discount_amount', 10, 2)->nullable();
-            $table->enum('payment_method', ['credit', 'debit', 'cash'])->nullable();
+            $table->enum('payment_method', ['card', 'cash'])->nullable();
             $table->enum('payment_status', ['paid', 'partial'])->default('partial');
             $table->enum('status', ['pending', 'confirmed', 'checked-in', 'completed', 'cancelled'])->default('pending');
             $table->text('notes')->nullable();

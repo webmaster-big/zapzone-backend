@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\ActivityLog;
 use App\Models\Location;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
@@ -97,7 +98,23 @@ class LocationController extends Controller
      */
     public function destroy(Location $location): JsonResponse
     {
+        $locationName = $location->name;
+        $locationId = $location->id;
+        $companyId = $location->company_id;
+
         $location->delete();
+
+        // Log location deletion
+        ActivityLog::log(
+            action: 'Location Deleted',
+            category: 'delete',
+            description: "Location '{$locationName}' was deleted",
+            userId: auth()->id(),
+            locationId: $locationId,
+            entityType: 'location',
+            entityId: $locationId,
+            metadata: ['company_id' => $companyId]
+        );
 
         return response()->json([
             'success' => true,

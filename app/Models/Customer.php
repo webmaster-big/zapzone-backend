@@ -6,10 +6,13 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Laravel\Sanctum\HasApiTokens;
+use Illuminate\Notifications\Notifiable;
+
 
 class Customer extends Model
 {
-    use HasFactory;
+    use HasFactory, Notifiable, HasApiTokens;
 
     protected $fillable = [
         'first_name',
@@ -44,6 +47,11 @@ class Customer extends Model
         return $this->hasMany(Booking::class);
     }
 
+    public function attractionPurchases(): HasMany
+    {
+        return $this->hasMany(AttractionPurchase::class);
+    }
+
     public function giftCards(): BelongsToMany
     {
         return $this->belongsToMany(GiftCard::class, 'customer_gift_cards');
@@ -52,6 +60,11 @@ class Customer extends Model
     public function payments(): HasMany
     {
         return $this->hasMany(Payment::class);
+    }
+
+    public function notifications(): HasMany
+    {
+        return $this->hasMany(CustomerNotification::class);
     }
 
     // Scopes

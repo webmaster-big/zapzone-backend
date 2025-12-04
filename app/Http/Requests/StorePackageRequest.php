@@ -55,6 +55,8 @@ class StorePackageRequest extends FormRequest
             'promo_ids.*' => 'exists:promos,id',
             'room_ids' => 'nullable|array',
             'room_ids.*' => 'exists:rooms,id',
+            'partial_payment_percentage' => 'nullable|integer|min:0|max:100',
+            'partial_payment_fixed' => 'nullable|integer|min:0',
         ];
     }
 
@@ -94,6 +96,11 @@ class StorePackageRequest extends FormRequest
             'time_slot_interval.required' => 'Time slot interval is required',
             'time_slot_interval.min' => 'Time slot interval must be at least 15 minutes',
             'time_slot_interval.max' => 'Time slot interval must not exceed 240 minutes (4 hours)',
+            'partial_payment_percentage.integer' => 'Partial payment percentage must be an integer',
+            'partial_payment_percentage.min' => 'Partial payment percentage must be at least 0',
+            'partial_payment_percentage.max' => 'Partial payment percentage must not exceed 100',
+            'partial_payment_fixed.integer' => 'Partial payment fixed amount must be an integer',
+            'partial_payment_fixed.min' => 'Partial payment fixed amount must be at least 0',
         ];
     }
 }

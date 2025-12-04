@@ -4,10 +4,13 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Mail\BookingConfirmation;
+use App\Models\ActivityLog;
 use App\Models\Booking;
 use App\Models\BookingAttraction;
 use App\Models\BookingAddOn;
+use App\Models\CustomerNotification;
 use App\Models\Location;
+use App\Models\Notification;
 use App\Models\PackageTimeSlot;
 use App\Models\User;
 use Illuminate\Http\Request;
@@ -25,7 +28,7 @@ class BookingController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
-        $query = Booking::with(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
+        $query = Booking::with(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns', 'payments']);
 
         // Role-based filtering
         if ($request->has('user_id')) {
@@ -39,6 +42,11 @@ class BookingController extends Controller
         // Filter by location
         if ($request->has('location_id')) {
             $query->byLocation($request->location_id);
+        }
+
+        // reference number
+        if ($request->has('reference_number')) {
+            $query->where('reference_number', $request->reference_number);
         }
 
         // Filter by status
@@ -56,7 +64,6 @@ class BookingController extends Controller
             $query->byDate($request->booking_date);
         }
 
-
         // Search by reference number, customer name, email, phone, or guest info
         if ($request->has('search')) {
             $search = $request->search;
@@ -70,6 +77,62 @@ class BookingController extends Controller
                                   ->orWhere('last_name', 'like', "%{$search}%")
                                   ->orWhere('email', 'like', "%{$search}%")
                                   ->orWhere('phone', 'like', "%{$search}%");
+                  });
+            });
+        }
+
+        // Sort
+        $sortBy = $request->get('sort_by', 'booking_date');
+        $sortOrder = $request->get('sort_order', 'desc');
+
+        if (in_array($sortBy, ['booking_date', 'booking_time', 'total_amount', 'status', 'created_at'])) {
+            $query->orderBy($sortBy, $sortOrder);
+        }
+
+        $perPage = min($request->get('per_page', 15), 100); // Max 100 items per page
+        $bookings = $query->paginate($perPage);
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'bookings' => $bookings->items(),
+                'pagination' => [
+                    'current_page' => $bookings->currentPage(),
+                    'last_page' => $bookings->lastPage(),
+                    'per_page' => $bookings->perPage(),
+                    'total' => $bookings->total(),
+                    'from' => $bookings->firstItem(),
+                    'to' => $bookings->lastItem(),
+                ],
+            ],
+        ]);
+    }
+
+    // customer booking index based on customer id and guest email
+    public function customerBookings(Request $request): JsonResponse
+    {
+        $query = Booking::with(['package', 'location', 'room', 'creator', 'attractions', 'addOns', 'payments']);
+
+        // filter by search by location, reference number, package name
+        if ($request->has('search')) {
+            $search = $request->search;
+            $query->where(function ($q) use ($search) {
+                $q->where('reference_number', 'like', "%{$search}%")
+                  ->orWhereHas('location', function ($locationQuery) use ($search) {
+                      $locationQuery->where('name', 'like', "%{$search}%");
+                  })
+                  ->orWhereHas('package', function ($packageQuery) use ($search) {
+                      $packageQuery->where('name', 'like', "%{$search}%");
+                  });
+            });
+        }
+
+        if ($request->has('guest_email')) {
+            $guestEmail = $request->guest_email;
+            $query->where(function ($q) use ($guestEmail) {
+                $q->where('guest_email', $guestEmail)
+                  ->orWhereHas('customer', function ($customerQuery) use ($guestEmail) {
+                      $customerQuery->where('email', $guestEmail);
                   });
             });
         }
@@ -136,7 +199,7 @@ class BookingController extends Controller
             'total_amount' => 'required|numeric|min:0',
             'amount_paid' => 'numeric|min:0',
             'discount_amount' => 'nullable|numeric|min:0',
-            'payment_method' => ['nullable', Rule::in(['credit', 'debit', 'cash'])],
+            'payment_method' => ['nullable', Rule::in(['card', 'cash'])],
             'payment_status' => ['sometimes', Rule::in(['paid', 'partial'])],
             'status' => ['sometimes', Rule::in(['pending', 'confirmed', 'checked-in', 'completed', 'cancelled'])],
             'notes' => 'nullable|string',
@@ -210,11 +273,140 @@ class BookingController extends Controller
 
         $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
 
+        // Create notification for customer
+        if ($booking->customer_id) {
+            CustomerNotification::create([
+                'customer_id' => $booking->customer_id,
+                'location_id' => $booking->location_id,
+                'type' => 'booking',
+                'priority' => 'high',
+                'title' => 'Booking Confirmed',
+                'message' => "Your booking {$booking->reference_number} has been confirmed for {$booking->booking_date} at {$booking->booking_time}.",
+                'status' => 'unread',
+                'action_url' => "/bookings/{$booking->id}",
+                'action_text' => 'View Booking',
+                'metadata' => [
+                    'booking_id' => $booking->id,
+                    'reference_number' => $booking->reference_number,
+                    'booking_date' => $booking->booking_date,
+                    'booking_time' => $booking->booking_time,
+                ],
+            ]);
+        }
+
+        // Create notification for location staff
+        $customerName = $booking->customer ? "{$booking->customer->first_name} {$booking->customer->last_name}" : $booking->guest_name;
+        Notification::create([
+            'location_id' => $booking->location_id,
+            'type' => 'booking',
+            'priority' => 'medium',
+            'title' => 'New Booking Received',
+            'message' => "New booking {$booking->reference_number} from {$customerName} for {$booking->booking_date} at {$booking->booking_time}. Amount: $" . number_format($booking->total_amount, 2),
+            'status' => 'unread',
+            'action_url' => "/bookings/{$booking->id}",
+            'action_text' => 'View Booking',
+            'metadata' => [
+                'booking_id' => $booking->id,
+                'reference_number' => $booking->reference_number,
+                'customer_id' => $booking->customer_id,
+                'total_amount' => $booking->total_amount,
+                'booking_date' => $booking->booking_date,
+            ],
+        ]);
+
+        // Log booking creation activity
+        // if created_by is not null
+        if($booking->created_by){
+            $booking->load('creator');
+
+        ActivityLog::log(
+            action: 'Booking Created',
+            category: 'create',
+            description: "Booking {$booking->reference_number} created for {$customerName}",
+            userId: $booking->created_by,
+            locationId: $booking->location_id,
+            entityType: 'booking',
+            entityId: $booking->id,
+            metadata: [
+                'reference_number' => $booking->reference_number,
+                'customer_id' => $booking->customer_id,
+                'total_amount' => $booking->total_amount,
+                'booking_date' => $booking->booking_date,
+            ]
+          );
+        }
+
+
         return response()->json([
             'success' => true,
             'message' => 'Booking created successfully',
             'data' => $booking,
         ], 201);
+    }
+
+    // export index functionality with filters similar to index method but without pagination with date range, amount, status range too and other advanced filters
+    public function exportIndex(Request $request): JsonResponse
+    {
+        $query = Booking::with(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns', 'payments']);
+
+        // Role-based filtering
+        if ($request->has('user_id')) {
+            $authUser = User::where('id', $request->user_id)->first();
+            // log the auth user info
+            if ($authUser->role === 'location_manager') {
+                $query->byLocation($authUser->location_id);
+            }
+        }
+
+        // Filter by location, what if multiple locations are provided as in checklist
+        if ($request->has('location_id')) {
+            $locationIds = is_array($request->location_id) ? $request->location_id : explode(',', $request->location_id);
+            $query->whereIn('location_id', $locationIds);
+        }
+
+        // reference number
+        if ($request->has('reference_number')) {
+            $query->where('reference_number', $request->reference_number);
+        }
+
+        // Filter by status, what if multiple statuses are provided as in checklist
+        if ($request->has('status')) {
+            $statuses = is_array($request->status) ? $request->status : explode(',', $request->status);
+            $query->whereIn('status', $statuses);
+        }
+
+        // Filter by customer, in customer selection multiple customers can be selected
+        if ($request->has('customer_id')) {
+            $customerIds = is_array($request->customer_id) ? $request->customer_id : explode(',', $request->customer_id);
+            $query->whereIn('customer_id', $customerIds);
+        }
+
+        // booking date range
+        if ($request->has('start_date') && $request->has('end_date')) {
+            $query->whereBetween('booking_date', [$request->start_date, $request->end_date]);
+        }
+
+        // total amount range
+        if ($request->has('min_amount') && $request->has('max_amount')) {
+            $query->whereBetween('total_amount', [$request->min_amount, $request->max_amount]);
+        }
+
+        // Sort
+        $sortBy = $request->get('sort_by', 'booking_date');
+        $sortOrder = $request->get('sort_order', 'desc');
+
+        if (in_array($sortBy, ['booking_date', 'booking_time', 'total_amount', 'status', 'created_at'])) {
+            $query->orderBy($sortBy, $sortOrder);
+        }
+
+        $bookings = $query->get();
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'bookings' => $bookings,
+            ],
+        ]);
     }
 
     /**
@@ -310,6 +502,15 @@ class BookingController extends Controller
      */
     public function update(Request $request, Booking $booking): JsonResponse
     {
+        // Clean undefined values from request
+        $data = $request->all();
+        foreach ($data as $key => $value) {
+            if ($value === 'undefined' || $value === 'null') {
+                $data[$key] = null;
+            }
+        }
+        $request->merge($data);
+
         $validated = $request->validate([
             'customer_id' => 'sometimes|nullable|exists:customers,id',
             'guest_name' => 'sometimes|nullable|string|max:255',
@@ -318,6 +519,8 @@ class BookingController extends Controller
             'package_id' => 'sometimes|nullable|exists:packages,id',
             'location_id' => 'sometimes|exists:locations,id',
             'room_id' => 'sometimes|nullable|exists:rooms,id',
+            'gift_card_id' => 'sometimes|nullable|exists:gift_cards,id',
+            'promo_id' => 'sometimes|nullable|exists:promos,id',
             'booking_date' => 'sometimes|date',
             'booking_time' => 'sometimes|date_format:H:i',
             'participants' => 'sometimes|integer|min:1',
@@ -326,11 +529,19 @@ class BookingController extends Controller
             'total_amount' => 'sometimes|numeric|min:0',
             'amount_paid' => 'sometimes|numeric|min:0',
             'discount_amount' => 'sometimes|nullable|numeric|min:0',
-            'payment_method' => ['sometimes', 'nullable', Rule::in(['credit', 'debit', 'cash'])],
+            'payment_method' => ['sometimes', 'nullable', Rule::in(['card', 'cash'])],
             'payment_status' => ['sometimes', Rule::in(['paid', 'partial'])],
             'status' => ['sometimes', Rule::in(['pending', 'confirmed', 'checked-in', 'completed', 'cancelled'])],
             'notes' => 'sometimes|nullable|string',
             'special_requests' => 'sometimes|nullable|string',
+            'additional_attractions' => 'sometimes|nullable|array',
+            'additional_attractions.*.attraction_id' => 'required|exists:attractions,id',
+            'additional_attractions.*.quantity' => 'required|integer|min:1',
+            'additional_attractions.*.price_at_booking' => 'required|numeric|min:0',
+            'additional_addons' => 'sometimes|nullable|array',
+            'additional_addons.*.addon_id' => 'required|exists:add_ons,id',
+            'additional_addons.*.quantity' => 'required|integer|min:1',
+            'additional_addons.*.price_at_booking' => 'required|numeric|min:0',
         ]);
 
         // Update timestamps based on status
@@ -348,8 +559,97 @@ class BookingController extends Controller
             }
         }
 
+        // Update payment status based on amount paid if not explicitly set
+        if (isset($validated['amount_paid']) && isset($validated['total_amount']) && !isset($validated['payment_status'])) {
+            $validated['payment_status'] = $validated['amount_paid'] >= $validated['total_amount'] ? 'paid' : 'partial';
+        }
+
         $booking->update($validated);
+
+        // Update attractions if provided
+        if (isset($validated['additional_attractions'])) {
+            // Delete existing attractions
+            BookingAttraction::where('booking_id', $booking->id)->delete();
+
+            // Add new attractions
+            if (is_array($validated['additional_attractions'])) {
+                foreach ($validated['additional_attractions'] as $attraction) {
+                    BookingAttraction::create([
+                        'booking_id' => $booking->id,
+                        'attraction_id' => $attraction['attraction_id'],
+                        'quantity' => $attraction['quantity'] ?? 1,
+                        'price_at_booking' => $attraction['price_at_booking'] ?? 0,
+                    ]);
+                }
+            }
+        }
+
+        // Update add-ons if provided
+        if (isset($validated['additional_addons'])) {
+            // Delete existing add-ons
+            BookingAddOn::where('booking_id', $booking->id)->delete();
+
+            // Add new add-ons
+            if (is_array($validated['additional_addons'])) {
+                foreach ($validated['additional_addons'] as $addon) {
+                    BookingAddOn::create([
+                        'booking_id' => $booking->id,
+                        'add_on_id' => $addon['addon_id'],
+                        'quantity' => $addon['quantity'] ?? 1,
+                        'price_at_booking' => $addon['price_at_booking'] ?? 0,
+                    ]);
+                }
+            }
+        }
+
+        // Update time slot if room, date, or time changed
+        if (isset($validated['room_id']) || isset($validated['booking_date']) || isset($validated['booking_time']) || isset($validated['duration']) || isset($validated['duration_unit'])) {
+            $timeSlot = PackageTimeSlot::where('booking_id', $booking->id)->first();
+
+            if ($timeSlot) {
+                $timeSlot->update([
+                    'room_id' => $validated['room_id'] ?? $timeSlot->room_id,
+                    'booked_date' => $validated['booking_date'] ?? $timeSlot->booked_date,
+                    'time_slot_start' => $validated['booking_time'] ?? $timeSlot->time_slot_start,
+                    'duration' => $validated['duration'] ?? $timeSlot->duration,
+                    'duration_unit' => $validated['duration_unit'] ?? $timeSlot->duration_unit,
+                    'notes' => $validated['notes'] ?? $timeSlot->notes,
+                ]);
+            } elseif (isset($validated['room_id']) && $validated['room_id']) {
+                // Create time slot if it doesn't exist but room is provided
+                PackageTimeSlot::create([
+                    'package_id' => $validated['package_id'] ?? $booking->package_id,
+                    'booking_id' => $booking->id,
+                    'room_id' => $validated['room_id'],
+                    'customer_id' => $validated['customer_id'] ?? $booking->customer_id,
+                    'user_id' => $booking->created_by,
+                    'booked_date' => $validated['booking_date'] ?? $booking->booking_date,
+                    'time_slot_start' => $validated['booking_time'] ?? $booking->booking_time,
+                    'duration' => $validated['duration'] ?? $booking->duration,
+                    'duration_unit' => $validated['duration_unit'] ?? $booking->duration_unit,
+                    'status' => 'booked',
+                    'notes' => $validated['notes'] ?? null,
+                ]);
+            }
+        }
+
         $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
+
+        // Log booking update activity
+        $customerName = $booking->customer ? "{$booking->customer->first_name} {$booking->customer->last_name}" : $booking->guest_name;
+        ActivityLog::log(
+            action: 'Booking Updated',
+            category: 'update',
+            description: "Booking {$booking->reference_number} updated for {$customerName}",
+            userId: auth()->id(),
+            locationId: $booking->location_id,
+            entityType: 'booking',
+            entityId: $booking->id,
+            metadata: [
+                'reference_number' => $booking->reference_number,
+                'updated_fields' => array_keys($validated),
+            ]
+        );
 
         return response()->json([
             'success' => true,
@@ -463,6 +763,164 @@ class BookingController extends Controller
             'data' => $booking,
         ]);
     }
+
+    // update status depending on the status sent
+    public function updateStatus(Request $request, Booking $booking): JsonResponse
+    {
+        $validated = $request->validate([
+            'status' => ['required', Rule::in(['pending', 'confirmed', 'checked-in', 'completed', 'cancelled'])],
+        ]);
+
+        $notificationData = null;
+
+        // Update timestamps based on status
+        switch ($validated['status']) {
+            case 'checked-in':
+                $booking->update([
+                    'status' => 'checked-in',
+                    'checked_in_at' => now(),
+                ]);
+                PackageTimeSlot::where('booking_id', $booking->id)->update([
+                    'status' => 'booked',
+                ]);
+                $notificationData = [
+                    'title' => 'Checked In',
+                    'message' => "You have been checked in for booking {$booking->reference_number}. Enjoy your experience!",
+                    'priority' => 'medium',
+                ];
+                break;
+            case 'completed':
+                $booking->update([
+                    'status' => 'completed',
+                    'completed_at' => now(),
+                ]);
+                PackageTimeSlot::where('booking_id', $booking->id)->update([
+                    'status' => 'completed',
+                ]);
+                $notificationData = [
+                    'title' => 'Booking Completed',
+                    'message' => "Thank you for visiting! Your booking {$booking->reference_number} has been completed.",
+                    'priority' => 'low',
+                ];
+                break;
+            case 'cancelled':
+                $booking->update([
+                    'status' => 'cancelled',
+                    'cancelled_at' => now(),
+                ]);
+                PackageTimeSlot::where('booking_id', $booking->id)->update([
+                    'status' => 'cancelled',
+                ]);
+                $notificationData = [
+                    'title' => 'Booking Cancelled',
+                    'message' => "Your booking {$booking->reference_number} has been cancelled.",
+                    'priority' => 'high',
+                ];
+                break;
+            case 'confirmed':
+                $booking->update([
+                    'status' => $validated['status'],
+                ]);
+                $notificationData = [
+                    'title' => 'Booking Confirmed',
+                    'message' => "Your booking {$booking->reference_number} has been confirmed for {$booking->booking_date} at {$booking->booking_time}.",
+                    'priority' => 'high',
+                ];
+                break;
+            default:
+                $booking->update([
+                    'status' => $validated['status'],
+                ]);
+                break;
+        }
+
+        // Create notification for customer if status changed to important states
+        if ($booking->customer_id && $notificationData) {
+            CustomerNotification::create([
+                'customer_id' => $booking->customer_id,
+                'location_id' => $booking->location_id,
+                'type' => 'booking',
+                'priority' => $notificationData['priority'],
+                'title' => $notificationData['title'],
+                'message' => $notificationData['message'],
+                'status' => 'unread',
+                'action_url' => "/bookings/{$booking->id}",
+                'action_text' => 'View Booking',
+                'metadata' => [
+                    'booking_id' => $booking->id,
+                    'reference_number' => $booking->reference_number,
+                    'status' => $validated['status'],
+                ],
+            ]);
+        }
+
+        // Create notification for location staff on cancelled bookings
+        if ($validated['status'] === 'cancelled') {
+            $customerName = $booking->customer ? "{$booking->customer->first_name} {$booking->customer->last_name}" : $booking->guest_name;
+            Notification::create([
+                'location_id' => $booking->location_id,
+                'type' => 'booking',
+                'priority' => 'high',
+                'title' => 'Booking Cancelled',
+                'message' => "Booking {$booking->reference_number} for {$customerName} has been cancelled.",
+                'status' => 'unread',
+                'action_url' => "/bookings/{$booking->id}",
+                'action_text' => 'View Booking',
+                'metadata' => [
+                    'booking_id' => $booking->id,
+                    'reference_number' => $booking->reference_number,
+                    'status' => 'cancelled',
+                ],
+            ]);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Booking status updated successfully',
+            'data' => $booking,
+        ]);
+    }
+
+        public function updatePaymentStatus(Request $request, Booking $booking): JsonResponse
+    {
+        $validated = $request->validate([
+            'payment_status' => ['required', Rule::in(['paid', 'partial'])],
+        ]);
+
+        $previousStatus = $booking->payment_status;
+
+        $booking->update([
+            'payment_status' => $validated['payment_status'],
+        ]);
+
+        // Create customer notification if payment status changed to paid
+        if ($validated['payment_status'] === 'paid' && $previousStatus !== 'paid' && $booking->customer_id) {
+            CustomerNotification::create([
+                'customer_id' => $booking->customer_id,
+                'location_id' => $booking->location_id,
+                'type' => 'payment',
+                'priority' => 'medium',
+                'title' => 'Payment Complete',
+                'message' => "Your booking {$booking->reference_number} is now fully paid.",
+                'status' => 'unread',
+                'action_url' => "/bookings/{$booking->id}",
+                'action_text' => 'View Booking',
+                'metadata' => [
+                    'booking_id' => $booking->id,
+                    'reference_number' => $booking->reference_number,
+                    'payment_status' => 'paid',
+                    'total_amount' => $booking->total_amount,
+                ],
+            ]);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Booking payment status updated successfully',
+            'data' => $booking,
+        ]);
+    }
+
 
     /**
      * Get bookings by location and date.

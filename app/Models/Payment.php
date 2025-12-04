@@ -21,6 +21,8 @@ class Payment extends Model
         'notes',
         'paid_at',
         'refunded_at',
+        'payment_id',
+        'location_id',
     ];
 
     protected $casts = [
@@ -38,6 +40,11 @@ class Payment extends Model
     public function customer(): BelongsTo
     {
         return $this->belongsTo(Customer::class);
+    }
+
+    public function location(): BelongsTo
+    {
+        return $this->belongsTo(Location::class);
     }
 
     // Scopes

@@ -35,4 +35,18 @@ return [
         ],
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Authorize.Net Configuration
+    |--------------------------------------------------------------------------
+    |
+    | Note: Actual credentials are stored per-location in the database
+    | These are just global settings if needed
+    |
+    */
+    'authorize_net' => [
+        'sandbox_endpoint' => 'https://apitest.authorize.net/xml/v1/request.api',
+        'production_endpoint' => 'https://api.authorize.net/xml/v1/request.api',
+    ],
+
 ];

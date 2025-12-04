@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\ActivityLog;
 use App\Models\Promo;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
@@ -155,7 +156,21 @@ class PromoController extends Controller
      */
     public function destroy(Promo $promo): JsonResponse
     {
+        $promoCode = $promo->code;
+        $promoId = $promo->id;
+
         $promo->update(['deleted' => true, 'status' => 'inactive']);
+
+        // Log promo deletion
+        ActivityLog::log(
+            action: 'Promo Deleted',
+            category: 'delete',
+            description: "Promo code '{$promoCode}' was deleted",
+            userId: auth()->id(),
+            locationId: null,
+            entityType: 'promo',
+            entityId: $promoId
+        );
 
         return response()->json([
             'success' => true,

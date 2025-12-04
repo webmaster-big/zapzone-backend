@@ -16,15 +16,15 @@ return new class extends Migration
             $table->foreignId('attraction_id')->constrained()->onDelete('cascade');
             $table->foreignId('customer_id')->nullable()->constrained()->onDelete('cascade');
             $table->foreignId('created_by')->nullable()->constrained('users')->onDelete('set null');
-            
+
             // Guest customer fields (for purchases without login)
             $table->string('guest_name')->nullable();
             $table->string('guest_email')->nullable();
             $table->string('guest_phone')->nullable();
-            
+
             $table->integer('quantity')->default(1);
             $table->decimal('total_amount', 10, 2);
-            $table->enum('payment_method', ['credit', 'debit', 'cash', 'e-wallet', 'bank_transfer']);
+            $table->enum('payment_method', ['card', 'cash']);
             $table->enum('status', ['pending', 'completed', 'cancelled'])->default('pending');
             $table->date('purchase_date');
             $table->text('notes')->nullable();

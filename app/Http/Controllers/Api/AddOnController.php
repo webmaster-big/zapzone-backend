@@ -3,10 +3,12 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\ActivityLog;
 use App\Models\AddOn;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Log;
 
 class AddOnController extends Controller
 {
@@ -97,8 +99,10 @@ class AddOnController extends Controller
         ]);
 
         // Handle image upload
-        if (isset($validated['image'])) {
+        if (isset($validated['image']) && !empty($validated['image'])) {
             $validated['image'] = $this->handleImageUpload($validated['image']);
+        } else {
+            $validated['image'] = null;
         }
 
         $addOn = AddOn::create($validated);
@@ -127,28 +131,58 @@ class AddOnController extends Controller
     /**
      * Update the specified add-on.
      */
-    public function update(Request $request, AddOn $addOn): JsonResponse
+    public function update(Request $request, $id): JsonResponse
     {
+        // Find the add-on
+        $addOn = AddOn::findOrFail($id);
+
+        // Store original name for logging
+        $originalName = $addOn->name;
+
         $validated = $request->validate([
             'location_id' => 'sometimes|nullable|exists:locations,id',
             'name' => 'sometimes|string|max:255',
             'price' => 'sometimes|numeric|min:0',
             'description' => 'sometimes|nullable|string',
             'image' => 'sometimes|nullable|string',
-            'is_active' => 'boolean',
+            'is_active' => 'sometimes|boolean',
+        ]);
+
+        // Log what we're receiving
+        Log::info('Update request received', [
+            'addon_id' => $addOn->id,
+            'addon_name' => $addOn->name,
+            'validated_data' => $validated,
+            'has_image' => isset($validated['image'])
         ]);
 
         // Handle image upload
-        if (isset($validated['image'])) {
+        if (isset($validated['image']) && !empty($validated['image'])) {
             // Delete old image if exists
             if ($addOn->image && file_exists(public_path($addOn->image))) {
                 unlink(public_path($addOn->image));
             }
             $validated['image'] = $this->handleImageUpload($validated['image']);
+            Log::info('Image processed', ['new_path' => $validated['image']]);
         }
 
         $addOn->update($validated);
+        $addOn->refresh();
         $addOn->load(['location', 'packages']);
+
+        // log laravel log
+        Log::info("Add-On '{$addOn->name}' (ID: {$addOn->id}) was updated from '{$originalName}'.");
+
+        // Log add-on update
+        ActivityLog::log(
+            action: 'Add-On Updated',
+            category: 'update',
+            description: "Add-on '{$addOn->name}' was updated",
+            userId: auth()->id(),
+            locationId: $addOn->location_id,
+            entityType: 'addon',
+            entityId: $addOn->id
+        );
 
         return response()->json([
             'success' => true,
@@ -160,14 +194,31 @@ class AddOnController extends Controller
     /**
      * Remove the specified add-on.
      */
-    public function destroy(AddOn $addOn): JsonResponse
+    public function destroy( $id): JsonResponse
     {
+        $addOn = AddOn::findOrFail($id);
+
         // Delete image if exists
         if ($addOn->image && file_exists(public_path($addOn->image))) {
             unlink(public_path($addOn->image));
         }
 
+        $addOnName = $addOn->name;
+        $addOnId = $addOn->id;
+        $locationId = $addOn->location_id;
+
         $addOn->delete();
+
+        // Log add-on deletion
+        ActivityLog::log(
+            action: 'Add-On Deleted',
+            category: 'delete',
+            description: "Add-on '{$addOnName}' was deleted",
+            userId: auth()->id(),
+            locationId: $locationId,
+            entityType: 'addon',
+            entityId: $addOnId
+        );
 
         return response()->json([
             'success' => true,
@@ -227,41 +278,36 @@ class AddOnController extends Controller
     }
 
     /**
-     * Handle image upload - converts base64 to file
+     * Handle image upload - base64 or file path
      */
-    private function handleImageUpload(string $imageData): string
+    private function handleImageUpload($image): string
     {
-        // Check if it's a base64 image
-        if (preg_match('/^data:image\/(\w+);base64,/', $imageData, $type)) {
+        // Check if it's a base64 string
+        if (is_string($image) && strpos($image, 'data:image') === 0) {
             // Extract base64 data
-            $imageData = substr($imageData, strpos($imageData, ',') + 1);
-            $type = strtolower($type[1]); // jpg, png, gif, etc.
-
-            // Decode base64
+            preg_match('/data:image\/(\w+);base64,/', $image, $matches);
+            $imageType = $matches[1] ?? 'png';
+            $imageData = substr($image, strpos($image, ',') + 1);
             $imageData = base64_decode($imageData);
 
-            if ($imageData === false) {
-                throw new \Exception('Base64 decode failed');
-            }
+            // Generate unique filename
+            $filename = uniqid() . '.' . $imageType;
+            $path = 'images/addons';
+            $fullPath = public_path($path);
 
             // Create directory if it doesn't exist
-            $directory = public_path('images/addons');
-            if (!file_exists($directory)) {
-                mkdir($directory, 0755, true);
+            if (!file_exists($fullPath)) {
+                mkdir($fullPath, 0755, true);
             }
 
-            // Generate unique filename
-            $filename = uniqid() . '.' . $type;
-            $filepath = $directory . '/' . $filename;
-
             // Save the file
-            file_put_contents($filepath, $imageData);
+            file_put_contents($fullPath . '/' . $filename, $imageData);
 
             // Return the relative path
-            return 'images/addons/' . $filename;
+            return $path . '/' . $filename;
         }
 
-        // If not base64, return as is (might be a URL or existing path)
-        return $imageData;
+        // If it's already a file path or URL, return as is
+        return $image;
     }
 }

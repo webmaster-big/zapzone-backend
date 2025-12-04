@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class Location extends Model
 {
@@ -42,6 +43,16 @@ class Location extends Model
     public function users(): HasMany
     {
         return $this->hasMany(User::class);
+    }
+
+    public function authorizeNetAccount(): HasOne
+    {
+        return $this->hasOne(AuthorizeNetAccount::class);
+    }
+
+    public function notifications(): HasMany
+    {
+        return $this->hasMany(Notification::class);
     }
 
     // Scopes

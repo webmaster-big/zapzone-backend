@@ -3,10 +3,12 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\ActivityLog;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 
@@ -108,6 +110,7 @@ class UserController extends Controller
             'email' => 'required|email|unique:users',
             'phone' => 'nullable|string|max:20',
             'password' => 'required|string|min:8|confirmed',
+            'profile_path' => 'nullable|string|max:500',
             'role' => ['required', Rule::in(['company_admin', 'location_manager', 'attendant'])],
             'employee_id' => 'nullable|string|unique:users',
             'department' => 'nullable|string|max:255',
@@ -122,6 +125,18 @@ class UserController extends Controller
 
         $user = User::create($validated);
         $user->load(['company', 'location']);
+
+        // Log user creation
+        ActivityLog::log(
+            action: 'User Created',
+            category: 'create',
+            description: "New user {$user->first_name} {$user->last_name} ({$user->role}) created",
+            userId: auth()->id(),
+            locationId: $user->location_id,
+            entityType: 'user',
+            entityId: $user->id,
+            metadata: ['role' => $user->role, 'email' => $user->email]
+        );
 
         return response()->json([
             'success' => true,
@@ -156,6 +171,7 @@ class UserController extends Controller
             'email' => 'sometimes|email|unique:users,email,' . $user->id,
             'phone' => 'sometimes|nullable|string|max:20',
             'password' => 'sometimes|string|min:8|confirmed',
+            'profile_path' => 'sometimes|nullable|string|max:500',
             'role' => ['sometimes', Rule::in(['company_admin', 'location_manager', 'attendant'])],
             'employee_id' => 'sometimes|nullable|string|unique:users,employee_id,' . $user->id,
             'department' => 'sometimes|nullable|string|max:255',
@@ -173,9 +189,107 @@ class UserController extends Controller
         $user->update($validated);
         $user->load(['company', 'location']);
 
+        // Log user update
+        ActivityLog::log(
+            action: 'User Updated',
+            category: 'update',
+            description: "User {$user->first_name} {$user->last_name} information updated",
+            userId: auth()->id(),
+            locationId: $user->location_id,
+            entityType: 'user',
+            entityId: $user->id,
+            metadata: array_keys($validated)
+        );
+
         return response()->json([
             'success' => true,
             'message' => 'User updated successfully',
+            'data' => $user,
+        ]);
+    }
+
+    // update profile_path and store to storage
+    public function updateProfilePath(Request $request, User $user): JsonResponse
+    {
+        $validated = $request->validate([
+            'profile_path' => 'required|string',
+        ]);
+
+        // Delete old profile image if it exists
+        if ($user->profile_path && Str::startsWith($user->profile_path, '/storage/profiles/')) {
+            $oldImagePath = str_replace('/storage/', '', $user->profile_path);
+            if (Storage::disk('public')->exists($oldImagePath)) {
+                Storage::disk('public')->delete($oldImagePath);
+            }
+        }
+
+        // store profile path to the storage and get the path
+        if (Str::startsWith($validated['profile_path'], 'data:image/')) {
+            $imageData = $validated['profile_path'];
+            $imageName = 'profiles/' . Str::uuid() . '.png';
+            Storage::disk('public')->put($imageName, base64_decode(preg_replace('#^data:image/\w+;base64,#i', '', $imageData)));
+            $validated['profile_path'] = '/storage/' . $imageName;
+        }
+
+        $user->update(['profile_path' => $validated['profile_path']]);
+        $user->load(['company', 'location']);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Profile picture updated successfully',
+            'data' => $user,
+        ]);
+    }
+
+
+    // update email check current email, if same, allow, if different, check unique and check password to confirm identity
+    public function updateEmail(Request $request, User $user): JsonResponse
+    {
+        $validated = $request->validate([
+            'new_email' => 'required|email|unique:users,email,' . $user->id,
+            'password' => 'required|string',
+        ]);
+
+        // Verify password
+        if (!Hash::check($validated['password'], $user->password)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Incorrect password',
+            ], 403);
+        }
+
+        $user->update(['email' => $validated['new_email']]);
+        $user->load(['company', 'location']);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Email updated successfully',
+            'data' => $user,
+        ]);
+    }
+
+    // update password, require current password to confirm identity
+    public function updatePassword(Request $request, User $user): JsonResponse
+    {
+        $validated = $request->validate([
+            'current_password' => 'required|string',
+            'new_password' => 'required|string|min:8|confirmed',
+        ]);
+
+        // Verify current password
+        if (!Hash::check($validated['current_password'], $user->password)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Incorrect current password',
+            ], 403);
+        }
+
+        $user->update(['password' => Hash::make($validated['new_password'])]);
+        $user->load(['company', 'location']);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Password updated successfully',
             'data' => $user,
         ]);
     }
@@ -185,7 +299,22 @@ class UserController extends Controller
      */
     public function destroy(User $user): JsonResponse
     {
+        $userName = $user->first_name . ' ' . $user->last_name;
+        $userId = $user->id;
+        $locationId = $user->location_id;
+
         $user->delete();
+
+        // Log user deletion
+        ActivityLog::log(
+            action: 'User Deleted',
+            category: 'delete',
+            description: "User {$userName} was deleted",
+            userId: auth()->id(),
+            locationId: $locationId,
+            entityType: 'user',
+            entityId: $userId
+        );
 
         return response()->json([
             'success' => true,

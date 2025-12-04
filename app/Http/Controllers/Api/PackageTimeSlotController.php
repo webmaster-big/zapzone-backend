@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\ActivityLog;
 use App\Models\PackageTimeSlot;
 use App\Models\Package;
 use Illuminate\Http\Request;
@@ -173,7 +174,23 @@ class PackageTimeSlotController extends Controller
      */
     public function destroy(PackageTimeSlot $packageTimeSlot): JsonResponse
     {
+        $timeSlotId = $packageTimeSlot->id;
+        $packageId = $packageTimeSlot->package_id;
+        $roomId = $packageTimeSlot->room_id;
+
         $packageTimeSlot->delete();
+
+        // Log time slot deletion
+        ActivityLog::log(
+            action: 'Package Time Slot Deleted',
+            category: 'delete',
+            description: "Package time slot was deleted",
+            userId: auth()->id(),
+            locationId: null,
+            entityType: 'package_time_slot',
+            entityId: $timeSlotId,
+            metadata: ['package_id' => $packageId, 'room_id' => $roomId]
+        );
 
         return response()->json([
             'success' => true,
@@ -222,7 +239,7 @@ class PackageTimeSlotController extends Controller
 
                 // Check if data has changed
                 $currentHash = md5(json_encode($data));
-                
+
                 if ($currentHash !== $lastHash) {
                     // Send data only if changed
                     echo "data: " . json_encode($data) . "\n\n";

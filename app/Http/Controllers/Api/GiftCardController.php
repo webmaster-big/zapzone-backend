@@ -4,6 +4,8 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\GiftCard;
+use App\Models\ActivityLog;
+use App\Models\CustomerNotification;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Str;
@@ -143,6 +145,21 @@ class GiftCardController extends Controller
         $giftCard->update($validated);
         $giftCard->load(['creator', 'packages']);
 
+        // Log gift card update activity
+        ActivityLog::log(
+            action: 'Gift Card Updated',
+            category: 'update',
+            description: "Gift card {$giftCard->code} updated",
+            userId: auth()->id(),
+            locationId: null,
+            entityType: 'gift_card',
+            entityId: $giftCard->id,
+            metadata: [
+                'code' => $giftCard->code,
+                'updated_fields' => array_keys($validated),
+            ]
+        );
+
         return response()->json([
             'success' => true,
             'message' => 'Gift card updated successfully',
@@ -155,7 +172,21 @@ class GiftCardController extends Controller
      */
     public function destroy(GiftCard $giftCard): JsonResponse
     {
+        $giftCardCode = $giftCard->code;
+        $giftCardId = $giftCard->id;
+
         $giftCard->update(['deleted' => true, 'status' => 'deleted']);
+
+        // Log gift card deletion activity
+        ActivityLog::log(
+            action: 'Gift Card Deleted',
+            category: 'delete',
+            description: "Gift card {$giftCardCode} deleted",
+            userId: auth()->id(),
+            locationId: null,
+            entityType: 'gift_card',
+            entityId: $giftCardId
+        );
 
         return response()->json([
             'success' => true,
@@ -201,6 +232,7 @@ class GiftCardController extends Controller
     {
         $validated = $request->validate([
             'amount' => 'required|numeric|min:0.01',
+            'customer_id' => 'nullable|exists:customers,id',
         ]);
 
         if (!$giftCard->isValid()) {
@@ -222,6 +254,44 @@ class GiftCardController extends Controller
             'balance' => $newBalance,
             'status' => $newBalance <= 0 ? 'redeemed' : 'active',
         ]);
+
+        // Create notification for customer if provided
+        if (isset($validated['customer_id'])) {
+            CustomerNotification::create([
+                'customer_id' => $validated['customer_id'],
+                'location_id' => null,
+                'type' => 'gift_card',
+                'priority' => 'medium',
+                'title' => 'Gift Card Redeemed',
+                'message' => "You have redeemed $" . number_format($validated['amount'], 2) . " from your gift card. Remaining balance: $" . number_format($newBalance, 2),
+                'status' => 'unread',
+                'action_url' => "/gift-cards/{$giftCard->id}",
+                'action_text' => 'View Gift Card',
+                'metadata' => [
+                    'gift_card_id' => $giftCard->id,
+                    'gift_card_code' => $giftCard->code,
+                    'redeemed_amount' => $validated['amount'],
+                    'remaining_balance' => $newBalance,
+                ],
+            ]);
+        }
+
+        // Log gift card redemption activity
+        ActivityLog::log(
+            action: 'Gift Card Redeemed',
+            category: 'update',
+            description: "Gift card {$giftCard->code} redeemed for $" . number_format($validated['amount'], 2),
+            userId: auth()->id(),
+            locationId: null,
+            entityType: 'gift_card',
+            entityId: $giftCard->id,
+            metadata: [
+                'gift_card_code' => $giftCard->code,
+                'customer_id' => $validated['customer_id'] ?? null,
+                'redeemed_amount' => $validated['amount'],
+                'remaining_balance' => $newBalance,
+            ]
+        );
 
         return response()->json([
             'success' => true,

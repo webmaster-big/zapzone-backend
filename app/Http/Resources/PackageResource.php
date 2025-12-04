@@ -50,6 +50,8 @@ class PackageResource extends JsonResource
             'bookings_count' => $this->when($this->relationLoaded('bookings'), function () {
                 return $this->bookings->count();
             }),
+            'partial_payment_percentage' => $this->partial_payment_percentage,
+            'partial_payment_fixed' => $this->partial_payment_fixed,
         ];
     }
 }

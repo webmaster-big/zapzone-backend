@@ -15,15 +15,15 @@ class AttractionPurchaseReceipt extends Mailable
     use Queueable, SerializesModels;
 
     public $purchase;
-    public $qrCodePath;
+    public $qrCodeBase64;
 
     /**
      * Create a new message instance.
      */
-    public function __construct(AttractionPurchase $purchase, ?string $qrCodePath = null)
+    public function __construct(AttractionPurchase $purchase, ?string $qrCodeBase64 = null)
     {
         $this->purchase = $purchase;
-        $this->qrCodePath = $qrCodePath;
+        $this->qrCodeBase64 = $qrCodeBase64;
     }
 
     /**
@@ -45,7 +45,7 @@ class AttractionPurchaseReceipt extends Mailable
             view: 'emails.attraction-purchase-receipt',
             with: [
                 'purchase' => $this->purchase,
-                'qrCodePath' => $this->qrCodePath,
+                'qrCodeBase64' => $this->qrCodeBase64,
             ],
         );
     }
@@ -59,11 +59,13 @@ class AttractionPurchaseReceipt extends Mailable
     {
         $attachments = [];
 
-        // Attach QR code if path is provided
-        if ($this->qrCodePath && file_exists($this->qrCodePath)) {
-            $attachments[] = Attachment::fromPath($this->qrCodePath)
-                ->as('ticket-qrcode.png')
-                ->withMime('image/png');
+        // Attach QR code if base64 data is provided
+        if ($this->qrCodeBase64) {
+            $qrCodeImage = base64_decode($this->qrCodeBase64);
+            if ($qrCodeImage !== false) {
+                $attachments[] = Attachment::fromData(fn () => $qrCodeImage, 'ticket-qrcode.png')
+                    ->withMime('image/png');
+            }
         }
 
         return $attachments;

@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\StorePackageRequest;
 use App\Http\Requests\UpdatePackageRequest;
 use App\Http\Resources\PackageResource;
+use App\Models\ActivityLog;
 use App\Models\Location;
 use App\Models\Package;
 use Illuminate\Support\Facades\Log;
@@ -85,6 +86,86 @@ class PackageController extends Controller
                     'to' => $packages->lastItem(),
                 ],
             ],
+        ]);
+    }
+
+    /**
+     * Get public packages with location-based booking links
+     * Groups packages by name and shows all locations where they're available
+     */
+    public function packagesGroupedByName(Request $request): JsonResponse
+    {
+        // search
+        $search = $request->get('search', null);
+
+        if ($search) {
+            $packages = Package::with(['location', 'attractions', 'addOns', 'rooms'])
+                ->where('is_active', true)
+                ->where(function ($q) use ($search) {
+                    $q->where('name', 'like', "%{$search}%")
+                      ->orWhere('description', 'like', "%{$search}%");
+                })
+                ->orderBy('name')
+                ->get();
+        } else {
+            // Get all active packages with their locations
+            $packages = Package::with(['location', 'attractions', 'addOns', 'rooms'])
+                ->where('is_active', true)
+                ->orderBy('name')
+                ->get();
+        }
+
+        // Group packages by name
+        $groupedPackages = [];
+
+        foreach ($packages as $package) {
+            $packageName = $package->name;
+
+            if (!isset($groupedPackages[$packageName])) {
+                // Initialize the group with the first package's data
+                $groupedPackages[$packageName] = [
+                    'name' => $package->name,
+                    'description' => $package->description,
+                    'price' => $package->price,
+                    'category' => $package->category,
+                    'max_guests' => $package->max_participants ,
+                    'duration' => $package->duration,
+                    'image' => $package->image,
+                    'locations' => [],
+                    'booking_links' => [],
+                ];
+            }
+
+            // Add this location's information
+            $locationSlug = str_replace(' ', '', $package->location->name); // Remove spaces for URL
+
+            $groupedPackages[$packageName]['locations'][] = [
+                'location_id' => $package->location->id,
+                'location_name' => $package->location->name,
+                'location_slug' => $locationSlug,
+                'package_id' => $package->id,
+                'address' => $package->location->address,
+                'city' => $package->location->city,
+                'state' => $package->location->state,
+                'phone' => $package->location->phone,
+            ];
+
+            // Create booking link for this location
+            $groupedPackages[$packageName]['booking_links'][] = [
+                'location' => $package->location->name,
+                'url' => "/book/package/{$locationSlug}/{$package->id}",
+                'package_id' => $package->id,
+                'location_id' => $package->location->id,
+            ];
+        }
+
+        // Convert to indexed array
+        $result = array_values($groupedPackages);
+
+        return response()->json([
+            'success' => true,
+            'data' => $result,
+            'total' => count($result),
         ]);
     }
 
@@ -407,7 +488,22 @@ class PackageController extends Controller
             }
         }
 
+        $packageName = $package->name;
+        $packageId = $package->id;
+        $locationId = $package->location_id;
+
         $package->delete();
+
+        // Log package deletion
+        ActivityLog::log(
+            action: 'Package Deleted',
+            category: 'delete',
+            description: "Package '{$packageName}' was deleted",
+            userId: auth()->id(),
+            locationId: $locationId,
+            entityType: 'package',
+            entityId: $packageId
+        );
 
         return response()->json([
             'success' => true,
