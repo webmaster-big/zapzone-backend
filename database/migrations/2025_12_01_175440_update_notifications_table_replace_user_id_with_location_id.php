@@ -12,14 +12,15 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('notifications', function (Blueprint $table) {
-            // Drop indexes first
-            $table->dropIndex(['user_id', 'user_type']); // Composite index
-            $table->dropIndex(['customer_id']);
-            
-            // Drop foreign key constraints
+            // Drop foreign key constraints first
+            $table->dropForeign(['user_id']);
             if (Schema::hasColumn('notifications', 'customer_id')) {
                 $table->dropForeign(['customer_id']);
             }
+            
+            // Then drop indexes
+            $table->dropIndex(['user_id', 'user_type']); // Composite index
+            $table->dropIndex(['customer_id']);
 
             // Drop old columns
             $table->dropColumn(['customer_id', 'user_type', 'related_user', 'related_location']);
