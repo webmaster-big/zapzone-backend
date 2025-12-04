@@ -17,10 +17,6 @@ return new class extends Migration
             $table->foreignId('customer_id')->nullable()->constrained()->onDelete('cascade');
             $table->foreignId('created_by')->nullable()->constrained('users')->onDelete('set null');
 
-            // Guest customer fields (for purchases without login)
-            $table->string('guest_name')->nullable();
-            $table->string('guest_email')->nullable();
-            $table->string('guest_phone')->nullable();
 
             $table->integer('quantity')->default(1);
             $table->decimal('total_amount', 10, 2);
@@ -33,7 +29,6 @@ return new class extends Migration
             // Indexes
             $table->index('attraction_id');
             $table->index('customer_id');
-            $table->index('guest_email');
             $table->index('status');
             $table->index('purchase_date');
         });
