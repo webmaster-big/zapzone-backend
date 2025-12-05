@@ -18,7 +18,6 @@
 /public/storage
 /storage/*.key
 /storage/pail
-/storage/app/gmail.json
 /vendor
 Homestead.json
 Homestead.yaml

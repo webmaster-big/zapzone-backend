@@ -1,67 +1,69 @@
 # Gmail API Setup for Production
 
-## Deployment Steps for Laravel Forge
-
-### Important: Forge Uses Shared Storage
-Laravel Forge uses zero-downtime deployments with changing release directories. The `gmail.json` file must be placed in the **shared storage** directory that persists across deployments.
-
-### 1. Upload Gmail Credentials via SSH
+## Step 1: Upload Gmail Credentials to Shared Storage
 
 ```bash
 # SSH into your server
 ssh forge@your-server-ip
 
-# Navigate to the SHARED storage directory (NOT releases)
-cd /home/forge/zapzone-backend-1oulhaj4.on-forge.com
+# Navigate to the shared storage directory (OUTSIDE releases)
+cd /home/forge/zapzone-backend-1oulhaj4.on-forge.com/storage/app
 
-# Create the gmail.json file in shared storage
-nano storage/app/gmail.json
+# Create the gmail.json file
+nano gmail.json
 
 # Paste your credentials and save (Ctrl+X, Y, Enter)
 
 # Set proper permissions
-chmod 600 storage/app/gmail.json
-chown forge:forge storage/app/gmail.json
+chmod 600 gmail.json
+chown forge:forge gmail.json
 ```
 
-### 2. Verify File Location
+## Step 2: Add Environment Variable in Laravel Forge
 
-The file should be at:
+1. Go to your site in **Laravel Forge**
+2. Click **Environment** section
+3. Add this line to your `.env` file:
+
+```bash
+GMAIL_CREDENTIALS_PATH=/home/forge/zapzone-backend-1oulhaj4.on-forge.com/storage/app/gmail.json
+```
+
+4. Click **Save**
+5. The server will automatically reload
+
+## Verify Setup
+
+```bash
+# SSH into server
+ssh forge@your-server-ip
+
+# Check file exists in shared storage
+ls -la /home/forge/zapzone-backend-1oulhaj4.on-forge.com/storage/app/gmail.json
+
+# Should show something like:
+# -rw------- 1 forge forge 1234 Dec 05 14:30 gmail.json
+```
+
+## File Locations
+
+✅ **Correct location (shared storage):**
 ```
 /home/forge/zapzone-backend-1oulhaj4.on-forge.com/storage/app/gmail.json
 ```
 
-**NOT** in the releases directory:
+❌ **Wrong location (releases directory):**
 ```
-/home/forge/zapzone-backend-1oulhaj4.on-forge.com/releases/XXXXXXXX/storage/app/gmail.json ❌
+/home/forge/zapzone-backend-1oulhaj4.on-forge.com/releases/XXXXXXXX/storage/app/gmail.json
 ```
-
-### 3. Verify File Exists
-
-```bash
-# Check if file exists in shared storage
-ls -la /home/forge/zapzone-backend-1oulhaj4.on-forge.com/storage/app/gmail.json
-
-# The symlink should point to shared storage
-ls -la /home/forge/zapzone-backend-1oulhaj4.on-forge.com/current/storage
-```
-
-## Alternative: Using Laravel Forge Dashboard
-
-1. Go to your site in Laravel Forge
-2. Click on **Files** section
-3. Navigate to: `storage/app/`
-4. Create new file: `gmail.json`
-5. Paste the contents from your local `storage/app/gmail.json`
-6. Save
 
 ## Important Notes
 
 - ⚠️ **Never commit `gmail.json` to git** - It's already in `.gitignore`
 - 🔒 The credentials file contains sensitive service account information
 - 📋 Keep a secure backup of `gmail.json` in a password manager
-- 🔄 File should be in **shared storage**, not releases directory
-- ✅ The application will log an error if the file is missing
+- 🔄 File persists across deployments in shared storage
+- ✅ Environment variable points to absolute path outside releases
 
 ## Gmail Service Account Details
 
@@ -73,30 +75,30 @@ ls -la /home/forge/zapzone-backend-1oulhaj4.on-forge.com/current/storage
 
 If you see the error: `Gmail credentials file not found`
 
-1. **Check shared storage location:**
+1. **Verify file in shared storage:**
    ```bash
-   ls -la /home/forge/your-site.com/storage/app/gmail.json
+   ls -la /home/forge/zapzone-backend-1oulhaj4.on-forge.com/storage/app/gmail.json
    ```
 
-2. **Verify storage symlink:**
-   ```bash
-   ls -la /home/forge/your-site.com/current/storage
-   # Should show: storage -> /home/forge/your-site.com/storage
-   ```
+2. **Check environment variable in Forge:**
+   - Go to site → Environment
+   - Verify `GMAIL_CREDENTIALS_PATH` is set correctly
 
 3. **Check file permissions:**
    ```bash
-   # Should be readable by forge user
-   chmod 600 /home/forge/your-site.com/storage/app/gmail.json
-   chown forge:forge /home/forge/your-site.com/storage/app/gmail.json
+   chmod 600 /home/forge/zapzone-backend-1oulhaj4.on-forge.com/storage/app/gmail.json
+   chown forge:forge /home/forge/zapzone-backend-1oulhaj4.on-forge.com/storage/app/gmail.json
    ```
 
 4. **Validate JSON:**
    ```bash
-   cat /home/forge/your-site.com/storage/app/gmail.json | jq
+   cat /home/forge/zapzone-backend-1oulhaj4.on-forge.com/storage/app/gmail.json | jq
    ```
 
-5. **Check logs for actual path being checked:**
+5. **Test in tinker:**
    ```bash
-   tail -f /home/forge/your-site.com/current/storage/logs/laravel.log
+   cd /home/forge/zapzone-backend-1oulhaj4.on-forge.com/current
+   php artisan tinker
+   >>> env('GMAIL_CREDENTIALS_PATH')
+   >>> file_exists(env('GMAIL_CREDENTIALS_PATH'))
    ```

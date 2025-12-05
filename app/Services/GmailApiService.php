@@ -14,15 +14,14 @@ class GmailApiService
 
     public function __construct()
     {
-        // For Laravel Forge deployments, use base_path for shared storage
-        // In production: /home/forge/site.com/shared/storage/app/gmail.json
-        // In local: /path/to/project/storage/app/gmail.json
-        $credentialsPath = base_path('storage/app/gmail.json');
+        // Use environment variable or fallback to default path
+        // For Forge: Set GMAIL_CREDENTIALS_PATH in .env to /home/forge/site.com/storage/app/gmail.json
+        $credentialsPath = env('GMAIL_CREDENTIALS_PATH', storage_path('app/gmail.json'));
         
         if (!file_exists($credentialsPath)) {
             Log::error('Gmail credentials file not found', [
                 'path' => $credentialsPath,
-                'base_path' => base_path(),
+                'env_path' => env('GMAIL_CREDENTIALS_PATH'),
                 'storage_path' => storage_path('app'),
             ]);
             throw new \Exception("Gmail credentials file not found at: {$credentialsPath}");
