@@ -7,6 +7,7 @@ use App\Models\ShareableToken;
 use App\Mail\ShareableTokenMail;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Validation\Rule;
 
@@ -41,17 +42,18 @@ class ShareableTokenController extends Controller
 
         $token = ShareableToken::create($validated);
 
-        // Send email with token link (queue it to avoid timeout)
-        try {
-            Mail::to($validated['email'])->queue(new ShareableTokenMail($token));
-        } catch (\Exception $e) {
-            // Log error but don't fail the request
-            \Log::error('Failed to send shareable token email: ' . $e->getMessage());
-        }
+        // Send email asynchronously to avoid blocking the response
+        dispatch(function () use ($validated, $token) {
+            try {
+                Mail::to($validated['email'])->send(new ShareableTokenMail($token));
+            } catch (\Exception $e) {
+                \Log::error('Failed to send shareable token email: ' . $e->getMessage());
+            }
+        })->afterResponse();
 
         return response()->json([
             'success' => true,
-            'message' => 'Token created and email sent',
+            'message' => 'Token created successfully',
             'data' => [
                 'link' => $token->getShareableLink(),
             ],
