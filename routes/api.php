@@ -46,6 +46,9 @@ Route::get('attractions/popular', [AttractionController::class, 'getPopular']);
 Route::get('locations', [LocationController::class, 'index']);
 Route::post('locations', [LocationController::class, 'store']);
 
+// User Registration
+Route::post('users', [ApiAuthController::class, 'store']);
+
 // Package Time Slot routes
 Route::apiResource('package-time-slots', PackageTimeSlotController::class);
 Route::get('package-time-slots/available-slots/{packageId}/{roomId}/{date}', [PackageTimeSlotController::class, 'getAvailableSlots']);
@@ -84,7 +87,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('locations/{location}/statistics', [LocationController::class, 'statistics']);
 
     // User routes
-    Route::apiResource('users', UserController::class);
+    Route::apiResource('users', UserController::class)->except(['store']);
     Route::get('users/company/{companyId}', [UserController::class, 'getByCompany']);
     Route::get('users/location/{locationId}', [UserController::class, 'getByLocation']);
     Route::get('users/role/{role}', [UserController::class, 'getByRole']);
