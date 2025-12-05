@@ -782,19 +782,29 @@ class PackageController extends Controller
             $path = 'images/packages';
             $fullPath = storage_path('app/public/' . $path);
 
+            Log::info('Package image upload attempt', [
+                'filename' => $filename,
+                'path' => $path,
+                'fullPath' => $fullPath,
+                'imageType' => $imageType
+            ]);
+
             // Create directory if it doesn't exist
             if (!file_exists($fullPath)) {
                 mkdir($fullPath, 0755, true);
+                Log::info('Created directory', ['path' => $fullPath]);
             }
 
             // Save the file
             file_put_contents($fullPath . '/' . $filename, $imageData);
+            Log::info('Image saved successfully', ['file' => $fullPath . '/' . $filename]);
 
             // Return the relative path (for storage URL)
             return $path . '/' . $filename;
         }
 
         // If it's already a file path or URL, return as is
+        Log::info('Image path returned as-is', ['image' => $image]);
         return $image;
     }
 }
