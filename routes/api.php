@@ -54,8 +54,9 @@ Route::get('stream/bookings', [StreamController::class, 'bookingNotifications'])
 Route::get('stream/attraction-purchases', [StreamController::class, 'attractionPurchaseNotifications']);
 Route::get('stream/notifications', [StreamController::class, 'combinedNotifications']);
 
-// Shareable Token public check
+// Shareable Token public routes
 Route::post('shareable-tokens/check', [ShareableTokenController::class, 'check']);
+Route::post('shareable-tokens', [ShareableTokenController::class, 'store']);
 
 // Protected routes (require authentication)
 Route::middleware('auth:sanctum')->group(function () {
@@ -189,8 +190,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('customer-notifications/mark-all-as-read/{customerId}', [CustomerNotificationController::class, 'markAllAsRead']);
     Route::get('customer-notifications/unread-count/{customerId}', [CustomerNotificationController::class, 'getUnreadCount']);
 
-    // Shareable Token Routes
-    Route::post('shareable-tokens', [ShareableTokenController::class, 'store']);
+
 
     // Authorize.Net Account Management (Protected routes for location managers)
     Route::prefix('authorize-net')->group(function () {

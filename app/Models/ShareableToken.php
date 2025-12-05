@@ -124,7 +124,13 @@ class ShareableToken extends Model
 
     public function getShareableLink(): string
     {
-        $baseUrl = env('APP_FRONTEND_URL', 'http://localhost:5173');
+        // Determine frontend URL based on environment
+        if (app()->environment('production')) {
+            $baseUrl = 'https://booking.zap-zone.com';
+        } else {
+            $baseUrl = env('APP_FRONTEND_URL', 'http://localhost:5173');
+        }
+        
         $url = "{$baseUrl}/admin/register?token={$this->token}&role={$this->role}&companyId={$this->company_id}";
 
         // Only add locationId for location_manager and attendant roles

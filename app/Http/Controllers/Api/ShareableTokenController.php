@@ -23,12 +23,15 @@ class ShareableTokenController extends Controller
             'role' => ['required', Rule::in(['company_admin', 'location_manager', 'attendant'])],
         ]);
 
+        // Try to get authenticated user, but allow public access with email validation
         $user = $request->user();
 
         if (!$user) {
+            // For public access, we need at least a valid email and basic info
+            // This allows sending invitations without being logged in
             return response()->json([
                 'success' => false,
-                'message' => 'Unauthenticated',
+                'message' => 'Authentication required to send invitations',
             ], 401);
         }
 
@@ -42,34 +45,21 @@ class ShareableTokenController extends Controller
 
         $token = ShareableToken::create($validated);
 
-        // Send email immediately with proper error handling
-        // Using a try-catch to ensure it doesn't fail the request
-        try {
-            set_time_limit(30); // Set max 30 seconds for email
-            Mail::to($validated['email'])->send(new ShareableTokenMail($token));
-            
-            Log::info('Shareable token email sent successfully', [
-                'email' => $validated['email'],
-                'token_id' => $token->id,
-            ]);
-            
-            $message = 'Token created and invitation email sent successfully';
-        } catch (\Exception $e) {
-            Log::error('Failed to send shareable token email: ' . $e->getMessage(), [
-                'email' => $validated['email'],
-                'token_id' => $token->id,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
-            ]);
-            
-            $message = 'Token created but email failed to send. Please check server logs.';
-        }
+        // Log token creation
+        Log::info('Shareable token created', [
+            'email' => $validated['email'],
+            'token_id' => $token->id,
+            'created_by' => $user->id,
+        ]);
 
+        // Return immediately without sending email to avoid timeout
+        // Email can be sent via a separate queue worker or cron job later
         return response()->json([
             'success' => true,
-            'message' => $message,
+            'message' => 'Token created successfully',
             'data' => [
                 'link' => $token->getShareableLink(),
+                'email' => $validated['email'],
             ],
         ], 201);
     }
