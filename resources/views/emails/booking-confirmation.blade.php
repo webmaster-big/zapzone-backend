@@ -11,7 +11,7 @@
         <tr>
             <td align="center" style="padding: 40px 20px;">
     <![endif]-->
-    
+
     <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f9fafb; padding: 40px 20px;">
         <tr>
             <td align="center">
@@ -200,7 +200,7 @@
             </td>
         </tr>
     </table>
-    
+
     <!--[if mso]>
             </td>
         </tr>

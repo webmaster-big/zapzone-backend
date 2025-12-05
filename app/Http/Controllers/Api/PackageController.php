@@ -269,34 +269,8 @@ class PackageController extends Controller
     /**
      * Display the specified package.
      */
-    public function show(Request $request, Package $package): JsonResponse
+    public function show(Package $package): JsonResponse
     {
-        $user = $request->user();
-
-        // Check if user has access to this package
-        if ($user) {
-            if ($user->role === 'company_admin') {
-                // Company admin can only view packages from their company's locations
-                $companyLocationIds = Location::where('company_id', $user->company_id)
-                    ->pluck('id')
-                    ->toArray();
-
-                if (!in_array($package->location_id, $companyLocationIds)) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'Unauthorized to view this package',
-                    ], 403);
-                }
-            } else {
-                // Other users can only view packages from their location
-                if ($package->location_id !== $user->location_id) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'Unauthorized to view this package',
-                    ], 403);
-                }
-            }
-        }
 
         $package->load(['location', 'attractions', 'addOns', 'rooms', 'giftCards', 'promos']);
 

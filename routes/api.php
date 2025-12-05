@@ -107,8 +107,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('customers/{customer}/update-last-visit', [CustomerController::class, 'updateLastVisit']);
 
     // Package routes
-    Route::post('packages/bulk-import', [PackageController::class, 'bulkImport']);
     Route::apiResource('packages', PackageController::class);
+    Route::post('packages/bulk-import', [PackageController::class, 'bulkImport']);
     Route::get('packages/category/{category}', [PackageController::class, 'getByCategory']);
     Route::patch('packages/{package}/toggle-status', [PackageController::class, 'toggleStatus']);
     Route::post('packages/{package}/attractions/attach', [PackageController::class, 'attachAttractions']);
