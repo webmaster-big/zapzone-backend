@@ -23,10 +23,13 @@ class Cors
             'https://zapzone-backend-1oulhaj4.on-forge.com',
         ];
 
+        // Determine which origin to allow
+        $allowedOrigin = in_array($origin, $allowedOrigins) ? $origin : '*';
+
         // Handle preflight OPTIONS request
         if ($request->isMethod('OPTIONS')) {
             return response('', 200)
-                ->header('Access-Control-Allow-Origin', in_array($origin, $allowedOrigins) ? $origin : $allowedOrigins[0])
+                ->header('Access-Control-Allow-Origin', $allowedOrigin)
                 ->header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS')
                 ->header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin, X-CSRF-TOKEN')
                 ->header('Access-Control-Allow-Credentials', 'true')
@@ -35,15 +38,12 @@ class Cors
 
         $response = $next($request);
 
-        // Apply CORS headers to all responses (including redirects)
-        if (in_array($origin, $allowedOrigins) || $request->header('Origin')) {
-            $allowedOrigin = in_array($origin, $allowedOrigins) ? $origin : $allowedOrigins[0];
-            $response->headers->set('Access-Control-Allow-Origin', $allowedOrigin);
-            $response->headers->set('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
-            $response->headers->set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin, X-CSRF-TOKEN');
-            $response->headers->set('Access-Control-Allow-Credentials', 'true');
-            $response->headers->set('Access-Control-Max-Age', '86400');
-        }
+        // Apply CORS headers to all responses
+        $response->headers->set('Access-Control-Allow-Origin', $allowedOrigin);
+        $response->headers->set('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+        $response->headers->set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin, X-CSRF-TOKEN');
+        $response->headers->set('Access-Control-Allow-Credentials', 'true');
+        $response->headers->set('Access-Control-Max-Age', '86400');
 
         return $response;
     }
