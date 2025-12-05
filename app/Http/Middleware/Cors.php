@@ -20,6 +20,7 @@ class Cors
             'http://zapzone-backend.test',
             'https://zapzone-backend.test',
             'https://booking.zap-zone.com',
+            'https://zapzone-backend-1oulhaj4.on-forge.com',
         ];
 
         // Handle preflight OPTIONS request
