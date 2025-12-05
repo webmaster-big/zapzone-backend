@@ -67,22 +67,8 @@ class ShareableTokenController extends Controller
                 'is_public' => !$user,
             ]);
 
-            // Send email in background to avoid blocking response
-            try {
-                Mail::to($validated['email'])->send(new ShareableTokenMail($token));
-                Log::info('Shareable token email sent', [
-                    'email' => $validated['email'],
-                    'token_id' => $token->id,
-                ]);
-            } catch (\Exception $e) {
-                Log::error('Failed to send shareable token email: ' . $e->getMessage(), [
-                    'email' => $validated['email'],
-                    'token_id' => $token->id,
-                    'error' => $e->getMessage(),
-                ]);
-            }
-
-            return response()->json([
+            // Return response immediately
+            $response = response()->json([
                 'success' => true,
                 'message' => 'Token created successfully',
                 'data' => [
@@ -90,6 +76,30 @@ class ShareableTokenController extends Controller
                     'email' => $validated['email'],
                 ],
             ], 201);
+
+            // Schedule email to be sent after response is sent
+            // Using fastcgi_finish_request() if available to send response first
+            if (function_exists('fastcgi_finish_request')) {
+                $response->send();
+                fastcgi_finish_request();
+                
+                // Now send email after response is already sent to client
+                try {
+                    Mail::to($validated['email'])->send(new ShareableTokenMail($token));
+                    Log::info('Shareable token email sent', [
+                        'email' => $validated['email'],
+                        'token_id' => $token->id,
+                    ]);
+                } catch (\Exception $e) {
+                    Log::error('Failed to send shareable token email: ' . $e->getMessage(), [
+                        'email' => $validated['email'],
+                        'token_id' => $token->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+
+            return $response;
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json([
                 'success' => false,
