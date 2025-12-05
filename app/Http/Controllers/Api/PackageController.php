@@ -768,40 +768,81 @@ class PackageController extends Controller
     {
         // Check if it's a base64 string
         if (is_string($image) && strpos($image, 'data:image') === 0) {
-            // Extract base64 data
-            preg_match('/data:image\/(\w+);base64,/', $image, $matches);
-            $imageType = $matches[1] ?? 'png';
-            $imageData = substr($image, strpos($image, ',') + 1);
-            $imageData = base64_decode($imageData);
+            try {
+                // Extract base64 data
+                preg_match('/data:image\/(\w+);base64,/', $image, $matches);
+                
+                if (empty($matches)) {
+                    Log::error('Invalid base64 image format', ['image_start' => substr($image, 0, 100)]);
+                    throw new \Exception('Invalid image format');
+                }
+                
+                $imageType = $matches[1] ?? 'png';
+                $base64Data = substr($image, strpos($image, ',') + 1);
+                
+                // Validate base64 data
+                if (empty($base64Data)) {
+                    Log::error('Empty base64 data');
+                    throw new \Exception('Empty image data');
+                }
+                
+                $imageData = base64_decode($base64Data, true);
+                
+                // Check if decode was successful
+                if ($imageData === false) {
+                    Log::error('Failed to decode base64 data', [
+                        'data_length' => strlen($base64Data),
+                        'data_start' => substr($base64Data, 0, 100)
+                    ]);
+                    throw new \Exception('Failed to decode image data');
+                }
 
-            // Generate shorter filename
-            $filename = uniqid() . '.' . $imageType;
-            $path = 'images/packages';
-            $fullPath = storage_path('app/public/' . $path);
+                // Generate shorter filename
+                $filename = uniqid() . '.' . $imageType;
+                $path = 'images/packages';
+                $fullPath = storage_path('app/public/' . $path);
 
-            Log::info('Package image upload attempt', [
-                'filename' => $filename,
-                'path' => $path,
-                'fullPath' => $fullPath,
-                'imageType' => $imageType
-            ]);
+                Log::info('Package image upload attempt', [
+                    'filename' => $filename,
+                    'path' => $path,
+                    'fullPath' => $fullPath,
+                    'imageType' => $imageType,
+                    'imageSize' => strlen($imageData)
+                ]);
 
-            // Create directory if it doesn't exist
-            if (!file_exists($fullPath)) {
-                mkdir($fullPath, 0755, true);
-                Log::info('Created directory', ['path' => $fullPath]);
+                // Create directory if it doesn't exist
+                if (!file_exists($fullPath)) {
+                    mkdir($fullPath, 0755, true);
+                    Log::info('Created directory', ['path' => $fullPath]);
+                }
+
+                // Save the file
+                $bytesWritten = file_put_contents($fullPath . '/' . $filename, $imageData);
+                
+                if ($bytesWritten === false) {
+                    Log::error('Failed to write image file', ['file' => $fullPath . '/' . $filename]);
+                    throw new \Exception('Failed to save image file');
+                }
+                
+                Log::info('Image saved successfully', [
+                    'file' => $fullPath . '/' . $filename,
+                    'bytes' => $bytesWritten
+                ]);
+
+                // Return the relative path (for storage URL)
+                return $path . '/' . $filename;
+                
+            } catch (\Exception $e) {
+                Log::error('Error handling image upload', [
+                    'error' => $e->getMessage(),
+                    'trace' => $e->getTraceAsString()
+                ]);
+                throw $e;
             }
-
-            // Save the file
-            file_put_contents($fullPath . '/' . $filename, $imageData);
-            Log::info('Image saved successfully', ['file' => $fullPath . '/' . $filename]);
-
-            // Return the relative path (for storage URL)
-            return $path . '/' . $filename;
         }
 
         // If it's already a file path or URL, return as is
-        Log::info('Image path returned as-is', ['image' => $image]);
+        Log::info('Image path returned as-is', ['image' => substr($image, 0, 100)]);
         return $image;
     }
 }
