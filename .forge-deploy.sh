@@ -23,14 +23,16 @@ $FORGE_PHP artisan optimize
 
 $ACTIVATE_RELEASE()
 
-# Fix storage symlink after activation (current symlink now points to new release)
-# Remove the storage symlink from the release directory
-if [ -L $FORGE_SITE_PATH/current/public/storage ]; then
-    rm $FORGE_SITE_PATH/current/public/storage
-fi
+# Fix storage symlink after activation
+# The storage:link command creates wrong symlink inside release directory
+# We need to recreate it to point to shared storage
+cd $FORGE_SITE_PATH/current/public
 
-# Create proper symlink to shared storage
-ln -sfn $FORGE_SITE_PATH/storage/app/public $FORGE_SITE_PATH/current/public/storage
+# Remove incorrect symlink if it exists
+[ -L storage ] && rm storage
+
+# Create correct symlink to shared storage (absolute path)
+ln -sfn $FORGE_SITE_PATH/storage/app/public storage
 
 # Set proper permissions
 chmod -R 775 $FORGE_SITE_PATH/storage

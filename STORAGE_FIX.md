@@ -32,12 +32,24 @@ rm $FORGE_SITE_PATH/current/public/storage
 ln -sfn $FORGE_SITE_PATH/storage/app/public $FORGE_SITE_PATH/current/public/storage
 ```
 
-## Manual Fix (if needed)
-SSH into your server and run:
+## Manual Fix (Run this NOW via SSH)
+SSH into your server and run these commands:
+
 ```bash
+cd /home/forge/zapzone-backend-1oulhaj4.on-forge.com/current/public
+
+# Remove incorrect symlink
+[ -L storage ] && rm storage
+
+# Create correct symlink to shared storage
+ln -sfn /home/forge/zapzone-backend-1oulhaj4.on-forge.com/storage/app/public storage
+
+# Verify it's correct
+ls -la storage
+# Should show: storage -> /home/forge/zapzone-backend-1oulhaj4.on-forge.com/storage/app/public
+
+# Set permissions
 cd /home/forge/zapzone-backend-1oulhaj4.on-forge.com
-rm -f current/public/storage
-ln -sfn /home/forge/zapzone-backend-1oulhaj4.on-forge.com/storage/app/public /home/forge/zapzone-backend-1oulhaj4.on-forge.com/current/public/storage
 chmod -R 775 storage
 ```
 

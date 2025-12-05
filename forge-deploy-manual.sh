@@ -2,24 +2,29 @@
 # Manual deployment commands for Laravel Forge
 # SSH into your server and run these commands
 
-cd /home/forge/zapzone-backend-1oulhaj4.on-forge.com
+cd /home/forge/zapzone-backend-1oulhaj4.on-forge.com/current/public
 
 # Fix storage symlink for zero-downtime deployments
-# Remove old symlink if exists
-if [ -L public/storage ]; then
-    rm public/storage
-fi
+# Remove old/incorrect symlink if exists
+[ -L storage ] && rm storage
 
-# Create proper symlink to shared storage
-ln -sfn /home/forge/zapzone-backend-1oulhaj4.on-forge.com/storage/app/public /home/forge/zapzone-backend-1oulhaj4.on-forge.com/current/public/storage
+# Create proper symlink to shared storage (use absolute path)
+ln -sfn /home/forge/zapzone-backend-1oulhaj4.on-forge.com/storage/app/public storage
+
+# Verify the symlink
+ls -la storage
+
+# Go back to site root
+cd /home/forge/zapzone-backend-1oulhaj4.on-forge.com
 
 # Set proper permissions
 chmod -R 775 storage
-chmod -R 775 bootstrap/cache
+chmod -R 775 current/bootstrap/cache
 chown -R forge:forge storage
-chown -R forge:forge bootstrap/cache
+chown -R forge:forge current/bootstrap/cache
 
 # Clear all caches
+cd current
 php artisan config:clear
 php artisan cache:clear
 php artisan route:clear
