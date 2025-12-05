@@ -21,26 +21,22 @@ class ShareableTokenController extends Controller
         $validated = $request->validate([
             'email' => 'required|email|max:255',
             'role' => ['required', Rule::in(['company_admin', 'location_manager', 'attendant'])],
+            'company_id' => 'required|exists:companies,id',
+            'location_id' => 'nullable|exists:locations,id',
         ]);
 
-        // Try to get authenticated user, but allow public access with email validation
+        // Try to get authenticated user for tracking purposes
         $user = $request->user();
 
-        if (!$user) {
-            // For public access, we need at least a valid email and basic info
-            // This allows sending invitations without being logged in
+        // Set created_by if user is authenticated, otherwise null
+        $validated['created_by'] = $user ? $user->id : null;
+
+        // Validate location_id is required for certain roles
+        if (in_array($validated['role'], ['location_manager', 'attendant']) && empty($validated['location_id'])) {
             return response()->json([
                 'success' => false,
-                'message' => 'Authentication required to send invitations',
-            ], 401);
-        }
-
-        $validated['created_by'] = $user->id;
-        $validated['company_id'] = $user->company_id;
-
-        // Only include location_id for location_manager and attendant roles
-        if (in_array($validated['role'], ['location_manager', 'attendant'])) {
-            $validated['location_id'] = $user->location_id;
+                'message' => 'Location ID is required for location_manager and attendant roles',
+            ], 422);
         }
 
         $token = ShareableToken::create($validated);
@@ -48,6 +44,10 @@ class ShareableTokenController extends Controller
         // Log token creation
         Log::info('Shareable token created', [
             'email' => $validated['email'],
+            'token_id' => $token->id,
+            'created_by' => $validated['created_by'],
+            'is_public' => !$user,
+        ]);
             'token_id' => $token->id,
             'created_by' => $user->id,
         ]);
