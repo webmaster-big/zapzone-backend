@@ -26,6 +26,7 @@ return [
         'https://zapzone-backend.test',
         'https://booking.zap-zone.com',
         'https://zapzone-backend-1oulhaj4.on-forge.com',
+        'https://zapzone-backend-yt1lm2w5.on-forge.com',
     ],
 
     'allowed_origins_patterns' => [],
