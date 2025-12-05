@@ -47,7 +47,7 @@ Route::get('locations', [LocationController::class, 'index']);
 Route::post('locations', [LocationController::class, 'store']);
 
 // User Registration
-Route::post('users', [ApiAuthController::class, 'store']);
+Route::post('users', [UserController::class, 'store']);
 
 // Package Time Slot routes
 Route::apiResource('package-time-slots', PackageTimeSlotController::class);
