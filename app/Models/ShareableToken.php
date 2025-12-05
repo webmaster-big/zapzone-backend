@@ -130,7 +130,7 @@ class ShareableToken extends Model
         } else {
             $baseUrl = env('APP_FRONTEND_URL', 'http://localhost:5173');
         }
-        
+
         $url = "{$baseUrl}/admin/register?token={$this->token}&role={$this->role}&companyId={$this->company_id}";
 
         // Only add locationId for location_manager and attendant roles

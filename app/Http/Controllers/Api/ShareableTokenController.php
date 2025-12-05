@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\ShareableToken;
 use App\Mail\ShareableTokenMail;
+use App\Services\GmailApiService;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Log;
@@ -67,39 +68,44 @@ class ShareableTokenController extends Controller
                 'is_public' => !$user,
             ]);
 
-            // Return response immediately
-            $response = response()->json([
+            // Send email using Gmail API with Blade template
+            try {
+                $gmailService = new GmailApiService();
+
+                // Get the email body by rendering the Blade template via Mailable
+                $mailable = new ShareableTokenMail($token);
+                $emailBody = $mailable->render();
+
+                $gmailService->sendEmail(
+                    $validated['email'],
+                    'Registration Invitation - Zap Zone',
+                    $emailBody,
+                    'Zap Zone'
+                );
+
+                Log::info('Shareable token email sent via Gmail API', [
+                    'email' => $validated['email'],
+                    'token_id' => $token->id,
+                ]);
+            } catch (\Exception $e) {
+                Log::error('Failed to send shareable token email via Gmail API: ' . $e->getMessage(), [
+                    'email' => $validated['email'],
+                    'token_id' => $token->id,
+                    'error' => $e->getMessage(),
+                    'trace' => $e->getTraceAsString(),
+                ]);
+                // Continue even if email fails - don't block token creation
+            }
+
+            // Return response
+            return response()->json([
                 'success' => true,
-                'message' => 'Token created successfully',
+                'message' => 'Token created and email sent successfully',
                 'data' => [
                     'link' => $token->getShareableLink(),
                     'email' => $validated['email'],
                 ],
             ], 201);
-
-            // Schedule email to be sent after response is sent
-            // Using fastcgi_finish_request() if available to send response first
-            if (function_exists('fastcgi_finish_request')) {
-                $response->send();
-                fastcgi_finish_request();
-                
-                // Now send email after response is already sent to client
-                try {
-                    Mail::to($validated['email'])->send(new ShareableTokenMail($token));
-                    Log::info('Shareable token email sent', [
-                        'email' => $validated['email'],
-                        'token_id' => $token->id,
-                    ]);
-                } catch (\Exception $e) {
-                    Log::error('Failed to send shareable token email: ' . $e->getMessage(), [
-                        'email' => $validated['email'],
-                        'token_id' => $token->id,
-                        'error' => $e->getMessage(),
-                    ]);
-                }
-            }
-
-            return $response;
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json([
                 'success' => false,
