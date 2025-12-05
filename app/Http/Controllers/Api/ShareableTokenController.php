@@ -42,28 +42,36 @@ class ShareableTokenController extends Controller
 
         $token = ShareableToken::create($validated);
 
-        // Return response immediately
-        $response = response()->json([
+        // Send email immediately with proper error handling
+        // Using a try-catch to ensure it doesn't fail the request
+        try {
+            set_time_limit(30); // Set max 30 seconds for email
+            Mail::to($validated['email'])->send(new ShareableTokenMail($token));
+            
+            Log::info('Shareable token email sent successfully', [
+                'email' => $validated['email'],
+                'token_id' => $token->id,
+            ]);
+            
+            $message = 'Token created and invitation email sent successfully';
+        } catch (\Exception $e) {
+            Log::error('Failed to send shareable token email: ' . $e->getMessage(), [
+                'email' => $validated['email'],
+                'token_id' => $token->id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            
+            $message = 'Token created but email failed to send. Please check server logs.';
+        }
+
+        return response()->json([
             'success' => true,
-            'message' => 'Token created successfully',
+            'message' => $message,
             'data' => [
                 'link' => $token->getShareableLink(),
             ],
         ], 201);
-
-        // Try to send email after response (if possible)
-        register_shutdown_function(function () use ($validated, $token) {
-            try {
-                Mail::to($validated['email'])->send(new ShareableTokenMail($token));
-            } catch (\Exception $e) {
-                Log::error('Failed to send shareable token email: ' . $e->getMessage(), [
-                    'email' => $validated['email'],
-                    'token_id' => $token->id,
-                ]);
-            }
-        });
-
-        return $response;
     }
 
     /**
