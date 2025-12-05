@@ -43,10 +43,6 @@ class MetricsController extends Controller
         $locationId = null;
         if (in_array($user->role, ['location_manager', 'attendant'])) {
             $locationId = $user->location_id;
-            Log::info('Applied role-based location filter', [
-                'role' => $user->role,
-                'location_id' => $locationId,
-            ]);
         }
 
         // Build booking query
@@ -65,13 +61,11 @@ class MetricsController extends Controller
         if ($dateFrom) {
             $bookingQuery->where('booking_date', '>=', $dateFrom);
             $purchaseQuery->where('purchase_date', '>=', $dateFrom);
-            Log::info('Applied date_from filter', ['date_from' => $dateFrom]);
         }
 
         if ($dateTo) {
             $bookingQuery->where('booking_date', '<=', $dateTo);
             $purchaseQuery->where('purchase_date', '<=', $dateTo);
-            Log::info('Applied date_to filter', ['date_to' => $dateTo]);
         }
 
         // Calculate booking metrics
