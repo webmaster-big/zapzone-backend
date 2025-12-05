@@ -269,10 +269,9 @@ class PackageController extends Controller
     /**
      * Display the specified package.
      */
-    public function show(Package $package): JsonResponse
+    public function show($package): JsonResponse
     {
-
-        $package->load(['location', 'attractions', 'addOns', 'rooms', 'giftCards', 'promos']);
+        $package = Package::with(['location', 'attractions', 'addOns', 'rooms', 'giftCards', 'promos'])->findOrFail($package);
 
         return response()->json([
             'success' => true,
@@ -426,32 +425,6 @@ class PackageController extends Controller
      */
     public function destroy(Request $request, Package $package): JsonResponse
     {
-        $user = $request->user();
-
-        // Check if user has access to delete this package
-        if ($user) {
-            if ($user->role === 'company_admin') {
-                // Company admin can only delete packages from their company's locations
-                $companyLocationIds = \App\Models\Location::where('company_id', $user->company_id)
-                    ->pluck('id')
-                    ->toArray();
-
-                if (!in_array($package->location_id, $companyLocationIds)) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'Unauthorized to delete this package',
-                    ], 403);
-                }
-            } else {
-                // Other users can only delete packages from their location
-                if ($package->location_id !== $user->location_id) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'Unauthorized to delete this package',
-                    ], 403);
-                }
-            }
-        }
 
         // Delete associated images if they exist
         if ($package->image && is_array($package->image)) {
