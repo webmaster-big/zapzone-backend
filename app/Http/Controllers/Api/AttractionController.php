@@ -196,12 +196,10 @@ class AttractionController extends Controller
             'rating' => 'nullable|numeric|between:0,5',
             'min_age' => 'nullable|integer|min:0',
             'is_active' => 'boolean',
+            'location_id' => 'nullable|exists:locations,id',
         ]);
 
         $validated['pricing_type'] = $validated['pricing_type'] ?? 'per_person';
-
-        // temp location id
-        $validated['location_id'] = 1 ?? auth()->user()->location_id;
 
         // Handle file uploads from request
         $uploadedImages = [];
@@ -285,9 +283,6 @@ class AttractionController extends Controller
         ]);
 
         $validated['pricing_type'] = $validated['pricing_type'] ?? 'per_person';
-
-        // temp location id
-        $validated['location_id'] = 1 ?? auth()->user()->location_id;
 
         // Handle image upload
         if ($request->hasFile('image') || isset($validated['image'])) {
