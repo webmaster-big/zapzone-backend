@@ -1,218 +1,210 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            line-height: 1.5;
-            color: #374151;
-            background-color: #f9fafb;
-            padding: 40px 20px;
-        }
-        .email-wrapper {
-            max-width: 520px;
-            margin: 0 auto;
-        }
-        .header {
-            background: #1e40af;
-            color: white;
-            padding: 24px 32px;
-            text-align: center;
-            border-radius: 8px 8px 0 0;
-        }
-        .header h1 {
-            font-size: 20px;
-            font-weight: 600;
-            margin-bottom: 8px;
-            letter-spacing: -0.01em;
-        }
-        .header p {
-            font-size: 14px;
-            opacity: 0.9;
-            margin: 0;
-        }
-        .container {
-            background: #ffffff;
-            padding: 32px;
-            border-radius: 0 0 8px 8px;
-            border: 1px solid #e5e7eb;
-            border-top: none;
-        }
-        p {
-            font-size: 14px;
-            line-height: 1.6;
-            margin-bottom: 16px;
-            color: #4b5563;
-        }
-        .section-title {
-            font-size: 16px;
-            font-weight: 600;
-            color: #111827;
-            margin: 24px 0 12px 0;
-        }
-        .booking-details {
-            background: #f9fafb;
-            padding: 16px;
-            border-radius: 6px;
-            margin: 16px 0;
-            border: 1px solid #e5e7eb;
-        }
-        .detail-row {
-            display: flex;
-            padding: 8px 0;
-            font-size: 14px;
-            line-height: 1.6;
-        }
-        .detail-row:not(:last-child) {
-            border-bottom: 1px solid #e5e7eb;
-        }
-        .detail-label {
-            font-weight: 500;
-            width: 140px;
-            color: #6b7280;
-            flex-shrink: 0;
-        }
-        .detail-value {
-            flex: 1;
-            color: #111827;
-        }
-        .qr-section {
-            text-align: center;
-            margin: 24px 0;
-            padding: 20px;
-            background: #f9fafb;
-            border-radius: 6px;
-            border: 1px solid #e5e7eb;
-        }
-        .qr-section h3 {
-            font-size: 16px;
-            font-weight: 600;
-            color: #111827;
-            margin-bottom: 8px;
-        }
-        .qr-section p {
-            margin: 8px 0 0 0;
-        }
-        .amount {
-            font-size: 20px;
-            color: #1e40af;
-            font-weight: 600;
-        }
-        .footer {
-            margin-top: 24px;
-            padding-top: 20px;
-            border-top: 1px solid #e5e7eb;
-            text-align: center;
-        }
-        .footer p {
-            font-size: 14px;
-            color: #9ca3af;
-            margin: 4px 0;
-        }
-    </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Booking Confirmation</title>
 </head>
-<body>
-    <div class="email-wrapper">
-        <div class="header">
-            <h1>Booking Confirmation</h1>
-            <p>Reference: {{ $booking->reference_number }}</p>
-        </div>
+<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.5; color: #374151; background-color: #f9fafb;">
+    <!--[if mso]>
+    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f9fafb;">
+        <tr>
+            <td align="center" style="padding: 40px 20px;">
+    <![endif]-->
+    
+    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f9fafb; padding: 40px 20px;">
+        <tr>
+            <td align="center">
+                <table width="520" cellpadding="0" cellspacing="0" border="0" style="max-width: 520px; width: 100%;">
+                    <!-- Header -->
+                    <tr>
+                        <td style="text-align: center; background-color: #1e40af; color: #ffffff; padding: 24px 32px; border-radius: 8px 8px 0 0;">
+                            <!--[if mso]>
+                            <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                <tr>
+                                    <td align="center">
+                            <![endif]-->
+                            <h1 style="margin: 0 0 8px 0; padding: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.01em; color: #ffffff;">Booking Confirmation</h1>
+                            <p style="margin: 0; padding: 0; font-size: 14px; opacity: 0.9; color: #ffffff;">Reference: {{ $booking->reference_number }}</p>
+                            <!--[if mso]>
+                                    </td>
+                                </tr>
+                            </table>
+                            <![endif]-->
+                        </td>
+                    </tr>
 
-        <div class="container">
-            <p>Dear {{ $customerName }},</p>
+                    <!-- Content -->
+                    <tr>
+                        <td style="background-color: #ffffff; padding: 32px; border-radius: 0 0 8px 8px; border: 1px solid #e5e7eb; border-top: none;">
+                            <p style="margin: 0 0 16px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #4b5563;">Dear {{ $customerName }},</p>
 
-            <p>Thank you for your booking! Your reservation has been confirmed.</p>
+                            <p style="margin: 0 0 16px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #4b5563;">Thank you for your booking! Your reservation has been confirmed.</p>
 
-            <div class="booking-details">
-            <h3 class="section-title" style="margin-top: 0;">Booking Details</h3>
+                            <!-- Booking Details -->
+                            <h3 style="margin: 16px 0 12px 0; padding: 0; font-size: 16px; font-weight: 600; color: #111827;">Booking Details</h3>
+                            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f9fafb; border-radius: 6px; border: 1px solid #e5e7eb; margin: 16px 0;">
+                                <tr>
+                                    <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                            <tr>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Reference Number:</td>
+                                                <td style="color: #111827;">{{ $booking->reference_number }}</td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                            <tr>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Package:</td>
+                                                <td style="color: #111827;">{{ $packageName }}</td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                            <tr>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Location:</td>
+                                                <td style="color: #111827;">{{ $locationName }}</td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                                @if($booking->room)
+                                <tr>
+                                    <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                            <tr>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Room:</td>
+                                                <td style="color: #111827;">{{ $roomName }}</td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                                @endif
+                                <tr>
+                                    <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                            <tr>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Date:</td>
+                                                <td style="color: #111827;">{{ \Carbon\Carbon::parse($booking->booking_date)->format('F j, Y') }}</td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                            <tr>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Time:</td>
+                                                <td style="color: #111827;">{{ \Carbon\Carbon::parse($booking->booking_time)->format('g:i A') }}</td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                            <tr>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Participants:</td>
+                                                <td style="color: #111827;">{{ $booking->participants }}</td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                            <tr>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Duration:</td>
+                                                <td style="color: #111827;">{{ $booking->duration }} {{ $booking->duration_unit }}</td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                            <tr>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Status:</td>
+                                                <td style="color: #111827; text-transform: capitalize;">{{ $booking->status }}</td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                            <tr>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Total Amount:</td>
+                                                <td style="color: #111827;">
+                                                    <span style="font-size: 20px; color: #1e40af; font-weight: 600;">${{ number_format($booking->total_amount, 2) }}</span>
+                                                </td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                                @if($booking->amount_paid > 0)
+                                <tr>
+                                    <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                            <tr>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Amount Paid:</td>
+                                                <td style="color: #111827;">${{ number_format($booking->amount_paid, 2) }}</td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                                @endif
+                                @if($booking->notes)
+                                <tr>
+                                    <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6;">
+                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                            <tr>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Notes:</td>
+                                                <td style="color: #111827;">{{ $booking->notes }}</td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                                @endif
+                            </table>
 
-            <div class="detail-row">
-                <div class="detail-label">Reference Number:</div>
-                <div class="detail-value">{{ $booking->reference_number }}</div>
-            </div>
+                            <!-- QR Section -->
+                            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f9fafb; border-radius: 6px; border: 1px solid #e5e7eb; margin: 24px 0;">
+                                <tr>
+                                    <td style="padding: 20px; text-align: center;">
+                                        <h3 style="margin: 0 0 8px 0; padding: 0; font-size: 16px; font-weight: 600; color: #111827;">Your Booking QR Code</h3>
+                                        <p style="margin: 8px 0 0 0; padding: 0; font-size: 14px; line-height: 1.6; color: #4b5563;">Please present this QR code at check-in:</p>
+                                        <p style="margin: 10px 0 0 0; padding: 0; font-size: 12px; line-height: 1.6; color: #6b7280;">The QR code is attached to this email as an image file.</p>
+                                    </td>
+                                </tr>
+                            </table>
 
-            <div class="detail-row">
-                <div class="detail-label">Package:</div>
-                <div class="detail-value">{{ $packageName }}</div>
-            </div>
-
-            <div class="detail-row">
-                <div class="detail-label">Location:</div>
-                <div class="detail-value">{{ $locationName }}</div>
-            </div>
-
-            @if($booking->room)
-            <div class="detail-row">
-                <div class="detail-label">Room:</div>
-                <div class="detail-value">{{ $roomName }}</div>
-            </div>
-            @endif
-
-            <div class="detail-row">
-                <div class="detail-label">Date:</div>
-                <div class="detail-value">{{ \Carbon\Carbon::parse($booking->booking_date)->format('F j, Y') }}</div>
-            </div>
-
-            <div class="detail-row">
-                <div class="detail-label">Time:</div>
-                <div class="detail-value">{{ \Carbon\Carbon::parse($booking->booking_time)->format('g:i A') }}</div>
-            </div>
-
-            <div class="detail-row">
-                <div class="detail-label">Participants:</div>
-                <div class="detail-value">{{ $booking->participants }}</div>
-            </div>
-
-            <div class="detail-row">
-                <div class="detail-label">Duration:</div>
-                <div class="detail-value">{{ $booking->duration }} {{ $booking->duration_unit }}</div>
-            </div>
-
-            <div class="detail-row">
-                <div class="detail-label">Status:</div>
-                <div class="detail-value" style="text-transform: capitalize;">{{ $booking->status }}</div>
-            </div>
-
-            <div class="detail-row">
-                <div class="detail-label">Total Amount:</div>
-                <div class="detail-value">
-                    <span class="amount">${{ number_format($booking->total_amount, 2) }}</span>
-                </div>
-            </div>
-
-            @if($booking->amount_paid > 0)
-            <div class="detail-row">
-                <div class="detail-label">Amount Paid:</div>
-                <div class="detail-value">${{ number_format($booking->amount_paid, 2) }}</div>
-            </div>
-            @endif
-
-            @if($booking->notes)
-            <div class="detail-row">
-                <div class="detail-label">Notes:</div>
-                <div class="detail-value">{{ $booking->notes }}</div>
-            </div>
-            @endif
-        </div>
-
-        <div class="qr-section">
-            <h3>Your Booking QR Code</h3>
-            <p>Please present this QR code at check-in:</p>
-            <p style="font-size: 12px; color: #666; margin-top: 10px;">
-                The QR code is attached to this email as an image file.
-            </p>
-        </div>
-
-        <div class="footer">
-            <p>If you have any questions, please contact us.</p>
-            <p>Thank you for choosing Zap Zone!</p>
-        </div>
-        </div>
-    </div>
+                            <!-- Footer -->
+                            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top: 24px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+                                <tr>
+                                    <td style="text-align: center;">
+                                        <p style="margin: 4px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #9ca3af;">If you have any questions, please contact us.</p>
+                                        <p style="margin: 4px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #9ca3af;">Thank you for choosing Zap Zone!</p>
+                                    </td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+    
+    <!--[if mso]>
+            </td>
+        </tr>
+    </table>
+    <![endif]-->
 </body>
 </html>

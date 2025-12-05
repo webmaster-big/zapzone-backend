@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Mail\BookingConfirmation;
+use App\Services\GmailApiService;
 use App\Models\ActivityLog;
 use App\Models\Booking;
 use App\Models\BookingAttraction;
@@ -16,7 +17,6 @@ use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
@@ -457,10 +457,30 @@ class BookingController extends Controller
         if ($recipientEmail) {
             try {
                 $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
-                Mail::to($recipientEmail)->send(new BookingConfirmation($booking, $emailQrPath));
+                
+                // Send booking confirmation using Gmail API
+                $gmailService = new GmailApiService();
+                $mailable = new BookingConfirmation($booking, $emailQrPath);
+                $emailBody = $mailable->render();
+
+                $gmailService->sendEmail(
+                    $recipientEmail,
+                    'Booking Confirmation - Zap Zone',
+                    $emailBody,
+                    'Zap Zone'
+                );
+
+                Log::info('Booking confirmation sent via Gmail API', [
+                    'email' => $recipientEmail,
+                    'booking_id' => $booking->id,
+                ]);
             } catch (\Exception $e) {
                 // Log error but don't fail the QR code storage
-                Log::error('Failed to send booking confirmation email: ' . $e->getMessage());
+                Log::error('Failed to send booking confirmation email: ' . $e->getMessage(), [
+                    'email' => $recipientEmail,
+                    'booking_id' => $booking->id,
+                    'error' => $e->getMessage(),
+                ]);
             }
         }
 

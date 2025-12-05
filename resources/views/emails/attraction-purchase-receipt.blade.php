@@ -4,371 +4,473 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Purchase Receipt</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            line-height: 1.5;
-            color: #374151;
-            background-color: #f9fafb;
-            padding: 40px 20px;
-        }
-        .email-wrapper {
-            max-width: 520px;
-            margin: 0 auto;
-        }
-        .email-container {
-            background-color: #ffffff;
-            border-radius: 8px;
-            border: 1px solid #e5e7eb;
-        }
-        .header {
-            text-align: center;
-            background: #1e40af;
-            color: white;
-            padding: 24px 32px;
-            border-radius: 8px 8px 0 0;
-        }
-        .header h1 {
-            font-size: 20px;
-            font-weight: 600;
-            margin-bottom: 4px;
-            letter-spacing: -0.01em;
-        }
-        .header p {
-            font-size: 14px;
-            opacity: 0.9;
-            margin: 0;
-        }
-        .content {
-            padding: 32px;
-        }
-        p {
-            font-size: 14px;
-            line-height: 1.6;
-            color: #4b5563;
-            margin-bottom: 12px;
-        }
-        .section-title {
-            font-size: 16px;
-            font-weight: 600;
-            color: #111827;
-            margin: 24px 0 12px 0;
-        }
-        .info-box {
-            background-color: #f9fafb;
-            padding: 16px;
-            border-radius: 6px;
-            margin: 16px 0;
-            border: 1px solid #e5e7eb;
-        }
-        .info-row {
-            display: flex;
-            padding: 8px 0;
-            font-size: 14px;
-            line-height: 1.6;
-        }
-        .info-row:not(:last-child) {
-            border-bottom: 1px solid #e5e7eb;
-        }
-        .label {
-            font-weight: 500;
-            color: #6b7280;
-            width: 140px;
-            flex-shrink: 0;
-        }
-        .value {
-            color: #111827;
-            flex: 1;
-        }
-        .total-section {
-            background-color: #1e40af;
-            color: white;
-            padding: 16px 20px;
-            border-radius: 6px;
-            margin: 20px 0;
-            text-align: center;
-        }
-        .total-section h2 {
-            font-size: 18px;
-            font-weight: 600;
-        }
-        .status-badge {
-            display: inline-block;
-            padding: 4px 12px;
-            border-radius: 12px;
-            font-size: 12px;
-            font-weight: 500;
-            text-transform: capitalize;
-        }
-        .status-pending {
-            background-color: #fef3c7;
-            color: #92400e;
-        }
-        .status-completed {
-            background-color: #d1fae5;
-            color: #065f46;
-        }
-        .status-cancelled {
-            background-color: #fee2e2;
-            color: #991b1b;
-        }
-        .footer {
-            margin-top: 24px;
-            padding-top: 20px;
-            border-top: 1px solid #e5e7eb;
-            text-align: center;
-        }
-        .footer p {
-            font-size: 14px;
-            color: #9ca3af;
-            margin: 4px 0;
-        }
-    </style>
 </head>
-<body>
-    <div class="email-wrapper">
-        <div class="email-container">
-            <div class="header">
-                <h1>Purchase Receipt</h1>
-                <p>Thank you for your purchase!</p>
-            </div>
+<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.5; color: #374151; background-color: #f9fafb;">
+    <!--[if mso]>
+    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f9fafb;">
+        <tr>
+            <td align="center" style="padding: 40px 20px;">
+    <![endif]-->
+    <!--[if mso]>
+    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f9fafb;">
+        <tr>
+            <td align="center" style="padding: 40px 20px;">
+    <![endif]-->
+    
+    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f9fafb; padding: 40px 20px;">
+        <tr>
+            <td align="center">
+                <table width="520" cellpadding="0" cellspacing="0" border="0" style="max-width: 520px; width: 100%; background-color: #ffffff; border-radius: 8px; border: 1px solid #e5e7eb;">
+                    <!-- Header -->
+                    <tr>
+                        <td style="text-align: center; background-color: #1e40af; color: #ffffff; padding: 24px 32px; border-radius: 8px 8px 0 0;">
+                            <!--[if mso]>
+                            <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                <tr>
+                                    <td align="center">
+                            <![endif]-->
+                            <h1 style="margin: 0 0 4px 0; padding: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.01em; color: #ffffff;">Purchase Receipt</h1>
+                            <p style="margin: 0; padding: 0; font-size: 14px; opacity: 0.9; color: #ffffff;">Thank you for your purchase!</p>
+                            <!--[if mso]>
+                                    </td>
+                                </tr>
+                            </table>
+                            <![endif]-->
+                        </td>
+                    </tr>
 
-            <div class="content">
-                <!-- Customer Information -->
-                <h3 class="section-title" style="margin-top: 0;">Customer Information</h3>
-                <div class="info-box">
-                    @if($purchase->customer)
-                        <div class="info-row">
-                            <span class="label">Name:</span>
-                            <span class="value">{{ $purchase->customer->first_name }} {{ $purchase->customer->last_name }}</span>
-                        </div>
-                        <div class="info-row">
-                            <span class="label">Email:</span>
-                            <span class="value">{{ $purchase->customer->email }}</span>
-                        </div>
-                        @if($purchase->customer->phone)
-                            <div class="info-row">
-                                <span class="label">Phone:</span>
-                                <span class="value">{{ $purchase->customer->phone }}</span>
-                            </div>
-                        @endif
-                    @else
-                        <div class="info-row">
-                            <span class="label">Name:</span>
-                            <span class="value">{{ $purchase->guest_name }}</span>
-                        </div>
-                        <div class="info-row">
-                            <span class="label">Email:</span>
-                            <span class="value">{{ $purchase->guest_email }}</span>
-                        </div>
-                        @if($purchase->guest_phone)
-                            <div class="info-row">
-                                <span class="label">Phone:</span>
-                                <span class="value">{{ $purchase->guest_phone }}</span>
-                            </div>
-                        @endif
-                    @endif
-                </div>
+                    <!-- Content -->
+                    <tr>
+                        <td style="padding: 32px;">
+                            <!-- Customer Information -->
+                            <h3 style="margin: 0 0 12px 0; padding: 0; font-size: 16px; font-weight: 600; color: #111827;">Customer Information</h3>
+                            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f9fafb; border-radius: 6px; border: 1px solid #e5e7eb; margin: 16px 0;">
+                                @if($purchase->customer)
+                                    <tr>
+                                        <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                            <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                                <tr>
+                                                    <td style="font-weight: 500; color: #6b7280; width: 140px;">Name:</td>
+                                                    <td style="color: #111827;">{{ $purchase->customer->first_name }} {{ $purchase->customer->last_name }}</td>
+                                                </tr>
+                                            </table>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                            <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                                <tr>
+                                                    <td style="font-weight: 500; color: #6b7280; width: 140px;">Email:</td>
+                                                    <td style="color: #111827;">{{ $purchase->customer->email }}</td>
+                                                </tr>
+                                            </table>
+                                        </td>
+                                    </tr>
+                                    @if($purchase->customer->phone)
+                                        <tr>
+                                            <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6;">
+                                                <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                                    <tr>
+                                                        <td style="font-weight: 500; color: #6b7280; width: 140px;">Phone:</td>
+                                                        <td style="color: #111827;">{{ $purchase->customer->phone }}</td>
+                                                    </tr>
+                                                </table>
+                                            </td>
+                                        </tr>
+                                    @endif
+                                @else
+                                    <tr>
+                                        <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                            <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                                <tr>
+                                                    <td style="font-weight: 500; color: #6b7280; width: 140px;">Name:</td>
+                                                    <td style="color: #111827;">{{ $purchase->guest_name }}</td>
+                                                </tr>
+                                            </table>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                            <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                                <tr>
+                                                    <td style="font-weight: 500; color: #6b7280; width: 140px;">Email:</td>
+                                                    <td style="color: #111827;">{{ $purchase->guest_email }}</td>
+                                                </tr>
+                                            </table>
+                                        </td>
+                                    </tr>
+                                    @if($purchase->guest_phone)
+                                        <tr>
+                                            <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6;">
+                                                <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                                    <tr>
+                                                        <td style="font-weight: 500; color: #6b7280; width: 140px;">Phone:</td>
+                                                        <td style="color: #111827;">{{ $purchase->guest_phone }}</td>
+                                                    </tr>
+                                                </table>
+                                            </td>
+                                        </tr>
+                                    @endif
+                                @endif
+                            </table>
 
-                <!-- Receipt Details -->
-                <h3 class="section-title">Purchase Details</h3>
-                <div class="info-box">
-                    <div class="info-row">
-                        <span class="label">Order Number:</span>
-                        <span class="value">#{{ str_pad($purchase->id, 6, '0', STR_PAD_LEFT) }}</span>
-                    </div>
+                            <!-- Purchase Details -->
+                            <h3 style="margin: 24px 0 12px 0; padding: 0; font-size: 16px; font-weight: 600; color: #111827;">Purchase Details</h3>
+                            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f9fafb; border-radius: 6px; border: 1px solid #e5e7eb; margin: 16px 0;">
+                                <tr>
+                                    <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                            <tr>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Order Number:</td>
+                                                <td style="color: #111827;">#{{ str_pad($purchase->id, 6, '0', STR_PAD_LEFT) }}</td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                            <tr>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Purchase Date:</td>
+                                                <td style="color: #111827;">{{ $purchase->purchase_date->format('F d, Y') }}</td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                                @if($purchase->purchase_date->format('H:i:s') != '00:00:00')
+                                <tr>
+                                    <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                            <tr>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Purchase Time:</td>
+                                                <td style="color: #111827;">{{ $purchase->purchase_date->format('g:i A') }}</td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                                @endif
+                                <tr>
+                                    <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                            <tr>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Attraction:</td>
+                                                <td style="color: #111827;">{{ $purchase->attraction->name }}</td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                            <tr>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Category:</td>
+                                                <td style="color: #111827;">{{ ucfirst($purchase->attraction->category) }}</td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                            <tr>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Quantity:</td>
+                                                <td style="color: #111827;">{{ $purchase->quantity }} {{ $purchase->quantity > 1 ? 'tickets' : 'ticket' }}</td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                            <tr>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Price per ticket:</td>
+                                                <td style="color: #111827;">${{ number_format($purchase->attraction->price, 2) }}</td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                                @if($purchase->discount_amount > 0)
+                                <tr>
+                                    <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                            <tr>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Discount:</td>
+                                                <td style="color: #111827;">-${{ number_format($purchase->discount_amount, 2) }}</td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                                @endif
+                                @if($purchase->tax_amount > 0)
+                                <tr>
+                                    <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                            <tr>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Tax:</td>
+                                                <td style="color: #111827;">${{ number_format($purchase->tax_amount, 2) }}</td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                                @endif
+                                <tr>
+                                    <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                            <tr>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Payment Method:</td>
+                                                <td style="color: #111827;">{{ ucfirst(str_replace('_', ' ', $purchase->payment_method)) }}</td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                                @if($purchase->transaction_id)
+                                <tr>
+                                    <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                            <tr>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Transaction ID:</td>
+                                                <td style="color: #111827;">{{ $purchase->transaction_id }}</td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                                @endif
+                                <tr>
+                                    <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                            <tr>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Status:</td>
+                                                <td style="color: #111827;">
+                                                    <span style="display: inline-block; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 500; text-transform: capitalize; background-color: {{ $purchase->status === 'completed' ? '#d1fae5' : ($purchase->status === 'pending' ? '#fef3c7' : '#fee2e2') }}; color: {{ $purchase->status === 'completed' ? '#065f46' : ($purchase->status === 'pending' ? '#92400e' : '#991b1b') }};">
+                                                        {{ ucfirst($purchase->status) }}
+                                                    </span>
+                                                </td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                                @if($purchase->notes)
+                                <tr>
+                                    <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6;">
+                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                            <tr>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Notes:</td>
+                                                <td style="color: #111827;">{{ $purchase->notes }}</td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                                @endif
+                            </table>
 
-                    <div class="info-row">
-                        <span class="label">Purchase Date:</span>
-                        <span class="value">{{ $purchase->purchase_date->format('F d, Y') }}</span>
-                    </div>
+                            <!-- Total Amount -->
+                            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #1e40af; border-radius: 6px; margin: 20px 0;">
+                                <tr>
+                                    <td style="padding: 16px 20px; text-align: center;">
+                                        <h2 style="margin: 0; padding: 0; font-size: 18px; font-weight: 600; color: #ffffff;">Total Amount: ${{ number_format($purchase->total_amount, 2) }}</h2>
+                                    </td>
+                                </tr>
+                            </table>
 
-                    @if($purchase->purchase_date->format('H:i:s') != '00:00:00')
-                    <div class="info-row">
-                        <span class="label">Purchase Time:</span>
-                        <span class="value">{{ $purchase->purchase_date->format('g:i A') }}</span>
-                    </div>
-                    @endif
+                            <!-- Location Information -->
+                            @if($purchase->attraction && $purchase->attraction->location)
+                            <h3 style="margin: 24px 0 12px 0; padding: 0; font-size: 16px; font-weight: 600; color: #111827;">Location Details</h3>
+                            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f9fafb; border-radius: 6px; border: 1px solid #e5e7eb; margin: 16px 0;">
+                                <tr>
+                                    <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                            <tr>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Venue:</td>
+                                                <td style="color: #111827;">{{ $purchase->attraction->location->name }}</td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                                @if($purchase->attraction->location->address)
+                                    <tr>
+                                        <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                            <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                                <tr>
+                                                    <td style="font-weight: 500; color: #6b7280; width: 140px;">Address:</td>
+                                                    <td style="color: #111827;">{{ $purchase->attraction->location->address }}</td>
+                                                </tr>
+                                            </table>
+                                        </td>
+                                    </tr>
+                                @endif
+                                @if($purchase->attraction->location->city)
+                                    <tr>
+                                        <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                            <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                                <tr>
+                                                    <td style="font-weight: 500; color: #6b7280; width: 140px;">City:</td>
+                                                    <td style="color: #111827;">{{ $purchase->attraction->location->city }}, {{ $purchase->attraction->location->state }} {{ $purchase->attraction->location->zip_code }}</td>
+                                                </tr>
+                                            </table>
+                                        </td>
+                                    </tr>
+                                @endif
+                                @if($purchase->attraction->location->country)
+                                    <tr>
+                                        <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                            <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                                <tr>
+                                                    <td style="font-weight: 500; color: #6b7280; width: 140px;">Country:</td>
+                                                    <td style="color: #111827;">{{ $purchase->attraction->location->country }}</td>
+                                                </tr>
+                                            </table>
+                                        </td>
+                                    </tr>
+                                @endif
+                                @if($purchase->attraction->location->phone)
+                                    <tr>
+                                        <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                            <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                                <tr>
+                                                    <td style="font-weight: 500; color: #6b7280; width: 140px;">Phone:</td>
+                                                    <td style="color: #111827;">{{ $purchase->attraction->location->phone }}</td>
+                                                </tr>
+                                            </table>
+                                        </td>
+                                    </tr>
+                                @endif
+                                @if($purchase->attraction->location->email)
+                                    <tr>
+                                        <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                            <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                                <tr>
+                                                    <td style="font-weight: 500; color: #6b7280; width: 140px;">Email:</td>
+                                                    <td style="color: #111827;">{{ $purchase->attraction->location->email }}</td>
+                                                </tr>
+                                            </table>
+                                        </td>
+                                    </tr>
+                                @endif
+                                @if($purchase->attraction->location->website)
+                                    <tr>
+                                        <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6;">
+                                            <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                                <tr>
+                                                    <td style="font-weight: 500; color: #6b7280; width: 140px;">Website:</td>
+                                                    <td style="color: #111827;"><a href="{{ $purchase->attraction->location->website }}" style="color: #1e40af; text-decoration: none;">{{ $purchase->attraction->location->website }}</a></td>
+                                                </tr>
+                                            </table>
+                                        </td>
+                                    </tr>
+                                @endif
+                            </table>
+                            @endif
 
-                    <div class="info-row">
-                        <span class="label">Attraction:</span>
-                        <span class="value">{{ $purchase->attraction->name }}</span>
-                    </div>
+                            <!-- Attraction Details -->
+                            @if($purchase->attraction->description)
+                            <h3 style="margin: 24px 0 12px 0; padding: 0; font-size: 16px; font-weight: 600; color: #111827;">About {{ $purchase->attraction->name }}</h3>
+                            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f9fafb; border-radius: 6px; border: 1px solid #e5e7eb; margin: 16px 0;">
+                                <tr>
+                                    <td style="padding: 16px;">
+                                        <p style="margin: 0 0 12px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #4b5563;">{{ $purchase->attraction->description }}</p>
 
-                    <div class="info-row">
-                        <span class="label">Category:</span>
-                        <span class="value">{{ ucfirst($purchase->attraction->category) }}</span>
-                    </div>
+                                        @if($purchase->attraction->duration || $purchase->attraction->min_age || $purchase->attraction->max_capacity || $purchase->attraction->difficulty_level)
+                                        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #e5e7eb;">
+                                            @if($purchase->attraction->duration)
+                                                <tr>
+                                                    <td style="padding: 8px 0; font-size: 14px; line-height: 1.6;">
+                                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                                            <tr>
+                                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Duration:</td>
+                                                                <td style="color: #111827;">{{ $purchase->attraction->duration }} {{ $purchase->attraction->duration_unit }}</td>
+                                                            </tr>
+                                                        </table>
+                                                    </td>
+                                                </tr>
+                                            @endif
+                                            @if($purchase->attraction->min_age)
+                                                <tr>
+                                                    <td style="padding: 8px 0; font-size: 14px; line-height: 1.6;">
+                                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                                            <tr>
+                                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Minimum Age:</td>
+                                                                <td style="color: #111827;">{{ $purchase->attraction->min_age }} years</td>
+                                                            </tr>
+                                                        </table>
+                                                    </td>
+                                                </tr>
+                                            @endif
+                                            @if($purchase->attraction->max_age)
+                                                <tr>
+                                                    <td style="padding: 8px 0; font-size: 14px; line-height: 1.6;">
+                                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                                            <tr>
+                                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Maximum Age:</td>
+                                                                <td style="color: #111827;">{{ $purchase->attraction->max_age }} years</td>
+                                                            </tr>
+                                                        </table>
+                                                    </td>
+                                                </tr>
+                                            @endif
+                                            @if($purchase->attraction->max_capacity)
+                                                <tr>
+                                                    <td style="padding: 8px 0; font-size: 14px; line-height: 1.6;">
+                                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                                            <tr>
+                                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Max Capacity:</td>
+                                                                <td style="color: #111827;">{{ $purchase->attraction->max_capacity }} people</td>
+                                                            </tr>
+                                                        </table>
+                                                    </td>
+                                                </tr>
+                                            @endif
+                                            @if($purchase->attraction->difficulty_level)
+                                                <tr>
+                                                    <td style="padding: 8px 0; font-size: 14px; line-height: 1.6;">
+                                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                                            <tr>
+                                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Difficulty Level:</td>
+                                                                <td style="color: #111827;">{{ ucfirst($purchase->attraction->difficulty_level) }}</td>
+                                                            </tr>
+                                                        </table>
+                                                    </td>
+                                                </tr>
+                                            @endif
+                                            @if($purchase->attraction->is_indoor !== null)
+                                                <tr>
+                                                    <td style="padding: 8px 0; font-size: 14px; line-height: 1.6;">
+                                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                                            <tr>
+                                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Type:</td>
+                                                                <td style="color: #111827;">{{ $purchase->attraction->is_indoor ? 'Indoor' : 'Outdoor' }}</td>
+                                                            </tr>
+                                                        </table>
+                                                    </td>
+                                                </tr>
+                                            @endif
+                                        </table>
+                                        @endif
+                                    </td>
+                                </tr>
+                            </table>
+                            @endif
 
-                    <div class="info-row">
-                        <span class="label">Quantity:</span>
-                        <span class="value">{{ $purchase->quantity }} {{ $purchase->quantity > 1 ? 'tickets' : 'ticket' }}</span>
-                    </div>
-
-                    <div class="info-row">
-                        <span class="label">Price per ticket:</span>
-                        <span class="value">${{ number_format($purchase->attraction->price, 2) }}</span>
-                    </div>
-
-                    @if($purchase->discount_amount > 0)
-                    <div class="info-row">
-                        <span class="label">Discount:</span>
-                        <span class="value">-${{ number_format($purchase->discount_amount, 2) }}</span>
-                    </div>
-                    @endif
-
-                    @if($purchase->tax_amount > 0)
-                    <div class="info-row">
-                        <span class="label">Tax:</span>
-                        <span class="value">${{ number_format($purchase->tax_amount, 2) }}</span>
-                    </div>
-                    @endif
-
-                    <div class="info-row">
-                        <span class="label">Payment Method:</span>
-                        <span class="value">{{ ucfirst(str_replace('_', ' ', $purchase->payment_method)) }}</span>
-                    </div>
-
-                    @if($purchase->transaction_id)
-                    <div class="info-row">
-                        <span class="label">Transaction ID:</span>
-                        <span class="value">{{ $purchase->transaction_id }}</span>
-                    </div>
-                    @endif
-
-                    <div class="info-row">
-                        <span class="label">Status:</span>
-                        <span class="value">
-                            <span class="status-badge status-{{ $purchase->status }}">
-                                {{ ucfirst($purchase->status) }}
-                            </span>
-                        </span>
-                    </div>
-
-                    @if($purchase->notes)
-                    <div class="info-row">
-                        <span class="label">Notes:</span>
-                        <span class="value">{{ $purchase->notes }}</span>
-                    </div>
-                    @endif
-                </div>
-
-                <!-- Total Amount -->
-                <div class="total-section">
-                    <h2>Total Amount: ${{ number_format($purchase->total_amount, 2) }}</h2>
-                </div>
-
-                <!-- Location Information -->
-                @if($purchase->attraction && $purchase->attraction->location)
-                <h3 class="section-title">Location Details</h3>
-                <div class="info-box">
-                    <div class="info-row">
-                        <span class="label">Venue:</span>
-                        <span class="value">{{ $purchase->attraction->location->name }}</span>
-                    </div>
-                    @if($purchase->attraction->location->address)
-                        <div class="info-row">
-                            <span class="label">Address:</span>
-                            <span class="value">{{ $purchase->attraction->location->address }}</span>
-                        </div>
-                    @endif
-                    @if($purchase->attraction->location->city)
-                        <div class="info-row">
-                            <span class="label">City:</span>
-                            <span class="value">{{ $purchase->attraction->location->city }}, {{ $purchase->attraction->location->state }} {{ $purchase->attraction->location->zip_code }}</span>
-                        </div>
-                    @endif
-                    @if($purchase->attraction->location->country)
-                        <div class="info-row">
-                            <span class="label">Country:</span>
-                            <span class="value">{{ $purchase->attraction->location->country }}</span>
-                        </div>
-                    @endif
-                    @if($purchase->attraction->location->phone)
-                        <div class="info-row">
-                            <span class="label">Phone:</span>
-                            <span class="value">{{ $purchase->attraction->location->phone }}</span>
-                        </div>
-                    @endif
-                    @if($purchase->attraction->location->email)
-                        <div class="info-row">
-                            <span class="label">Email:</span>
-                            <span class="value">{{ $purchase->attraction->location->email }}</span>
-                        </div>
-                    @endif
-                    @if($purchase->attraction->location->website)
-                        <div class="info-row">
-                            <span class="label">Website:</span>
-                            <span class="value"><a href="{{ $purchase->attraction->location->website }}" style="color: #1e40af; text-decoration: none;">{{ $purchase->attraction->location->website }}</a></span>
-                        </div>
-                    @endif
-                </div>
-                @endif
-
-                <!-- Attraction Details -->
-                @if($purchase->attraction->description)
-                <h3 class="section-title">About {{ $purchase->attraction->name }}</h3>
-                <div class="info-box">
-                    <p style="margin: 0 0 12px 0; color: #4b5563;">{{ $purchase->attraction->description }}</p>
-
-                    @if($purchase->attraction->duration || $purchase->attraction->min_age || $purchase->attraction->max_capacity || $purchase->attraction->difficulty_level)
-                    <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #e5e7eb;">
-                        @if($purchase->attraction->duration)
-                            <div class="info-row">
-                                <span class="label">Duration:</span>
-                                <span class="value">{{ $purchase->attraction->duration }} {{ $purchase->attraction->duration_unit }}</span>
-                            </div>
-                        @endif
-                        @if($purchase->attraction->min_age)
-                            <div class="info-row">
-                                <span class="label">Minimum Age:</span>
-                                <span class="value">{{ $purchase->attraction->min_age }} years</span>
-                            </div>
-                        @endif
-                        @if($purchase->attraction->max_age)
-                            <div class="info-row">
-                                <span class="label">Maximum Age:</span>
-                                <span class="value">{{ $purchase->attraction->max_age }} years</span>
-                            </div>
-                        @endif
-                        @if($purchase->attraction->max_capacity)
-                            <div class="info-row">
-                                <span class="label">Max Capacity:</span>
-                                <span class="value">{{ $purchase->attraction->max_capacity }} people</span>
-                            </div>
-                        @endif
-                        @if($purchase->attraction->difficulty_level)
-                            <div class="info-row">
-                                <span class="label">Difficulty Level:</span>
-                                <span class="value">{{ ucfirst($purchase->attraction->difficulty_level) }}</span>
-                            </div>
-                        @endif
-                        @if($purchase->attraction->is_indoor !== null)
-                            <div class="info-row">
-                                <span class="label">Type:</span>
-                                <span class="value">{{ $purchase->attraction->is_indoor ? 'Indoor' : 'Outdoor' }}</span>
-                            </div>
-                        @endif
-                    </div>
-                    @endif
-                </div>
-                @endif
-
-                <!-- Footer -->
-                <div class="footer">
-                    <p>Thank you for choosing our attractions!</p>
-                    <p>If you have any questions, please contact our support team.</p>
-                    <p style="margin-top: 8px;">
-                        This is an automated email. Please do not reply to this message.
-                    </p>
-                </div>
-            </div>
-        </div>
-    </div>
+                            <!-- Footer -->
+                            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top: 24px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+                                <tr>
+                                    <td style="text-align: center;">
+                                        <p style="margin: 4px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #9ca3af;">Thank you for choosing our attractions!</p>
+                                        <p style="margin: 4px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #9ca3af;">If you have any questions, please contact our support team.</p>
+                                        <p style="margin: 8px 0 4px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #9ca3af;">This is an automated email. Please do not reply to this message.</p>
+                                    </td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+    
+    <!--[if mso]>
+            </td>
+        </tr>
+    </table>
+    <![endif]-->
 </body>
 </html>

@@ -44,6 +44,7 @@ Route::get('attractions/popular', [AttractionController::class, 'getPopular']);
 
 // Locations Route
 Route::get('locations', [LocationController::class, 'index']);
+Route::post('locations', [LocationController::class, 'store']);
 
 // Package Time Slot routes
 Route::apiResource('package-time-slots', PackageTimeSlotController::class);
@@ -77,7 +78,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('companies/{company}/statistics', [CompanyController::class, 'statistics']);
 
     // Location routes
-    Route::apiResource('locations', LocationController::class)->only(['show', 'store', 'update', 'destroy']);
+    Route::apiResource('locations', LocationController::class)->only(['show', 'update', 'destroy']);
     Route::get('locations/company/{companyId}', [LocationController::class, 'getByCompany']);
     Route::patch('locations/{location}/toggle-status', [LocationController::class, 'toggleStatus']);
     Route::get('locations/{location}/statistics', [LocationController::class, 'statistics']);

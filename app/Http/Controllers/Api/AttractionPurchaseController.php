@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\AttractionPurchase;
 use App\Models\Attraction;
 use App\Mail\AttractionPurchaseReceipt;
+use App\Services\GmailApiService;
 use App\Models\ActivityLog;
 use App\Models\CustomerNotification;
 use App\Models\Notification;
@@ -14,7 +15,6 @@ use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Validation\Rule;
-use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Log;
 
 class AttractionPurchaseController extends Controller
@@ -253,8 +253,22 @@ class AttractionPurchaseController extends Controller
             // Load relationships for email including location
             $attractionPurchase->load(['attraction.location', 'customer', 'createdBy']);
 
-            // Send receipt email with QR code (passed as base64, not stored)
-            Mail::to($recipientEmail)->send(new AttractionPurchaseReceipt($attractionPurchase, $qrCodeBase64));
+            // Send receipt email with QR code using Gmail API
+            $gmailService = new GmailApiService();
+            $mailable = new AttractionPurchaseReceipt($attractionPurchase, $qrCodeBase64);
+            $emailBody = $mailable->render();
+
+            $gmailService->sendEmail(
+                $recipientEmail,
+                'Your Attraction Purchase Receipt - Zap Zone',
+                $emailBody,
+                'Zap Zone'
+            );
+
+            Log::info('Attraction purchase receipt sent via Gmail API', [
+                'email' => $recipientEmail,
+                'purchase_id' => $attractionPurchase->id,
+            ]);
 
             return response()->json([
                 'success' => true,
@@ -265,7 +279,11 @@ class AttractionPurchaseController extends Controller
             ]);
 
         } catch (\Exception $e) {
-            Log::error('Failed to send purchase receipt email: ' . $e->getMessage());
+            Log::error('Failed to send purchase receipt email: ' . $e->getMessage(), [
+                'email' => $recipientEmail,
+                'purchase_id' => $attractionPurchase->id,
+                'error' => $e->getMessage(),
+            ]);
 
             return response()->json([
                 'success' => false,
