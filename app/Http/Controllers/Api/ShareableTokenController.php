@@ -18,50 +18,79 @@ class ShareableTokenController extends Controller
      */
     public function store(Request $request): JsonResponse
     {
-        $validated = $request->validate([
-            'email' => 'required|email|max:255',
-            'role' => ['required', Rule::in(['company_admin', 'location_manager', 'attendant'])],
-            'company_id' => 'required|exists:companies,id',
-            'location_id' => 'nullable|exists:locations,id',
-        ]);
+        try {
+            $validated = $request->validate([
+                'email' => 'required|email|max:255',
+                'role' => ['required', Rule::in(['company_admin', 'location_manager', 'attendant'])],
+                'company_id' => 'nullable|exists:companies,id',
+                'location_id' => 'nullable|exists:locations,id',
+            ]);
 
-        // Try to get authenticated user for tracking purposes
-        $user = $request->user();
+            // Try to get authenticated user for tracking purposes
+            $user = $request->user();
 
-        // Set created_by if user is authenticated, otherwise null
-        $validated['created_by'] = $user ? $user->id : null;
+            // Set created_by if user is authenticated, otherwise null
+            $validated['created_by'] = $user ? $user->id : null;
 
-        // Validate location_id is required for certain roles
-        if (in_array($validated['role'], ['location_manager', 'attendant']) && empty($validated['location_id'])) {
+            // If no company_id provided, try to get from user, otherwise use first company
+            if (empty($validated['company_id'])) {
+                if ($user && $user->company_id) {
+                    $validated['company_id'] = $user->company_id;
+                } else {
+                    // Get first company as fallback
+                    $firstCompany = \App\Models\Company::first();
+                    if (!$firstCompany) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => 'No company found in system',
+                        ], 422);
+                    }
+                    $validated['company_id'] = $firstCompany->id;
+                }
+            }
+
+            // Validate location_id is required for certain roles
+            if (in_array($validated['role'], ['location_manager', 'attendant']) && empty($validated['location_id'])) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Location ID is required for location_manager and attendant roles',
+                ], 422);
+            }
+
+            $token = ShareableToken::create($validated);
+
+            // Log token creation
+            Log::info('Shareable token created', [
+                'email' => $validated['email'],
+                'token_id' => $token->id,
+                'created_by' => $validated['created_by'],
+                'is_public' => !$user,
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Token created successfully',
+                'data' => [
+                    'link' => $token->getShareableLink(),
+                    'email' => $validated['email'],
+                ],
+            ], 201);
+        } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json([
                 'success' => false,
-                'message' => 'Location ID is required for location_manager and attendant roles',
+                'message' => 'Validation failed',
+                'errors' => $e->errors(),
             ], 422);
+        } catch (\Exception $e) {
+            Log::error('Error creating shareable token: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString(),
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to create token: ' . $e->getMessage(),
+            ], 500);
         }
-
-        $token = ShareableToken::create($validated);
-
-        // Log token creation
-        Log::info('Shareable token created', [
-            'email' => $validated['email'],
-            'token_id' => $token->id,
-            'created_by' => $validated['created_by'],
-            'is_public' => !$user,
-        ]);
-            'token_id' => $token->id,
-            'created_by' => $user->id,
-        ]);
-
-        // Return immediately without sending email to avoid timeout
-        // Email can be sent via a separate queue worker or cron job later
-        return response()->json([
-            'success' => true,
-            'message' => 'Token created successfully',
-            'data' => [
-                'link' => $token->getShareableLink(),
-                'email' => $validated['email'],
-            ],
-        ], 201);
     }
 
     /**
