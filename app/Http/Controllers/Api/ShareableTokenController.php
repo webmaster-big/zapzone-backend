@@ -67,39 +67,50 @@ class ShareableTokenController extends Controller
                 'is_public' => !$user,
             ]);
 
-            // Return response immediately
-            $response = response()->json([
+            // Prepare response
+            $responseData = [
                 'success' => true,
-                'message' => 'Token created successfully',
+                'message' => 'Token created successfully. Email will be sent shortly.',
                 'data' => [
                     'link' => $token->getShareableLink(),
                     'email' => $validated['email'],
                 ],
-            ], 201);
+            ];
 
-            // Schedule email to be sent after response is sent
-            // Using fastcgi_finish_request() if available to send response first
+            // Send email in a separate process that won't block
             if (function_exists('fastcgi_finish_request')) {
-                $response->send();
-                fastcgi_finish_request();
+                // Send response first
+                $response = response()->json($responseData, 201);
                 
-                // Now send email after response is already sent to client
-                try {
-                    Mail::to($validated['email'])->send(new ShareableTokenMail($token));
-                    Log::info('Shareable token email sent', [
-                        'email' => $validated['email'],
-                        'token_id' => $token->id,
-                    ]);
-                } catch (\Exception $e) {
-                    Log::error('Failed to send shareable token email: ' . $e->getMessage(), [
-                        'email' => $validated['email'],
-                        'token_id' => $token->id,
-                        'error' => $e->getMessage(),
-                    ]);
-                }
+                // This will be executed after sending response
+                register_shutdown_function(function () use ($validated, $token) {
+                    try {
+                        Mail::to($validated['email'])->send(new ShareableTokenMail($token));
+                        Log::info('Shareable token email sent', [
+                            'email' => $validated['email'],
+                            'token_id' => $token->id,
+                        ]);
+                    } catch (\Exception $e) {
+                        Log::error('Failed to send shareable token email: ' . $e->getMessage(), [
+                            'email' => $validated['email'],
+                            'token_id' => $token->id,
+                            'error' => $e->getMessage(),
+                        ]);
+                    }
+                });
+                
+                return $response;
             }
-
-            return $response;
+            
+            // Fallback: try to send email with timeout
+            try {
+                set_time_limit(10); // Max 10 seconds for email
+                Mail::to($validated['email'])->send(new ShareableTokenMail($token));
+            } catch (\Exception $e) {
+                Log::error('Failed to send shareable token email: ' . $e->getMessage());
+            }
+            
+            return response()->json($responseData, 201);
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json([
                 'success' => false,
