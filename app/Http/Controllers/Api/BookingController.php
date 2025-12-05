@@ -458,16 +458,27 @@ class BookingController extends Controller
             try {
                 $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
                 
+                // Get QR code as base64 for attachment
+                $qrCodeBase64 = base64_encode(file_get_contents($emailQrPath));
+                
                 // Send booking confirmation using Gmail API
                 $gmailService = new GmailApiService();
                 $mailable = new BookingConfirmation($booking, $emailQrPath);
                 $emailBody = $mailable->render();
 
+                // Prepare QR code attachment
+                $attachments = [[
+                    'data' => $qrCodeBase64,
+                    'filename' => 'booking-qrcode.png',
+                    'mime_type' => 'image/png'
+                ]];
+
                 $gmailService->sendEmail(
                     $recipientEmail,
-                    'Booking Confirmation - Zap Zone',
+                    'Your Booking Confirmation - Zap Zone',
                     $emailBody,
-                    'Zap Zone'
+                    'Zap Zone',
+                    $attachments
                 );
 
                 Log::info('Booking confirmation sent via Gmail API', [

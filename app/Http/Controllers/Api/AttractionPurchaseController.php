@@ -258,11 +258,19 @@ class AttractionPurchaseController extends Controller
             $mailable = new AttractionPurchaseReceipt($attractionPurchase, $qrCodeBase64);
             $emailBody = $mailable->render();
 
+            // Prepare QR code attachment
+            $attachments = [[
+                'data' => $qrCodeBase64,
+                'filename' => 'qrcode.png',
+                'mime_type' => 'image/png'
+            ]];
+
             $gmailService->sendEmail(
                 $recipientEmail,
                 'Your Attraction Purchase Receipt - Zap Zone',
                 $emailBody,
-                'Zap Zone'
+                'Zap Zone',
+                $attachments
             );
 
             Log::info('Attraction purchase receipt sent via Gmail API', [

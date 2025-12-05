@@ -35,7 +35,7 @@ class GmailApiService
         $this->service = new Gmail($this->client);
     }
 
-    public function sendEmail($to, $subject, $htmlBody, $fromName = 'Zap Zone')
+    public function sendEmail($to, $subject, $htmlBody, $fromName = 'Zap Zone', $attachments = [])
     {
         try {
             $message = $this->createMessage(
@@ -43,7 +43,8 @@ class GmailApiService
                 $to,
                 $subject,
                 $htmlBody,
-                $fromName
+                $fromName,
+                $attachments
             );
 
             $result = $this->service->users_messages->send('me', $message);
@@ -51,7 +52,8 @@ class GmailApiService
             Log::info('Gmail API email sent successfully', [
                 'to' => $to,
                 'subject' => $subject,
-                'message_id' => $result->getId()
+                'message_id' => $result->getId(),
+                'attachments_count' => count($attachments)
             ]);
 
             return true;
@@ -66,17 +68,28 @@ class GmailApiService
         }
     }
 
-    private function createMessage($from, $to, $subject, $htmlBody, $fromName = 'Zap Zone')
+    private function createMessage($from, $to, $subject, $htmlBody, $fromName = 'Zap Zone', $attachments = [])
     {
         // Create multipart message with proper encoding
         $boundary = uniqid('boundary_');
+        $attachmentBoundary = uniqid('attachment_boundary_');
 
         $emailContent = "From: {$fromName} <{$from}>\r\n";
         $emailContent .= "To: {$to}\r\n";
         $emailContent .= "Reply-To: {$from}\r\n";
         $emailContent .= "Subject: {$subject}\r\n";
         $emailContent .= "MIME-Version: 1.0\r\n";
-        $emailContent .= "Content-Type: multipart/alternative; boundary=\"{$boundary}\"\r\n\r\n";
+        
+        // Use mixed if we have attachments, otherwise use alternative
+        if (!empty($attachments)) {
+            $emailContent .= "Content-Type: multipart/mixed; boundary=\"{$attachmentBoundary}\"\r\n\r\n";
+            
+            // Start with the HTML/text content part
+            $emailContent .= "--{$attachmentBoundary}\r\n";
+            $emailContent .= "Content-Type: multipart/alternative; boundary=\"{$boundary}\"\r\n\r\n";
+        } else {
+            $emailContent .= "Content-Type: multipart/alternative; boundary=\"{$boundary}\"\r\n\r\n";
+        }
 
         // Plain text version
         $plainText = strip_tags($htmlBody);
@@ -91,7 +104,19 @@ class GmailApiService
         $emailContent .= "Content-Transfer-Encoding: 8bit\r\n\r\n";
         $emailContent .= $htmlBody . "\r\n\r\n";
 
-        $emailContent .= "--{$boundary}--";
+        $emailContent .= "--{$boundary}--\r\n";
+
+        // Add attachments if any
+        if (!empty($attachments)) {
+            foreach ($attachments as $attachment) {
+                $emailContent .= "\r\n--{$attachmentBoundary}\r\n";
+                $emailContent .= "Content-Type: {$attachment['mime_type']}; name=\"{$attachment['filename']}\"\r\n";
+                $emailContent .= "Content-Transfer-Encoding: base64\r\n";
+                $emailContent .= "Content-Disposition: attachment; filename=\"{$attachment['filename']}\"\r\n\r\n";
+                $emailContent .= chunk_split($attachment['data']) . "\r\n";
+            }
+            $emailContent .= "--{$attachmentBoundary}--";
+        }
 
         $message = new Message();
         $message->setRaw($this->base64UrlEncode($emailContent));
