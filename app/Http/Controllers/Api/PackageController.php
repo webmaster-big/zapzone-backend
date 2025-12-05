@@ -290,8 +290,10 @@ class PackageController extends Controller
             // Delete old images if they exist
             if ($package->image && is_array($package->image)) {
                 foreach ($package->image as $oldImage) {
-                    if (file_exists(storage_path('app/public/' . $oldImage))) {
-                        unlink(storage_path('app/public/' . $oldImage));
+                    $oldImagePath = storage_path('app/public/' . $oldImage);
+                    if (file_exists($oldImagePath)) {
+                        unlink($oldImagePath);
+                        Log::info('Deleted old image', ['path' => $oldImagePath]);
                     }
                 }
             }
@@ -299,7 +301,15 @@ class PackageController extends Controller
             $uploadedImages = [];
             foreach ($validated['image'] as $image) {
                 if (!empty($image)) {
-                    $uploadedImages[] = $this->handleImageUpload($image);
+                    try {
+                        $uploadedImages[] = $this->handleImageUpload($image);
+                    } catch (\Exception $e) {
+                        Log::error('Failed to upload image during package update', [
+                            'package_id' => $package->id,
+                            'error' => $e->getMessage()
+                        ]);
+                        // Continue with other images
+                    }
                 }
             }
             $validated['image'] = !empty($uploadedImages) ? $uploadedImages : null;
