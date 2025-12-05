@@ -293,8 +293,8 @@ class PackageController extends Controller
             // Delete old images if they exist
             if ($package->image && is_array($package->image)) {
                 foreach ($package->image as $oldImage) {
-                    if (file_exists(public_path($oldImage))) {
-                        unlink(public_path($oldImage));
+                    if (file_exists(storage_path('app/public/' . $oldImage))) {
+                        unlink(storage_path('app/public/' . $oldImage));
                     }
                 }
             }
@@ -397,8 +397,8 @@ class PackageController extends Controller
         // Delete associated images if they exist
         if ($package->image && is_array($package->image)) {
             foreach ($package->image as $image) {
-                if (file_exists(public_path($image))) {
-                    unlink(public_path($image));
+                if (file_exists(storage_path('app/public/' . $image))) {
+                    unlink(storage_path('app/public/' . $image));
                 }
             }
         }
@@ -780,7 +780,7 @@ class PackageController extends Controller
             // Generate shorter filename
             $filename = uniqid() . '.' . $imageType;
             $path = 'images/packages';
-            $fullPath = public_path($path);
+            $fullPath = storage_path('app/public/' . $path);
 
             // Create directory if it doesn't exist
             if (!file_exists($fullPath)) {
@@ -790,7 +790,7 @@ class PackageController extends Controller
             // Save the file
             file_put_contents($fullPath . '/' . $filename, $imageData);
 
-            // Return the relative path
+            // Return the relative path (for storage URL)
             return $path . '/' . $filename;
         }
 

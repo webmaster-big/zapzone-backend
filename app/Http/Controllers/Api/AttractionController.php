@@ -622,7 +622,7 @@ class AttractionController extends Controller
         // Generate unique filename
         $filename = uniqid() . '.' . $file->getClientOriginalExtension();
         $path = 'images/attractions';
-        $fullPath = public_path($path);
+        $fullPath = storage_path('app/public/' . $path);
 
         // Create directory if it doesn't exist
         if (!file_exists($fullPath)) {
@@ -632,7 +632,7 @@ class AttractionController extends Controller
         // Move the uploaded file
         $file->move($fullPath, $filename);
 
-        // Return the relative path
+        // Return the relative path (for storage URL)
         return $path . '/' . $filename;
     }
 
@@ -652,7 +652,7 @@ class AttractionController extends Controller
             // Generate shorter filename
             $filename = uniqid() . '.' . $imageType;
             $path = 'images/attractions';
-            $fullPath = public_path($path);
+            $fullPath = storage_path('app/public/' . $path);
 
             // Create directory if it doesn't exist
             if (!file_exists($fullPath)) {
@@ -662,7 +662,7 @@ class AttractionController extends Controller
             // Save the file
             file_put_contents($fullPath . '/' . $filename, $imageData);
 
-            // Return the relative path
+            // Return the relative path (for storage URL)
             return $path . '/' . $filename;
         }
 

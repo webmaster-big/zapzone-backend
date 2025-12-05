@@ -159,8 +159,8 @@ class AddOnController extends Controller
         // Handle image upload
         if (isset($validated['image']) && !empty($validated['image'])) {
             // Delete old image if exists
-            if ($addOn->image && file_exists(public_path($addOn->image))) {
-                unlink(public_path($addOn->image));
+            if ($addOn->image && file_exists(storage_path('app/public/' . $addOn->image))) {
+                unlink(storage_path('app/public/' . $addOn->image));
             }
             $validated['image'] = $this->handleImageUpload($validated['image']);
             Log::info('Image processed', ['new_path' => $validated['image']]);
@@ -199,8 +199,8 @@ class AddOnController extends Controller
         $addOn = AddOn::findOrFail($id);
 
         // Delete image if exists
-        if ($addOn->image && file_exists(public_path($addOn->image))) {
-            unlink(public_path($addOn->image));
+        if ($addOn->image && file_exists(storage_path('app/public/' . $addOn->image))) {
+            unlink(storage_path('app/public/' . $addOn->image));
         }
 
         $addOnName = $addOn->name;
@@ -293,7 +293,7 @@ class AddOnController extends Controller
             // Generate unique filename
             $filename = uniqid() . '.' . $imageType;
             $path = 'images/addons';
-            $fullPath = public_path($path);
+            $fullPath = storage_path('app/public/' . $path);
 
             // Create directory if it doesn't exist
             if (!file_exists($fullPath)) {
@@ -303,7 +303,7 @@ class AddOnController extends Controller
             // Save the file
             file_put_contents($fullPath . '/' . $filename, $imageData);
 
-            // Return the relative path
+            // Return the relative path (for storage URL)
             return $path . '/' . $filename;
         }
 
