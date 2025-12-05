@@ -42,27 +42,28 @@ class ShareableTokenController extends Controller
 
         $token = ShareableToken::create($validated);
 
-        // Send email synchronously with error handling
-        $emailSent = false;
-        try {
-            Mail::to($validated['email'])->send(new ShareableTokenMail($token));
-            $emailSent = true;
-        } catch (\Exception $e) {
-            Log::error('Failed to send shareable token email: ' . $e->getMessage(), [
-                'email' => $validated['email'],
-                'token_id' => $token->id,
-                'exception' => $e,
-            ]);
-        }
-
-        return response()->json([
+        // Return response immediately
+        $response = response()->json([
             'success' => true,
-            'message' => $emailSent ? 'Token created and email sent successfully' : 'Token created but email failed to send',
-            'email_sent' => $emailSent,
+            'message' => 'Token created successfully',
             'data' => [
                 'link' => $token->getShareableLink(),
             ],
         ], 201);
+
+        // Try to send email after response (if possible)
+        register_shutdown_function(function () use ($validated, $token) {
+            try {
+                Mail::to($validated['email'])->send(new ShareableTokenMail($token));
+            } catch (\Exception $e) {
+                Log::error('Failed to send shareable token email: ' . $e->getMessage(), [
+                    'email' => $validated['email'],
+                    'token_id' => $token->id,
+                ]);
+            }
+        });
+
+        return $response;
     }
 
     /**
