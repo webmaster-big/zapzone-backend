@@ -50,10 +50,10 @@ class ShareableTokenController extends Controller
             }
 
             // Validate location_id is required for certain roles
-            if (in_array($validated['role'], ['location_manager', 'attendant']) && empty($validated['location_id'])) {
+            if (in_array($validated['role'], ['attendant']) && empty($validated['location_id'])) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'Location ID is required for location_manager and attendant roles',
+                    'message' => 'Location ID is required for attendant roles',
                 ], 422);
             }
 
@@ -85,7 +85,7 @@ class ShareableTokenController extends Controller
             Log::error('Error creating shareable token: ' . $e->getMessage(), [
                 'trace' => $e->getTraceAsString(),
             ]);
-            
+
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to create token: ' . $e->getMessage(),
