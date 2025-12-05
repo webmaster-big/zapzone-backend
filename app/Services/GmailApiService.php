@@ -14,8 +14,18 @@ class GmailApiService
 
     public function __construct()
     {
+        $credentialsPath = storage_path('app/gmail.json');
+        
+        if (!file_exists($credentialsPath)) {
+            Log::error('Gmail credentials file not found', [
+                'path' => $credentialsPath,
+                'storage_path' => storage_path('app'),
+            ]);
+            throw new \Exception("Gmail credentials file not found at: {$credentialsPath}");
+        }
+
         $this->client = new Client();
-        $this->client->setAuthConfig(storage_path('app/gmail.json'));
+        $this->client->setAuthConfig($credentialsPath);
         $this->client->addScope(Gmail::GMAIL_SEND);
         $this->client->setSubject('webmaster@bestingames.com'); // The email to send from
 
