@@ -25,16 +25,17 @@ class MetricsController extends Controller
      */
     public function dashboard(Request $request, $id)
     {
-        $user = User::findOrFail($id);
+        try {
+            $user = User::findOrFail($id);
 
-        // Log incoming request for debugging
-        Log::info('=== Dashboard Metrics API Called ===', [
-            'user_role' => $user->role,
-            'user_location_id' => $user->location_id,
-            'date_from' => $request->query('date_from'),
-            'date_to' => $request->query('date_to'),
-            'timestamp' => now()->toDateTimeString(),
-        ]);
+            // Log incoming request for debugging
+            Log::info('=== Dashboard Metrics API Called ===', [
+                'user_role' => $user->role,
+                'user_location_id' => $user->location_id,
+                'date_from' => $request->query('date_from'),
+                'date_to' => $request->query('date_to'),
+                'timestamp' => now()->toDateTimeString(),
+            ]);
 
         $dateFrom = $request->query('date_from');
         $dateTo = $request->query('date_to');
@@ -224,6 +225,30 @@ class MetricsController extends Controller
         ]);
 
         return response()->json($response);
+        
+        } catch (\PDOException $e) {
+            Log::error('Database error in dashboard metrics', [
+                'error' => $e->getMessage(),
+                'code' => $e->getCode()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Database connection limit exceeded. Please try again in a few minutes.',
+                'error' => config('app.debug') ? $e->getMessage() : 'Database error'
+            ], 503);
+        } catch (\Exception $e) {
+            Log::error('Error in dashboard metrics', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch dashboard metrics',
+                'error' => config('app.debug') ? $e->getMessage() : 'Server error'
+            ], 500);
+        }
     }
 
     /**
@@ -234,17 +259,18 @@ class MetricsController extends Controller
      */
     public function attendant(Request $request)
     {
-        $locationId = $request->query('location_id');
-        $dateFrom = $request->query('date_from');
-        $dateTo = $request->query('date_to');
+        try {
+            $locationId = $request->query('location_id');
+            $dateFrom = $request->query('date_from');
+            $dateTo = $request->query('date_to');
 
-        // Log incoming request for debugging
-        Log::info('=== Attendant Metrics API Called ===', [
-            'location_id' => $locationId,
-            'date_from' => $dateFrom,
-            'date_to' => $dateTo,
-            'timestamp' => now()->toDateTimeString(),
-        ]);
+            // Log incoming request for debugging
+            Log::info('=== Attendant Metrics API Called ===', [
+                'location_id' => $locationId,
+                'date_from' => $dateFrom,
+                'date_to' => $dateTo,
+                'timestamp' => now()->toDateTimeString(),
+            ]);
 
         // Build booking query
         $bookingQuery = Booking::query();
@@ -437,6 +463,30 @@ class MetricsController extends Controller
         ]);
 
         return response()->json($response);
+        
+        } catch (\PDOException $e) {
+            Log::error('Database error in attendant metrics', [
+                'error' => $e->getMessage(),
+                'code' => $e->getCode()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Database connection limit exceeded. Please try again in a few minutes.',
+                'error' => config('app.debug') ? $e->getMessage() : 'Database error'
+            ], 503);
+        } catch (\Exception $e) {
+            Log::error('Error in attendant metrics', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch attendant metrics',
+                'error' => config('app.debug') ? $e->getMessage() : 'Server error'
+            ], 500);
+        }
     }
 
     /**
