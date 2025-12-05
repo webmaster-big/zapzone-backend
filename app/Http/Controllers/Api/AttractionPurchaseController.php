@@ -156,7 +156,7 @@ class AttractionPurchaseController extends Controller
             CustomerNotification::create([
                 'customer_id' => $purchase->customer_id,
                 'location_id' => $purchase->attraction->location_id ?? null,
-                'type' => 'attraction',
+                'type' => 'payment',
                 'priority' => 'medium',
                 'title' => 'Attraction Purchase Confirmed',
                 'message' => "Your purchase of {$purchase->quantity} x {$purchase->attraction->name} has been confirmed. Total: $" . number_format($purchase->total_amount, 2),
@@ -177,7 +177,7 @@ class AttractionPurchaseController extends Controller
         if ($purchase->attraction->location_id) {
             Notification::create([
                 'location_id' => $purchase->attraction->location_id,
-                'type' => 'attraction',
+                'type' => 'payment',
                 'priority' => 'medium',
                 'title' => 'New Attraction Purchase',
                 'message' => "New purchase: {$purchase->quantity} x {$purchase->attraction->name} by {$customerName}. Total: $" . number_format($purchase->total_amount, 2),
