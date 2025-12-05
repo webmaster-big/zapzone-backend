@@ -68,14 +68,30 @@ class GmailApiService
 
     private function createMessage($from, $to, $subject, $htmlBody, $fromName = 'Zap Zone')
     {
+        // Create multipart message with proper encoding
+        $boundary = uniqid('boundary_');
+        
         $emailContent = "From: {$fromName} <{$from}>\r\n";
         $emailContent .= "To: {$to}\r\n";
         $emailContent .= "Reply-To: {$from}\r\n";
         $emailContent .= "Subject: {$subject}\r\n";
         $emailContent .= "MIME-Version: 1.0\r\n";
+        $emailContent .= "Content-Type: multipart/alternative; boundary=\"{$boundary}\"\r\n\r\n";
+        
+        // Plain text version
+        $plainText = strip_tags($htmlBody);
+        $emailContent .= "--{$boundary}\r\n";
+        $emailContent .= "Content-Type: text/plain; charset=utf-8\r\n";
+        $emailContent .= "Content-Transfer-Encoding: 8bit\r\n\r\n";
+        $emailContent .= $plainText . "\r\n\r\n";
+        
+        // HTML version
+        $emailContent .= "--{$boundary}\r\n";
         $emailContent .= "Content-Type: text/html; charset=utf-8\r\n";
-        $emailContent .= "Content-Transfer-Encoding: quoted-printable\r\n\r\n";
-        $emailContent .= $htmlBody;
+        $emailContent .= "Content-Transfer-Encoding: 8bit\r\n\r\n";
+        $emailContent .= $htmlBody . "\r\n\r\n";
+        
+        $emailContent .= "--{$boundary}--";
 
         $message = new Message();
         $message->setRaw($this->base64UrlEncode($emailContent));
