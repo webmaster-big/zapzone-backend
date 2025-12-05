@@ -26,7 +26,7 @@ class PackageController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
-        $query = Package::with(['location', 'attractions', 'addOns', 'rooms', 'giftCards', 'promos']);
+        $query = Package::with(['location', 'rooms', 'giftCards', 'promos']);
 
            // Role-based filtering
         if ($request->has('user_id')) {
@@ -282,34 +282,9 @@ class PackageController extends Controller
     /**
      * Update the specified package.
      */
-    public function update(UpdatePackageRequest $request, Package $package): JsonResponse
+    public function update(UpdatePackageRequest $request, $package): JsonResponse
     {
-        $user = $request->user();
-
-        // Check if user has access to update this package
-        if ($user) {
-            if ($user->role === 'company_admin') {
-                // Company admin can only update packages from their company's locations
-                $companyLocationIds = \App\Models\Location::where('company_id', $user->company_id)
-                    ->pluck('id')
-                    ->toArray();
-
-                if (!in_array($package->location_id, $companyLocationIds)) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'Unauthorized to update this package',
-                    ], 403);
-                }
-            } else {
-                // Other users can only update packages from their location
-                if ($package->location_id !== $user->location_id) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'Unauthorized to update this package',
-                    ], 403);
-                }
-            }
-        }
+        $package = Package::with(['location', 'attractions', 'addOns', 'rooms', 'giftCards', 'promos'])->findOrFail($package);
 
         $validated = $request->validated();
 
@@ -331,11 +306,6 @@ class PackageController extends Controller
                 }
             }
             $validated['image'] = !empty($uploadedImages) ? $uploadedImages : null;
-        }
-
-        // Prevent changing location_id for non-company-admin users
-        if ($user && $user->role !== 'company_admin') {
-            unset($validated['location_id']);
         }
 
         // Update the package basic information
@@ -410,8 +380,6 @@ class PackageController extends Controller
                 ]);
             }
         }
-
-        $package->load(['location', 'attractions', 'addOns', 'rooms', 'giftCards', 'promos']);
 
         return response()->json([
             'success' => true,
