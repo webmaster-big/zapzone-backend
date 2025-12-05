@@ -67,6 +67,21 @@ class ShareableTokenController extends Controller
                 'is_public' => !$user,
             ]);
 
+            // Send email in background to avoid blocking response
+            try {
+                Mail::to($validated['email'])->send(new ShareableTokenMail($token));
+                Log::info('Shareable token email sent', [
+                    'email' => $validated['email'],
+                    'token_id' => $token->id,
+                ]);
+            } catch (\Exception $e) {
+                Log::error('Failed to send shareable token email: ' . $e->getMessage(), [
+                    'email' => $validated['email'],
+                    'token_id' => $token->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
             return response()->json([
                 'success' => true,
                 'message' => 'Token created successfully',
