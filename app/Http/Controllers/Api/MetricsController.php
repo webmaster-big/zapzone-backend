@@ -23,8 +23,10 @@ class MetricsController extends Controller
      * @param Request $request
      * @return \Illuminate\Http\JsonResponse
      */
-    public function dashboard(Request $request, User $user)
+    public function dashboard(Request $request, $id)
     {
+        $user = User::findOrFail($id);
+
         // Log incoming request for debugging
         Log::info('=== Dashboard Metrics API Called ===', [
             'user_role' => $user->role,
