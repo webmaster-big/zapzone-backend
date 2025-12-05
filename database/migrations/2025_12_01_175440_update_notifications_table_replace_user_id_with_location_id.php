@@ -17,7 +17,7 @@ return new class extends Migration
             if (Schema::hasColumn('notifications', 'customer_id')) {
                 $table->dropForeign(['customer_id']);
             }
-            
+
             // Then drop indexes
             $table->dropIndex(['user_id', 'user_type']); // Composite index
             $table->dropIndex(['customer_id']);
