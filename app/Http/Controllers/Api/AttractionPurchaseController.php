@@ -251,6 +251,10 @@ class AttractionPurchaseController extends Controller
      */
     public function storeQrCode(Request $request, AttractionPurchase $attractionPurchase): JsonResponse
     {
+        Log::info('Attraction purchase receipt email initiated', [
+            'purchase_id' => $attractionPurchase->id,
+        ]);
+
         $validated = $request->validate([
             'qr_code' => 'required|string', // Base64 encoded QR code image
         ]);
@@ -260,12 +264,24 @@ class AttractionPurchaseController extends Controller
             ? $attractionPurchase->customer->email
             : $attractionPurchase->guest_email;
 
+        Log::info('Preparing to send attraction purchase receipt', [
+            'purchase_id' => $attractionPurchase->id,
+            'recipient_email' => $recipientEmail,
+            'has_customer' => $attractionPurchase->customer ? true : false,
+        ]);
+
         if (!$recipientEmail) {
+            Log::warning('No recipient email for attraction purchase receipt', [
+                'purchase_id' => $attractionPurchase->id,
+            ]);
             return response()->json([
                 'success' => false,
                 'message' => 'No email address found for this purchase',
             ], 400);
         }
+
+        $emailSent = false;
+        $emailError = null;
 
         try {
             // Get base64 QR code (remove data URI prefix if present)
@@ -274,54 +290,120 @@ class AttractionPurchaseController extends Controller
                 $qrCodeBase64 = substr($qrCodeBase64, strpos($qrCodeBase64, ',') + 1);
             }
 
+            if (!$qrCodeBase64) {
+                throw new \Exception("Failed to decode QR code data");
+            }
+
             // Load relationships for email including location
             $attractionPurchase->load(['attraction.location', 'customer', 'createdBy']);
 
-            // Send receipt email with QR code using Gmail API
-            $gmailService = new GmailApiService();
-            $mailable = new AttractionPurchaseReceipt($attractionPurchase, $qrCodeBase64);
-            $emailBody = $mailable->render();
-
-            // Prepare QR code attachment
-            $attachments = [[
-                'data' => $qrCodeBase64,
-                'filename' => 'qrcode.png',
-                'mime_type' => 'image/png'
-            ]];
-
-            $gmailService->sendEmail(
-                $recipientEmail,
-                'Your Attraction Purchase Receipt - Zap Zone',
-                $emailBody,
-                'Zap Zone',
-                $attachments
-            );
-
-            Log::info('Attraction purchase receipt sent via Gmail API', [
-                'email' => $recipientEmail,
+            Log::info('Preparing email for attraction purchase', [
                 'purchase_id' => $attractionPurchase->id,
+                'qr_code_size' => strlen($qrCodeBase64),
+                'use_gmail_api' => config('gmail.enabled', false),
             ]);
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Receipt sent successfully to ' . $recipientEmail,
-                'data' => [
-                    'email_sent_to' => $recipientEmail,
-                ],
+            // Check if Gmail API should be used
+            $useGmailApi = config('gmail.enabled', false) && 
+                          (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
+
+            if ($useGmailApi) {
+                Log::info('Using Gmail API for attraction purchase receipt', [
+                    'purchase_id' => $attractionPurchase->id,
+                ]);
+
+                // Send using Gmail API
+                $gmailService = new GmailApiService();
+                $mailable = new AttractionPurchaseReceipt($attractionPurchase, $qrCodeBase64);
+                $emailBody = $mailable->render();
+
+                $attachments = [[
+                    'data' => $qrCodeBase64,
+                    'filename' => 'qrcode.png',
+                    'mime_type' => 'image/png'
+                ]];
+
+                $gmailService->sendEmail(
+                    $recipientEmail,
+                    'Your Attraction Purchase Receipt - Zap Zone',
+                    $emailBody,
+                    'Zap Zone',
+                    $attachments
+                );
+            } else {
+                Log::info('Using Laravel Mail (SMTP) for attraction purchase receipt', [
+                    'purchase_id' => $attractionPurchase->id,
+                    'mail_driver' => config('mail.default'),
+                ]);
+
+                // Decode base64 to create temporary file for attachment
+                $qrCodeImage = base64_decode($qrCodeBase64);
+                $tempPath = storage_path('app/temp/qr_' . $attractionPurchase->id . '_' . time() . '.png');
+                
+                // Create temp directory if not exists
+                if (!file_exists(storage_path('app/temp'))) {
+                    mkdir(storage_path('app/temp'), 0755, true);
+                }
+                
+                file_put_contents($tempPath, $qrCodeImage);
+
+                // Send using Laravel Mail (SMTP)
+                \Illuminate\Support\Facades\Mail::send([], [], function ($message) use ($attractionPurchase, $tempPath, $recipientEmail, $qrCodeBase64) {
+                    $mailable = new AttractionPurchaseReceipt($attractionPurchase, $qrCodeBase64);
+                    $emailBody = $mailable->render();
+
+                    $message->to($recipientEmail)
+                        ->subject('Your Attraction Purchase Receipt - Zap Zone')
+                        ->html($emailBody)
+                        ->attach($tempPath, [
+                            'as' => 'qrcode.png',
+                            'mime' => 'image/png',
+                        ]);
+                });
+
+                // Clean up temp file
+                if (file_exists($tempPath)) {
+                    unlink($tempPath);
+                }
+            }
+
+            $emailSent = true;
+
+            Log::info('✅ Attraction purchase receipt sent successfully', [
+                'email' => $recipientEmail,
+                'purchase_id' => $attractionPurchase->id,
+                'method' => $useGmailApi ? 'Gmail API' : 'SMTP',
             ]);
 
         } catch (\Exception $e) {
-            Log::error('Failed to send purchase receipt email: ' . $e->getMessage(), [
+            $emailError = $e->getMessage();
+            
+            Log::error('❌ Failed to send attraction purchase receipt', [
                 'email' => $recipientEmail,
                 'purchase_id' => $attractionPurchase->id,
                 'error' => $e->getMessage(),
+                'error_class' => get_class($e),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+                'trace' => $e->getTraceAsString(),
             ]);
 
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to send receipt email: ' . $e->getMessage(),
+                'message' => 'Failed to send receipt email',
+                'error' => $emailError,
             ], 500);
         }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Receipt sent successfully to ' . $recipientEmail,
+            'data' => [
+                'email_sent_to' => $recipientEmail,
+                'email_sent' => $emailSent,
+                'method' => $useGmailApi ? 'Gmail API' : 'SMTP',
+            ],
+        ]);
     }
 
     /**

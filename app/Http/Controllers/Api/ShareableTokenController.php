@@ -67,30 +67,63 @@ class ShareableTokenController extends Controller
                 'is_public' => !$user,
             ]);
 
-            // Send email using Gmail API with Blade template
+            // Send email using Gmail API or SMTP
             try {
-                $gmailService = new GmailApiService();
-
-                // Get the email body by rendering the Blade template via Mailable
-                $mailable = new ShareableTokenMail($token);
-                $emailBody = $mailable->render();
-
-                $gmailService->sendEmail(
-                    $validated['email'],
-                    'Registration Invitation - Zap Zone',
-                    $emailBody,
-                    'Zap Zone'
-                );
-
-                Log::info('Shareable token email sent via Gmail API', [
+                Log::info('Preparing to send shareable token email', [
                     'email' => $validated['email'],
                     'token_id' => $token->id,
+                    'use_gmail_api' => config('gmail.enabled', false),
+                ]);
+
+                // Check if Gmail API should be used
+                $useGmailApi = config('gmail.enabled', false) && 
+                              (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
+
+                if ($useGmailApi) {
+                    Log::info('Using Gmail API for shareable token email', [
+                        'token_id' => $token->id,
+                    ]);
+
+                    $gmailService = new GmailApiService();
+                    $mailable = new ShareableTokenMail($token);
+                    $emailBody = $mailable->render();
+
+                    $gmailService->sendEmail(
+                        $validated['email'],
+                        'Registration Invitation - Zap Zone',
+                        $emailBody,
+                        'Zap Zone'
+                    );
+                } else {
+                    Log::info('Using Laravel Mail (SMTP) for shareable token email', [
+                        'token_id' => $token->id,
+                        'mail_driver' => config('mail.default'),
+                    ]);
+
+                    // Send using Laravel Mail (SMTP)
+                    \Illuminate\Support\Facades\Mail::send([], [], function ($message) use ($token, $validated) {
+                        $mailable = new ShareableTokenMail($token);
+                        $emailBody = $mailable->render();
+
+                        $message->to($validated['email'])
+                            ->subject('Registration Invitation - Zap Zone')
+                            ->html($emailBody);
+                    });
+                }
+
+                Log::info('✅ Shareable token email sent successfully', [
+                    'email' => $validated['email'],
+                    'token_id' => $token->id,
+                    'method' => $useGmailApi ? 'Gmail API' : 'SMTP',
                 ]);
             } catch (\Exception $e) {
-                Log::error('Failed to send shareable token email via Gmail API: ' . $e->getMessage(), [
+                Log::error('❌ Failed to send shareable token email', [
                     'email' => $validated['email'],
                     'token_id' => $token->id,
                     'error' => $e->getMessage(),
+                    'error_class' => get_class($e),
+                    'file' => $e->getFile(),
+                    'line' => $e->getLine(),
                     'trace' => $e->getTraceAsString(),
                 ]);
                 // Continue even if email fails - don't block token creation
