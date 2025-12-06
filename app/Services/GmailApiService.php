@@ -16,36 +16,36 @@ class GmailApiService
     {
         $this->client = new Client();
 
-        // Check if credentials are in environment variables (recommended for production)
-        if (env('GMAIL_CLIENT_EMAIL')) {
-            Log::info('Using Gmail API credentials from environment variables');
+        // Check if credentials are in config (from environment variables - recommended for production)
+        if (config('gmail.credentials.client_email')) {
+            Log::info('Using Gmail API credentials from config/environment variables');
 
             $credentials = [
                 'type' => 'service_account',
-                'project_id' => env('GMAIL_PROJECT_ID'),
-                'private_key_id' => env('GMAIL_PRIVATE_KEY_ID'),
-                'private_key' => str_replace('\\n', "\n", env('GMAIL_PRIVATE_KEY')),
-                'client_email' => env('GMAIL_CLIENT_EMAIL'),
-                'client_id' => env('GMAIL_CLIENT_ID'),
+                'project_id' => config('gmail.credentials.project_id'),
+                'private_key_id' => config('gmail.credentials.private_key_id'),
+                'private_key' => str_replace('\\n', "\n", config('gmail.credentials.private_key')),
+                'client_email' => config('gmail.credentials.client_email'),
+                'client_id' => config('gmail.credentials.client_id'),
                 'auth_uri' => 'https://accounts.google.com/o/oauth2/auth',
                 'token_uri' => 'https://oauth2.googleapis.com/token',
                 'auth_provider_x509_cert_url' => 'https://www.googleapis.com/oauth2/v1/certs',
-                'client_x509_cert_url' => env('GMAIL_CLIENT_CERT_URL'),
+                'client_x509_cert_url' => config('gmail.credentials.client_cert_url'),
                 'universe_domain' => 'googleapis.com'
             ];
 
             $this->client->setAuthConfig($credentials);
             $this->client->addScope(Gmail::GMAIL_SEND);
-            $this->client->setSubject(env('GMAIL_SENDER_EMAIL', 'webmaster@bestingames.com'));
+            $this->client->setSubject(config('gmail.sender_email', 'webmaster@bestingames.com'));
         } 
-        // Fallback to JSON file if environment variables not set
+        // Fallback to JSON file if config not set
         else {
-            $credentialsPath = env('GMAIL_CREDENTIALS_PATH', storage_path('app/gmail.json'));
+            $credentialsPath = config('gmail.credentials_path', storage_path('app/gmail.json'));
 
             if (!file_exists($credentialsPath)) {
                 Log::error('Gmail credentials not found', [
                     'path' => $credentialsPath,
-                    'env_client_email' => env('GMAIL_CLIENT_EMAIL'),
+                    'config_client_email' => config('gmail.credentials.client_email'),
                     'message' => 'Set GMAIL_CLIENT_EMAIL and related env vars, or provide gmail.json file'
                 ]);
                 throw new \Exception("Gmail credentials not configured. Set GMAIL_CLIENT_EMAIL in .env or provide gmail.json file at: {$credentialsPath}");
@@ -55,7 +55,7 @@ class GmailApiService
 
             $this->client->setAuthConfig($credentialsPath);
             $this->client->addScope(Gmail::GMAIL_SEND);
-            $this->client->setSubject(env('GMAIL_SENDER_EMAIL', 'webmaster@bestingames.com'));
+            $this->client->setSubject(config('gmail.sender_email', 'webmaster@bestingames.com'));
         }
 
         $this->service = new Gmail($this->client);

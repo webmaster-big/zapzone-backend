@@ -521,11 +521,12 @@ class BookingController extends Controller
                 Log::info('Preparing email', [
                     'booking_id' => $booking->id,
                     'qr_code_size' => strlen($qrCodeBase64),
-                    'use_gmail_api' => env('USE_GMAIL_API', false),
+                    'use_gmail_api' => config('gmail.enabled', false),
                 ]);
 
                 // Check if Gmail API should be used
-                $useGmailApi = env('USE_GMAIL_API', false) && file_exists(env('GMAIL_CREDENTIALS_PATH', storage_path('app/gmail.json')));
+                $useGmailApi = config('gmail.enabled', false) && 
+                              (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
 
                 if ($useGmailApi) {
                     Log::info('Using Gmail API for email sending', [
