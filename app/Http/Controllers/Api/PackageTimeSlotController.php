@@ -220,7 +220,7 @@ class PackageTimeSlotController extends Controller
 
             try {
                 $package = Package::findOrFail($packageId);
-                
+
                 Log::info('Package found for time slots', [
                     'package_id' => $package->id,
                     'package_name' => $package->name,
@@ -237,7 +237,7 @@ class PackageTimeSlotController extends Controller
                 // Keep sending updates every 3 seconds
                 while (true) {
                     $iteration++;
-                    
+
                     Log::info("SSE iteration #{$iteration}", [
                         'package_id' => $packageId,
                         'room_id' => $roomId,
@@ -286,7 +286,7 @@ class PackageTimeSlotController extends Controller
                             'available_count' => count($availableSlots),
                             'booked_count' => $bookedSlots->count()
                         ]);
-                        
+
                         echo "data: " . json_encode($data) . "\n\n";
                         ob_flush();
                         flush();
@@ -316,7 +316,7 @@ class PackageTimeSlotController extends Controller
                     'error' => $e->getMessage(),
                     'trace' => $e->getTraceAsString()
                 ]);
-                
+
                 // Send error to client
                 echo "event: error\n";
                 echo "data: " . json_encode([
@@ -453,7 +453,7 @@ class PackageTimeSlotController extends Controller
                         'duration_unit' => $durationUnit,
                     ];
                     $availableSlots[] = $slot;
-                    
+
                     Log::debug("Slot #{$slotIteration} is available", $slot);
                 } else {
                     Log::debug("Slot #{$slotIteration} is booked", [

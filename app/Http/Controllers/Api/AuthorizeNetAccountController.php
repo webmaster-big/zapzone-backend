@@ -62,8 +62,22 @@ class AuthorizeNetAccountController extends Controller
             ], 200);
         }
 
+        // Check if credentials can be decrypted
+        $credentialsValid = true;
+        try {
+            // Attempt to access encrypted field to verify APP_KEY matches
+            $testAccess = $account->api_login_id;
+        } catch (\Illuminate\Contracts\Encryption\DecryptException $e) {
+            $credentialsValid = false;
+            Log::warning('Authorize.Net credentials cannot be decrypted - APP_KEY mismatch', [
+                'location_id' => $user->location_id,
+                'account_id' => $account->id
+            ]);
+        }
+
         return response()->json([
             'connected' => true,
+            'credentials_valid' => $credentialsValid,
             'account' => [
                 'id' => $account->id,
                 'location_id' => $account->location_id,
@@ -305,17 +319,34 @@ class AuthorizeNetAccountController extends Controller
                 ], 404);
             }
 
+            // Try to decrypt the API login ID
+            try {
+                $apiLoginId = $account->api_login_id;
+            } catch (\Illuminate\Contracts\Encryption\DecryptException $e) {
+                Log::error('Failed to decrypt Authorize.Net credentials - APP_KEY mismatch', [
+                    'location_id' => $locationId,
+                    'account_id' => $account->id,
+                    'error' => $e->getMessage()
+                ]);
+
+                return response()->json([
+                    'message' => 'Payment configuration is corrupted. Please reconnect your Authorize.Net account.',
+                    'error' => 'Encryption key mismatch - credentials need to be re-entered'
+                ], 500);
+            }
+
             // Only return API Login ID for Accept.js
             // NEVER expose the transaction key to frontend
             return response()->json([
-                'api_login_id' => $account->api_login_id,
+                'api_login_id' => $apiLoginId,
                 'environment' => $account->environment,
             ]);
 
         } catch (\Exception $e) {
             Log::error('Failed to retrieve public key', [
                 'location_id' => $locationId,
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
             ]);
 
             return response()->json([
