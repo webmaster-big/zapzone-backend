@@ -43,6 +43,7 @@ class Package extends Model
         'price_per_additional' => 'decimal:2',
         'price_per_additional_30min' => 'decimal:2',
         'price_per_additional_1hr' => 'decimal:2',
+        'partial_payment_fixed' => 'decimal:2',
         'available_days' => 'array',
         'available_week_days' => 'array',
         'available_month_days' => 'array',

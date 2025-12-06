@@ -28,13 +28,13 @@ class UpdatePackageRequest extends FormRequest
             'description' => 'sometimes|string',
             'category' => 'sometimes|string|max:255',
             'features' => 'nullable|string',
-            'price' => 'sometimes|numeric|min:0',
-            'price_per_additional' => 'nullable|numeric|min:0',
+            'price' => 'sometimes|numeric|min:0|regex:/^\d+(\.\d{1,2})?$/',
+            'price_per_additional' => 'nullable|numeric|min:0|regex:/^\d+(\.\d{1,2})?$/',
             'max_participants' => 'sometimes|integer|min:1',
             'duration' => 'sometimes|integer|min:1',
             'duration_unit' => ['sometimes', Rule::in(['hours', 'minutes'])],
-            'price_per_additional_30min' => 'nullable|numeric|min:0',
-            'price_per_additional_1hr' => 'nullable|numeric|min:0',
+            'price_per_additional_30min' => 'nullable|numeric|min:0|regex:/^\d+(\.\d{1,2})?$/',
+            'price_per_additional_1hr' => 'nullable|numeric|min:0|regex:/^\d+(\.\d{1,2})?$/',
             'availability_type' => ['sometimes', Rule::in(['daily', 'weekly', 'monthly'])],
             'available_days' => 'nullable|array',
             'available_week_days' => 'nullable|array',
@@ -56,7 +56,7 @@ class UpdatePackageRequest extends FormRequest
             'room_ids' => 'sometimes|array',
             'room_ids.*' => 'exists:rooms,id',
             'partial_payment_percentage' => 'nullable|integer|min:0|max:100',
-            'partial_payment_fixed' => 'nullable|integer|min:0',
+            'partial_payment_fixed' => 'nullable|numeric|min:0|regex:/^\d+(\.\d{1,2})?$/',
         ];
     }
 
