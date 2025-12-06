@@ -414,6 +414,11 @@ class BookingController extends Controller
      */
     public function storeQrCode(Request $request, Booking $booking): JsonResponse
     {
+        Log::info('QR Code storage initiated', [
+            'booking_id' => $booking->id,
+            'reference_number' => $booking->reference_number,
+        ]);
+
         $validated = $request->validate([
             'qr_code' => 'required|string', // Base64 encoded QR code image
         ]);
@@ -428,6 +433,16 @@ class BookingController extends Controller
 
         $qrCodeImage = base64_decode($qrCodeData);
 
+        if (!$qrCodeImage) {
+            Log::error('Failed to decode QR code base64 data', [
+                'booking_id' => $booking->id,
+            ]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Invalid QR code data',
+            ], 400);
+        }
+
         // Create shorter filename using booking ID
         $fileName = 'qr_' . $booking->id . '.png';
         $qrCodePath = 'qrcodes/' . $fileName;
@@ -439,9 +454,27 @@ class BookingController extends Controller
         $dir = dirname($fullPath);
         if (!file_exists($dir)) {
             mkdir($dir, 0755, true);
+            Log::info('Created QR codes directory', ['path' => $dir]);
         }
 
-        file_put_contents($fullPath, $qrCodeImage);
+        $writeResult = file_put_contents($fullPath, $qrCodeImage);
+        
+        if ($writeResult === false) {
+            Log::error('Failed to write QR code file', [
+                'booking_id' => $booking->id,
+                'path' => $fullPath,
+            ]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to save QR code file',
+            ], 500);
+        }
+
+        Log::info('QR code file saved successfully', [
+            'booking_id' => $booking->id,
+            'path' => $fullPath,
+            'size' => $writeResult,
+        ]);
 
         // Update booking with QR code path
         $booking->update(['qr_code_path' => $qrCodePath]);
@@ -454,16 +487,50 @@ class BookingController extends Controller
             ? $booking->customer->email
             : $booking->guest_email;
 
+        Log::info('Preparing to send booking confirmation email', [
+            'booking_id' => $booking->id,
+            'recipient_email' => $recipientEmail,
+            'has_customer' => $booking->customer ? true : false,
+            'customer_email' => $booking->customer ? $booking->customer->email : null,
+            'guest_email' => $booking->guest_email,
+        ]);
+
+        $emailSent = false;
+        $emailError = null;
+
         if ($recipientEmail) {
             try {
+                Log::info('Loading booking relationships for email', [
+                    'booking_id' => $booking->id,
+                ]);
+
                 $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
+
+                // Verify QR code file exists before reading
+                if (!file_exists($emailQrPath)) {
+                    throw new \Exception("QR code file not found at path: {$emailQrPath}");
+                }
 
                 // Get QR code as base64 for attachment
                 $qrCodeBase64 = base64_encode(file_get_contents($emailQrPath));
 
+                if (!$qrCodeBase64) {
+                    throw new \Exception("Failed to read QR code file for email attachment");
+                }
+
+                Log::info('Creating Gmail service and mailable', [
+                    'booking_id' => $booking->id,
+                    'qr_code_size' => strlen($qrCodeBase64),
+                ]);
+
                 // Send booking confirmation using Gmail API
                 $gmailService = new GmailApiService();
                 $mailable = new BookingConfirmation($booking, $emailQrPath);
+                
+                Log::info('Rendering email body', [
+                    'booking_id' => $booking->id,
+                ]);
+                
                 $emailBody = $mailable->render();
 
                 // Prepare QR code attachment
@@ -473,6 +540,13 @@ class BookingController extends Controller
                     'mime_type' => 'image/png'
                 ]];
 
+                Log::info('Sending email via Gmail API', [
+                    'booking_id' => $booking->id,
+                    'recipient' => $recipientEmail,
+                    'subject' => 'Your Booking Confirmation - Zap Zone',
+                    'has_attachments' => count($attachments) > 0,
+                ]);
+
                 $gmailService->sendEmail(
                     $recipientEmail,
                     'Your Booking Confirmation - Zap Zone',
@@ -481,18 +555,37 @@ class BookingController extends Controller
                     $attachments
                 );
 
-                Log::info('Booking confirmation sent via Gmail API', [
+                $emailSent = true;
+
+                Log::info('✅ Booking confirmation email sent successfully via Gmail API', [
                     'email' => $recipientEmail,
                     'booking_id' => $booking->id,
+                    'reference_number' => $booking->reference_number,
                 ]);
+
             } catch (\Exception $e) {
-                // Log error but don't fail the QR code storage
-                Log::error('Failed to send booking confirmation email: ' . $e->getMessage(), [
+                $emailError = $e->getMessage();
+                
+                // Log detailed error information
+                Log::error('❌ Failed to send booking confirmation email', [
                     'email' => $recipientEmail,
                     'booking_id' => $booking->id,
+                    'reference_number' => $booking->reference_number,
                     'error' => $e->getMessage(),
+                    'error_class' => get_class($e),
+                    'file' => $e->getFile(),
+                    'line' => $e->getLine(),
+                    'trace' => $e->getTraceAsString(),
                 ]);
             }
+        } else {
+            Log::warning('No recipient email available for booking confirmation', [
+                'booking_id' => $booking->id,
+                'reference_number' => $booking->reference_number,
+                'has_customer' => $booking->customer_id ? true : false,
+                'guest_email' => $booking->guest_email,
+            ]);
+            $emailError = 'No recipient email address available';
         }
 
         return response()->json([
@@ -501,6 +594,9 @@ class BookingController extends Controller
             'data' => [
                 'qr_code_path' => $qrCodePath,
                 'qr_code_url' => asset('storage/' . $qrCodePath),
+                'email_sent' => $emailSent,
+                'email_error' => $emailError,
+                'recipient_email' => $recipientEmail,
             ],
         ]);
     }

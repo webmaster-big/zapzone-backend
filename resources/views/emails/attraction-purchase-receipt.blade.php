@@ -16,7 +16,7 @@
         <tr>
             <td align="center" style="padding: 40px 20px;">
     <![endif]-->
-    
+
     <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f9fafb; padding: 40px 20px;">
         <tr>
             <td align="center">
@@ -30,7 +30,7 @@
                                     <td align="center">
                             <![endif]-->
                             <h1 style="margin: 0 0 4px 0; padding: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.01em; color: #ffffff;">Purchase Receipt</h1>
-                            <p style="margin: 0; padding: 0; font-size: 14px; opacity: 0.9; color: #ffffff;">Thank you for your purchase!</p>
+                            <p style="margin: 0; padding: 0; font-size: 13px; opacity: 0.9; color: #ffffff;">Thank you for your purchase! Please find your QR code attached to this email. Use for check-in at the attraction.</p>
                             <!--[if mso]>
                                     </td>
                                 </tr>
@@ -466,7 +466,7 @@
             </td>
         </tr>
     </table>
-    
+
     <!--[if mso]>
             </td>
         </tr>
