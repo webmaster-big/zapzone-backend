@@ -6,7 +6,6 @@ use App\Http\Controllers\Controller;
 use App\Mail\BookingConfirmation;
 use App\Services\GmailApiService;
 use App\Models\ActivityLog;
-use Illuminate\Support\Facades\Mail;
 use App\Models\Booking;
 use App\Models\BookingAttraction;
 use App\Models\BookingAddOn;
@@ -512,37 +511,37 @@ class BookingController extends Controller
                     throw new \Exception("QR code file not found at path: {$emailQrPath}");
                 }
 
-                // Try Laravel Mail first (simpler and more reliable)
-                $useGmailApi = config('mail.use_gmail_api', false);
+                // Get QR code as base64 for attachment
+                $qrCodeBase64 = base64_encode(file_get_contents($emailQrPath));
+
+                if (!$qrCodeBase64) {
+                    throw new \Exception("Failed to read QR code file for email attachment");
+                }
+
+                Log::info('Preparing email', [
+                    'booking_id' => $booking->id,
+                    'qr_code_size' => strlen($qrCodeBase64),
+                    'use_gmail_api' => env('USE_GMAIL_API', false),
+                ]);
+
+                // Check if Gmail API should be used
+                $useGmailApi = env('USE_GMAIL_API', false) && file_exists(env('GMAIL_CREDENTIALS_PATH', storage_path('app/gmail.json')));
 
                 if ($useGmailApi) {
-                    // Use Gmail API
                     Log::info('Using Gmail API for email sending', [
                         'booking_id' => $booking->id,
                     ]);
 
-                    // Get QR code as base64 for attachment
-                    $qrCodeBase64 = base64_encode(file_get_contents($emailQrPath));
-
-                    if (!$qrCodeBase64) {
-                        throw new \Exception("Failed to read QR code file for email attachment");
-                    }
-
+                    // Send using Gmail API
                     $gmailService = new GmailApiService();
                     $mailable = new BookingConfirmation($booking, $emailQrPath);
                     $emailBody = $mailable->render();
 
-                    // Prepare QR code attachment
                     $attachments = [[
                         'data' => $qrCodeBase64,
                         'filename' => 'booking-qrcode.png',
                         'mime_type' => 'image/png'
                     ]];
-
-                    Log::info('Sending email via Gmail API', [
-                        'booking_id' => $booking->id,
-                        'recipient' => $recipientEmail,
-                    ]);
 
                     $gmailService->sendEmail(
                         $recipientEmail,
@@ -551,29 +550,35 @@ class BookingController extends Controller
                         'Zap Zone',
                         $attachments
                     );
-
-                    Log::info('✅ Email sent successfully via Gmail API', [
-                        'email' => $recipientEmail,
-                        'booking_id' => $booking->id,
-                    ]);
                 } else {
-                    // Use Laravel Mail (Default - Simpler and more reliable)
-                    Log::info('Using Laravel Mail for email sending', [
+                    Log::info('Using Laravel Mail (SMTP) for email sending', [
                         'booking_id' => $booking->id,
-                        'recipient' => $recipientEmail,
-                        'mailer' => config('mail.default'),
+                        'mail_driver' => config('mail.default'),
                     ]);
 
-                    Mail::to($recipientEmail)->send(new BookingConfirmation($booking, $emailQrPath));
+                    // Send using Laravel Mail (SMTP)
+                    \Illuminate\Support\Facades\Mail::send([], [], function ($message) use ($booking, $emailQrPath, $recipientEmail) {
+                        $mailable = new BookingConfirmation($booking, $emailQrPath);
+                        $emailBody = $mailable->render();
 
-                    Log::info('✅ Email sent successfully via Laravel Mail', [
-                        'email' => $recipientEmail,
-                        'booking_id' => $booking->id,
-                        'reference_number' => $booking->reference_number,
-                    ]);
+                        $message->to($recipientEmail)
+                            ->subject('Your Booking Confirmation - Zap Zone')
+                            ->html($emailBody)
+                            ->attach($emailQrPath, [
+                                'as' => 'booking-qrcode.png',
+                                'mime' => 'image/png',
+                            ]);
+                    });
                 }
 
                 $emailSent = true;
+
+                Log::info('✅ Booking confirmation email sent successfully', [
+                    'email' => $recipientEmail,
+                    'booking_id' => $booking->id,
+                    'reference_number' => $booking->reference_number,
+                    'method' => $useGmailApi ? 'Gmail API' : 'SMTP',
+                ]);
 
             } catch (\Exception $e) {
                 $emailError = $e->getMessage();

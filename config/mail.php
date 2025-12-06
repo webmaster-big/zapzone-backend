@@ -115,4 +115,16 @@ return [
         'name' => env('MAIL_FROM_NAME', 'Example'),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Gmail API Configuration
+    |--------------------------------------------------------------------------
+    |
+    | Enable Gmail API for sending emails instead of SMTP.
+    | Set USE_GMAIL_API=true in .env and provide the credentials path.
+    |
+    */
+
+    'use_gmail_api' => env('USE_GMAIL_API', false),
+
 ];
