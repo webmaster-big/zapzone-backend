@@ -225,13 +225,13 @@ class MetricsController extends Controller
         ]);
 
         return response()->json($response);
-        
+
         } catch (\PDOException $e) {
             Log::error('Database error in dashboard metrics', [
                 'error' => $e->getMessage(),
                 'code' => $e->getCode()
             ]);
-            
+
             return response()->json([
                 'success' => false,
                 'message' => 'Database connection limit exceeded. Please try again in a few minutes.',
@@ -242,7 +242,7 @@ class MetricsController extends Controller
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString()
             ]);
-            
+
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to fetch dashboard metrics',
@@ -463,13 +463,13 @@ class MetricsController extends Controller
         ]);
 
         return response()->json($response);
-        
+
         } catch (\PDOException $e) {
             Log::error('Database error in attendant metrics', [
                 'error' => $e->getMessage(),
                 'code' => $e->getCode()
             ]);
-            
+
             return response()->json([
                 'success' => false,
                 'message' => 'Database connection limit exceeded. Please try again in a few minutes.',
@@ -480,7 +480,7 @@ class MetricsController extends Controller
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString()
             ]);
-            
+
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to fetch attendant metrics',

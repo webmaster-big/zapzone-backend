@@ -79,11 +79,11 @@ class GmailApiService
         $emailContent .= "Reply-To: {$from}\r\n";
         $emailContent .= "Subject: {$subject}\r\n";
         $emailContent .= "MIME-Version: 1.0\r\n";
-        
+
         // Use mixed if we have attachments, otherwise use alternative
         if (!empty($attachments)) {
             $emailContent .= "Content-Type: multipart/mixed; boundary=\"{$attachmentBoundary}\"\r\n\r\n";
-            
+
             // Start with the HTML/text content part
             $emailContent .= "--{$attachmentBoundary}\r\n";
             $emailContent .= "Content-Type: multipart/alternative; boundary=\"{$boundary}\"\r\n\r\n";

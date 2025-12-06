@@ -457,10 +457,10 @@ class BookingController extends Controller
         if ($recipientEmail) {
             try {
                 $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
-                
+
                 // Get QR code as base64 for attachment
                 $qrCodeBase64 = base64_encode(file_get_contents($emailQrPath));
-                
+
                 // Send booking confirmation using Gmail API
                 $gmailService = new GmailApiService();
                 $mailable = new BookingConfirmation($booking, $emailQrPath);

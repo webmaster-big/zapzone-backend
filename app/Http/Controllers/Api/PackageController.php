@@ -100,7 +100,7 @@ class PackageController extends Controller
 
         // Use chunk to reduce memory usage and avoid MySQL sort buffer errors
         $groupedPackages = [];
-        
+
         $query = Package::with(['location'])
             ->select(['id', 'name', 'description', 'price', 'category', 'max_participants', 'duration', 'image', 'location_id', 'is_active'])
             ->where('is_active', true);
@@ -781,23 +781,23 @@ class PackageController extends Controller
             try {
                 // Extract base64 data
                 preg_match('/data:image\/(\w+);base64,/', $image, $matches);
-                
+
                 if (empty($matches)) {
                     Log::error('Invalid base64 image format', ['image_start' => substr($image, 0, 100)]);
                     throw new \Exception('Invalid image format');
                 }
-                
+
                 $imageType = $matches[1] ?? 'png';
                 $base64Data = substr($image, strpos($image, ',') + 1);
-                
+
                 // Validate base64 data
                 if (empty($base64Data)) {
                     Log::error('Empty base64 data');
                     throw new \Exception('Empty image data');
                 }
-                
+
                 $imageData = base64_decode($base64Data, true);
-                
+
                 // Check if decode was successful
                 if ($imageData === false) {
                     Log::error('Failed to decode base64 data', [
@@ -828,12 +828,12 @@ class PackageController extends Controller
 
                 // Save the file
                 $bytesWritten = file_put_contents($fullPath . '/' . $filename, $imageData);
-                
+
                 if ($bytesWritten === false) {
                     Log::error('Failed to write image file', ['file' => $fullPath . '/' . $filename]);
                     throw new \Exception('Failed to save image file');
                 }
-                
+
                 Log::info('Image saved successfully', [
                     'file' => $fullPath . '/' . $filename,
                     'bytes' => $bytesWritten
@@ -841,7 +841,7 @@ class PackageController extends Controller
 
                 // Return the relative path (for storage URL)
                 return $path . '/' . $filename;
-                
+
             } catch (\Exception $e) {
                 Log::error('Error handling image upload', [
                     'error' => $e->getMessage(),

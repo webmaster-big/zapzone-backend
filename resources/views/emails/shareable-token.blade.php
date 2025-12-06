@@ -12,11 +12,11 @@
                     <tr>
                         <td>
                             <h2 style="color: #111827; font-size: 20px; font-weight: 600; margin: 0 0 16px 0; letter-spacing: -0.01em; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;">Welcome to Zap Zone!</h2>
-                            
+
                             <p style="font-size: 14px; line-height: 1.6; margin: 0 0 16px 0; color: #4b5563; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;">
                                 You've been invited to register as a <strong>{{ ucwords(str_replace('_', ' ', $role)) }}</strong>.
                             </p>
-                            
+
                             <table width="100%" border="0" cellpadding="16" cellspacing="0" style="background-color: #f9fafb; border-radius: 6px; margin: 20px 0; border: 1px solid #e5e7eb;">
                                 <tr>
                                     <td>
@@ -29,11 +29,11 @@
                                     </td>
                                 </tr>
                             </table>
-                            
+
                             <p style="font-size: 14px; line-height: 1.6; margin: 0 0 20px 0; color: #4b5563; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;">
                                 Click the button below to complete your registration:
                             </p>
-                            
+
                             <!-- Button with VML for Outlook compatibility -->
                             <table width="100%" border="0" cellpadding="0" cellspacing="0" style="margin: 0 0 20px 0;">
                                 <tr>
@@ -56,7 +56,7 @@
                                     </td>
                                 </tr>
                             </table>
-                            
+
                             <table width="100%" border="0" cellpadding="0" cellspacing="0" style="margin: 20px 0 0 0;">
                                 <tr>
                                     <td align="center">
@@ -69,7 +69,7 @@
                                     </td>
                                 </tr>
                             </table>
-                            
+
                             <table width="100%" border="0" cellpadding="0" cellspacing="0" style="margin: 24px 0 0 0; padding-top: 20px; border-top: 1px solid #e5e7eb;">
                                 <tr>
                                     <td>

@@ -122,7 +122,7 @@ class AttractionPurchaseController extends Controller
                 'error' => $e->getMessage(),
                 'code' => $e->getCode()
             ]);
-            
+
             return response()->json([
                 'success' => false,
                 'message' => 'Database connection limit exceeded. Please try again in a few minutes.',
@@ -133,7 +133,7 @@ class AttractionPurchaseController extends Controller
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString()
             ]);
-            
+
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to fetch attraction purchases',
