@@ -94,7 +94,7 @@ class Customer extends Model
     // Helper Methods
     /**
      * Get customer billing data formatted for Authorize.Net
-     * 
+     *
      * @return array
      */
     public function getBillingData(): array
@@ -114,7 +114,7 @@ class Customer extends Model
 
     /**
      * Get customer full name
-     * 
+     *
      * @return string
      */
     public function getFullNameAttribute(): string

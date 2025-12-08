@@ -130,7 +130,7 @@ class AuthorizeNetPaymentService
             // Add customer billing information if provided
             if ($customerData) {
                 $billTo = new \net\authorize\api\contract\v1\CustomerAddressType();
-                
+
                 if (!empty($customerData['first_name'])) {
                     $billTo->setFirstName(substr($customerData['first_name'], 0, 50));
                 }
@@ -175,7 +175,7 @@ class AuthorizeNetPaymentService
             // Add order information if provided
             if ($orderData) {
                 $order = new \net\authorize\api\contract\v1\OrderType();
-                
+
                 if (!empty($orderData['invoice_number'])) {
                     $order->setInvoiceNumber(substr($orderData['invoice_number'], 0, 20));
                 }

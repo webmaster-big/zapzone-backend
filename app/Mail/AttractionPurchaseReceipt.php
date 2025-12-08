@@ -50,11 +50,14 @@ class AttractionPurchaseReceipt extends Mailable
                 $this->attachData($qrCodeImage, 'ticket-qrcode.png', [
                     'mime' => 'image/png',
                 ]);
-                
-                // Embed inline for viewing in email using Swift_Image
-                $this->withSwiftMessage(function ($message) use ($qrCodeImage) {
-                    $attachment = \Swift_Image::newInstance($qrCodeImage, $this->qrCodeCid, 'image/png');
-                    $message->embed($attachment);
+
+                // Embed inline for viewing in email
+                $cid = $this->qrCodeCid;
+                $this->withSwiftMessage(function ($message) use ($qrCodeImage, $cid) {
+                    $image = new \Swift_Image($qrCodeImage, 'qrcode.png', 'image/png');
+                    $image->getHeaders()->addTextHeader('Content-ID', '<' . $cid . '>');
+                    $image->setDisposition('inline');
+                    $message->attach($image);
                 });
             }
         }

@@ -245,14 +245,14 @@
                                     <td style="padding: 20px; text-align: center;">
                                         <h3 style="margin: 0 0 8px 0; padding: 0; font-size: 16px; font-weight: 600; color: #111827;">Your Booking QR Code</h3>
                                         <p style="margin: 8px 0 16px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #4b5563;">Please present this QR code at check-in:</p>
-                                        
+
                                         <!-- Inline QR Code Image -->
                                         @if(isset($qrCodeCid))
                                         <div style="background-color: #ffffff; padding: 20px; border-radius: 8px; display: inline-block; margin: 12px 0;">
                                             <img src="cid:{{ $qrCodeCid }}" alt="Booking QR Code" style="max-width: 250px; width: 100%; height: auto; display: block; margin: 0 auto;" />
                                         </div>
                                         @endif
-                                        
+
                                         <p style="margin: 16px 0 0 0; padding: 0; font-size: 12px; line-height: 1.6; color: #6b7280;">Reference: {{ $booking->reference_number }}</p>
                                         <p style="margin: 4px 0 0 0; padding: 0; font-size: 11px; line-height: 1.6; color: #9ca3af;">The QR code is also attached as a separate file for your convenience.</p>
                                     </td>

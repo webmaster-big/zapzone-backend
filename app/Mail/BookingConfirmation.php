@@ -38,7 +38,7 @@ class BookingConfirmation extends Mailable
             ->view('emails.booking-confirmation')
             ->with([
                 'booking' => $this->booking,
-                'customerName' => $this->booking->customer 
+                'customerName' => $this->booking->customer
                     ? $this->booking->customer->first_name . ' ' . $this->booking->customer->last_name
                     : $this->booking->guest_name,
                 'packageName' => $this->booking->package?->name ?? 'N/A',
@@ -50,16 +50,19 @@ class BookingConfirmation extends Mailable
         // Attach and embed QR code if path is provided
         if ($this->qrCodePath && file_exists($this->qrCodePath)) {
             $qrCodeImage = file_get_contents($this->qrCodePath);
-            
+
             // Attach as downloadable file
             $this->attachData($qrCodeImage, 'booking-qrcode.png', [
                 'mime' => 'image/png',
             ]);
-            
-            // Embed inline for viewing in email using Swift_Attachment
-            $this->withSwiftMessage(function ($message) use ($qrCodeImage) {
-                $attachment = \Swift_Image::newInstance($qrCodeImage, $this->qrCodeCid, 'image/png');
-                $message->embed($attachment);
+
+            // Embed inline for viewing in email
+            $cid = $this->qrCodeCid;
+            $this->withSwiftMessage(function ($message) use ($qrCodeImage, $cid) {
+                $image = new \Swift_Image($qrCodeImage, 'qrcode.png', 'image/png');
+                $image->getHeaders()->addTextHeader('Content-ID', '<' . $cid . '>');
+                $image->setDisposition('inline');
+                $message->attach($image);
             });
         }
 

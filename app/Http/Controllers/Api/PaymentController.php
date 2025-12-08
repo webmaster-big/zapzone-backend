@@ -380,7 +380,7 @@ class PaymentController extends Controller
             // Add customer billing information if provided
             if ($request->has('customer')) {
                 $customerData = $request->customer;
-                
+
                 Log::info('🔍 Processing customer billing data', [
                     'has_first_name' => !empty($customerData['first_name']),
                     'has_last_name' => !empty($customerData['last_name']),
@@ -393,9 +393,9 @@ class PaymentController extends Controller
                     'has_country' => !empty($customerData['country']),
                     'customer_data_keys' => array_keys($customerData),
                 ]);
-                
+
                 $billTo = new AnetAPI\CustomerAddressType();
-                
+
                 if (!empty($customerData['first_name'])) {
                     $billTo->setFirstName(substr($customerData['first_name'], 0, 50));
                 }
@@ -482,8 +482,8 @@ class PaymentController extends Controller
                         'transaction_id' => $tresponse->getTransId(),
                         'amount' => $request->amount,
                         'location_id' => $request->location_id,
-                        'customer_name' => $request->has('customer') ? 
-                            ($request->customer['first_name'] ?? '') . ' ' . ($request->customer['last_name'] ?? '') : 
+                        'customer_name' => $request->has('customer') ?
+                            ($request->customer['first_name'] ?? '') . ' ' . ($request->customer['last_name'] ?? '') :
                             'Not provided',
                         'customer_email' => $request->customer['email'] ?? 'Not provided',
                     ]);

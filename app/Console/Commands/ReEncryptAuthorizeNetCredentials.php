@@ -90,7 +90,7 @@ class ReEncryptAuthorizeNetCredentials extends Command
                         'transaction_key' => $newTransactionKey,
                         'updated_at' => now(),
                     ];
-                    
+
                     if ($newPublicClientKey) {
                         $updateData['public_client_key'] = $newPublicClientKey;
                     }
