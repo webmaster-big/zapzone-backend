@@ -204,13 +204,6 @@ class PackageTimeSlotController extends Controller
      */
     public function getAvailableSlots(int $packageId, int $roomId, string $date)
     {
-        Log::info('=== SSE Time Slots Request Started ===', [
-            'package_id' => $packageId,
-            'room_id' => $roomId,
-            'date' => $date,
-            'timestamp' => now()->toIso8601String()
-        ]);
-
         return response()->stream(function () use ($packageId, $roomId, $date) {
             // Set headers for SSE
             header('Content-Type: text/event-stream');
@@ -221,39 +214,15 @@ class PackageTimeSlotController extends Controller
             try {
                 $package = Package::findOrFail($packageId);
 
-                Log::info('Package found for time slots', [
-                    'package_id' => $package->id,
-                    'package_name' => $package->name,
-                    'time_slot_start' => $package->time_slot_start,
-                    'time_slot_end' => $package->time_slot_end,
-                    'time_slot_interval' => $package->time_slot_interval,
-                    'duration' => $package->duration,
-                    'duration_unit' => $package->duration_unit
-                ]);
-
                 $lastHash = '';
-                $iteration = 0;
 
                 // Keep sending updates every 3 seconds
                 while (true) {
-                    $iteration++;
-
-                    Log::info("SSE iteration #{$iteration}", [
-                        'package_id' => $packageId,
-                        'room_id' => $roomId,
-                        'date' => $date
-                    ]);
-
                     // Get current booked slots
                     $bookedSlots = PackageTimeSlot::where('room_id', $roomId)
                         ->whereDate('booked_date', $date)
                         ->where('status', 'booked')
                         ->get(['time_slot_start', 'duration', 'duration_unit']);
-
-                    Log::info('Booked slots retrieved', [
-                        'count' => $bookedSlots->count(),
-                        'slots' => $bookedSlots->toArray()
-                    ]);
 
                     // Generate available slots
                     $availableSlots = $this->generateAvailableSlots(
@@ -264,11 +233,6 @@ class PackageTimeSlotController extends Controller
                         $package->duration_unit,
                         $bookedSlots
                     );
-
-                    Log::info('Available slots generated', [
-                        'count' => count($availableSlots),
-                        'slots' => $availableSlots
-                    ]);
 
                     $data = [
                         'available_slots' => $availableSlots,
@@ -281,27 +245,14 @@ class PackageTimeSlotController extends Controller
 
                     if ($currentHash !== $lastHash) {
                         // Send data only if changed
-                        Log::info('Sending SSE data (changed)', [
-                            'iteration' => $iteration,
-                            'available_count' => count($availableSlots),
-                            'booked_count' => $bookedSlots->count()
-                        ]);
-
                         echo "data: " . json_encode($data) . "\n\n";
                         ob_flush();
                         flush();
                         $lastHash = $currentHash;
-                    } else {
-                        Log::debug('SSE data unchanged', ['iteration' => $iteration]);
                     }
 
                     // Check if connection is still alive
                     if (connection_aborted()) {
-                        Log::info('SSE connection aborted', [
-                            'iteration' => $iteration,
-                            'package_id' => $packageId,
-                            'room_id' => $roomId
-                        ]);
                         break;
                     }
 
@@ -314,7 +265,6 @@ class PackageTimeSlotController extends Controller
                     'room_id' => $roomId,
                     'date' => $date,
                     'error' => $e->getMessage(),
-                    'trace' => $e->getTraceAsString()
                 ]);
 
                 // Send error to client
@@ -381,101 +331,44 @@ class PackageTimeSlotController extends Controller
      */
     private function generateAvailableSlots($slotStart, $slotEnd, $interval, $duration, $durationUnit, $bookedSlots)
     {
-        Log::info('=== Generating Available Slots ===', [
-            'slot_start' => $slotStart,
-            'slot_end' => $slotEnd,
-            'interval' => $interval,
-            'duration' => $duration,
-            'duration_unit' => $durationUnit,
-            'booked_slots_count' => count($bookedSlots)
-        ]);
-
         $availableSlots = [];
         $currentTime = Carbon::parse($slotStart);
         $endTime = Carbon::parse($slotEnd);
 
-        Log::info('Time boundaries parsed', [
-            'current_time' => $currentTime->format('H:i'),
-            'end_time' => $endTime->format('H:i')
-        ]);
-
         // Calculate actual duration in minutes for slot generation
         $slotDuration = $durationUnit === 'hours' ? $duration * 60 : $duration;
 
-        Log::info('Slot duration calculated', [
-            'slot_duration_minutes' => $slotDuration,
-            'interval_minutes' => $interval
-        ]);
-
-        $slotIteration = 0;
         while ($currentTime->lt($endTime)) {
-            $slotIteration++;
             $slotEndTime = (clone $currentTime)->addMinutes($slotDuration);
-
-            Log::debug("Checking slot #{$slotIteration}", [
-                'start' => $currentTime->format('H:i'),
-                'end' => $slotEndTime->format('H:i'),
-                'fits_in_range' => $slotEndTime->lte($endTime)
-            ]);
 
             // Check if this slot fits before the end time
             if ($slotEndTime->lte($endTime)) {
                 $isBooked = false;
 
                 // Check if this slot overlaps with any booked slot
-                foreach ($bookedSlots as $bookedIndex => $booked) {
+                foreach ($bookedSlots as $booked) {
                     $bookedStart = Carbon::parse($booked->time_slot_start);
                     $bookedDuration = $booked->duration_unit === 'hours' ? $booked->duration * 60 : $booked->duration;
                     $bookedEnd = (clone $bookedStart)->addMinutes($bookedDuration);
 
-                    $overlaps = $currentTime->lt($bookedEnd) && $slotEndTime->gt($bookedStart);
-
-                    if ($overlaps) {
-                        Log::debug("Slot #{$slotIteration} overlaps with booked slot #{$bookedIndex}", [
-                            'slot_start' => $currentTime->format('H:i'),
-                            'slot_end' => $slotEndTime->format('H:i'),
-                            'booked_start' => $bookedStart->format('H:i'),
-                            'booked_end' => $bookedEnd->format('H:i')
-                        ]);
-                    }
-
-                    if ($overlaps) {
+                    if ($currentTime->lt($bookedEnd) && $slotEndTime->gt($bookedStart)) {
                         $isBooked = true;
                         break;
                     }
                 }
 
                 if (!$isBooked) {
-                    $slot = [
+                    $availableSlots[] = [
                         'start_time' => $currentTime->format('H:i'),
                         'end_time' => $slotEndTime->format('H:i'),
                         'duration' => $duration,
                         'duration_unit' => $durationUnit,
                     ];
-                    $availableSlots[] = $slot;
-
-                    Log::debug("Slot #{$slotIteration} is available", $slot);
-                } else {
-                    Log::debug("Slot #{$slotIteration} is booked", [
-                        'start' => $currentTime->format('H:i'),
-                        'end' => $slotEndTime->format('H:i')
-                    ]);
                 }
-            } else {
-                Log::debug("Slot #{$slotIteration} doesn't fit", [
-                    'slot_end' => $slotEndTime->format('H:i'),
-                    'range_end' => $endTime->format('H:i')
-                ]);
             }
 
             $currentTime->addMinutes($interval);
         }
-
-        Log::info('Slot generation complete', [
-            'total_iterations' => $slotIteration,
-            'available_slots_count' => count($availableSlots),
-            'available_slots' => $availableSlots
-        ]);
 
         return $availableSlots;
     }
