@@ -16,7 +16,6 @@ class AttractionPurchaseReceipt extends Mailable
 
     public $purchase;
     public $qrCodeBase64;
-    public string $qrCodeCid;
 
     /**
      * Create a new message instance.
@@ -25,8 +24,6 @@ class AttractionPurchaseReceipt extends Mailable
     {
         $this->purchase = $purchase;
         $this->qrCodeBase64 = $qrCodeBase64;
-        // Generate a unique CID for the QR code
-        $this->qrCodeCid = 'purchase_qr_' . $purchase->id . '_' . time();
     }
 
     /**
@@ -39,26 +36,15 @@ class AttractionPurchaseReceipt extends Mailable
             ->with([
                 'purchase' => $this->purchase,
                 'qrCodeBase64' => $this->qrCodeBase64,
-                'qrCodeCid' => $this->qrCodeCid,
             ]);
 
         // Attach QR code if base64 data is provided
         if ($this->qrCodeBase64) {
             $qrCodeImage = base64_decode($this->qrCodeBase64);
             if ($qrCodeImage !== false) {
-                // Attach as downloadable file
                 $this->attachData($qrCodeImage, 'ticket-qrcode.png', [
                     'mime' => 'image/png',
                 ]);
-
-                // Embed inline for viewing in email
-                $cid = $this->qrCodeCid;
-                $this->withSwiftMessage(function ($message) use ($qrCodeImage, $cid) {
-                    $image = new \Swift_Image($qrCodeImage, 'qrcode.png', 'image/png');
-                    $image->getHeaders()->addTextHeader('Content-ID', '<' . $cid . '>');
-                    $image->setDisposition('inline');
-                    $message->attach($image);
-                });
             }
         }
 
