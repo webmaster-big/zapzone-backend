@@ -34,7 +34,7 @@ class AttractionPurchaseReceipt extends Mailable
      */
     public function build()
     {
-        $email = $this->subject('Your Attraction Purchase Receipt - Order #' . $this->purchase->id)
+        $this->subject('Your Attraction Purchase Receipt - Order #' . $this->purchase->id)
             ->view('emails.attraction-purchase-receipt')
             ->with([
                 'purchase' => $this->purchase,
@@ -47,15 +47,20 @@ class AttractionPurchaseReceipt extends Mailable
             $qrCodeImage = base64_decode($this->qrCodeBase64);
             if ($qrCodeImage !== false) {
                 // Attach as downloadable file
-                $email->attachData($qrCodeImage, 'ticket-qrcode.png', [
+                $this->attachData($qrCodeImage, 'ticket-qrcode.png', [
                     'mime' => 'image/png',
                 ]);
                 
-                // Embed inline using embedData
-                $email->embedData($qrCodeImage, $this->qrCodeCid, 'image/png');
+                // Embed inline for viewing in email using rawAttachData
+                $this->withSwiftMessage(function ($message) use ($qrCodeImage) {
+                    $attachment = \Swift_Attachment::newInstance($qrCodeImage, $this->qrCodeCid, 'image/png')
+                        ->setDisposition('inline')
+                        ->setId($this->qrCodeCid . '@swift.generated');
+                    $message->attach($attachment);
+                });
             }
         }
 
-        return $email;
+        return $this;
     }
 }

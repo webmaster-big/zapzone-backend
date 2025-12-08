@@ -34,7 +34,7 @@ class BookingConfirmation extends Mailable
      */
     public function build()
     {
-        $email = $this->subject('Booking Confirmation - Order #' . $this->booking->id)
+        $this->subject('Booking Confirmation - Order #' . $this->booking->id)
             ->view('emails.booking-confirmation')
             ->with([
                 'booking' => $this->booking,
@@ -52,14 +52,19 @@ class BookingConfirmation extends Mailable
             $qrCodeImage = file_get_contents($this->qrCodePath);
             
             // Attach as downloadable file
-            $email->attachData($qrCodeImage, 'booking-qrcode.png', [
+            $this->attachData($qrCodeImage, 'booking-qrcode.png', [
                 'mime' => 'image/png',
             ]);
             
-            // Embed inline for viewing in email
-            $email->embedData($qrCodeImage, $this->qrCodeCid, 'image/png');
+            // Embed inline for viewing in email using rawAttachData
+            $this->withSwiftMessage(function ($message) use ($qrCodeImage) {
+                $attachment = \Swift_Attachment::newInstance($qrCodeImage, $this->qrCodeCid, 'image/png')
+                    ->setDisposition('inline')
+                    ->setId($this->qrCodeCid . '@swift.generated');
+                $message->attach($attachment);
+            });
         }
 
-        return $email;
+        return $this;
     }
 }
