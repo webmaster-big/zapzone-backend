@@ -15,6 +15,7 @@ class AuthorizeNetAccount extends Model
         'location_id',
         'api_login_id',
         'transaction_key',
+        'public_client_key',
         'environment',
         'is_active',
         'connected_at',
@@ -30,6 +31,7 @@ class AuthorizeNetAccount extends Model
     protected $hidden = [
         'api_login_id',
         'transaction_key',
+        'public_client_key',
     ];
 
     // Relationships
@@ -48,6 +50,14 @@ class AuthorizeNetAccount extends Model
     }
 
     protected function transactionKey(): \Illuminate\Database\Eloquent\Casts\Attribute
+    {
+        return \Illuminate\Database\Eloquent\Casts\Attribute::make(
+            get: fn (?string $value) => $value ? Crypt::decryptString($value) : null,
+            set: fn (?string $value) => $value ? Crypt::encryptString($value) : null,
+        );
+    }
+
+    protected function publicClientKey(): \Illuminate\Database\Eloquent\Casts\Attribute
     {
         return \Illuminate\Database\Eloquent\Casts\Attribute::make(
             get: fn (?string $value) => $value ? Crypt::decryptString($value) : null,

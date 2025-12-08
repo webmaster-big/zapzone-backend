@@ -74,6 +74,7 @@ class ReEncryptAuthorizeNetCredentials extends Command
                 // Decrypt with old key
                 $apiLoginId = $oldCrypter->decryptString($account->api_login_id);
                 $transactionKey = $oldCrypter->decryptString($account->transaction_key);
+                $publicClientKey = $account->public_client_key ? $oldCrypter->decryptString($account->public_client_key) : null;
 
                 $this->line("  ✓ Successfully decrypted credentials");
 
@@ -81,15 +82,22 @@ class ReEncryptAuthorizeNetCredentials extends Command
                     // Re-encrypt with new key
                     $newApiLoginId = $newCrypter->encryptString($apiLoginId);
                     $newTransactionKey = $newCrypter->encryptString($transactionKey);
+                    $newPublicClientKey = $publicClientKey ? $newCrypter->encryptString($publicClientKey) : null;
 
                     // Update in database
+                    $updateData = [
+                        'api_login_id' => $newApiLoginId,
+                        'transaction_key' => $newTransactionKey,
+                        'updated_at' => now(),
+                    ];
+                    
+                    if ($newPublicClientKey) {
+                        $updateData['public_client_key'] = $newPublicClientKey;
+                    }
+
                     DB::table('authorize_net_accounts')
                         ->where('id', $account->id)
-                        ->update([
-                            'api_login_id' => $newApiLoginId,
-                            'transaction_key' => $newTransactionKey,
-                            'updated_at' => now(),
-                        ]);
+                        ->update($updateData);
 
                     $this->line("  ✓ Re-encrypted and saved successfully");
                 } else {

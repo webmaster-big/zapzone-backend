@@ -120,6 +120,7 @@ class AuthorizeNetAccountController extends Controller
         $validator = Validator::make($request->all(), [
             'api_login_id' => 'required|string|max:255',
             'transaction_key' => 'required|string|max:255',
+            'public_client_key' => 'nullable|string|max:1000',
             'environment' => 'required|in:sandbox,production',
         ]);
 
@@ -158,6 +159,7 @@ class AuthorizeNetAccountController extends Controller
                 'location_id' => $user->location_id,
                 'api_login_id' => $request->api_login_id,
                 'transaction_key' => $request->transaction_key,
+                'public_client_key' => $request->public_client_key,
                 'environment' => $request->environment,
                 'is_active' => true,
                 'connected_at' => now(),
@@ -228,6 +230,7 @@ class AuthorizeNetAccountController extends Controller
         $validator = Validator::make($request->all(), [
             'api_login_id' => 'sometimes|required|string|max:255',
             'transaction_key' => 'sometimes|required|string|max:255',
+            'public_client_key' => 'nullable|string|max:1000',
             'environment' => 'sometimes|required|in:sandbox,production',
             'is_active' => 'sometimes|boolean',
         ]);
@@ -250,10 +253,11 @@ class AuthorizeNetAccountController extends Controller
             $updateData = $request->only([
                 'api_login_id',
                 'transaction_key',
+                'public_client_key',
                 'environment',
                 'is_active'
             ]);
-            
+
             Log::info('Updating Authorize.Net account', [
                 'location_id' => $user->location_id,
                 'user_id' => $user->id,
@@ -261,7 +265,7 @@ class AuthorizeNetAccountController extends Controller
                 'fields_updating' => array_keys($updateData),
                 'environment_change' => $request->has('environment') ? $account->environment . ' -> ' . $request->environment : 'no change'
             ]);
-            
+
             $account->update($updateData);
 
             Log::info('Authorize.Net account updated', [
@@ -375,31 +379,64 @@ class AuthorizeNetAccountController extends Controller
      */
     public function getPublicKey(Request $request, $locationId)
     {
+        Log::info('🔑 Public key request received', [
+            'location_id' => $locationId,
+            'request_ip' => $request->ip(),
+            'user_agent' => $request->userAgent()
+        ]);
+
         try {
             $account = AuthorizeNetAccount::where('location_id', $locationId)
                 ->where('is_active', true)
                 ->first();
 
             if (!$account) {
+                Log::warning('❌ No active Authorize.Net account found', [
+                    'location_id' => $locationId
+                ]);
                 return response()->json([
                     'message' => 'No active Authorize.Net account found for this location'
                 ], 404);
             }
 
+            Log::info('✅ Account found', [
+                'account_id' => $account->id,
+                'environment' => $account->environment,
+                'is_active' => $account->is_active,
+                'connected_at' => $account->connected_at
+            ]);
+
             // Try to decrypt the API login ID
             try {
                 $apiLoginId = $account->api_login_id;
-                
-                Log::info('Public key retrieved successfully for Accept.js', [
+                $publicClientKey = $account->public_client_key;
+
+                Log::info('✅ Public key retrieved successfully for Accept.js', [
                     'location_id' => $locationId,
                     'account_id' => $account->id,
                     'environment' => $account->environment,
                     'api_login_id_length' => strlen($apiLoginId),
+                    'api_login_id_preview' => substr($apiLoginId, 0, 4) . '...' . substr($apiLoginId, -4),
+                    'has_public_client_key' => !empty($publicClientKey),
+                    'public_client_key_length' => $publicClientKey ? strlen($publicClientKey) : 0,
                     'account_is_active' => $account->is_active,
-                    'connected_at' => $account->connected_at
+                    'connected_at' => $account->connected_at,
+                    'response_will_contain' => [
+                        'api_login_id' => 'length: ' . strlen($apiLoginId),
+                        'client_key' => $publicClientKey ? 'length: ' . strlen($publicClientKey) : 'MISSING',
+                        'environment' => $account->environment
+                    ]
                 ]);
+
+                if (empty($publicClientKey)) {
+                    Log::warning('⚠️ Public Client Key is missing for this account', [
+                        'location_id' => $locationId,
+                        'account_id' => $account->id,
+                        'message' => 'Accept.js requires a Public Client Key. Please update the account with the Public Client Key from Authorize.Net dashboard.'
+                    ]);
+                }
             } catch (\Illuminate\Contracts\Encryption\DecryptException $e) {
-                Log::error('Failed to decrypt Authorize.Net credentials - APP_KEY mismatch', [
+                Log::error('❌ Failed to decrypt Authorize.Net credentials - APP_KEY mismatch', [
                     'location_id' => $locationId,
                     'account_id' => $account->id,
                     'environment' => $account->environment,
@@ -420,10 +457,11 @@ class AuthorizeNetAccountController extends Controller
                 ], 500);
             }
 
-            // Only return API Login ID for Accept.js
+            // Only return API Login ID and Public Client Key for Accept.js
             // NEVER expose the transaction key to frontend
             return response()->json([
                 'api_login_id' => $apiLoginId,
+                'client_key' => $publicClientKey,
                 'environment' => $account->environment,
             ]);
 
@@ -442,6 +480,110 @@ class AuthorizeNetAccountController extends Controller
 
             return response()->json([
                 'message' => 'Failed to retrieve payment configuration',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Test Authorize.Net credentials by making a test API call
+     */
+    public function testConnection(Request $request)
+    {
+        $user = $request->user();
+
+        if (!$user->location_id) {
+            return response()->json([
+                'message' => 'No location assigned to your account'
+            ], 403);
+        }
+
+        $account = AuthorizeNetAccount::where('location_id', $user->location_id)->first();
+
+        if (!$account) {
+            return response()->json([
+                'message' => 'No Authorize.Net account found for this location'
+            ], 404);
+        }
+
+        try {
+            // Try to decrypt credentials
+            $apiLoginId = $account->api_login_id;
+            $transactionKey = $account->transaction_key;
+
+            Log::info('Testing Authorize.Net connection', [
+                'location_id' => $user->location_id,
+                'account_id' => $account->id,
+                'environment' => $account->environment,
+                'api_login_id_preview' => substr($apiLoginId, 0, 4) . '...',
+                'api_login_id_length' => strlen($apiLoginId),
+                'transaction_key_length' => strlen($transactionKey)
+            ]);
+
+            // Make a simple authentication test
+            $endpoint = $account->environment === 'production'
+                ? 'https://api.authorize.net/xml/v1/request.api'
+                : 'https://apitest.authorize.net/xml/v1/request.api';
+
+            $merchantAuth = [
+                'name' => $apiLoginId,
+                'transactionKey' => $transactionKey
+            ];
+
+            $requestData = [
+                'getCustomerProfileRequest' => [
+                    'merchantAuthentication' => $merchantAuth,
+                    'customerProfileId' => '0' // Test with invalid ID to check auth
+                ]
+            ];
+
+            $response = \Http::post($endpoint, $requestData);
+            $result = $response->json();
+
+            Log::info('Authorize.Net test response', [
+                'status' => $response->status(),
+                'result' => $result
+            ]);
+
+            // Update last tested timestamp
+            $account->update(['last_tested_at' => now()]);
+
+            // Even if the profile doesn't exist, if auth worked we'll get a specific error
+            $authWorked = $response->successful() || 
+                         (isset($result['messages']['resultCode']) && 
+                          $result['messages']['message'][0]['code'] !== 'E00007'); // E00007 = auth failed
+
+            return response()->json([
+                'success' => $authWorked,
+                'message' => $authWorked 
+                    ? 'Credentials are valid' 
+                    : 'Authentication failed - credentials may be incorrect',
+                'environment' => $account->environment,
+                'tested_at' => now(),
+                'debug' => config('app.debug') ? $result : null
+            ]);
+
+        } catch (\Illuminate\Contracts\Encryption\DecryptException $e) {
+            Log::error('Cannot test - decryption failed', [
+                'location_id' => $user->location_id,
+                'error' => $e->getMessage()
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Credentials are encrypted with a different key. Please reconnect your account.',
+                'credentials_valid' => false
+            ], 500);
+
+        } catch (\Exception $e) {
+            Log::error('Failed to test Authorize.Net connection', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to test connection',
                 'error' => $e->getMessage()
             ], 500);
         }
