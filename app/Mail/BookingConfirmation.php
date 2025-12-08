@@ -41,6 +41,9 @@ class BookingConfirmation extends Mailable
      */
     public function content(): Content
     {
+        // Generate a unique CID for the QR code
+        $qrCodeCid = 'booking_qr_' . $this->booking->id . '_' . time();
+        
         return new Content(
             view: 'emails.booking-confirmation',
             with: [
@@ -51,6 +54,7 @@ class BookingConfirmation extends Mailable
                 'packageName' => $this->booking->package?->name ?? 'N/A',
                 'locationName' => $this->booking->location?->name ?? 'N/A',
                 'roomName' => $this->booking->room?->name ?? 'N/A',
+                'qrCodeCid' => $qrCodeCid,
             ],
         );
     }
@@ -63,9 +67,17 @@ class BookingConfirmation extends Mailable
         $attachments = [];
 
         if ($this->qrCodePath && file_exists($this->qrCodePath)) {
+            // Attach as downloadable file
             $attachments[] = Attachment::fromPath($this->qrCodePath)
                 ->as('booking-qrcode.png')
                 ->withMime('image/png');
+            
+            // Embed inline for viewing in email
+            $qrCodeCid = 'booking_qr_' . $this->booking->id . '_' . time();
+            $attachments[] = Attachment::fromPath($this->qrCodePath)
+                ->as($qrCodeCid)
+                ->withMime('image/png')
+                ->inline();
         }
 
         return $attachments;

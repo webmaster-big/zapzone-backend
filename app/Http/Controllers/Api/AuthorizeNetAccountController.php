@@ -120,7 +120,7 @@ class AuthorizeNetAccountController extends Controller
         $validator = Validator::make($request->all(), [
             'api_login_id' => 'required|string|max:255',
             'transaction_key' => 'required|string|max:255',
-            'public_client_key' => 'nullable|string|max:1000',
+            'public_client_key' => 'required|string|max:1000',
             'environment' => 'required|in:sandbox,production',
         ]);
 
@@ -230,7 +230,7 @@ class AuthorizeNetAccountController extends Controller
         $validator = Validator::make($request->all(), [
             'api_login_id' => 'sometimes|required|string|max:255',
             'transaction_key' => 'sometimes|required|string|max:255',
-            'public_client_key' => 'nullable|string|max:1000',
+            'public_client_key' => 'sometimes|required|string|max:1000',
             'environment' => 'sometimes|required|in:sandbox,production',
             'is_active' => 'sometimes|boolean',
         ]);
@@ -549,14 +549,14 @@ class AuthorizeNetAccountController extends Controller
             $account->update(['last_tested_at' => now()]);
 
             // Even if the profile doesn't exist, if auth worked we'll get a specific error
-            $authWorked = $response->successful() || 
-                         (isset($result['messages']['resultCode']) && 
+            $authWorked = $response->successful() ||
+                         (isset($result['messages']['resultCode']) &&
                           $result['messages']['message'][0]['code'] !== 'E00007'); // E00007 = auth failed
 
             return response()->json([
                 'success' => $authWorked,
-                'message' => $authWorked 
-                    ? 'Credentials are valid' 
+                'message' => $authWorked
+                    ? 'Credentials are valid'
                     : 'Authentication failed - credentials may be incorrect',
                 'environment' => $account->environment,
                 'tested_at' => now(),

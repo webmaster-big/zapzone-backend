@@ -41,11 +41,15 @@ class AttractionPurchaseReceipt extends Mailable
      */
     public function content(): Content
     {
+        // Generate a unique CID for the QR code
+        $qrCodeCid = 'purchase_qr_' . $this->purchase->id . '_' . time();
+        
         return new Content(
             view: 'emails.attraction-purchase-receipt',
             with: [
                 'purchase' => $this->purchase,
                 'qrCodeBase64' => $this->qrCodeBase64,
+                'qrCodeCid' => $qrCodeCid,
             ],
         );
     }
@@ -63,8 +67,15 @@ class AttractionPurchaseReceipt extends Mailable
         if ($this->qrCodeBase64) {
             $qrCodeImage = base64_decode($this->qrCodeBase64);
             if ($qrCodeImage !== false) {
+                // Attach as downloadable file
                 $attachments[] = Attachment::fromData(fn () => $qrCodeImage, 'ticket-qrcode.png')
                     ->withMime('image/png');
+                
+                // Embed inline for viewing in email
+                $qrCodeCid = 'purchase_qr_' . $this->purchase->id . '_' . time();
+                $attachments[] = Attachment::fromData(fn () => $qrCodeImage, $qrCodeCid)
+                    ->withMime('image/png')
+                    ->inline();
             }
         }
 
