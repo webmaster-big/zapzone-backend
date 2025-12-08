@@ -67,11 +67,23 @@ class AuthorizeNetAccountController extends Controller
         try {
             // Attempt to access encrypted field to verify APP_KEY matches
             $testAccess = $account->api_login_id;
+            Log::info('Authorize.Net credentials decrypted successfully', [
+                'location_id' => $user->location_id,
+                'account_id' => $account->id,
+                'environment' => $account->environment
+            ]);
         } catch (\Illuminate\Contracts\Encryption\DecryptException $e) {
             $credentialsValid = false;
-            Log::warning('Authorize.Net credentials cannot be decrypted - APP_KEY mismatch', [
+            Log::error('Authorize.Net credentials decryption failed - APP_KEY mismatch', [
                 'location_id' => $user->location_id,
-                'account_id' => $account->id
+                'account_id' => $account->id,
+                'environment' => $account->environment,
+                'error_message' => $e->getMessage(),
+                'error_class' => get_class($e),
+                'possible_cause' => 'APP_KEY environment variable changed since credentials were stored',
+                'solution' => 'Run: php artisan authorizenet:re-encrypt or reconnect account',
+                'connected_at' => $account->connected_at,
+                'current_app_key_prefix' => substr(config('app.key'), 0, 20) . '...'
             ]);
         }
 
@@ -112,6 +124,12 @@ class AuthorizeNetAccountController extends Controller
         ]);
 
         if ($validator->fails()) {
+            Log::warning('Authorize.Net account creation validation failed', [
+                'location_id' => $user->location_id,
+                'user_id' => $user->id,
+                'errors' => $validator->errors()->toArray(),
+                'provided_fields' => array_keys($request->only(['api_login_id', 'transaction_key', 'environment']))
+            ]);
             return response()->json([
                 'message' => 'Validation failed',
                 'errors' => $validator->errors()
@@ -122,6 +140,13 @@ class AuthorizeNetAccountController extends Controller
         $existingAccount = AuthorizeNetAccount::where('location_id', $user->location_id)->first();
 
         if ($existingAccount) {
+            Log::warning('Attempt to create duplicate Authorize.Net account', [
+                'location_id' => $user->location_id,
+                'user_id' => $user->id,
+                'existing_account_id' => $existingAccount->id,
+                'existing_environment' => $existingAccount->environment,
+                'existing_connected_at' => $existingAccount->connected_at
+            ]);
             return response()->json([
                 'message' => 'An Authorize.Net account is already connected to this location. Please disconnect it first.'
             ], 409);
@@ -138,10 +163,14 @@ class AuthorizeNetAccountController extends Controller
                 'connected_at' => now(),
             ]);
 
-            Log::info('Authorize.Net account connected', [
+            Log::info('Authorize.Net account connected successfully', [
                 'location_id' => $user->location_id,
                 'environment' => $request->environment,
-                'user_id' => $user->id
+                'user_id' => $user->id,
+                'account_id' => $account->id,
+                'api_login_id_length' => strlen($request->api_login_id),
+                'transaction_key_length' => strlen($request->transaction_key),
+                'encrypted_successfully' => true
             ]);
 
             return response()->json([
@@ -158,7 +187,13 @@ class AuthorizeNetAccountController extends Controller
         } catch (\Exception $e) {
             Log::error('Failed to connect Authorize.Net account', [
                 'location_id' => $user->location_id,
-                'error' => $e->getMessage()
+                'user_id' => $user->id,
+                'error_message' => $e->getMessage(),
+                'error_class' => get_class($e),
+                'error_code' => $e->getCode(),
+                'error_file' => $e->getFile(),
+                'error_line' => $e->getLine(),
+                'stack_trace' => $e->getTraceAsString()
             ]);
 
             return response()->json([
@@ -198,6 +233,13 @@ class AuthorizeNetAccountController extends Controller
         ]);
 
         if ($validator->fails()) {
+            Log::warning('Authorize.Net account update validation failed', [
+                'location_id' => $user->location_id,
+                'user_id' => $user->id,
+                'account_id' => $account->id,
+                'errors' => $validator->errors()->toArray(),
+                'provided_fields' => array_keys($request->all())
+            ]);
             return response()->json([
                 'message' => 'Validation failed',
                 'errors' => $validator->errors()
@@ -205,12 +247,22 @@ class AuthorizeNetAccountController extends Controller
         }
 
         try {
-            $account->update($request->only([
+            $updateData = $request->only([
                 'api_login_id',
                 'transaction_key',
                 'environment',
                 'is_active'
-            ]));
+            ]);
+            
+            Log::info('Updating Authorize.Net account', [
+                'location_id' => $user->location_id,
+                'user_id' => $user->id,
+                'account_id' => $account->id,
+                'fields_updating' => array_keys($updateData),
+                'environment_change' => $request->has('environment') ? $account->environment . ' -> ' . $request->environment : 'no change'
+            ]);
+            
+            $account->update($updateData);
 
             Log::info('Authorize.Net account updated', [
                 'location_id' => $user->location_id,
@@ -231,7 +283,15 @@ class AuthorizeNetAccountController extends Controller
         } catch (\Exception $e) {
             Log::error('Failed to update Authorize.Net account', [
                 'location_id' => $user->location_id,
-                'error' => $e->getMessage()
+                'user_id' => $user->id,
+                'account_id' => $account->id,
+                'error_message' => $e->getMessage(),
+                'error_class' => get_class($e),
+                'error_code' => $e->getCode(),
+                'error_file' => $e->getFile(),
+                'error_line' => $e->getLine(),
+                'attempted_fields' => array_keys($request->only(['api_login_id', 'transaction_key', 'environment', 'is_active'])),
+                'stack_trace' => $e->getTraceAsString()
             ]);
 
             return response()->json([
@@ -291,7 +351,14 @@ class AuthorizeNetAccountController extends Controller
         } catch (\Exception $e) {
             Log::error('Failed to disconnect Authorize.Net account', [
                 'location_id' => $user->location_id,
-                'error' => $e->getMessage()
+                'user_id' => $user->id,
+                'account_id' => $account->id ?? null,
+                'error_message' => $e->getMessage(),
+                'error_class' => get_class($e),
+                'error_code' => $e->getCode(),
+                'error_file' => $e->getFile(),
+                'error_line' => $e->getLine(),
+                'stack_trace' => $e->getTraceAsString()
             ]);
 
             return response()->json([
@@ -322,11 +389,29 @@ class AuthorizeNetAccountController extends Controller
             // Try to decrypt the API login ID
             try {
                 $apiLoginId = $account->api_login_id;
+                
+                Log::info('Public key retrieved successfully for Accept.js', [
+                    'location_id' => $locationId,
+                    'account_id' => $account->id,
+                    'environment' => $account->environment,
+                    'api_login_id_length' => strlen($apiLoginId),
+                    'account_is_active' => $account->is_active,
+                    'connected_at' => $account->connected_at
+                ]);
             } catch (\Illuminate\Contracts\Encryption\DecryptException $e) {
                 Log::error('Failed to decrypt Authorize.Net credentials - APP_KEY mismatch', [
                     'location_id' => $locationId,
                     'account_id' => $account->id,
-                    'error' => $e->getMessage()
+                    'environment' => $account->environment,
+                    'error_message' => $e->getMessage(),
+                    'error_class' => get_class($e),
+                    'error_code' => $e->getCode(),
+                    'connected_at' => $account->connected_at,
+                    'last_tested_at' => $account->last_tested_at,
+                    'possible_cause' => 'APP_KEY changed after credentials were encrypted',
+                    'solution_1' => 'Run: php artisan authorizenet:re-encrypt',
+                    'solution_2' => 'Disconnect and reconnect Authorize.Net account',
+                    'current_app_key_prefix' => substr(config('app.key'), 0, 20) . '...'
                 ]);
 
                 return response()->json([
@@ -345,8 +430,14 @@ class AuthorizeNetAccountController extends Controller
         } catch (\Exception $e) {
             Log::error('Failed to retrieve public key', [
                 'location_id' => $locationId,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
+                'error_message' => $e->getMessage(),
+                'error_class' => get_class($e),
+                'error_code' => $e->getCode(),
+                'error_file' => $e->getFile(),
+                'error_line' => $e->getLine(),
+                'stack_trace' => $e->getTraceAsString(),
+                'request_method' => request()->method(),
+                'request_ip' => request()->ip()
             ]);
 
             return response()->json([

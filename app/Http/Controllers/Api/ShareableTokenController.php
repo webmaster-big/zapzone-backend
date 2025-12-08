@@ -76,7 +76,7 @@ class ShareableTokenController extends Controller
                 ]);
 
                 // Check if Gmail API should be used
-                $useGmailApi = config('gmail.enabled', false) && 
+                $useGmailApi = config('gmail.enabled', false) &&
                               (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
 
                 if ($useGmailApi) {

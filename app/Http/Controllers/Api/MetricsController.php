@@ -91,15 +91,15 @@ class MetricsController extends Controller
 
         // Calculate purchase metrics
         $totalPurchases = $purchaseQuery->count();
-        
+
         // Get all purchases for debugging
         $allPurchaseStatuses = (clone $purchaseQuery)->select('status', DB::raw('COUNT(*) as count'), DB::raw('SUM(total_amount) as revenue'))
             ->groupBy('status')
             ->get();
-        
+
         // Revenue from completed purchases only
         $purchaseRevenue = (clone $purchaseQuery)->where('status', 'completed')->sum('total_amount') ?? 0;
-        
+
         // Also include pending purchases in some cases (you may want all non-cancelled)
         $allPurchaseRevenue = (clone $purchaseQuery)->whereIn('status', ['completed', 'pending'])->sum('total_amount') ?? 0;
 
@@ -112,7 +112,7 @@ class MetricsController extends Controller
 
         // Calculate total revenue (using all non-cancelled purchases)
         $totalRevenue = $bookingRevenue + $allPurchaseRevenue;
-        
+
         Log::info('Total revenue calculated', [
             'booking_revenue' => $bookingRevenue,
             'purchase_revenue' => $allPurchaseRevenue,
@@ -326,21 +326,21 @@ class MetricsController extends Controller
 
         // Calculate purchase metrics
         $totalPurchases = $purchaseQuery->count();
-        
+
         // Get all purchases for debugging
         $allPurchaseStatuses = (clone $purchaseQuery)->select('status', DB::raw('COUNT(*) as count'), DB::raw('SUM(total_amount) as revenue'))
             ->groupBy('status')
             ->get();
-        
-        // Revenue from completed purchases only  
+
+        // Revenue from completed purchases only
         $purchaseRevenue = (clone $purchaseQuery)->where('status', 'completed')->sum('total_amount') ?? 0;
-        
+
         // Also include pending purchases (all non-cancelled)
         $allPurchaseRevenue = (clone $purchaseQuery)->whereIn('status', ['completed', 'pending'])->sum('total_amount') ?? 0;
 
         // Calculate total revenue (using all non-cancelled purchases)
         $totalRevenue = $bookingRevenue + $allPurchaseRevenue;
-        
+
         Log::info('Attendant purchase metrics calculated', [
             'total_purchases' => $totalPurchases,
             'completed_revenue' => $purchaseRevenue,
@@ -571,18 +571,18 @@ class MetricsController extends Controller
             }
 
             $locationPurchases = $locationPurchaseQuery->count();
-            
+
             // Get purchase status breakdown for debugging
             $locationPurchaseStatuses = (clone $locationPurchaseQuery)
                 ->select('status', DB::raw('COUNT(*) as count'), DB::raw('SUM(total_amount) as revenue'))
                 ->groupBy('status')
                 ->get();
-            
+
             // Revenue from completed purchases only
             $locationPurchaseRevenueCompleted = (clone $locationPurchaseQuery)
                 ->where('status', 'completed')
                 ->sum('total_amount') ?? 0;
-                
+
             // Include pending purchases (all non-cancelled)
             $locationPurchaseRevenue = (clone $locationPurchaseQuery)
                 ->whereIn('status', ['completed', 'pending'])

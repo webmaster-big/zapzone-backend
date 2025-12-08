@@ -14,7 +14,7 @@ class ReEncryptAuthorizeNetCredentials extends Command
      *
      * @var string
      */
-    protected $signature = 'authorizenet:re-encrypt 
+    protected $signature = 'authorizenet:re-encrypt
                             {--old-key= : The old APP_KEY to decrypt with}
                             {--test : Test mode - show what would be re-encrypted without making changes}';
 

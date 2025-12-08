@@ -300,6 +300,7 @@ class BookingController extends Controller
             'location_id' => $booking->location_id,
             'type' => 'booking',
             'priority' => 'medium',
+            'user_id' => $booking->created_by,
             'title' => 'New Booking Received',
             'message' => "New booking {$booking->reference_number} from {$customerName} for {$booking->booking_date} at {$booking->booking_time}. Amount: $" . number_format($booking->total_amount, 2),
             'status' => 'unread',
@@ -458,7 +459,7 @@ class BookingController extends Controller
         }
 
         $writeResult = file_put_contents($fullPath, $qrCodeImage);
-        
+
         if ($writeResult === false) {
             Log::error('Failed to write QR code file', [
                 'booking_id' => $booking->id,
@@ -525,7 +526,7 @@ class BookingController extends Controller
                 ]);
 
                 // Check if Gmail API should be used
-                $useGmailApi = config('gmail.enabled', false) && 
+                $useGmailApi = config('gmail.enabled', false) &&
                               (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
 
                 if ($useGmailApi) {
@@ -583,7 +584,7 @@ class BookingController extends Controller
 
             } catch (\Exception $e) {
                 $emailError = $e->getMessage();
-                
+
                 // Log detailed error information
                 Log::error('❌ Failed to send booking confirmation email', [
                     'email' => $recipientEmail,

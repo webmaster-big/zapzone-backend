@@ -203,6 +203,7 @@ class AttractionPurchaseController extends Controller
                 'location_id' => $purchase->attraction->location_id,
                 'type' => 'payment',
                 'priority' => 'medium',
+                'created_by' => $purchase->created_by,
                 'title' => 'New Attraction Purchase',
                 'message' => "New purchase: {$purchase->quantity} x {$purchase->attraction->name} by {$customerName}. Total: $" . number_format($purchase->total_amount, 2),
                 'status' => 'unread',
@@ -304,7 +305,7 @@ class AttractionPurchaseController extends Controller
             ]);
 
             // Check if Gmail API should be used
-            $useGmailApi = config('gmail.enabled', false) && 
+            $useGmailApi = config('gmail.enabled', false) &&
                           (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
 
             if ($useGmailApi) {
@@ -339,12 +340,12 @@ class AttractionPurchaseController extends Controller
                 // Decode base64 to create temporary file for attachment
                 $qrCodeImage = base64_decode($qrCodeBase64);
                 $tempPath = storage_path('app/temp/qr_' . $attractionPurchase->id . '_' . time() . '.png');
-                
+
                 // Create temp directory if not exists
                 if (!file_exists(storage_path('app/temp'))) {
                     mkdir(storage_path('app/temp'), 0755, true);
                 }
-                
+
                 file_put_contents($tempPath, $qrCodeImage);
 
                 // Send using Laravel Mail (SMTP)
@@ -377,7 +378,7 @@ class AttractionPurchaseController extends Controller
 
         } catch (\Exception $e) {
             $emailError = $e->getMessage();
-            
+
             Log::error('❌ Failed to send attraction purchase receipt', [
                 'email' => $recipientEmail,
                 'purchase_id' => $attractionPurchase->id,

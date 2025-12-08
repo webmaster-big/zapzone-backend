@@ -37,7 +37,7 @@ class GmailApiService
             $this->client->setAuthConfig($credentials);
             $this->client->addScope(Gmail::GMAIL_SEND);
             $this->client->setSubject(config('gmail.sender_email', 'webmaster@bestingames.com'));
-        } 
+        }
         // Fallback to JSON file if config not set
         else {
             $credentialsPath = config('gmail.credentials_path', storage_path('app/gmail.json'));
