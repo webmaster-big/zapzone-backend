@@ -19,6 +19,11 @@ class Customer extends Model
         'last_name',
         'email',
         'phone',
+        'address',
+        'city',
+        'state',
+        'zip',
+        'country',
         'password',
         'date_of_birth',
         'total_bookings',
@@ -84,5 +89,36 @@ class Customer extends Model
             $q->where('first_name', 'like', "%{$name}%")
               ->orWhere('last_name', 'like', "%{$name}%");
         });
+    }
+
+    // Helper Methods
+    /**
+     * Get customer billing data formatted for Authorize.Net
+     * 
+     * @return array
+     */
+    public function getBillingData(): array
+    {
+        return [
+            'first_name' => $this->first_name,
+            'last_name' => $this->last_name,
+            'email' => $this->email,
+            'phone' => $this->phone,
+            'address' => $this->address,
+            'city' => $this->city,
+            'state' => $this->state,
+            'zip' => $this->zip,
+            'country' => $this->country ?? 'US',
+        ];
+    }
+
+    /**
+     * Get customer full name
+     * 
+     * @return string
+     */
+    public function getFullNameAttribute(): string
+    {
+        return "{$this->first_name} {$this->last_name}";
     }
 }
