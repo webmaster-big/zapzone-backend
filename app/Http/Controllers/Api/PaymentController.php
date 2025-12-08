@@ -309,6 +309,15 @@ class PaymentController extends Controller
      */
     public function charge(Request $request): JsonResponse
     {
+        // Log incoming request for debugging
+        Log::info('💳 Payment charge request received', [
+            'location_id' => $request->location_id,
+            'amount' => $request->amount,
+            'has_customer_data' => $request->has('customer'),
+            'customer_data' => $request->customer ?? 'NOT PROVIDED',
+            'all_request_data' => $request->except(['opaqueData']), // Don't log sensitive payment data
+        ]);
+
         $request->validate([
             'location_id' => 'required|exists:locations,id',
             'opaqueData' => 'required|array',
@@ -371,6 +380,20 @@ class PaymentController extends Controller
             // Add customer billing information if provided
             if ($request->has('customer')) {
                 $customerData = $request->customer;
+                
+                Log::info('🔍 Processing customer billing data', [
+                    'has_first_name' => !empty($customerData['first_name']),
+                    'has_last_name' => !empty($customerData['last_name']),
+                    'has_email' => !empty($customerData['email']),
+                    'has_phone' => !empty($customerData['phone']),
+                    'has_address' => !empty($customerData['address']),
+                    'has_city' => !empty($customerData['city']),
+                    'has_state' => !empty($customerData['state']),
+                    'has_zip' => !empty($customerData['zip']),
+                    'has_country' => !empty($customerData['country']),
+                    'customer_data_keys' => array_keys($customerData),
+                ]);
+                
                 $billTo = new AnetAPI\CustomerAddressType();
                 
                 if (!empty($customerData['first_name'])) {
@@ -403,13 +426,18 @@ class PaymentController extends Controller
 
                 $transactionRequestType->setBillTo($billTo);
 
-                Log::info('Customer billing data added to Authorize.Net transaction', [
+                Log::info('✅ Customer billing data successfully added to transaction', [
                     'customer_name' => ($customerData['first_name'] ?? '') . ' ' . ($customerData['last_name'] ?? ''),
                     'email' => $customerData['email'] ?? null,
+                    'phone' => $customerData['phone'] ?? null,
                     'address' => $customerData['address'] ?? null,
                     'city' => $customerData['city'] ?? null,
                     'state' => $customerData['state'] ?? null,
+                    'zip' => $customerData['zip'] ?? null,
+                    'country' => $customerData['country'] ?? null,
                 ]);
+            } else {
+                Log::warning('⚠️ No customer billing data provided in payment request');
             }
 
             // Add order information if provided
