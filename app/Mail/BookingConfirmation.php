@@ -56,12 +56,10 @@ class BookingConfirmation extends Mailable
                 'mime' => 'image/png',
             ]);
             
-            // Embed inline for viewing in email using rawAttachData
+            // Embed inline for viewing in email using Swift_Attachment
             $this->withSwiftMessage(function ($message) use ($qrCodeImage) {
-                $attachment = \Swift_Attachment::newInstance($qrCodeImage, $this->qrCodeCid, 'image/png')
-                    ->setDisposition('inline')
-                    ->setId($this->qrCodeCid . '@swift.generated');
-                $message->attach($attachment);
+                $attachment = \Swift_Image::newInstance($qrCodeImage, $this->qrCodeCid, 'image/png');
+                $message->embed($attachment);
             });
         }
 
