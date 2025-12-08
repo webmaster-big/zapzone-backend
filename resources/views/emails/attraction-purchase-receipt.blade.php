@@ -68,11 +68,37 @@
                                     </tr>
                                     @if($purchase->customer->phone)
                                         <tr>
-                                            <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6;">
+                                            <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
                                                 <table width="100%" cellpadding="0" cellspacing="0" border="0">
                                                     <tr>
                                                         <td style="font-weight: 500; color: #6b7280; width: 140px;">Phone:</td>
                                                         <td style="color: #111827;">{{ $purchase->customer->phone }}</td>
+                                                    </tr>
+                                                </table>
+                                            </td>
+                                        </tr>
+                                    @endif
+                                    @if($purchase->customer->address)
+                                        <tr>
+                                            <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                                <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                                    <tr>
+                                                        <td style="font-weight: 500; color: #6b7280; width: 140px;">Address:</td>
+                                                        <td style="color: #111827;">{{ $purchase->customer->address }}</td>
+                                                    </tr>
+                                                </table>
+                                            </td>
+                                        </tr>
+                                    @endif
+                                    @if($purchase->customer->city || $purchase->customer->state || $purchase->customer->zip)
+                                        <tr>
+                                            <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6;">
+                                                <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                                    <tr>
+                                                        <td style="font-weight: 500; color: #6b7280; width: 140px;">City/State/ZIP:</td>
+                                                        <td style="color: #111827;">
+                                                            {{ $purchase->customer->city }}{{ $purchase->customer->city && ($purchase->customer->state || $purchase->customer->zip) ? ', ' : '' }}{{ $purchase->customer->state }} {{ $purchase->customer->zip }}
+                                                        </td>
                                                     </tr>
                                                 </table>
                                             </td>

@@ -41,6 +41,71 @@
 
                             <p style="margin: 0 0 16px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #4b5563;">Thank you for your booking! Your reservation has been confirmed.</p>
 
+                            <!-- Customer Information -->
+                            @if($booking->customer)
+                            <h3 style="margin: 16px 0 12px 0; padding: 0; font-size: 16px; font-weight: 600; color: #111827;">Customer Information</h3>
+                            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f9fafb; border-radius: 6px; border: 1px solid #e5e7eb; margin: 16px 0;">
+                                <tr>
+                                    <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                            <tr>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Name:</td>
+                                                <td style="color: #111827;">{{ $booking->customer->first_name }} {{ $booking->customer->last_name }}</td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                            <tr>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Email:</td>
+                                                <td style="color: #111827;">{{ $booking->customer->email }}</td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                                @if($booking->customer->phone)
+                                <tr>
+                                    <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                            <tr>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Phone:</td>
+                                                <td style="color: #111827;">{{ $booking->customer->phone }}</td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                                @endif
+                                @if($booking->customer->address)
+                                <tr>
+                                    <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                            <tr>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Address:</td>
+                                                <td style="color: #111827;">{{ $booking->customer->address }}</td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                                @endif
+                                @if($booking->customer->city || $booking->customer->state || $booking->customer->zip)
+                                <tr>
+                                    <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6;">
+                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                            <tr>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">City/State/ZIP:</td>
+                                                <td style="color: #111827;">
+                                                    {{ $booking->customer->city }}{{ $booking->customer->city && ($booking->customer->state || $booking->customer->zip) ? ', ' : '' }}{{ $booking->customer->state }} {{ $booking->customer->zip }}
+                                                </td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                                @endif
+                            </table>
+                            @endif
+
                             <!-- Booking Details -->
                             <h3 style="margin: 16px 0 12px 0; padding: 0; font-size: 16px; font-weight: 600; color: #111827;">Booking Details</h3>
                             <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f9fafb; border-radius: 6px; border: 1px solid #e5e7eb; margin: 16px 0;">

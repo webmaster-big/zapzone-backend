@@ -16,6 +16,7 @@ class BookingConfirmation extends Mailable
 
     public Booking $booking;
     public ?string $qrCodePath;
+    public string $qrCodeCid;
 
     /**
      * Create a new message instance.
@@ -24,29 +25,18 @@ class BookingConfirmation extends Mailable
     {
         $this->booking = $booking;
         $this->qrCodePath = $qrCodePath;
-    }
-
-    /**
-     * Get the message envelope.
-     */
-    public function envelope(): Envelope
-    {
-        return new Envelope(
-            subject: 'Booking Confirmation - ' . $this->booking->reference_number,
-        );
-    }
-
-    /**
-     * Get the message content definition.
-     */
-    public function content(): Content
-    {
         // Generate a unique CID for the QR code
-        $qrCodeCid = 'booking_qr_' . $this->booking->id . '_' . time();
-        
-        return new Content(
-            view: 'emails.booking-confirmation',
-            with: [
+        $this->qrCodeCid = 'booking_qr_' . $booking->id . '_' . time();
+    }
+
+    /**
+     * Build the message.
+     */
+    public function build()
+    {
+        $email = $this->subject('Booking Confirmation - Order #' . $this->booking->id)
+            ->view('emails.booking-confirmation')
+            ->with([
                 'booking' => $this->booking,
                 'customerName' => $this->booking->customer 
                     ? $this->booking->customer->first_name . ' ' . $this->booking->customer->last_name
@@ -54,32 +44,22 @@ class BookingConfirmation extends Mailable
                 'packageName' => $this->booking->package?->name ?? 'N/A',
                 'locationName' => $this->booking->location?->name ?? 'N/A',
                 'roomName' => $this->booking->room?->name ?? 'N/A',
-                'qrCodeCid' => $qrCodeCid,
-            ],
-        );
-    }
+                'qrCodeCid' => $this->qrCodeCid,
+            ]);
 
-    /**
-     * Get the attachments for the message.
-     */
-    public function attachments(): array
-    {
-        $attachments = [];
-
+        // Attach and embed QR code if path is provided
         if ($this->qrCodePath && file_exists($this->qrCodePath)) {
+            $qrCodeImage = file_get_contents($this->qrCodePath);
+            
             // Attach as downloadable file
-            $attachments[] = Attachment::fromPath($this->qrCodePath)
-                ->as('booking-qrcode.png')
-                ->withMime('image/png');
+            $email->attachData($qrCodeImage, 'booking-qrcode.png', [
+                'mime' => 'image/png',
+            ]);
             
             // Embed inline for viewing in email
-            $qrCodeCid = 'booking_qr_' . $this->booking->id . '_' . time();
-            $attachments[] = Attachment::fromPath($this->qrCodePath)
-                ->as($qrCodeCid)
-                ->withMime('image/png')
-                ->inline();
+            $email->embedData($qrCodeImage, $this->qrCodeCid, 'image/png');
         }
 
-        return $attachments;
+        return $email;
     }
 }
