@@ -155,10 +155,16 @@ class AttractionPurchaseController extends Controller
             'guest_name' => 'required_without:customer_id|string|max:255',
             'guest_email' => 'required_without:customer_id|email|max:255',
             'guest_phone' => 'nullable|string|max:20',
+            'guest_address' => 'nullable|string|max:255',
+            'guest_city' => 'nullable|string|max:100',
+            'guest_state' => 'nullable|string|max:50',
+            'guest_zip' => 'nullable|string|max:20',
+            'guest_country' => 'nullable|string|max:100',
 
             'quantity' => 'required|integer|min:1',
             'payment_method' => ['required', Rule::in(['card', 'cash'])],
             'purchase_date' => 'required|date',
+            'transaction_id' => 'nullable|string|max:255',
             'notes' => 'nullable|string',
         ]);
 
