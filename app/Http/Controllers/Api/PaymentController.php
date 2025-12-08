@@ -319,6 +319,16 @@ class PaymentController extends Controller
             'customer_id' => 'nullable|exists:customers,id',
             'booking_id' => 'nullable|exists:bookings,id',
             'description' => 'nullable|string',
+            'customer' => 'nullable|array',
+            'customer.first_name' => 'nullable|string|max:50',
+            'customer.last_name' => 'nullable|string|max:50',
+            'customer.email' => 'nullable|email|max:255',
+            'customer.phone' => 'nullable|string|max:25',
+            'customer.address' => 'nullable|string|max:60',
+            'customer.city' => 'nullable|string|max:40',
+            'customer.state' => 'nullable|string|max:40',
+            'customer.zip' => 'nullable|string|max:20',
+            'customer.country' => 'nullable|string|max:60',
         ]);
 
         try {
@@ -358,6 +368,50 @@ class PaymentController extends Controller
             $transactionRequestType->setAmount($request->amount);
             $transactionRequestType->setPayment($paymentOne);
 
+            // Add customer billing information if provided
+            if ($request->has('customer')) {
+                $customerData = $request->customer;
+                $billTo = new AnetAPI\CustomerAddressType();
+                
+                if (!empty($customerData['first_name'])) {
+                    $billTo->setFirstName(substr($customerData['first_name'], 0, 50));
+                }
+                if (!empty($customerData['last_name'])) {
+                    $billTo->setLastName(substr($customerData['last_name'], 0, 50));
+                }
+                if (!empty($customerData['email'])) {
+                    $billTo->setEmail(substr($customerData['email'], 0, 255));
+                }
+                if (!empty($customerData['phone'])) {
+                    $billTo->setPhoneNumber(substr($customerData['phone'], 0, 25));
+                }
+                if (!empty($customerData['address'])) {
+                    $billTo->setAddress(substr($customerData['address'], 0, 60));
+                }
+                if (!empty($customerData['city'])) {
+                    $billTo->setCity(substr($customerData['city'], 0, 40));
+                }
+                if (!empty($customerData['state'])) {
+                    $billTo->setState(substr($customerData['state'], 0, 40));
+                }
+                if (!empty($customerData['zip'])) {
+                    $billTo->setZip(substr($customerData['zip'], 0, 20));
+                }
+                if (!empty($customerData['country'])) {
+                    $billTo->setCountry(substr($customerData['country'], 0, 60));
+                }
+
+                $transactionRequestType->setBillTo($billTo);
+
+                Log::info('Customer billing data added to Authorize.Net transaction', [
+                    'customer_name' => ($customerData['first_name'] ?? '') . ' ' . ($customerData['last_name'] ?? ''),
+                    'email' => $customerData['email'] ?? null,
+                    'address' => $customerData['address'] ?? null,
+                    'city' => $customerData['city'] ?? null,
+                    'state' => $customerData['state'] ?? null,
+                ]);
+            }
+
             // Add order information if provided
             if ($request->order_id) {
                 $order = new AnetAPI\OrderType();
@@ -396,10 +450,14 @@ class PaymentController extends Controller
                         'paid_at' => now(),
                     ]);
 
-                    Log::info('Authorize.Net payment successful', [
+                    Log::info('Authorize.Net payment successful with customer data', [
                         'transaction_id' => $tresponse->getTransId(),
                         'amount' => $request->amount,
                         'location_id' => $request->location_id,
+                        'customer_name' => $request->has('customer') ? 
+                            ($request->customer['first_name'] ?? '') . ' ' . ($request->customer['last_name'] ?? '') : 
+                            'Not provided',
+                        'customer_email' => $request->customer['email'] ?? 'Not provided',
                     ]);
 
                     // Create notification for customer
