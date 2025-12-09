@@ -97,6 +97,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('users/{user}/update-email', [UserController::class, 'updateEmail']);
     Route::patch('users/{user}/update-password', [UserController::class, 'updatePassword']);
     Route::patch('users/{user}/update-profile-path', [UserController::class, 'updateProfilePath']);
+    Route::post('users/bulk-delete', [UserController::class, 'bulkDelete']);
 
     // Customer routes
     Route::get('customers/bookings', [BookingController::class, 'customerBookings']);
@@ -125,6 +126,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('attractions/{attraction}/activate', [AttractionController::class, 'activate']);
     Route::patch('attractions/{attraction}/deactivate', [AttractionController::class, 'deactivate']);
     Route::get('attractions/{attraction}/statistics', [AttractionController::class, 'statistics']);
+    Route::post('attractions/bulk-delete', [AttractionController::class, 'bulkDelete']);
 
     // Attraction Purchase routes
     Route::apiResource('attraction-purchases', AttractionPurchaseController::class);
@@ -137,6 +139,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('attraction-purchases/{id}/verify', [AttractionPurchaseController::class, 'verify']);
     Route::patch('attraction-purchases/{id}/check-in', [AttractionPurchaseController::class, 'checkIn']);
     Route::post('attraction-purchases/{attractionPurchase}/qrcode', [AttractionPurchaseController::class, 'storeQrCode']);
+    Route::post('attraction-purchases/bulk-delete', [AttractionPurchaseController::class, 'bulkDelete']);
 
     // Room routes
     Route::apiResource('rooms', RoomController::class);
@@ -149,6 +152,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('addons/location/{locationId}', [AddOnController::class, 'getByLocation']);
     Route::patch('addons/{addOn}/toggle-status', [AddOnController::class, 'toggleStatus']);
     Route::get('addons/popular', [AddOnController::class, 'getPopular']);
+    Route::post('addons/bulk-delete', [AddOnController::class, 'bulkDelete']);
 
     // Gift Card routes
     Route::apiResource('gift-cards', GiftCardController::class);
@@ -175,6 +179,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('bookings/search', [BookingController::class, 'search']);
     Route::patch('bookings/{booking}/status', [BookingController::class, 'updateStatus']);
     Route::patch('bookings/{booking}/payment-status', [BookingController::class, 'updatePaymentStatus']);
+    Route::post('bookings/bulk-delete', [BookingController::class, 'bulkDelete']);
 
     // Payment routes
     Route::apiResource('payments', PaymentController::class);

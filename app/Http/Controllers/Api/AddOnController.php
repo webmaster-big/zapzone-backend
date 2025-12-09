@@ -320,4 +320,47 @@ class AddOnController extends Controller
         Log::info('Image path returned as-is', ['image' => $image]);
         return $image;
     }
+
+    /**
+     * Bulk delete add-ons
+     */
+    public function bulkDelete(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'ids' => 'required|array|min:1',
+            'ids.*' => 'required|integer|exists:add_ons,id',
+        ]);
+
+        $addOns = AddOn::whereIn('id', $validated['ids'])->get();
+        $deletedCount = 0;
+        $locationIds = [];
+
+        foreach ($addOns as $addOn) {
+            // Delete image if exists
+            if ($addOn->image && file_exists(storage_path('app/public/' . $addOn->image))) {
+                unlink(storage_path('app/public/' . $addOn->image));
+            }
+            
+            $locationIds[] = $addOn->location_id;
+            $addOn->delete();
+            $deletedCount++;
+        }
+
+        // Log bulk deletion
+        ActivityLog::log(
+            action: 'Bulk Add-Ons Deleted',
+            category: 'delete',
+            description: "{$deletedCount} add-ons deleted in bulk operation",
+            userId: auth()->id(),
+            locationId: $locationIds[0] ?? null,
+            entityType: 'addon',
+            metadata: ['deleted_count' => $deletedCount, 'ids' => $validated['ids']]
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => "{$deletedCount} add-ons deleted successfully",
+            'data' => ['deleted_count' => $deletedCount],
+        ]);
+    }
 }

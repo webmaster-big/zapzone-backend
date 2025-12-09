@@ -672,10 +672,57 @@ class AttractionController extends Controller
     {
         // Remove any surrounding quotes from the image filename
         if (is_string($image)) {
-            $image = trim($image, '"\'');
+            $image = trim($image, '"');
         }
 
         // Return the clean path: images/attractions/filename.ext
         return 'images/attractions/' . basename($image);
+    }
+
+    /**
+     * Bulk delete attractions
+     */
+    public function bulkDelete(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'ids' => 'required|array|min:1',
+            'ids.*' => 'required|integer|exists:attractions,id',
+        ]);
+
+        $attractions = Attraction::whereIn('id', $validated['ids'])->get();
+        $deletedCount = 0;
+        $locationIds = [];
+
+        foreach ($attractions as $attraction) {
+            // Delete images if they exist
+            if ($attraction->image && is_array($attraction->image)) {
+                foreach ($attraction->image as $imagePath) {
+                    if (file_exists(storage_path('app/public/' . $imagePath))) {
+                        unlink(storage_path('app/public/' . $imagePath));
+                    }
+                }
+            }
+            
+            $locationIds[] = $attraction->location_id;
+            $attraction->delete();
+            $deletedCount++;
+        }
+
+        // Log bulk deletion
+        ActivityLog::log(
+            action: 'Bulk Attractions Deleted',
+            category: 'delete',
+            description: "{$deletedCount} attractions deleted in bulk operation",
+            userId: auth()->id(),
+            locationId: $locationIds[0] ?? null,
+            entityType: 'attraction',
+            metadata: ['deleted_count' => $deletedCount, 'ids' => $validated['ids']]
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => "{$deletedCount} attractions deleted successfully",
+            'data' => ['deleted_count' => $deletedCount],
+        ]);
     }
 }

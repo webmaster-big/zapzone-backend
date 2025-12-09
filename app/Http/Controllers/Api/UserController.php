@@ -400,4 +400,53 @@ class UserController extends Controller
             'message' => 'Last login updated successfully',
         ]);
     }
+
+    /**
+     * Bulk delete users
+     */
+    public function bulkDelete(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'ids' => 'required|array|min:1',
+            'ids.*' => 'required|integer|exists:users,id',
+        ]);
+
+        // Prevent deletion of current user
+        $currentUserId = auth()->id();
+        $idsToDelete = array_diff($validated['ids'], [$currentUserId]);
+
+        if (empty($idsToDelete)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Cannot delete yourself or no valid users to delete',
+            ], 400);
+        }
+
+        $users = User::whereIn('id', $idsToDelete)->get();
+        $deletedCount = 0;
+        $locationIds = [];
+
+        foreach ($users as $user) {
+            $locationIds[] = $user->location_id;
+            $user->delete();
+            $deletedCount++;
+        }
+
+        // Log bulk deletion
+        ActivityLog::log(
+            action: 'Bulk Users Deleted',
+            category: 'delete',
+            description: "{$deletedCount} users deleted in bulk operation",
+            userId: auth()->id(),
+            locationId: $locationIds[0] ?? null,
+            entityType: 'user',
+            metadata: ['deleted_count' => $deletedCount, 'ids' => $idsToDelete]
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => "{$deletedCount} users deleted successfully",
+            'data' => ['deleted_count' => $deletedCount],
+        ]);
+    }
 }

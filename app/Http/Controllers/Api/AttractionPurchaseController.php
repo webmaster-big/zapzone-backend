@@ -866,6 +866,46 @@ public function checkIn(int $id): JsonResponse
         ], 404);
     }
 }
+
+    /**
+     * Bulk delete attraction purchases
+     */
+    public function bulkDelete(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'ids' => 'required|array|min:1',
+            'ids.*' => 'required|integer|exists:attraction_purchases,id',
+        ]);
+
+        $purchases = AttractionPurchase::with('attraction')->whereIn('id', $validated['ids'])->get();
+        $deletedCount = 0;
+        $locationIds = [];
+
+        foreach ($purchases as $purchase) {
+            if ($purchase->attraction && $purchase->attraction->location_id) {
+                $locationIds[] = $purchase->attraction->location_id;
+            }
+            $purchase->delete();
+            $deletedCount++;
+        }
+
+        // Log bulk deletion
+        ActivityLog::log(
+            action: 'Bulk Attraction Purchases Deleted',
+            category: 'delete',
+            description: "{$deletedCount} attraction purchases deleted in bulk operation",
+            userId: auth()->id(),
+            locationId: $locationIds[0] ?? null,
+            entityType: 'attraction_purchase',
+            metadata: ['deleted_count' => $deletedCount, 'ids' => $validated['ids']]
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => "{$deletedCount} attraction purchases deleted successfully",
+            'data' => ['deleted_count' => $deletedCount],
+        ]);
+    }
 }
 
 

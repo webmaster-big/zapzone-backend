@@ -1125,6 +1125,44 @@ class BookingController extends Controller
             'data' => $bookings,
         ]);
     }
+
+    /**
+     * Bulk delete bookings
+     */
+    public function bulkDelete(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'ids' => 'required|array|min:1',
+            'ids.*' => 'required|integer|exists:bookings,id',
+        ]);
+
+        $bookings = Booking::whereIn('id', $validated['ids'])->get();
+        $deletedCount = 0;
+        $locationIds = [];
+
+        foreach ($bookings as $booking) {
+            $locationIds[] = $booking->location_id;
+            $booking->delete();
+            $deletedCount++;
+        }
+
+        // Log bulk deletion
+        ActivityLog::log(
+            action: 'Bulk Bookings Deleted',
+            category: 'delete',
+            description: "{$deletedCount} bookings deleted in bulk operation",
+            userId: auth()->id(),
+            locationId: $locationIds[0] ?? null,
+            entityType: 'booking',
+            metadata: ['deleted_count' => $deletedCount, 'ids' => $validated['ids']]
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => "{$deletedCount} bookings deleted successfully",
+            'data' => ['deleted_count' => $deletedCount],
+        ]);
+    }
 }
 
 
