@@ -10,7 +10,6 @@ use App\Models\Booking;
 use App\Models\BookingAttraction;
 use App\Models\BookingAddOn;
 use App\Models\CustomerNotification;
-use App\Models\Location;
 use App\Models\Notification;
 use App\Models\PackageTimeSlot;
 use App\Models\User;
@@ -1015,6 +1014,7 @@ class BookingController extends Controller
                 'location_id' => $booking->location_id,
                 'type' => 'booking',
                 'priority' => 'high',
+                'user_id' => $booking->created_by,
                 'title' => 'Booking Cancelled',
                 'message' => "Booking {$booking->reference_number} for {$customerName} has been cancelled.",
                 'status' => 'unread',
