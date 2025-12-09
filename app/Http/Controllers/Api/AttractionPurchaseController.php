@@ -209,7 +209,7 @@ class AttractionPurchaseController extends Controller
                 'location_id' => $purchase->attraction->location_id,
                 'type' => 'payment',
                 'priority' => 'medium',
-                'created_by' => $purchase->created_by,
+                'user_id' => $purchase->created_by ?? auth()->id(),
                 'title' => 'New Attraction Purchase',
                 'message' => "New purchase: {$purchase->quantity} x {$purchase->attraction->name} by {$customerName}. Total: $" . number_format($purchase->total_amount, 2),
                 'status' => 'unread',
