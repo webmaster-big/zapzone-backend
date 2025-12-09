@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\ActivityLog;
 use App\Models\Notification;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Validation\Rule;
@@ -128,8 +129,12 @@ class NotificationController extends Controller
         ]);
     }
 
-    public function destroy(Notification $notification): JsonResponse
+    public function destroy($id): JsonResponse
     {
+        $notification = Notification::findOrFail($id);
+
+        $user = User::findOrFail(auth()->id());
+
         $notificationId = $notification->id;
         $title = $notification->title;
         $locationId = $notification->location_id;
@@ -140,7 +145,7 @@ class NotificationController extends Controller
         ActivityLog::log(
             action: 'Notification Deleted',
             category: 'delete',
-            description: "Notification '{$title}' was deleted",
+            description: "Notification '{$title}' was deleted by {$user->first_name} {$user->last_name}",
             userId: auth()->id(),
             locationId: $locationId,
             entityType: 'notification',

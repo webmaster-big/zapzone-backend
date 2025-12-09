@@ -297,8 +297,11 @@ class UserController extends Controller
     /**
      * Remove the specified user.
      */
-    public function destroy(User $user): JsonResponse
+    public function destroy($id): JsonResponse
     {
+        $user = User::findOrFail($id);
+        $deletedBy = User::findOrFail(auth()->id());
+
         $userName = $user->first_name . ' ' . $user->last_name;
         $userId = $user->id;
         $locationId = $user->location_id;
@@ -309,7 +312,7 @@ class UserController extends Controller
         ActivityLog::log(
             action: 'User Deleted',
             category: 'delete',
-            description: "User {$userName} was deleted",
+            description: "User {$userName} was deleted by {$deletedBy->first_name} {$deletedBy->last_name}",
             userId: auth()->id(),
             locationId: $locationId,
             entityType: 'user',

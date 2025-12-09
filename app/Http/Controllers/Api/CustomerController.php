@@ -342,8 +342,11 @@ class CustomerController extends Controller
     /**
      * Remove the specified customer.
      */
-    public function destroy(Customer $customer): JsonResponse
+    public function destroy($id): JsonResponse
     {
+        $customer = Customer::findOrFail($id);
+        $user = User::findOrFail(auth()->id());
+
         $customerName = $customer->first_name . ' ' . $customer->last_name;
         $customerId = $customer->id;
 
@@ -353,7 +356,7 @@ class CustomerController extends Controller
         ActivityLog::log(
             action: 'Customer Deleted',
             category: 'delete',
-            description: "Customer {$customerName} was deleted",
+            description: "Customer {$customerName} was deleted by {$user->first_name} {$user->last_name}",
             userId: auth()->id(),
             locationId: null,
             entityType: 'customer',

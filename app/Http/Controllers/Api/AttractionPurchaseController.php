@@ -482,9 +482,12 @@ class AttractionPurchaseController extends Controller
     /**
      * Remove the specified attraction purchase.
      */
-    public function destroy(AttractionPurchase $attractionPurchase): JsonResponse
+    public function destroy($id): JsonResponse
     {
-        $customerName = $attractionPurchase->customer ? "{$attractionPurchase->customer->first_name} {$attractionPurchase->customer->last_name}" : $attractionPurchase->guest_name;
+        $attractionPurchase = AttractionPurchase::findOrFail($id);
+
+        $user = User::findOrFail(auth()->id());
+
         $attractionName = $attractionPurchase->attraction->name;
         $purchaseId = $attractionPurchase->id;
         $locationId = $attractionPurchase->attraction->location_id ?? null;
@@ -495,7 +498,7 @@ class AttractionPurchaseController extends Controller
         ActivityLog::log(
             action: 'Attraction Purchase Deleted',
             category: 'delete',
-            description: "Attraction purchase deleted: {$attractionName} by {$customerName}",
+            description: "Attraction purchase deleted: {$attractionName} by {$user->first_name} {$user->last_name}",
             userId: auth()->id(),
             locationId: $locationId,
             entityType: 'attraction_purchase',

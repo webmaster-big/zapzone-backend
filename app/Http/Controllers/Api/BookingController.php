@@ -840,6 +840,8 @@ class BookingController extends Controller
         ]);
     }
 
+
+
     /**
      * Check in the booking.
      */
@@ -1163,6 +1165,35 @@ class BookingController extends Controller
             'data' => ['deleted_count' => $deletedCount],
         ]);
     }
+
+    // detroy method
+    public function destroy($id): JsonResponse
+    {
+        $booking = Booking::findOrFail($id);
+
+        // deleted by whom?
+        $deletedBy = auth()->id();
+        $user = User::findOrFail($deletedBy);
+
+        $booking->delete();
+
+        // Log deletion
+        ActivityLog::log(
+            action: 'Booking Deleted',
+            category: 'delete',
+            description: "Booking {$booking->reference_number} deleted by {$user->first_name} {$user->last_name}",
+            userId: auth()->id(),
+            locationId: $booking->location_id,
+            entityType: 'booking',
+            entityId: $booking->id,
+            metadata: ['reference_number' => $booking->reference_number]
+        );
+        return response()->json([
+            'success' => true,
+            'message' => 'Booking deleted successfully',
+        ]);
+    }
+
 }
 
 

@@ -343,8 +343,12 @@ class AttractionController extends Controller
     /**
      * Remove the specified attraction.
      */
-    public function destroy(Attraction $attraction): JsonResponse
+    public function destroy($id): JsonResponse
     {
+        $attraction = Attraction::findOrFail($id);
+
+        $deletedBy = User::findOrFail(auth()->id());
+
         // Delete images if they exist
         if ($attraction->image && is_array($attraction->image)) {
             foreach ($attraction->image as $image) {
@@ -365,7 +369,7 @@ class AttractionController extends Controller
         ActivityLog::log(
             action: 'Attraction Deleted',
             category: 'delete',
-            description: "Attraction '{$attractionName}' was deleted",
+            description: "Attraction '{$attractionName}' was deleted by {$deletedBy->first_name} {$deletedBy->last_name}",
             userId: auth()->id(),
             locationId: $locationId,
             entityType: 'attraction',
@@ -702,7 +706,7 @@ class AttractionController extends Controller
                     }
                 }
             }
-            
+
             $locationIds[] = $attraction->location_id;
             $attraction->delete();
             $deletedCount++;

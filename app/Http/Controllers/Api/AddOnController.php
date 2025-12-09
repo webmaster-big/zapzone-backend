@@ -198,6 +198,8 @@ class AddOnController extends Controller
     {
         $addOn = AddOn::findOrFail($id);
 
+        $deletedBy = User::findOrFail(auth()->id());
+
         // Delete image if exists
         if ($addOn->image && file_exists(storage_path('app/public/' . $addOn->image))) {
             unlink(storage_path('app/public/' . $addOn->image));
@@ -213,7 +215,7 @@ class AddOnController extends Controller
         ActivityLog::log(
             action: 'Add-On Deleted',
             category: 'delete',
-            description: "Add-on '{$addOnName}' was deleted",
+            description: "Add-on '{$addOnName}' was deleted by {$deletedBy->first_name} {$deletedBy->last_name}",
             userId: auth()->id(),
             locationId: $locationId,
             entityType: 'addon',
@@ -340,7 +342,7 @@ class AddOnController extends Controller
             if ($addOn->image && file_exists(storage_path('app/public/' . $addOn->image))) {
                 unlink(storage_path('app/public/' . $addOn->image));
             }
-            
+
             $locationIds[] = $addOn->location_id;
             $addOn->delete();
             $deletedCount++;
