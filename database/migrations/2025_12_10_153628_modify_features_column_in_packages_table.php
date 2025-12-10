@@ -14,10 +14,10 @@ return new class extends Migration
     {
         // First, convert existing comma-separated features to JSON array
         DB::statement("UPDATE packages SET features = CONCAT('[\"', REPLACE(REPLACE(features, '\"', '\\\\\"'), ',', '\",\"'), '\"]') WHERE features IS NOT NULL AND features != ''");
-        
+
         // Handle empty strings
         DB::statement("UPDATE packages SET features = NULL WHERE features = ''");
-        
+
         Schema::table('packages', function (Blueprint $table) {
             // Change features from text to json to store array
             $table->json('features')->nullable()->change();
@@ -33,7 +33,7 @@ return new class extends Migration
             // Revert back to text
             $table->text('features')->nullable()->change();
         });
-        
+
         // Convert JSON arrays back to comma-separated strings
         $packages = DB::table('packages')->whereNotNull('features')->get();
         foreach ($packages as $package) {

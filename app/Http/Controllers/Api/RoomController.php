@@ -226,4 +226,55 @@ class RoomController extends Controller
             'data' => $rooms,
         ]);
     }
+
+    /**
+     * Bulk delete rooms.
+     */
+    public function bulkDelete(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'ids' => 'required|array|min:1',
+            'ids.*' => 'required|integer|exists:rooms,id',
+        ]);
+
+        $ids = $validated['ids'];
+        $deletedCount = 0;
+
+        foreach ($ids as $id) {
+            $room = Room::find($id);
+            if ($room) {
+                $roomName = $room->name;
+                $locationId = $room->location_id;
+                
+                $room->delete();
+                $deletedCount++;
+
+                // Log each room deletion
+                ActivityLog::log(
+                    action: 'Room Bulk Deleted',
+                    category: 'delete',
+                    description: "Room '{$roomName}' was deleted via bulk operation",
+                    userId: auth()->id(),
+                    locationId: $locationId,
+                    entityType: 'room',
+                    entityId: $id
+                );
+            }
+        }
+
+        // Log the bulk operation summary
+        ActivityLog::log(
+            action: 'Rooms Bulk Delete',
+            category: 'delete',
+            description: "Bulk deleted {$deletedCount} rooms",
+            userId: auth()->id(),
+            metadata: ['count' => $deletedCount, 'ids' => $ids]
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => "{$deletedCount} room(s) deleted successfully",
+            'data' => ['deleted_count' => $deletedCount],
+        ]);
+    }
 }

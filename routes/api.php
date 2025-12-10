@@ -162,6 +162,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('rooms/location/{locationId}', [RoomController::class, 'getByLocation']);
     Route::patch('rooms/{room}/toggle-availability', [RoomController::class, 'toggleAvailability']);
     Route::get('rooms/available', [RoomController::class, 'getAvailableRooms']);
+    Route::post('rooms/bulk-delete', [RoomController::class, 'bulkDelete']);
 
     // Add-on routes
     Route::apiResource('addons', AddOnController::class);
