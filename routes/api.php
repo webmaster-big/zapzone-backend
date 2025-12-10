@@ -35,12 +35,10 @@ Route::get('authorize-net/public-key/{locationId}', [AuthorizeNetAccountControll
 Route::get('authorize-net/accounts/all', [AuthorizeNetAccountController::class, 'allAccounts']);
 Route::post('authorize-net/test-connection', [AuthorizeNetAccountController::class, 'testConnection'])->middleware('auth:sanctum');
 
-// Attraction Route
-Route::get('attractions', [AttractionController::class, 'show']);
-
 // Public package and attraction browsing
 Route::get('/packages/grouped-by-name', [PackageController::class, 'packagesGroupedByName']);
 Route::get('/packages/{id}', [PackageController::class, 'show']);
+Route::get('attractions/{id}', [AttractionController::class, 'show']);
 Route::get('attractions/grouped', [AttractionController::class, 'attractionsGroupedByName']);
 Route::get('packages/location/{locationId}', [PackageController::class, 'getByLocation']);
 Route::get('attractions/location/{locationId}', [AttractionController::class, 'getByLocation']);
@@ -127,7 +125,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Attraction routes
     Route::post('attractions/bulk-import', [AttractionController::class, 'bulkImport']);
     Route::get('attractions/category/{category}', [AttractionController::class, 'getByCategory']);
-    Route::apiResource('attractions', AttractionController::class);
+    Route::apiResource('attractions', AttractionController::class)->except(['show']);
     Route::patch('attractions/{attraction}/toggle-status', [AttractionController::class, 'toggleStatus']);
     Route::patch('attractions/{attraction}/activate', [AttractionController::class, 'activate']);
     Route::patch('attractions/{attraction}/deactivate', [AttractionController::class, 'deactivate']);
