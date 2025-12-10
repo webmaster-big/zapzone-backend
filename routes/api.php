@@ -56,6 +56,9 @@ Route::patch('payments/{payment}', [PaymentController::class, 'update']);
 Route::post('bookings', [BookingController::class, 'store']);
 Route::post('bookings/{booking}/qrcode', [BookingController::class, 'storeQrCode']);
 
+// Public attraction purchase creation
+Route::post('attraction-purchases', [AttractionPurchaseController::class, 'store']);
+
 // Locations Route
 Route::get('locations', [LocationController::class, 'index']);
 Route::post('locations', [LocationController::class, 'store']);
@@ -142,7 +145,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('attractions/bulk-delete', [AttractionController::class, 'bulkDelete']);
 
     // Attraction Purchase routes
-    Route::apiResource('attraction-purchases', AttractionPurchaseController::class);
+    Route::apiResource('attraction-purchases', AttractionPurchaseController::class)->except(['store']);
     Route::get('attraction-purchases/statistics', [AttractionPurchaseController::class, 'statistics']);
     Route::get('attraction-purchases/customer/{customerId}', [AttractionPurchaseController::class, 'getByCustomer']);
     Route::get('attraction-purchases/attraction/{attractionId}', [AttractionPurchaseController::class, 'getByAttraction']);
