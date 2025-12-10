@@ -127,7 +127,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Attraction routes
     Route::post('attractions/bulk-import', [AttractionController::class, 'bulkImport']);
     Route::get('attractions/category/{category}', [AttractionController::class, 'getByCategory']);
-    Route::apiResource('attractions', AttractionController::class)->only(['index', 'store', 'update', 'destroy']);
+    Route::apiResource('attractions', AttractionController::class);
     Route::patch('attractions/{attraction}/toggle-status', [AttractionController::class, 'toggleStatus']);
     Route::patch('attractions/{attraction}/activate', [AttractionController::class, 'activate']);
     Route::patch('attractions/{attraction}/deactivate', [AttractionController::class, 'deactivate']);
