@@ -35,6 +35,9 @@ Route::get('authorize-net/public-key/{locationId}', [AuthorizeNetAccountControll
 Route::get('authorize-net/accounts/all', [AuthorizeNetAccountController::class, 'allAccounts']);
 Route::post('authorize-net/test-connection', [AuthorizeNetAccountController::class, 'testConnection'])->middleware('auth:sanctum');
 
+// Attraction Route
+Route::get('attractions', [AttractionController::class, 'show']);
+
 // Public package and attraction browsing
 Route::get('/packages/grouped-by-name', [PackageController::class, 'packagesGroupedByName']);
 Route::get('/packages/{id}', [PackageController::class, 'show']);
@@ -43,8 +46,7 @@ Route::get('packages/location/{locationId}', [PackageController::class, 'getByLo
 Route::get('attractions/location/{locationId}', [AttractionController::class, 'getByLocation']);
 Route::get('attractions/popular', [AttractionController::class, 'getPopular']);
 
-// Attraction Route
-Route::get('attractions', [AttractionController::class, 'show']);
+
 
 // Locations Route
 Route::get('locations', [LocationController::class, 'index']);
