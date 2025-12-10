@@ -248,8 +248,10 @@ class AttractionController extends Controller
     /**
      * Display the specified attraction.
      */
-    public function show(Attraction $attraction): JsonResponse
+    public function show($id): JsonResponse
     {
+        $attraction = Attraction::findOrFail($id);
+
         $attraction->load(['location', 'packages', 'bookings']);
 
         return response()->json([
