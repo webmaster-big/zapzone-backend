@@ -38,11 +38,11 @@ Route::post('authorize-net/test-connection', [AuthorizeNetAccountController::cla
 // Public package and attraction browsing
 Route::get('/packages/grouped-by-name', [PackageController::class, 'packagesGroupedByName']);
 Route::get('/packages/{id}', [PackageController::class, 'show']);
-Route::get('attractions/{id}', [AttractionController::class, 'show']);
 Route::get('attractions/grouped', [AttractionController::class, 'attractionsGroupedByName']);
-Route::get('packages/location/{locationId}', [PackageController::class, 'getByLocation']);
-Route::get('attractions/location/{locationId}', [AttractionController::class, 'getByLocation']);
 Route::get('attractions/popular', [AttractionController::class, 'getPopular']);
+Route::get('attractions/location/{locationId}', [AttractionController::class, 'getByLocation']);
+Route::get('attractions/{id}', [AttractionController::class, 'show']);
+Route::get('packages/location/{locationId}', [PackageController::class, 'getByLocation']);
 
 // Public customer search
 Route::get('customers/search', [CustomerController::class, 'search']);
@@ -58,6 +58,7 @@ Route::post('bookings/{booking}/qrcode', [BookingController::class, 'storeQrCode
 
 // Public attraction purchase creation
 Route::post('attraction-purchases', [AttractionPurchaseController::class, 'store']);
+Route::post('attraction-purchases/{attractionPurchase}/qrcode', [AttractionPurchaseController::class, 'storeQrCode']);
 
 // Locations Route
 Route::get('locations', [LocationController::class, 'index']);
