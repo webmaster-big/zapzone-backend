@@ -43,6 +43,9 @@ Route::get('packages/location/{locationId}', [PackageController::class, 'getByLo
 Route::get('attractions/location/{locationId}', [AttractionController::class, 'getByLocation']);
 Route::get('attractions/popular', [AttractionController::class, 'getPopular']);
 
+// Attraction Route
+Route::get('attractions', [AttractionController::class, 'show']);
+
 // Locations Route
 Route::get('locations', [LocationController::class, 'index']);
 Route::post('locations', [LocationController::class, 'store']);
@@ -109,6 +112,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('customers/{customer}/update-last-visit', [CustomerController::class, 'updateLastVisit']);
 
     // Package routes
+    Route::post('packages/room/create', [PackageController::class, 'storePackageRoom']);
     Route::apiResource('packages', PackageController::class);
     Route::post('packages/bulk-import', [PackageController::class, 'bulkImport']);
     Route::get('packages/category/{category}', [PackageController::class, 'getByCategory']);
@@ -121,7 +125,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Attraction routes
     Route::post('attractions/bulk-import', [AttractionController::class, 'bulkImport']);
     Route::get('attractions/category/{category}', [AttractionController::class, 'getByCategory']);
-    Route::apiResource('attractions', AttractionController::class);
+    Route::apiResource('attractions', AttractionController::class)->only(['index', 'store', 'update', 'destroy']);
     Route::patch('attractions/{attraction}/toggle-status', [AttractionController::class, 'toggleStatus']);
     Route::patch('attractions/{attraction}/activate', [AttractionController::class, 'activate']);
     Route::patch('attractions/{attraction}/deactivate', [AttractionController::class, 'deactivate']);

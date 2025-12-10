@@ -855,4 +855,21 @@ class PackageController extends Controller
         Log::info('Image path returned as-is', ['image' => substr($image, 0, 100)]);
         return $image;
     }
+
+    // store package room
+    public function storePackageRoom(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'package_id' => 'required|exists:packages,id',
+            'room_id' => 'required|exists:rooms,id',
+        ]);
+
+        $packageRoom = PackageRoom::create($validated);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Package room created successfully',
+            'data' => $packageRoom,
+        ], 201);
+    }
 }
