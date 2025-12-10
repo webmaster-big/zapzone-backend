@@ -49,6 +49,8 @@ Route::get('customers/search', [CustomerController::class, 'search']);
 
 // Public payment processing
 Route::post('payments/charge', [PaymentController::class, 'charge']);
+Route::put('payments/{payment}', [PaymentController::class, 'update']);
+Route::patch('payments/{payment}', [PaymentController::class, 'update']);
 
 // Public booking creation
 Route::post('bookings', [BookingController::class, 'store']);
@@ -192,7 +194,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('bookings/bulk-delete', [BookingController::class, 'bulkDelete']);
 
     // Payment routes
-    Route::apiResource('payments', PaymentController::class);
+    Route::apiResource('payments', PaymentController::class)->except(['update']);
     Route::patch('payments/{payment}/refund', [PaymentController::class, 'refund']);
 
     // Activity Log routes
