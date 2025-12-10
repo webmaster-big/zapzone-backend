@@ -50,6 +50,10 @@ Route::get('customers/search', [CustomerController::class, 'search']);
 // Public payment processing
 Route::post('payments/charge', [PaymentController::class, 'charge']);
 
+// Public booking creation
+Route::post('bookings', [BookingController::class, 'store']);
+Route::post('bookings/{booking}/qrcode', [BookingController::class, 'storeQrCode']);
+
 // Locations Route
 Route::get('locations', [LocationController::class, 'index']);
 Route::post('locations', [LocationController::class, 'store']);
@@ -177,8 +181,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Booking routes
     Route::get('bookings/export', [BookingController::class, 'exportIndex']);
-    Route::apiResource('bookings', BookingController::class);
-    Route::post('bookings/{booking}/qrcode', [BookingController::class, 'storeQrCode']);
+    Route::apiResource('bookings', BookingController::class)->except(['store']);
     Route::patch('bookings/{booking}/cancel', [BookingController::class, 'cancel']);
     Route::post('bookings/check-in', [BookingController::class, 'checkIn']);
     Route::patch('bookings/{booking}/complete', [BookingController::class, 'complete']);
