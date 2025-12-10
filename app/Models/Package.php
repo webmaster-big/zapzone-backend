@@ -47,6 +47,7 @@ class Package extends Model
         'available_days' => 'array',
         'available_week_days' => 'array',
         'available_month_days' => 'array',
+        'features' => 'array',
         'image' => 'array',
         'is_active' => 'boolean',
         // NEW: Time slot fields
