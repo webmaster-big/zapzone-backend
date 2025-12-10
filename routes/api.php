@@ -44,7 +44,8 @@ Route::get('packages/location/{locationId}', [PackageController::class, 'getByLo
 Route::get('attractions/location/{locationId}', [AttractionController::class, 'getByLocation']);
 Route::get('attractions/popular', [AttractionController::class, 'getPopular']);
 
-
+// Public customer search
+Route::get('customers/search', [CustomerController::class, 'search']);
 
 // Locations Route
 Route::get('locations', [LocationController::class, 'index']);
@@ -105,7 +106,6 @@ Route::middleware('auth:sanctum')->group(function () {
     // Customer routes
     Route::get('customers/bookings', [BookingController::class, 'customerBookings']);
     Route::get('customers/list/{user}', [CustomerController::class, 'fetchCustomerList']);
-    Route::get('customers/search', [CustomerController::class, 'search']);
     Route::apiResource('customers', CustomerController::class);
     Route::patch('customers/{customer}/toggle-status', [CustomerController::class, 'toggleStatus']);
     Route::get('customers/{customer}/statistics', [CustomerController::class, 'statistics']);
