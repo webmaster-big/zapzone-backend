@@ -155,7 +155,6 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('attraction-purchases/{attractionPurchase}/send-receipt', [AttractionPurchaseController::class, 'sendReceipt']);
     Route::get('attraction-purchases/{id}/verify', [AttractionPurchaseController::class, 'verify']);
     Route::patch('attraction-purchases/{id}/check-in', [AttractionPurchaseController::class, 'checkIn']);
-    Route::post('attraction-purchases/{attractionPurchase}/qrcode', [AttractionPurchaseController::class, 'storeQrCode']);
     Route::post('attraction-purchases/bulk-delete', [AttractionPurchaseController::class, 'bulkDelete']);
 
     // Room routes
