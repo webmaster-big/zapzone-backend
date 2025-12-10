@@ -47,6 +47,9 @@ Route::get('attractions/popular', [AttractionController::class, 'getPopular']);
 // Public customer search
 Route::get('customers/search', [CustomerController::class, 'search']);
 
+// Public payment processing
+Route::post('payments/charge', [PaymentController::class, 'charge']);
+
 // Locations Route
 Route::get('locations', [LocationController::class, 'index']);
 Route::post('locations', [LocationController::class, 'store']);
@@ -187,7 +190,6 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Payment routes
     Route::apiResource('payments', PaymentController::class);
-    Route::post('payments/charge', [PaymentController::class, 'charge']);
     Route::patch('payments/{payment}/refund', [PaymentController::class, 'refund']);
 
     // Activity Log routes
