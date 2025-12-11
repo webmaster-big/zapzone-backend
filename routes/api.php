@@ -119,6 +119,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Customer routes
     Route::get('customers/bookings', [BookingController::class, 'customerBookings']);
     Route::get('customers/list/{user}', [CustomerController::class, 'fetchCustomerList']);
+    Route::get('customers/analytics', [CustomerController::class, 'analytics']);
     Route::apiResource('customers', CustomerController::class);
     Route::patch('customers/{customer}/toggle-status', [CustomerController::class, 'toggleStatus']);
     Route::get('customers/{customer}/statistics', [CustomerController::class, 'statistics']);

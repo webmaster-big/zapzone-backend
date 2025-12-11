@@ -411,6 +411,8 @@ class CustomerController extends Controller
         ]);
     }
 
+
+
     /**
      * Update customer's last visit.
      */
@@ -450,6 +452,489 @@ class CustomerController extends Controller
         return response()->json([
             'success' => true,
             'data' => $customers,
+        ]);
+    }
+
+    /**
+     * Get comprehensive customer analytics.
+     */
+    public function analytics(Request $request): JsonResponse
+    {
+        // Get user from frontend parameter or auth
+        $userId = $request->get('user_id') ?? auth()->id();
+        $user = User::find($userId);
+        
+        // Get date range filter
+        $dateRange = $request->get('date_range', '30d');
+        $startDate = match($dateRange) {
+            '7d' => now()->subDays(7),
+            '30d' => now()->subDays(30),
+            '90d' => now()->subDays(90),
+            '1y' => now()->subYear(),
+            default => now()->subDays(30),
+        };
+
+        // Determine if we should filter by location
+        $isCompanyAdmin = $user && $user->role === 'company_admin';
+        
+        // If company admin and location_id is provided in request, use it
+        // If not company admin, always use their assigned location
+        $locationId = null;
+        if ($isCompanyAdmin) {
+            $locationId = $request->get('location_id') ? (int)$request->get('location_id') : null;
+        } else {
+            $locationId = $user ? $user->location_id : null;
+        }
+
+        // 1. Key Metrics
+        $totalCustomersQuery = Booking::query()
+            ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+            ->whereNotNull('guest_email')
+            ->distinct('guest_email');
+        
+        $purchaseCustomersQuery = AttractionPurchase::query()
+            ->when($locationId, function($q) use ($locationId) {
+                $q->whereHas('attraction', fn($query) => $query->where('location_id', $locationId));
+            })
+            ->whereNotNull('guest_email')
+            ->distinct('guest_email');
+
+        $totalCustomers = $totalCustomersQuery->count() + $purchaseCustomersQuery->count();
+
+        $activeCustomers = Booking::query()
+            ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+            ->where('created_at', '>=', now()->subDays(30))
+            ->whereNotNull('guest_email')
+            ->distinct('guest_email')
+            ->count();
+
+        $totalRevenue = Booking::query()
+            ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+            ->where('created_at', '>=', $startDate)
+            ->sum('total_amount');
+
+        $totalPurchaseRevenue = AttractionPurchase::query()
+            ->when($locationId, function($q) use ($locationId) {
+                $q->whereHas('attraction', fn($query) => $query->where('location_id', $locationId));
+            })
+            ->where('created_at', '>=', $startDate)
+            ->sum('total_amount');
+
+        $totalRevenueSum = $totalRevenue + $totalPurchaseRevenue;
+        $avgRevenuePerCustomer = $totalCustomers > 0 ? round($totalRevenueSum / $totalCustomers, 2) : 0;
+
+        $newCustomers = Booking::query()
+            ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+            ->where('created_at', '>=', now()->subDays(30))
+            ->whereNotNull('guest_email')
+            ->distinct('guest_email')
+            ->count();
+
+        // Calculate previous period metrics for comparison
+        $previousPeriodStart = match($dateRange) {
+            '7d' => now()->subDays(14),
+            '30d' => now()->subDays(60),
+            '90d' => now()->subDays(180),
+            '1y' => now()->subYears(2),
+            default => now()->subDays(60),
+        };
+
+        $previousPeriodEnd = match($dateRange) {
+            '7d' => now()->subDays(7),
+            '30d' => now()->subDays(30),
+            '90d' => now()->subDays(90),
+            '1y' => now()->subYear(),
+            default => now()->subDays(30),
+        };
+
+        // Previous period total customers
+        $prevTotalCustomers = Booking::query()
+            ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+            ->whereBetween('created_at', [$previousPeriodStart, $previousPeriodEnd])
+            ->whereNotNull('guest_email')
+            ->distinct('guest_email')
+            ->count();
+
+        // Previous period active customers
+        $prevActiveCustomers = Booking::query()
+            ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+            ->whereBetween('created_at', [now()->subDays(60), now()->subDays(30)])
+            ->whereNotNull('guest_email')
+            ->distinct('guest_email')
+            ->count();
+
+        // Previous period revenue
+        $prevTotalRevenue = Booking::query()
+            ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+            ->whereBetween('created_at', [$previousPeriodStart, $previousPeriodEnd])
+            ->sum('total_amount');
+
+        $prevPurchaseRevenue = AttractionPurchase::query()
+            ->when($locationId, function($q) use ($locationId) {
+                $q->whereHas('attraction', fn($query) => $query->where('location_id', $locationId));
+            })
+            ->whereBetween('created_at', [$previousPeriodStart, $previousPeriodEnd])
+            ->sum('total_amount');
+
+        $prevTotalRevenueSum = $prevTotalRevenue + $prevPurchaseRevenue;
+
+        // Previous period avg revenue per customer
+        $prevAvgRevenuePerCustomer = $prevTotalCustomers > 0 ? round($prevTotalRevenueSum / $prevTotalCustomers, 2) : 0;
+
+        // Previous period new customers
+        $prevNewCustomers = Booking::query()
+            ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+            ->whereBetween('created_at', [now()->subDays(60), now()->subDays(30)])
+            ->whereNotNull('guest_email')
+            ->distinct('guest_email')
+            ->count();
+
+        // Calculate percentage changes
+        $totalCustomersChange = $prevTotalCustomers > 0 
+            ? round((($totalCustomers - $prevTotalCustomers) / $prevTotalCustomers) * 100, 1) 
+            : 0;
+
+        $activeCustomersChange = $prevActiveCustomers > 0 
+            ? round((($activeCustomers - $prevActiveCustomers) / $prevActiveCustomers) * 100, 1) 
+            : 0;
+
+        $revenueChange = $prevTotalRevenueSum > 0 
+            ? round((($totalRevenueSum - $prevTotalRevenueSum) / $prevTotalRevenueSum) * 100, 1) 
+            : 0;
+
+        $avgRevenueChange = $prevAvgRevenuePerCustomer > 0 
+            ? round((($avgRevenuePerCustomer - $prevAvgRevenuePerCustomer) / $prevAvgRevenuePerCustomer) * 100, 1) 
+            : 0;
+
+        $newCustomersChange = $prevNewCustomers > 0 
+            ? round((($newCustomers - $prevNewCustomers) / $prevNewCustomers) * 100, 1) 
+            : 0;
+
+        // 2. Customer Growth (last 9 months)
+        $customerGrowth = [];
+        for ($i = 8; $i >= 0; $i--) {
+            $monthStart = now()->subMonths($i)->startOfMonth();
+            $monthEnd = now()->subMonths($i)->endOfMonth();
+            
+            $bookingCount = Booking::query()
+                ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+                ->whereBetween('created_at', [$monthStart, $monthEnd])
+                ->whereNotNull('guest_email')
+                ->distinct('guest_email')
+                ->count();
+
+            $purchaseCount = AttractionPurchase::query()
+                ->when($locationId, function($q) use ($locationId) {
+                    $q->whereHas('attraction', fn($query) => $query->where('location_id', $locationId));
+                })
+                ->whereBetween('created_at', [$monthStart, $monthEnd])
+                ->whereNotNull('guest_email')
+                ->distinct('guest_email')
+                ->count();
+
+            $totalCount = $bookingCount + $purchaseCount;
+            $growth = $i < 8 ? ($totalCount - ($customerGrowth[$i-1]['customers'] ?? 0)) : 0;
+
+            $customerGrowth[] = [
+                'month' => $monthStart->format('M'),
+                'customers' => $totalCount,
+                'growth' => $growth,
+            ];
+        }
+
+        // 3. Revenue Trend (last 9 months)
+        $revenueTrend = [];
+        for ($i = 8; $i >= 0; $i--) {
+            $monthStart = now()->subMonths($i)->startOfMonth();
+            $monthEnd = now()->subMonths($i)->endOfMonth();
+            
+            $bookingRevenue = Booking::query()
+                ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+                ->whereBetween('created_at', [$monthStart, $monthEnd])
+                ->sum('total_amount');
+
+            $purchaseRevenue = AttractionPurchase::query()
+                ->when($locationId, function($q) use ($locationId) {
+                    $q->whereHas('attraction', fn($query) => $query->where('location_id', $locationId));
+                })
+                ->whereBetween('created_at', [$monthStart, $monthEnd])
+                ->sum('total_amount');
+
+            $bookingCount = Booking::query()
+                ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+                ->whereBetween('created_at', [$monthStart, $monthEnd])
+                ->count();
+
+            $revenueTrend[] = [
+                'month' => $monthStart->format('M'),
+                'revenue' => round($bookingRevenue + $purchaseRevenue, 2),
+                'bookings' => $bookingCount,
+            ];
+        }
+
+        // 4. Booking Time Distribution
+        $bookingTimeDistribution = Booking::query()
+            ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+            ->where('created_at', '>=', $startDate)
+            ->selectRaw('HOUR(booking_date) as hour, COUNT(*) as count')
+            ->groupBy('hour')
+            ->orderBy('hour')
+            ->get()
+            ->map(fn($item) => [
+                'time' => date('g A', strtotime($item->hour . ':00')),
+                'count' => $item->count,
+            ]);
+
+        // 5. Top Bookings per Customer
+        $topBookingCustomers = Booking::query()
+            ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+            ->where('created_at', '>=', $startDate)
+            ->whereNotNull('guest_email')
+            ->selectRaw('guest_email, guest_name, COUNT(*) as bookings')
+            ->groupBy('guest_email', 'guest_name')
+            ->orderByDesc('bookings')
+            ->limit(5)
+            ->get()
+            ->map(fn($item) => [
+                'name' => $item->guest_name,
+                'bookings' => $item->bookings,
+            ]);
+
+        // 6. Customer Status Distribution
+        $activeCount = Booking::query()
+            ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+            ->where('created_at', '>=', now()->subDays(30))
+            ->whereNotNull('guest_email')
+            ->distinct('guest_email')
+            ->count();
+
+        $inactiveCount = Booking::query()
+            ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+            ->where('created_at', '<', now()->subDays(30))
+            ->whereNotNull('guest_email')
+            ->distinct('guest_email')
+            ->count();
+
+        $statusDistribution = [
+            ['status' => 'active', 'count' => $activeCount, 'color' => '#10b981'],
+            ['status' => 'inactive', 'count' => $inactiveCount, 'color' => '#ef4444'],
+            ['status' => 'new', 'count' => $newCustomers, 'color' => '#3b82f6'],
+        ];
+
+        // 7. Activity Hours (hourly distribution)
+        $activityHours = Booking::query()
+            ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+            ->where('created_at', '>=', $startDate)
+            ->selectRaw('HOUR(created_at) as hour, COUNT(*) as activity')
+            ->groupBy('hour')
+            ->orderBy('hour')
+            ->get()
+            ->map(fn($item) => [
+                'hour' => date('g A', strtotime($item->hour . ':00')),
+                'activity' => $item->activity,
+            ]);
+
+        // 8. Customer Lifetime Value Segments
+        $allCustomerEmails = Booking::query()
+            ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+            ->whereNotNull('guest_email')
+            ->distinct()
+            ->pluck('guest_email');
+
+        $customerValues = [];
+        foreach ($allCustomerEmails as $email) {
+            $totalSpent = Booking::where('guest_email', $email)
+                ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+                ->sum('total_amount');
+            
+            $purchaseSpent = AttractionPurchase::where('guest_email', $email)
+                ->when($locationId, function($q) use ($locationId) {
+                    $q->whereHas('attraction', fn($query) => $query->where('location_id', $locationId));
+                })
+                ->sum('total_amount');
+            
+            $customerValues[] = $totalSpent + $purchaseSpent;
+        }
+
+        $highValue = count(array_filter($customerValues, fn($v) => $v >= 1000));
+        $mediumValue = count(array_filter($customerValues, fn($v) => $v >= 500 && $v < 1000));
+        $lowValue = count(array_filter($customerValues, fn($v) => $v < 500));
+        $totalValues = count($customerValues) ?: 1;
+
+        $customerLifetimeValue = [
+            ['segment' => 'High Value', 'value' => round(($highValue / $totalValues) * 100), 'color' => '#10b981'],
+            ['segment' => 'Medium Value', 'value' => round(($mediumValue / $totalValues) * 100), 'color' => '#3b82f6'],
+            ['segment' => 'Low Value', 'value' => round(($lowValue / $totalValues) * 100), 'color' => '#ef4444'],
+        ];
+
+        // 9. Repeat Customers Rate (last 9 months)
+        $repeatCustomers = [];
+        for ($i = 8; $i >= 0; $i--) {
+            $monthStart = now()->subMonths($i)->startOfMonth();
+            $monthEnd = now()->subMonths($i)->endOfMonth();
+            
+            $allCustomers = Booking::query()
+                ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+                ->whereBetween('created_at', [$monthStart, $monthEnd])
+                ->whereNotNull('guest_email')
+                ->distinct('guest_email')
+                ->count();
+
+            $repeaters = Booking::query()
+                ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+                ->whereBetween('created_at', [$monthStart, $monthEnd])
+                ->whereNotNull('guest_email')
+                ->selectRaw('guest_email, COUNT(*) as count')
+                ->groupBy('guest_email')
+                ->havingRaw('COUNT(*) > 1')
+                ->count();
+
+            $repeatRate = $allCustomers > 0 ? round(($repeaters / $allCustomers) * 100) : 0;
+
+            $repeatCustomers[] = [
+                'month' => $monthStart->format('M'),
+                'repeatRate' => $repeatRate,
+            ];
+        }
+
+        // 10. Top 5 Most Purchased Activities by Customer
+        $topActivities = AttractionPurchase::query()
+            ->with('attraction')
+            ->when($locationId, function($q) use ($locationId) {
+                $q->whereHas('attraction', fn($query) => $query->where('location_id', $locationId));
+            })
+            ->where('created_at', '>=', $startDate)
+            ->whereNotNull('guest_email')
+            ->selectRaw('guest_email, guest_name, attraction_id, COUNT(*) as purchases')
+            ->groupBy('guest_email', 'guest_name', 'attraction_id')
+            ->orderByDesc('purchases')
+            ->limit(5)
+            ->get()
+            ->map(fn($item) => [
+                'customer' => $item->guest_name,
+                'activity' => $item->attraction->name ?? 'N/A',
+                'purchases' => $item->purchases,
+            ]);
+
+        // 11. Top 5 Most Booked Packages by Customer
+        $topPackages = Booking::query()
+            ->with('package')
+            ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+            ->where('created_at', '>=', $startDate)
+            ->whereNotNull('guest_email')
+            ->whereNotNull('package_id')
+            ->selectRaw('guest_email, guest_name, package_id, COUNT(*) as bookings')
+            ->groupBy('guest_email', 'guest_name', 'package_id')
+            ->orderByDesc('bookings')
+            ->limit(5)
+            ->get()
+            ->map(fn($item) => [
+                'customer' => $item->guest_name,
+                'package' => $item->package->name ?? 'N/A',
+                'bookings' => $item->bookings,
+            ]);
+
+        // 12. Recent Customers (from bookings and purchases)
+        $recentBookings = Booking::query()
+            ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+            ->whereNotNull('guest_email')
+            ->selectRaw('guest_email, guest_name, guest_phone, MIN(created_at) as join_date, MAX(created_at) as last_activity')
+            ->groupBy('guest_email', 'guest_name', 'guest_phone')
+            ->orderByDesc('last_activity')
+            ->limit(10)
+            ->get();
+
+        $recentCustomers = $recentBookings->map(function($customer) use ($locationId) {
+            $totalSpent = Booking::where('guest_email', $customer->guest_email)
+                ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+                ->sum('total_amount');
+
+            $purchaseSpent = AttractionPurchase::where('guest_email', $customer->guest_email)
+                ->when($locationId, function($q) use ($locationId) {
+                    $q->whereHas('attraction', fn($query) => $query->where('location_id', $locationId));
+                })
+                ->sum('total_amount');
+
+            $bookingCount = Booking::where('guest_email', $customer->guest_email)
+                ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+                ->count();
+
+            $isActive = $customer->last_activity >= now()->subDays(30);
+
+            return [
+                'id' => md5($customer->guest_email),
+                'name' => $customer->guest_name,
+                'email' => $customer->guest_email,
+                'joinDate' => $customer->join_date,
+                'totalSpent' => round($totalSpent + $purchaseSpent, 2),
+                'bookings' => $bookingCount,
+                'lastActivity' => $customer->last_activity,
+                'status' => $isActive ? 'active' : 'inactive',
+            ];
+        });
+
+        // Get previous repeat rate for comparison
+        $prevRepeatRate = count($repeatCustomers) > 1 ? $repeatCustomers[count($repeatCustomers) - 2]['repeatRate'] : 0;
+        $currentRepeatRate = $repeatCustomers[count($repeatCustomers) - 1]['repeatRate'];
+        $repeatRateChange = $prevRepeatRate > 0 
+            ? round((($currentRepeatRate - $prevRepeatRate) / $prevRepeatRate) * 100, 1) 
+            : 0;
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'keyMetrics' => [
+                    [
+                        'label' => 'Total Customers', 
+                        'value' => (string)$totalCustomers, 
+                        'change' => ($totalCustomersChange >= 0 ? '+' : '') . $totalCustomersChange . '%', 
+                        'trend' => $totalCustomersChange >= 0 ? 'up' : 'down'
+                    ],
+                    [
+                        'label' => 'Active Customers', 
+                        'value' => (string)$activeCustomers, 
+                        'change' => ($activeCustomersChange >= 0 ? '+' : '') . $activeCustomersChange . '%', 
+                        'trend' => $activeCustomersChange >= 0 ? 'up' : 'down'
+                    ],
+                    [
+                        'label' => 'Total Revenue', 
+                        'value' => '$' . number_format($totalRevenueSum, 2), 
+                        'change' => ($revenueChange >= 0 ? '+' : '') . $revenueChange . '%', 
+                        'trend' => $revenueChange >= 0 ? 'up' : 'down'
+                    ],
+                    [
+                        'label' => 'Repeat Rate', 
+                        'value' => $currentRepeatRate . '%', 
+                        'change' => ($repeatRateChange >= 0 ? '+' : '') . $repeatRateChange . '%', 
+                        'trend' => $repeatRateChange >= 0 ? 'up' : 'down'
+                    ],
+                    [
+                        'label' => 'Avg. Revenue/Customer', 
+                        'value' => '$' . $avgRevenuePerCustomer, 
+                        'change' => ($avgRevenueChange >= 0 ? '+' : '') . $avgRevenueChange . '%', 
+                        'trend' => $avgRevenueChange >= 0 ? 'up' : 'down'
+                    ],
+                    [
+                        'label' => 'New Customers (30d)', 
+                        'value' => (string)$newCustomers, 
+                        'change' => ($newCustomersChange >= 0 ? '+' : '') . $newCustomersChange . '%', 
+                        'trend' => $newCustomersChange >= 0 ? 'up' : 'down'
+                    ],
+                ],
+                'analyticsData' => [
+                    'customerGrowth' => $customerGrowth,
+                    'revenueTrend' => $revenueTrend,
+                    'bookingTimeDistribution' => $bookingTimeDistribution,
+                    'bookingsPerCustomer' => $topBookingCustomers,
+                    'statusDistribution' => $statusDistribution,
+                    'activityHours' => $activityHours,
+                    'customerLifetimeValue' => $customerLifetimeValue,
+                    'repeatCustomers' => $repeatCustomers,
+                ],
+                'topActivities' => $topActivities,
+                'topPackages' => $topPackages,
+                'recentCustomers' => $recentCustomers,
+            ],
         ]);
     }
 }
