@@ -463,7 +463,7 @@ class CustomerController extends Controller
         // Get user from frontend parameter or auth
         $userId = $request->get('user_id') ?? auth()->id();
         $user = User::find($userId);
-        
+
         // Get date range filter
         $dateRange = $request->get('date_range', '30d');
         $startDate = match($dateRange) {
@@ -476,7 +476,7 @@ class CustomerController extends Controller
 
         // Determine if we should filter by location
         $isCompanyAdmin = $user && $user->role === 'company_admin';
-        
+
         // If company admin and location_id is provided in request, use it
         // If not company admin, always use their assigned location
         $locationId = null;
@@ -491,7 +491,7 @@ class CustomerController extends Controller
             ->when($locationId, fn($q) => $q->where('location_id', $locationId))
             ->whereNotNull('guest_email')
             ->distinct('guest_email');
-        
+
         $purchaseCustomersQuery = AttractionPurchase::query()
             ->when($locationId, function($q) use ($locationId) {
                 $q->whereHas('attraction', fn($query) => $query->where('location_id', $locationId));
@@ -590,24 +590,24 @@ class CustomerController extends Controller
             ->count();
 
         // Calculate percentage changes
-        $totalCustomersChange = $prevTotalCustomers > 0 
-            ? round((($totalCustomers - $prevTotalCustomers) / $prevTotalCustomers) * 100, 1) 
+        $totalCustomersChange = $prevTotalCustomers > 0
+            ? round((($totalCustomers - $prevTotalCustomers) / $prevTotalCustomers) * 100, 1)
             : 0;
 
-        $activeCustomersChange = $prevActiveCustomers > 0 
-            ? round((($activeCustomers - $prevActiveCustomers) / $prevActiveCustomers) * 100, 1) 
+        $activeCustomersChange = $prevActiveCustomers > 0
+            ? round((($activeCustomers - $prevActiveCustomers) / $prevActiveCustomers) * 100, 1)
             : 0;
 
-        $revenueChange = $prevTotalRevenueSum > 0 
-            ? round((($totalRevenueSum - $prevTotalRevenueSum) / $prevTotalRevenueSum) * 100, 1) 
+        $revenueChange = $prevTotalRevenueSum > 0
+            ? round((($totalRevenueSum - $prevTotalRevenueSum) / $prevTotalRevenueSum) * 100, 1)
             : 0;
 
-        $avgRevenueChange = $prevAvgRevenuePerCustomer > 0 
-            ? round((($avgRevenuePerCustomer - $prevAvgRevenuePerCustomer) / $prevAvgRevenuePerCustomer) * 100, 1) 
+        $avgRevenueChange = $prevAvgRevenuePerCustomer > 0
+            ? round((($avgRevenuePerCustomer - $prevAvgRevenuePerCustomer) / $prevAvgRevenuePerCustomer) * 100, 1)
             : 0;
 
-        $newCustomersChange = $prevNewCustomers > 0 
-            ? round((($newCustomers - $prevNewCustomers) / $prevNewCustomers) * 100, 1) 
+        $newCustomersChange = $prevNewCustomers > 0
+            ? round((($newCustomers - $prevNewCustomers) / $prevNewCustomers) * 100, 1)
             : 0;
 
         // 2. Customer Growth (last 9 months)
@@ -615,7 +615,7 @@ class CustomerController extends Controller
         for ($i = 8; $i >= 0; $i--) {
             $monthStart = now()->subMonths($i)->startOfMonth();
             $monthEnd = now()->subMonths($i)->endOfMonth();
-            
+
             $bookingCount = Booking::query()
                 ->when($locationId, fn($q) => $q->where('location_id', $locationId))
                 ->whereBetween('created_at', [$monthStart, $monthEnd])
@@ -647,7 +647,7 @@ class CustomerController extends Controller
         for ($i = 8; $i >= 0; $i--) {
             $monthStart = now()->subMonths($i)->startOfMonth();
             $monthEnd = now()->subMonths($i)->endOfMonth();
-            
+
             $bookingRevenue = Booking::query()
                 ->when($locationId, fn($q) => $q->where('location_id', $locationId))
                 ->whereBetween('created_at', [$monthStart, $monthEnd])
@@ -701,81 +701,24 @@ class CustomerController extends Controller
             ]);
 
         // 6. Customer Status Distribution
-        // Get all unique customer emails with their first and last activity dates
-        $allCustomerEmails = Booking::query()
+        $activeCount = Booking::query()
             ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+            ->where('created_at', '>=', now()->subDays(30))
             ->whereNotNull('guest_email')
-            ->selectRaw('guest_email, MIN(created_at) as first_activity, MAX(created_at) as last_activity')
-            ->groupBy('guest_email')
-            ->get();
+            ->distinct('guest_email')
+            ->count();
 
-        // Also get customer emails from purchases
-        $purchaseCustomerEmails = AttractionPurchase::query()
-            ->when($locationId, function($q) use ($locationId) {
-                $q->whereHas('attraction', fn($query) => $query->where('location_id', $locationId));
-            })
+        $inactiveCount = Booking::query()
+            ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+            ->where('created_at', '<', now()->subDays(30))
             ->whereNotNull('guest_email')
-            ->selectRaw('guest_email, MIN(created_at) as first_activity, MAX(created_at) as last_activity')
-            ->groupBy('guest_email')
-            ->get();
-
-        // Merge and determine status for each customer
-        $customerStatuses = ['active' => 0, 'inactive' => 0, 'new' => 0];
-        $processedEmails = [];
-
-        foreach ($allCustomerEmails->concat($purchaseCustomerEmails) as $customer) {
-            if (in_array($customer->guest_email, $processedEmails)) {
-                continue;
-            }
-            $processedEmails[] = $customer->guest_email;
-
-            // Get combined first and last activity from both bookings and purchases
-            $bookingFirst = Booking::where('guest_email', $customer->guest_email)
-                ->when($locationId, fn($q) => $q->where('location_id', $locationId))
-                ->min('created_at');
-            
-            $bookingLast = Booking::where('guest_email', $customer->guest_email)
-                ->when($locationId, fn($q) => $q->where('location_id', $locationId))
-                ->max('created_at');
-
-            $purchaseFirst = AttractionPurchase::where('guest_email', $customer->guest_email)
-                ->when($locationId, function($q) use ($locationId) {
-                    $q->whereHas('attraction', fn($query) => $query->where('location_id', $locationId));
-                })
-                ->min('created_at');
-
-            $purchaseLast = AttractionPurchase::where('guest_email', $customer->guest_email)
-                ->when($locationId, function($q) use ($locationId) {
-                    $q->whereHas('attraction', fn($query) => $query->where('location_id', $locationId));
-                })
-                ->max('created_at');
-
-            $firstActivity = min(array_filter([$bookingFirst, $purchaseFirst]));
-            $lastActivity = max(array_filter([$bookingLast, $purchaseLast]));
-
-            // Determine status based on activity dates
-            $daysSinceFirst = now()->diffInDays($firstActivity);
-            $daysSinceLast = now()->diffInDays($lastActivity);
-
-            if ($daysSinceFirst <= 7) {
-                // New customer: first activity within 7 days
-                $customerStatuses['new']++;
-            } elseif ($daysSinceLast <= 30) {
-                // Active customer: last activity within 30 days
-                $customerStatuses['active']++;
-            } elseif ($daysSinceLast >= 60) {
-                // Inactive customer: last activity 60+ days ago
-                $customerStatuses['inactive']++;
-            } else {
-                // Edge case: between 30-60 days, consider active
-                $customerStatuses['active']++;
-            }
-        }
+            ->distinct('guest_email')
+            ->count();
 
         $statusDistribution = [
-            ['status' => 'active', 'count' => $customerStatuses['active'], 'color' => '#10b981'],
-            ['status' => 'inactive', 'count' => $customerStatuses['inactive'], 'color' => '#ef4444'],
-            ['status' => 'new', 'count' => $customerStatuses['new'], 'color' => '#3b82f6'],
+            ['status' => 'active', 'count' => $activeCount, 'color' => '#10b981'],
+            ['status' => 'inactive', 'count' => $inactiveCount, 'color' => '#ef4444'],
+            ['status' => 'new', 'count' => $newCustomers, 'color' => '#3b82f6'],
         ];
 
         // 7. Activity Hours (hourly distribution)
@@ -803,13 +746,13 @@ class CustomerController extends Controller
             $totalSpent = Booking::where('guest_email', $email)
                 ->when($locationId, fn($q) => $q->where('location_id', $locationId))
                 ->sum('total_amount');
-            
+
             $purchaseSpent = AttractionPurchase::where('guest_email', $email)
                 ->when($locationId, function($q) use ($locationId) {
                     $q->whereHas('attraction', fn($query) => $query->where('location_id', $locationId));
                 })
                 ->sum('total_amount');
-            
+
             $customerValues[] = $totalSpent + $purchaseSpent;
         }
 
@@ -829,7 +772,7 @@ class CustomerController extends Controller
         for ($i = 8; $i >= 0; $i--) {
             $monthStart = now()->subMonths($i)->startOfMonth();
             $monthEnd = now()->subMonths($i)->endOfMonth();
-            
+
             $allCustomers = Booking::query()
                 ->when($locationId, fn($q) => $q->where('location_id', $locationId))
                 ->whereBetween('created_at', [$monthStart, $monthEnd])
@@ -916,19 +859,7 @@ class CustomerController extends Controller
                 ->when($locationId, fn($q) => $q->where('location_id', $locationId))
                 ->count();
 
-            // Determine status based on first and last activity
-            $daysSinceFirst = now()->diffInDays($customer->join_date);
-            $daysSinceLast = now()->diffInDays($customer->last_activity);
-
-            if ($daysSinceFirst <= 7) {
-                $status = 'new';
-            } elseif ($daysSinceLast <= 30) {
-                $status = 'active';
-            } elseif ($daysSinceLast >= 60) {
-                $status = 'inactive';
-            } else {
-                $status = 'active'; // Edge case: 30-60 days
-            }
+            $isActive = $customer->last_activity >= now()->subDays(30);
 
             return [
                 'id' => md5($customer->guest_email),
@@ -938,15 +869,15 @@ class CustomerController extends Controller
                 'totalSpent' => round($totalSpent + $purchaseSpent, 2),
                 'bookings' => $bookingCount,
                 'lastActivity' => $customer->last_activity,
-                'status' => $status,
+                'status' => $isActive ? 'active' : 'inactive',
             ];
         });
 
         // Get previous repeat rate for comparison
         $prevRepeatRate = count($repeatCustomers) > 1 ? $repeatCustomers[count($repeatCustomers) - 2]['repeatRate'] : 0;
         $currentRepeatRate = $repeatCustomers[count($repeatCustomers) - 1]['repeatRate'];
-        $repeatRateChange = $prevRepeatRate > 0 
-            ? round((($currentRepeatRate - $prevRepeatRate) / $prevRepeatRate) * 100, 1) 
+        $repeatRateChange = $prevRepeatRate > 0
+            ? round((($currentRepeatRate - $prevRepeatRate) / $prevRepeatRate) * 100, 1)
             : 0;
 
         return response()->json([
@@ -954,39 +885,39 @@ class CustomerController extends Controller
             'data' => [
                 'keyMetrics' => [
                     [
-                        'label' => 'Total Customers', 
-                        'value' => (string)$totalCustomers, 
-                        'change' => ($totalCustomersChange >= 0 ? '+' : '') . $totalCustomersChange . '%', 
+                        'label' => 'Total Customers',
+                        'value' => (string)$totalCustomers,
+                        'change' => ($totalCustomersChange >= 0 ? '+' : '') . $totalCustomersChange . '%',
                         'trend' => $totalCustomersChange >= 0 ? 'up' : 'down'
                     ],
                     [
-                        'label' => 'Active Customers', 
-                        'value' => (string)$activeCustomers, 
-                        'change' => ($activeCustomersChange >= 0 ? '+' : '') . $activeCustomersChange . '%', 
+                        'label' => 'Active Customers',
+                        'value' => (string)$activeCustomers,
+                        'change' => ($activeCustomersChange >= 0 ? '+' : '') . $activeCustomersChange . '%',
                         'trend' => $activeCustomersChange >= 0 ? 'up' : 'down'
                     ],
                     [
-                        'label' => 'Total Revenue', 
-                        'value' => '$' . number_format($totalRevenueSum, 2), 
-                        'change' => ($revenueChange >= 0 ? '+' : '') . $revenueChange . '%', 
+                        'label' => 'Total Revenue',
+                        'value' => '$' . number_format($totalRevenueSum, 2),
+                        'change' => ($revenueChange >= 0 ? '+' : '') . $revenueChange . '%',
                         'trend' => $revenueChange >= 0 ? 'up' : 'down'
                     ],
                     [
-                        'label' => 'Repeat Rate', 
-                        'value' => $currentRepeatRate . '%', 
-                        'change' => ($repeatRateChange >= 0 ? '+' : '') . $repeatRateChange . '%', 
+                        'label' => 'Repeat Rate',
+                        'value' => $currentRepeatRate . '%',
+                        'change' => ($repeatRateChange >= 0 ? '+' : '') . $repeatRateChange . '%',
                         'trend' => $repeatRateChange >= 0 ? 'up' : 'down'
                     ],
                     [
-                        'label' => 'Avg. Revenue/Customer', 
-                        'value' => '$' . $avgRevenuePerCustomer, 
-                        'change' => ($avgRevenueChange >= 0 ? '+' : '') . $avgRevenueChange . '%', 
+                        'label' => 'Avg. Revenue/Customer',
+                        'value' => '$' . $avgRevenuePerCustomer,
+                        'change' => ($avgRevenueChange >= 0 ? '+' : '') . $avgRevenueChange . '%',
                         'trend' => $avgRevenueChange >= 0 ? 'up' : 'down'
                     ],
                     [
-                        'label' => 'New Customers (30d)', 
-                        'value' => (string)$newCustomers, 
-                        'change' => ($newCustomersChange >= 0 ? '+' : '') . $newCustomersChange . '%', 
+                        'label' => 'New Customers (30d)',
+                        'value' => (string)$newCustomers,
+                        'change' => ($newCustomersChange >= 0 ? '+' : '') . $newCustomersChange . '%',
                         'trend' => $newCustomersChange >= 0 ? 'up' : 'down'
                     ],
                 ],
