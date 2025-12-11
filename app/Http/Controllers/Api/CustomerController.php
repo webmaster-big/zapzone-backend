@@ -773,21 +773,29 @@ class CustomerController extends Controller
             $monthStart = now()->subMonths($i)->startOfMonth();
             $monthEnd = now()->subMonths($i)->endOfMonth();
 
-            $allCustomers = Booking::query()
+            // Get all customers who made bookings in this month
+            $monthCustomerEmails = Booking::query()
                 ->when($locationId, fn($q) => $q->where('location_id', $locationId))
                 ->whereBetween('created_at', [$monthStart, $monthEnd])
                 ->whereNotNull('guest_email')
-                ->distinct('guest_email')
-                ->count();
+                ->distinct()
+                ->pluck('guest_email');
 
-            $repeaters = Booking::query()
-                ->when($locationId, fn($q) => $q->where('location_id', $locationId))
-                ->whereBetween('created_at', [$monthStart, $monthEnd])
-                ->whereNotNull('guest_email')
-                ->selectRaw('guest_email, COUNT(*) as count')
-                ->groupBy('guest_email')
-                ->havingRaw('COUNT(*) > 1')
-                ->count();
+            $allCustomers = $monthCustomerEmails->count();
+
+            // Count how many of these customers had previous bookings (before this month)
+            $repeaters = 0;
+            foreach ($monthCustomerEmails as $email) {
+                $previousBookings = Booking::query()
+                    ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+                    ->where('guest_email', $email)
+                    ->where('created_at', '<', $monthStart)
+                    ->count();
+                
+                if ($previousBookings > 0) {
+                    $repeaters++;
+                }
+            }
 
             $repeatRate = $allCustomers > 0 ? round(($repeaters / $allCustomers) * 100) : 0;
 
