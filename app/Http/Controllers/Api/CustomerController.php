@@ -1292,25 +1292,21 @@ class CustomerController extends Controller
     }
 
     /**
-     * Generate PDF export (HTML-based report for printing).
+     * Generate PDF export using DomPDF.
      */
     private function generatePDFExport($data, $locationName, $dateRange, $user)
     {
-        $filename = 'customer_analytics_' . date('Y-m-d_His') . '.html';
+        $filename = 'customer_analytics_' . date('Y-m-d_His') . '.pdf';
         
-        $html = view('exports.customer-analytics-pdf', [
+        $pdf = \PDF::loadView('exports.customer-analytics-pdf', [
             'data' => $data,
             'locationName' => $locationName,
             'dateRange' => $dateRange,
             'generatedBy' => $user ? $user->first_name . ' ' . $user->last_name : 'System',
             'generatedAt' => now()->format('F d, Y - h:i A'),
-        ])->render();
-
-        return response($html, 200, [
-            'Content-Type' => 'text/html; charset=utf-8',
-            'Content-Disposition' => 'inline; filename="' . $filename . '"',
-            'Cache-Control' => 'no-cache, no-store, must-revalidate',
         ]);
+
+        return $pdf->download($filename);
     }
 
     /**
