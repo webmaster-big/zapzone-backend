@@ -962,4 +962,375 @@ class CustomerController extends Controller
             ],
         ]);
     }
+
+    /**
+     * Export customer analytics data in various formats (CSV, PDF).
+     */
+    public function exportAnalytics(Request $request)
+    {
+        $validated = $request->validate([
+            'user_id' => 'nullable|exists:users,id',
+            'location_id' => 'nullable|exists:locations,id',
+            'date_range' => 'nullable|in:7d,30d,90d,1y,all',
+            'format' => 'required|in:csv,pdf,receipt',
+            'include_sections' => 'nullable|array',
+            'include_sections.*' => 'in:customers,revenue,bookings,activities,packages',
+        ]);
+
+        $userId = $request->get('user_id') ?? auth()->id();
+        $user = User::find($userId);
+        $format = $validated['format'];
+        $includeSections = $validated['include_sections'] ?? ['customers', 'revenue', 'bookings', 'activities', 'packages'];
+
+        // Get date range filter
+        $dateRange = $request->get('date_range', '30d');
+        $startDate = match($dateRange) {
+            '7d' => now()->subDays(7),
+            '30d' => now()->subDays(30),
+            '90d' => now()->subDays(90),
+            '1y' => now()->subYear(),
+            'all' => null,
+            default => now()->subDays(30),
+        };
+
+        // Location filtering
+        $isCompanyAdmin = $user && $user->role === 'company_admin';
+        $locationId = null;
+        if ($isCompanyAdmin) {
+            $locationId = $request->get('location_id') ? (int)$request->get('location_id') : null;
+        } else {
+            $locationId = $user ? $user->location_id : null;
+        }
+
+        // Get location name for report
+        $locationName = 'All Locations';
+        if ($locationId) {
+            $location = \App\Models\Location::find($locationId);
+            $locationName = $location ? $location->name : 'Unknown Location';
+        }
+
+        // Collect export data
+        $exportData = [];
+
+        if (in_array('customers', $includeSections)) {
+            // Get all customers with their details
+            $bookingEmails = Booking::query()
+                ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+                ->when($startDate, fn($q) => $q->where('created_at', '>=', $startDate))
+                ->whereNotNull('guest_email')
+                ->distinct()
+                ->pluck('guest_email');
+
+            $purchaseEmails = AttractionPurchase::query()
+                ->when($locationId, function($q) use ($locationId) {
+                    $q->whereHas('attraction', fn($query) => $query->where('location_id', $locationId));
+                })
+                ->when($startDate, fn($q) => $q->where('created_at', '>=', $startDate))
+                ->whereNotNull('guest_email')
+                ->distinct()
+                ->pluck('guest_email');
+
+            $allEmails = $bookingEmails->merge($purchaseEmails)->unique();
+
+            $exportData['customers'] = [];
+            foreach ($allEmails as $email) {
+                $firstBooking = Booking::where('guest_email', $email)
+                    ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+                    ->orderBy('created_at')
+                    ->first();
+
+                $lastBooking = Booking::where('guest_email', $email)
+                    ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+                    ->orderByDesc('created_at')
+                    ->first();
+
+                $totalBookings = Booking::where('guest_email', $email)
+                    ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+                    ->when($startDate, fn($q) => $q->where('created_at', '>=', $startDate))
+                    ->count();
+
+                $totalSpent = Booking::where('guest_email', $email)
+                    ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+                    ->when($startDate, fn($q) => $q->where('created_at', '>=', $startDate))
+                    ->sum('total_amount');
+
+                $purchaseSpent = AttractionPurchase::where('guest_email', $email)
+                    ->when($locationId, function($q) use ($locationId) {
+                        $q->whereHas('attraction', fn($query) => $query->where('location_id', $locationId));
+                    })
+                    ->when($startDate, fn($q) => $q->where('created_at', '>=', $startDate))
+                    ->sum('total_amount');
+
+                $totalPurchases = AttractionPurchase::where('guest_email', $email)
+                    ->when($locationId, function($q) use ($locationId) {
+                        $q->whereHas('attraction', fn($query) => $query->where('location_id', $locationId));
+                    })
+                    ->when($startDate, fn($q) => $q->where('created_at', '>=', $startDate))
+                    ->count();
+
+                $customerName = $firstBooking ? $firstBooking->guest_name : 
+                               ($lastBooking ? $lastBooking->guest_name : 'Unknown');
+
+                $exportData['customers'][] = [
+                    'name' => $customerName,
+                    'email' => $email,
+                    'total_bookings' => $totalBookings,
+                    'total_purchases' => $totalPurchases,
+                    'total_spent' => round($totalSpent + $purchaseSpent, 2),
+                    'first_visit' => $firstBooking ? $firstBooking->created_at->format('Y-m-d') : 'N/A',
+                    'last_visit' => $lastBooking ? $lastBooking->created_at->format('Y-m-d') : 'N/A',
+                ];
+            }
+        }
+
+        if (in_array('revenue', $includeSections)) {
+            // Revenue by month
+            $exportData['revenue_by_month'] = [];
+            for ($i = 8; $i >= 0; $i--) {
+                $monthStart = now()->subMonths($i)->startOfMonth();
+                $monthEnd = now()->subMonths($i)->endOfMonth();
+
+                $bookingRevenue = Booking::query()
+                    ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+                    ->whereBetween('created_at', [$monthStart, $monthEnd])
+                    ->sum('total_amount');
+
+                $purchaseRevenue = AttractionPurchase::query()
+                    ->when($locationId, function($q) use ($locationId) {
+                        $q->whereHas('attraction', fn($query) => $query->where('location_id', $locationId));
+                    })
+                    ->whereBetween('created_at', [$monthStart, $monthEnd])
+                    ->sum('total_amount');
+
+                $exportData['revenue_by_month'][] = [
+                    'month' => $monthStart->format('M Y'),
+                    'bookings_revenue' => round($bookingRevenue, 2),
+                    'purchases_revenue' => round($purchaseRevenue, 2),
+                    'total_revenue' => round($bookingRevenue + $purchaseRevenue, 2),
+                ];
+            }
+        }
+
+        if (in_array('bookings', $includeSections)) {
+            // Top booking customers
+            $exportData['top_customers'] = Booking::query()
+                ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+                ->when($startDate, fn($q) => $q->where('created_at', '>=', $startDate))
+                ->whereNotNull('guest_email')
+                ->selectRaw('guest_email, guest_name, COUNT(*) as booking_count, SUM(total_amount) as total_spent')
+                ->groupBy('guest_email', 'guest_name')
+                ->orderByDesc('booking_count')
+                ->limit(20)
+                ->get()
+                ->map(fn($item) => [
+                    'name' => $item->guest_name,
+                    'email' => $item->guest_email,
+                    'bookings' => $item->booking_count,
+                    'total_spent' => round($item->total_spent, 2),
+                ])
+                ->toArray();
+        }
+
+        if (in_array('activities', $includeSections)) {
+            // Top activities
+            $exportData['top_activities'] = AttractionPurchase::query()
+                ->with('attraction')
+                ->when($locationId, function($q) use ($locationId) {
+                    $q->whereHas('attraction', fn($query) => $query->where('location_id', $locationId));
+                })
+                ->when($startDate, fn($q) => $q->where('created_at', '>=', $startDate))
+                ->whereNotNull('guest_email')
+                ->selectRaw('attraction_id, COUNT(*) as purchase_count, SUM(total_amount) as total_revenue')
+                ->groupBy('attraction_id')
+                ->orderByDesc('purchase_count')
+                ->limit(10)
+                ->get()
+                ->map(fn($item) => [
+                    'activity' => $item->attraction->name ?? 'N/A',
+                    'purchases' => $item->purchase_count,
+                    'revenue' => round($item->total_revenue, 2),
+                ])
+                ->toArray();
+        }
+
+        if (in_array('packages', $includeSections)) {
+            // Top packages
+            $exportData['top_packages'] = Booking::query()
+                ->with('package')
+                ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+                ->when($startDate, fn($q) => $q->where('created_at', '>=', $startDate))
+                ->whereNotNull('guest_email')
+                ->whereNotNull('package_id')
+                ->selectRaw('package_id, COUNT(*) as booking_count, SUM(total_amount) as total_revenue')
+                ->groupBy('package_id')
+                ->orderByDesc('booking_count')
+                ->limit(10)
+                ->get()
+                ->map(fn($item) => [
+                    'package' => $item->package->name ?? 'N/A',
+                    'bookings' => $item->booking_count,
+                    'revenue' => round($item->total_revenue, 2),
+                ])
+                ->toArray();
+        }
+
+        // Generate export based on format
+        if ($format === 'csv') {
+            return $this->generateCSVExport($exportData, $locationName, $dateRange);
+        } elseif ($format === 'receipt') {
+            return $this->generateReceiptExport($exportData, $locationName, $dateRange, $user);
+        } else {
+            return $this->generatePDFExport($exportData, $locationName, $dateRange, $user);
+        }
+    }
+
+    /**
+     * Generate CSV export.
+     */
+    private function generateCSVExport($data, $locationName, $dateRange)
+    {
+        $filename = 'customer_analytics_' . date('Y-m-d_His') . '.csv';
+        
+        $headers = [
+            'Content-Type' => 'text/csv',
+            'Content-Disposition' => 'attachment; filename="' . $filename . '"',
+        ];
+
+        $callback = function() use ($data, $locationName, $dateRange) {
+            $file = fopen('php://output', 'w');
+
+            // Header information
+            fputcsv($file, ['Customer Analytics Report']);
+            fputcsv($file, ['Location:', $locationName]);
+            fputcsv($file, ['Date Range:', $dateRange]);
+            fputcsv($file, ['Generated:', now()->format('Y-m-d H:i:s')]);
+            fputcsv($file, []);
+
+            // Customers section
+            if (isset($data['customers'])) {
+                fputcsv($file, ['CUSTOMER LIST']);
+                fputcsv($file, ['Name', 'Email', 'Total Bookings', 'Total Purchases', 'Total Spent', 'First Visit', 'Last Visit']);
+                foreach ($data['customers'] as $customer) {
+                    fputcsv($file, [
+                        $customer['name'],
+                        $customer['email'],
+                        $customer['total_bookings'],
+                        $customer['total_purchases'],
+                        '$' . number_format($customer['total_spent'], 2),
+                        $customer['first_visit'],
+                        $customer['last_visit'],
+                    ]);
+                }
+                fputcsv($file, []);
+            }
+
+            // Revenue by month section
+            if (isset($data['revenue_by_month'])) {
+                fputcsv($file, ['REVENUE BY MONTH']);
+                fputcsv($file, ['Month', 'Bookings Revenue', 'Purchases Revenue', 'Total Revenue']);
+                foreach ($data['revenue_by_month'] as $revenue) {
+                    fputcsv($file, [
+                        $revenue['month'],
+                        '$' . number_format($revenue['bookings_revenue'], 2),
+                        '$' . number_format($revenue['purchases_revenue'], 2),
+                        '$' . number_format($revenue['total_revenue'], 2),
+                    ]);
+                }
+                fputcsv($file, []);
+            }
+
+            // Top customers section
+            if (isset($data['top_customers'])) {
+                fputcsv($file, ['TOP CUSTOMERS']);
+                fputcsv($file, ['Name', 'Email', 'Bookings', 'Total Spent']);
+                foreach ($data['top_customers'] as $customer) {
+                    fputcsv($file, [
+                        $customer['name'],
+                        $customer['email'],
+                        $customer['bookings'],
+                        '$' . number_format($customer['total_spent'], 2),
+                    ]);
+                }
+                fputcsv($file, []);
+            }
+
+            // Top activities section
+            if (isset($data['top_activities'])) {
+                fputcsv($file, ['TOP ACTIVITIES']);
+                fputcsv($file, ['Activity', 'Purchases', 'Revenue']);
+                foreach ($data['top_activities'] as $activity) {
+                    fputcsv($file, [
+                        $activity['activity'],
+                        $activity['purchases'],
+                        '$' . number_format($activity['revenue'], 2),
+                    ]);
+                }
+                fputcsv($file, []);
+            }
+
+            // Top packages section
+            if (isset($data['top_packages'])) {
+                fputcsv($file, ['TOP PACKAGES']);
+                fputcsv($file, ['Package', 'Bookings', 'Revenue']);
+                foreach ($data['top_packages'] as $package) {
+                    fputcsv($file, [
+                        $package['package'],
+                        $package['bookings'],
+                        '$' . number_format($package['revenue'], 2),
+                    ]);
+                }
+                fputcsv($file, []);
+            }
+
+            fclose($file);
+        };
+
+        return response()->stream($callback, 200, $headers);
+    }
+
+    /**
+     * Generate PDF export (simple HTML-based report).
+     */
+    private function generatePDFExport($data, $locationName, $dateRange, $user)
+    {
+        $filename = 'customer_analytics_' . date('Y-m-d_His') . '.html';
+        
+        $html = view('exports.customer-analytics-pdf', [
+            'data' => $data,
+            'locationName' => $locationName,
+            'dateRange' => $dateRange,
+            'generatedBy' => $user ? $user->first_name . ' ' . $user->last_name : 'System',
+            'generatedAt' => now()->format('F d, Y - h:i A'),
+        ])->render();
+
+        $headers = [
+            'Content-Type' => 'text/html',
+            'Content-Disposition' => 'inline; filename="' . $filename . '"',
+        ];
+
+        return response($html, 200, $headers);
+    }
+
+    /**
+     * Generate Receipt-style export (compact printer-friendly format).
+     */
+    private function generateReceiptExport($data, $locationName, $dateRange, $user)
+    {
+        $filename = 'customer_analytics_receipt_' . date('Y-m-d_His') . '.html';
+        
+        $html = view('exports.customer-analytics-receipt', [
+            'data' => $data,
+            'locationName' => $locationName,
+            'dateRange' => $dateRange,
+            'generatedBy' => $user ? $user->first_name . ' ' . $user->last_name : 'System',
+            'generatedAt' => now()->format('M d, Y - h:i A'),
+        ])->render();
+
+        $headers = [
+            'Content-Type' => 'text/html',
+            'Content-Disposition' => 'inline; filename="' . $filename . '"',
+        ];
+
+        return response($html, 200, $headers);
+    }
 }

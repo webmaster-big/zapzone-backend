@@ -120,6 +120,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('customers/bookings', [BookingController::class, 'customerBookings']);
     Route::get('customers/list/{user}', [CustomerController::class, 'fetchCustomerList']);
     Route::get('customers/analytics', [CustomerController::class, 'analytics']);
+    Route::post('customers/analytics/export', [CustomerController::class, 'exportAnalytics']);
     Route::apiResource('customers', CustomerController::class);
     Route::patch('customers/{customer}/toggle-status', [CustomerController::class, 'toggleStatus']);
     Route::get('customers/{customer}/statistics', [CustomerController::class, 'statistics']);
