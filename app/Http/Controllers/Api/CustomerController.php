@@ -1308,6 +1308,8 @@ class CustomerController extends Controller
 
         return response($html, 200, [
             'Content-Type' => 'text/html; charset=utf-8',
+            'Content-Disposition' => 'inline; filename="' . $filename . '"',
+            'Cache-Control' => 'no-cache, no-store, must-revalidate',
         ]);
     }
 
@@ -1422,9 +1424,10 @@ class CustomerController extends Controller
         $imageData = ob_get_clean();
         imagedestroy($image);
         
-        return response($imageData, 200, [
-            'Content-Type' => 'image/png',
-            'Content-Disposition' => 'attachment; filename="' . $filename . '"',
-        ]);
+        return response($imageData, 200)
+            ->header('Content-Type', 'image/png')
+            ->header('Content-Disposition', 'attachment; filename="' . $filename . '"')
+            ->header('Content-Length', strlen($imageData))
+            ->header('Cache-Control', 'no-cache, no-store, must-revalidate');
     }
 }
