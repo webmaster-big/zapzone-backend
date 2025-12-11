@@ -1289,7 +1289,7 @@ class CustomerController extends Controller
     }
 
     /**
-     * Generate PDF export (simple HTML-based report).
+     * Generate PDF export (HTML-based report for printing).
      */
     private function generatePDFExport($data, $locationName, $dateRange, $user)
     {
@@ -1303,34 +1303,125 @@ class CustomerController extends Controller
             'generatedAt' => now()->format('F d, Y - h:i A'),
         ])->render();
 
-        $headers = [
-            'Content-Type' => 'text/html',
-            'Content-Disposition' => 'inline; filename="' . $filename . '"',
-        ];
-
-        return response($html, 200, $headers);
+        return response($html, 200, [
+            'Content-Type' => 'text/html; charset=utf-8',
+        ]);
     }
 
     /**
-     * Generate Receipt-style export (compact printer-friendly format).
+     * Generate Receipt-style export as PNG image.
      */
     private function generateReceiptExport($data, $locationName, $dateRange, $user)
     {
-        $filename = 'customer_analytics_receipt_' . date('Y-m-d_His') . '.html';
+        $filename = 'customer_analytics_receipt_' . date('Y-m-d_His') . '.png';
         
-        $html = view('exports.customer-analytics-receipt', [
-            'data' => $data,
-            'locationName' => $locationName,
-            'dateRange' => $dateRange,
-            'generatedBy' => $user ? $user->first_name . ' ' . $user->last_name : 'System',
-            'generatedAt' => now()->format('M d, Y - h:i A'),
-        ])->render();
-
-        $headers = [
-            'Content-Type' => 'text/html',
-            'Content-Disposition' => 'inline; filename="' . $filename . '"',
-        ];
-
-        return response($html, 200, $headers);
+        // Create image with GD
+        $width = 600;
+        $lineHeight = 20;
+        $padding = 20;
+        
+        // Calculate height based on content
+        $contentLines = 15; // Header lines
+        if (isset($data['customers'])) $contentLines += min(count($data['customers']), 10) + 3;
+        if (isset($data['revenue_by_month'])) $contentLines += min(count($data['revenue_by_month']), 9) + 3;
+        if (isset($data['top_customers'])) $contentLines += min(count($data['top_customers']), 5) + 3;
+        if (isset($data['top_activities'])) $contentLines += min(count($data['top_activities']), 5) + 3;
+        if (isset($data['top_packages'])) $contentLines += min(count($data['top_packages']), 5) + 3;
+        
+        $height = ($contentLines * $lineHeight) + ($padding * 2);
+        
+        // Create image
+        $image = imagecreate($width, $height);
+        
+        // Colors
+        $white = imagecolorallocate($image, 255, 255, 255);
+        $black = imagecolorallocate($image, 0, 0, 0);
+        $gray = imagecolorallocate($image, 100, 100, 100);
+        
+        // Fill background
+        imagefill($image, 0, 0, $white);
+        
+        $y = $padding;
+        $font = 3; // Built-in font
+        
+        // Helper function to draw text
+        $drawText = function($text, $isBold = false) use ($image, &$y, $padding, $black, $lineHeight, $font) {
+            imagestring($image, $font, $padding, $y, $text, $black);
+            $y += $lineHeight;
+        };
+        
+        $drawDivider = function() use ($image, &$y, $width, $gray, $lineHeight) {
+            imageline($image, 10, $y + 5, $width - 10, $y + 5, $gray);
+            $y += $lineHeight;
+        };
+        
+        // Header
+        $drawText('CUSTOMER ANALYTICS REPORT', true);
+        $drawText('Location: ' . $locationName);
+        $drawText('Date Range: ' . $dateRange);
+        $drawText('Generated: ' . now()->format('M d, Y - h:i A'));
+        $generatedBy = $user ? $user->first_name . ' ' . $user->last_name : 'System';
+        $drawText('By: ' . $generatedBy);
+        $drawDivider();
+        
+        // Customers section
+        if (isset($data['customers']) && count($data['customers']) > 0) {
+            $drawText('CUSTOMER LIST', true);
+            $customers = array_slice($data['customers'], 0, 10);
+            foreach ($customers as $customer) {
+                $drawText(substr($customer['name'], 0, 30) . ' - $' . number_format($customer['total_spent'], 2));
+            }
+            $drawDivider();
+        }
+        
+        // Revenue by month section
+        if (isset($data['revenue_by_month']) && count($data['revenue_by_month']) > 0) {
+            $drawText('REVENUE BY MONTH', true);
+            $revenues = array_slice($data['revenue_by_month'], 0, 9);
+            foreach ($revenues as $revenue) {
+                $drawText($revenue['month'] . ': $' . number_format($revenue['total_revenue'], 2));
+            }
+            $drawDivider();
+        }
+        
+        // Top customers section
+        if (isset($data['top_customers']) && count($data['top_customers']) > 0) {
+            $drawText('TOP CUSTOMERS', true);
+            $topCustomers = array_slice($data['top_customers'], 0, 5);
+            foreach ($topCustomers as $customer) {
+                $drawText(substr($customer['name'], 0, 25) . ' - ' . $customer['bookings'] . ' bookings');
+            }
+            $drawDivider();
+        }
+        
+        // Top activities section
+        if (isset($data['top_activities']) && count($data['top_activities']) > 0) {
+            $drawText('TOP ACTIVITIES', true);
+            $topActivities = array_slice($data['top_activities'], 0, 5);
+            foreach ($topActivities as $activity) {
+                $drawText(substr($activity['activity'], 0, 30) . ' - ' . $activity['purchases'] . ' sales');
+            }
+            $drawDivider();
+        }
+        
+        // Top packages section
+        if (isset($data['top_packages']) && count($data['top_packages']) > 0) {
+            $drawText('TOP PACKAGES', true);
+            $topPackages = array_slice($data['top_packages'], 0, 5);
+            foreach ($topPackages as $package) {
+                $drawText(substr($package['package'], 0, 30) . ' - ' . $package['bookings'] . ' bookings');
+            }
+        }
+        
+        // Output image
+        ob_start();
+        imagepng($image);
+        $imageData = ob_get_clean();
+        imagedestroy($image);
+        
+        return response($imageData, 200, [
+            'Content-Type' => 'image/png',
+            'Content-Disposition' => 'attachment; filename="' . $filename . '"',
+        ]);
     }
 }
