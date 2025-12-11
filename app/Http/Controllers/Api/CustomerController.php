@@ -120,20 +120,37 @@ class CustomerController extends Controller
 
             $processedEmails[] = $emailToCheck;
 
-            // Parse guest_name into first and last name
-            $nameParts = explode(' ', trim($record->guest_name ?? ''), 2);
+            // Check if this email exists in the customers table
+            $registeredCustomer = Customer::where('email', $record->guest_email)->first();
 
-            // Create customer object from booking/purchase data
-            $customer = (object) [
-                'id' => null,
-                'first_name' => $nameParts[0] ?? 'Guest',
-                'last_name' => $nameParts[1] ?? '',
-                'email' => $record->guest_email,
-                'phone' => $record->guest_phone,
-                'status' => 'guest',
-                'created_at' => null,
-                'last_visit' => null,
-            ];
+            if ($registeredCustomer) {
+                // Use registered customer data
+                $customer = (object) [
+                    'id' => $registeredCustomer->id,
+                    'first_name' => $registeredCustomer->first_name,
+                    'last_name' => $registeredCustomer->last_name,
+                    'email' => $registeredCustomer->email,
+                    'phone' => $registeredCustomer->phone,
+                    'status' => $registeredCustomer->status,
+                    'created_at' => $registeredCustomer->created_at,
+                    'last_visit' => $registeredCustomer->last_visit,
+                ];
+            } else {
+                // Parse guest_name into first and last name
+                $nameParts = explode(' ', trim($record->guest_name ?? ''), 2);
+
+                // Create customer object from booking/purchase data
+                $customer = (object) [
+                    'id' => null,
+                    'first_name' => $nameParts[0] ?? 'Guest',
+                    'last_name' => $nameParts[1] ?? '',
+                    'email' => $record->guest_email,
+                    'phone' => $record->guest_phone,
+                    'status' => 'guest',
+                    'created_at' => null,
+                    'last_visit' => null,
+                ];
+            }
 
             $allCustomers->push($customer);
         }
