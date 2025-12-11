@@ -488,6 +488,7 @@ class CustomerController extends Controller
             '30d' => now()->subDays(30),
             '90d' => now()->subDays(90),
             '1y' => now()->subYear(),
+            'all' => null,
             default => now()->subDays(30),
         };
 
@@ -527,14 +528,14 @@ class CustomerController extends Controller
 
         $totalRevenue = Booking::query()
             ->when($locationId, fn($q) => $q->where('location_id', $locationId))
-            ->where('created_at', '>=', $startDate)
+            ->when($startDate, fn($q) => $q->where('created_at', '>=', $startDate))
             ->sum('total_amount');
 
         $totalPurchaseRevenue = AttractionPurchase::query()
             ->when($locationId, function($q) use ($locationId) {
                 $q->whereHas('attraction', fn($query) => $query->where('location_id', $locationId));
             })
-            ->where('created_at', '>=', $startDate)
+            ->when($startDate, fn($q) => $q->where('created_at', '>=', $startDate))
             ->sum('total_amount');
 
         $totalRevenueSum = $totalRevenue + $totalPurchaseRevenue;
@@ -553,6 +554,7 @@ class CustomerController extends Controller
             '30d' => now()->subDays(60),
             '90d' => now()->subDays(180),
             '1y' => now()->subYears(2),
+            'all' => null,
             default => now()->subDays(60),
         };
 
@@ -561,13 +563,14 @@ class CustomerController extends Controller
             '30d' => now()->subDays(30),
             '90d' => now()->subDays(90),
             '1y' => now()->subYear(),
+            'all' => null,
             default => now()->subDays(30),
         };
 
         // Previous period total customers
         $prevTotalCustomers = Booking::query()
             ->when($locationId, fn($q) => $q->where('location_id', $locationId))
-            ->whereBetween('created_at', [$previousPeriodStart, $previousPeriodEnd])
+            ->when($previousPeriodStart && $previousPeriodEnd, fn($q) => $q->whereBetween('created_at', [$previousPeriodStart, $previousPeriodEnd]))
             ->whereNotNull('guest_email')
             ->distinct('guest_email')
             ->count();
@@ -583,14 +586,14 @@ class CustomerController extends Controller
         // Previous period revenue
         $prevTotalRevenue = Booking::query()
             ->when($locationId, fn($q) => $q->where('location_id', $locationId))
-            ->whereBetween('created_at', [$previousPeriodStart, $previousPeriodEnd])
+            ->when($previousPeriodStart && $previousPeriodEnd, fn($q) => $q->whereBetween('created_at', [$previousPeriodStart, $previousPeriodEnd]))
             ->sum('total_amount');
 
         $prevPurchaseRevenue = AttractionPurchase::query()
             ->when($locationId, function($q) use ($locationId) {
                 $q->whereHas('attraction', fn($query) => $query->where('location_id', $locationId));
             })
-            ->whereBetween('created_at', [$previousPeriodStart, $previousPeriodEnd])
+            ->when($previousPeriodStart && $previousPeriodEnd, fn($q) => $q->whereBetween('created_at', [$previousPeriodStart, $previousPeriodEnd]))
             ->sum('total_amount');
 
         $prevTotalRevenueSum = $prevTotalRevenue + $prevPurchaseRevenue;
@@ -692,7 +695,7 @@ class CustomerController extends Controller
         // 4. Booking Time Distribution
         $bookingTimeDistribution = Booking::query()
             ->when($locationId, fn($q) => $q->where('location_id', $locationId))
-            ->where('created_at', '>=', $startDate)
+            ->when($startDate, fn($q) => $q->where('created_at', '>=', $startDate))
             ->selectRaw('HOUR(booking_date) as hour, COUNT(*) as count')
             ->groupBy('hour')
             ->orderBy('hour')
@@ -705,7 +708,7 @@ class CustomerController extends Controller
         // 5. Top Bookings per Customer
         $topBookingCustomers = Booking::query()
             ->when($locationId, fn($q) => $q->where('location_id', $locationId))
-            ->where('created_at', '>=', $startDate)
+            ->when($startDate, fn($q) => $q->where('created_at', '>=', $startDate))
             ->whereNotNull('guest_email')
             ->selectRaw('guest_email, guest_name, COUNT(*) as bookings')
             ->groupBy('guest_email', 'guest_name')
@@ -741,7 +744,7 @@ class CustomerController extends Controller
         // 7. Activity Hours (hourly distribution)
         $activityHours = Booking::query()
             ->when($locationId, fn($q) => $q->where('location_id', $locationId))
-            ->where('created_at', '>=', $startDate)
+            ->when($startDate, fn($q) => $q->where('created_at', '>=', $startDate))
             ->selectRaw('HOUR(created_at) as hour, COUNT(*) as activity')
             ->groupBy('hour')
             ->orderBy('hour')
@@ -828,7 +831,7 @@ class CustomerController extends Controller
             ->when($locationId, function($q) use ($locationId) {
                 $q->whereHas('attraction', fn($query) => $query->where('location_id', $locationId));
             })
-            ->where('created_at', '>=', $startDate)
+            ->when($startDate, fn($q) => $q->where('created_at', '>=', $startDate))
             ->whereNotNull('guest_email')
             ->selectRaw('guest_email, guest_name, attraction_id, COUNT(*) as purchases')
             ->groupBy('guest_email', 'guest_name', 'attraction_id')
@@ -845,7 +848,7 @@ class CustomerController extends Controller
         $topPackages = Booking::query()
             ->with('package')
             ->when($locationId, fn($q) => $q->where('location_id', $locationId))
-            ->where('created_at', '>=', $startDate)
+            ->when($startDate, fn($q) => $q->where('created_at', '>=', $startDate))
             ->whereNotNull('guest_email')
             ->whereNotNull('package_id')
             ->selectRaw('guest_email, guest_name, package_id, COUNT(*) as bookings')
