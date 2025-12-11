@@ -2,9 +2,13 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Customer Analytics Report</title>
     <style>
+        @page {
+            margin: 15mm;
+            size: A4;
+        }
+
         * {
             margin: 0;
             padding: 0;
@@ -12,331 +16,283 @@
         }
 
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            line-height: 1.6;
+            font-family: Arial, Helvetica, sans-serif;
+            font-size: 9pt;
+            line-height: 1.3;
             color: #333;
-            background: #f5f5f5;
-            padding: 20px;
-        }
-
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            background: white;
-            padding: 40px;
-            box-shadow: 0 0 10px rgba(0,0,0,0.1);
         }
 
         .header {
             text-align: center;
-            border-bottom: 3px solid #3b82f6;
-            padding-bottom: 20px;
-            margin-bottom: 30px;
+            border-bottom: 2px solid #1e40af;
+            padding-bottom: 10px;
+            margin-bottom: 15px;
         }
 
         .header h1 {
             color: #1e40af;
-            font-size: 28px;
-            margin-bottom: 10px;
+            font-size: 18pt;
+            margin-bottom: 5px;
         }
 
         .header-info {
-            display: flex;
-            justify-content: space-between;
-            margin-top: 15px;
-            font-size: 14px;
+            font-size: 8pt;
             color: #666;
-        }
-
-        .header-info div {
-            flex: 1;
+            margin-top: 8px;
         }
 
         .section {
-            margin-bottom: 40px;
+            margin-bottom: 20px;
+            page-break-inside: avoid;
         }
 
         .section-title {
-            background: #3b82f6;
+            background: #1e40af;
             color: white;
-            padding: 10px 15px;
-            font-size: 18px;
+            padding: 5px 10px;
+            font-size: 11pt;
             font-weight: bold;
-            margin-bottom: 15px;
-            border-radius: 4px;
+            margin-bottom: 8px;
         }
 
         table {
             width: 100%;
             border-collapse: collapse;
-            margin-bottom: 20px;
+            margin-bottom: 10px;
+            font-size: 8pt;
         }
 
         table thead {
-            background: #f3f4f6;
+            background: #e5e7eb;
         }
 
         table th {
-            padding: 12px;
+            padding: 5px 4px;
             text-align: left;
-            font-weight: 600;
-            color: #374151;
-            border-bottom: 2px solid #e5e7eb;
+            font-weight: bold;
+            color: #1f2937;
+            border-bottom: 1px solid #9ca3af;
+            font-size: 8pt;
         }
 
         table td {
-            padding: 10px 12px;
+            padding: 4px;
             border-bottom: 1px solid #e5e7eb;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
         }
 
-        table tbody tr:hover {
+        table tbody tr:nth-child(even) {
             background: #f9fafb;
-        }
-
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 20px;
-            margin-bottom: 30px;
-        }
-
-        .stat-card {
-            background: #f9fafb;
-            padding: 20px;
-            border-radius: 8px;
-            border-left: 4px solid #3b82f6;
-        }
-
-        .stat-label {
-            font-size: 12px;
-            color: #6b7280;
-            text-transform: uppercase;
-            margin-bottom: 5px;
-        }
-
-        .stat-value {
-            font-size: 24px;
-            font-weight: bold;
-            color: #1f2937;
         }
 
         .footer {
-            margin-top: 50px;
-            padding-top: 20px;
+            margin-top: 15px;
+            padding-top: 10px;
             border-top: 1px solid #e5e7eb;
             text-align: center;
             color: #9ca3af;
-            font-size: 12px;
+            font-size: 7pt;
         }
 
-        .no-data {
-            text-align: center;
-            padding: 40px;
-            color: #9ca3af;
-            font-style: italic;
+        /* Column width adjustments */
+        .col-rank { width: 5%; text-align: center; }
+        .col-name { width: 20%; }
+        .col-email { width: 25%; font-size: 7pt; }
+        .col-num { width: 8%; text-align: center; }
+        .col-amount { width: 12%; text-align: right; }
+        .col-date { width: 10%; font-size: 7pt; }
+        .col-month { width: 15%; }
+
+        .total-row {
+            background: #e5e7eb !important;
+            font-weight: bold;
         }
 
-        @media print {
-            body {
-                background: white;
-                padding: 0;
-            }
-            
-            .container {
-                box-shadow: none;
-                padding: 20px;
-            }
-
-            .section {
-                page-break-inside: avoid;
-            }
-        }
+        .text-right { text-align: right; }
+        .text-center { text-align: center; }
+        .text-small { font-size: 7pt; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <!-- Header -->
-        <div class="header">
-            <h1>Customer Analytics Report</h1>
-            <div class="header-info">
-                <div><strong>Location:</strong> {{ $locationName }}</div>
-                <div><strong>Date Range:</strong> {{ strtoupper($dateRange) }}</div>
-                <div><strong>Generated:</strong> {{ $generatedAt }}</div>
-            </div>
-            <div style="margin-top: 10px; font-size: 13px; color: #666;">
-                Generated by: {{ $generatedBy }}
-            </div>
+    <!-- Header -->
+    <div class="header">
+        <h1>Customer Analytics Report</h1>
+        <div class="header-info">
+            <strong>Location:</strong> {{ $locationName }} | 
+            <strong>Date Range:</strong> {{ strtoupper($dateRange) }} | 
+            <strong>Generated:</strong> {{ $generatedAt }} by {{ $generatedBy }}
         </div>
+    </div>
 
         <!-- Customers Section -->
         @if(isset($data['customers']) && count($data['customers']) > 0)
         <div class="section">
             <div class="section-title">Customer List ({{ count($data['customers']) }} Total)</div>
-            
-            <table>
-                <thead>
-                    <tr>
-                        <th>Name</th>
-                        <th>Email</th>
-                        <th style="text-align: center;">Bookings</th>
-                        <th style="text-align: center;">Purchases</th>
-                        <th style="text-align: right;">Total Spent</th>
-                        <th>First Visit</th>
-                        <th>Last Visit</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    @foreach($data['customers'] as $customer)
-                    <tr>
-                        <td>{{ $customer['name'] }}</td>
-                        <td>{{ $customer['email'] }}</td>
-                        <td style="text-align: center;">{{ $customer['total_bookings'] }}</td>
-                        <td style="text-align: center;">{{ $customer['total_purchases'] }}</td>
-                        <td style="text-align: right;">${{ number_format($customer['total_spent'], 2) }}</td>
-                        <td>{{ $customer['first_visit'] }}</td>
-                        <td>{{ $customer['last_visit'] }}</td>
-                    </tr>
-                    @endforeach
-                </tbody>
-            </table>
-        </div>
-        @endif
-
-        <!-- Revenue by Month Section -->
-        @if(isset($data['revenue_by_month']) && count($data['revenue_by_month']) > 0)
-        <div class="section">
+    <!-- Customers Section -->
+    @if(isset($data['customers']) && count($data['customers']) > 0)
+    <div class="section">
+        <div class="section-title">Customer List ({{ count($data['customers']) }} Total)</div>
+        
+        <table>
+            <thead>
+                <tr>
+                    <th class="col-name">Name</th>
+                    <th class="col-email">Email</th>
+                    <th class="col-num">Book</th>
+                    <th class="col-num">Purch</th>
+                    <th class="col-amount">Total Spent</th>
+                    <th class="col-date">First Visit</th>
+                    <th class="col-date">Last Visit</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach($data['customers'] as $customer)
+                <tr>
+                    <td class="col-name">{{ Str::limit($customer['name'], 30) }}</td>
+                    <td class="col-email text-small">{{ Str::limit($customer['email'], 35) }}</td>
+                    <td class="col-num">{{ $customer['total_bookings'] }}</td>
+                    <td class="col-num">{{ $customer['total_purchases'] }}</td>
+                    <td class="col-amount">${{ number_format($customer['total_spent'], 2) }}</td>
+                    <td class="col-date text-small">{{ $customer['first_visit'] }}</td>
+                    <td class="col-date text-small">{{ $customer['last_visit'] }}</td>
+                </tr>
+                @endforeach
+            </tbody>
+        </table>
+    </div>
+    @endiflass="section">
             <div class="section-title">Revenue Trend (Last 9 Months)</div>
-            
-            <table>
-                <thead>
-                    <tr>
-                        <th>Month</th>
-                        <th style="text-align: right;">Bookings Revenue</th>
-                        <th style="text-align: right;">Purchases Revenue</th>
-                        <th style="text-align: right;">Total Revenue</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    @foreach($data['revenue_by_month'] as $revenue)
-                    <tr>
-                        <td><strong>{{ $revenue['month'] }}</strong></td>
-                        <td style="text-align: right;">${{ number_format($revenue['bookings_revenue'], 2) }}</td>
-                        <td style="text-align: right;">${{ number_format($revenue['purchases_revenue'], 2) }}</td>
-                        <td style="text-align: right;"><strong>${{ number_format($revenue['total_revenue'], 2) }}</strong></td>
-                    </tr>
-                    @endforeach
-                    <tr style="background: #f3f4f6; font-weight: bold;">
-                        <td>TOTAL</td>
-                        <td style="text-align: right;">${{ number_format(collect($data['revenue_by_month'])->sum('bookings_revenue'), 2) }}</td>
-                        <td style="text-align: right;">${{ number_format(collect($data['revenue_by_month'])->sum('purchases_revenue'), 2) }}</td>
-                        <td style="text-align: right;">${{ number_format(collect($data['revenue_by_month'])->sum('total_revenue'), 2) }}</td>
-                    </tr>
-                </tbody>
-            </table>
-        </div>
-        @endif
+    <!-- Revenue by Month Section -->
+    @if(isset($data['revenue_by_month']) && count($data['revenue_by_month']) > 0)
+    <div class="section">
+        <div class="section-title">Revenue Trend (Last 9 Months)</div>
+        
+        <table>
+            <thead>
+                <tr>
+                    <th class="col-month">Month</th>
+                    <th class="col-amount">Bookings</th>
+                    <th class="col-amount">Purchases</th>
+                    <th class="col-amount">Total</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach($data['revenue_by_month'] as $revenue)
+                <tr>
+                    <td class="col-month"><strong>{{ $revenue['month'] }}</strong></td>
+                    <td class="col-amount">${{ number_format($revenue['bookings_revenue'], 2) }}</td>
+                    <td class="col-amount">${{ number_format($revenue['purchases_revenue'], 2) }}</td>
+                    <td class="col-amount"><strong>${{ number_format($revenue['total_revenue'], 2) }}</strong></td>
+                </tr>
+                @endforeach
+                <tr class="total-row">
+                    <td>TOTAL</td>
+                    <td class="text-right">${{ number_format(collect($data['revenue_by_month'])->sum('bookings_revenue'), 2) }}</td>
+                    <td class="text-right">${{ number_format(collect($data['revenue_by_month'])->sum('purchases_revenue'), 2) }}</td>
+                    <td class="text-right">${{ number_format(collect($data['revenue_by_month'])->sum('total_revenue'), 2) }}</td>
+                </tr>
+            </tbody>
+    <!-- Top Customers Section -->
+    @if(isset($data['top_customers']) && count($data['top_customers']) > 0)
+    <div class="section">
+        <div class="section-title">Top 20 Customers by Bookings</div>
+        
+        <table>
+            <thead>
+                <tr>
+                    <th class="col-rank">#</th>
+                    <th class="col-name">Name</th>
+                    <th class="col-email">Email</th>
+                    <th class="col-num">Bookings</th>
+                    <th class="col-amount">Total Spent</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach($data['top_customers'] as $index => $customer)
+                <tr>
+                    <td class="col-rank"><strong>{{ $index + 1 }}</strong></td>
+                    <td class="col-name">{{ Str::limit($customer['name'], 30) }}</td>
+                    <td class="col-email text-small">{{ Str::limit($customer['email'], 35) }}</td>
+                    <td class="col-num">{{ $customer['bookings'] }}</td>
+                    <td class="col-amount">${{ number_format($customer['total_spent'], 2) }}</td>
+                </tr>
+                @endforeach
+            </tbody>
+        </table>
+    </div>
+    @endif
 
-        <!-- Top Customers Section -->
-        @if(isset($data['top_customers']) && count($data['top_customers']) > 0)
-        <div class="section">
-            <div class="section-title">Top 20 Customers by Bookings</div>
-            
-            <table>
-                <thead>
-                    <tr>
-                        <th>Rank</th>
-                        <th>Name</th>
-                        <th>Email</th>
-                        <th style="text-align: center;">Bookings</th>
-                        <th style="text-align: right;">Total Spent</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    @foreach($data['top_customers'] as $index => $customer)
-                    <tr>
-                        <td><strong>{{ $index + 1 }}</strong></td>
-                        <td>{{ $customer['name'] }}</td>
-                        <td>{{ $customer['email'] }}</td>
-                        <td style="text-align: center;">{{ $customer['bookings'] }}</td>
-                        <td style="text-align: right;">${{ number_format($customer['total_spent'], 2) }}</td>
-                    </tr>
-                    @endforeach
-                </tbody>
-            </table>
-        </div>
-        @endif
+    <!-- Top Activities Section -->
+    @if(isset($data['top_activities']) && count($data['top_activities']) > 0)
+    <div class="section">
+        <div class="section-title">Top 10 Activities by Purchases</div>
+        
+        <table>
+            <thead>
+                <tr>
+                    <th class="col-rank">#</th>
+                    <th>Activity Name</th>
+                    <th class="col-num">Purchases</th>
+                    <th class="col-amount">Revenue</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach($data['top_activities'] as $index => $activity)
+                <tr>
+                    <td class="col-rank"><strong>{{ $index + 1 }}</strong></td>
+                    <td>{{ Str::limit($activity['activity'], 50) }}</td>
+                    <td class="col-num">{{ $activity['purchases'] }}</td>
+                    <td class="col-amount">${{ number_format($activity['revenue'], 2) }}</td>
+                </tr>
+                @endforeach
+                <tr class="total-row">
+                    <td colspan="2">TOTAL</td>
+                    <td class="text-center">{{ collect($data['top_activities'])->sum('purchases') }}</td>
+                    <td class="text-right">${{ number_format(collect($data['top_activities'])->sum('revenue'), 2) }}</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+    @endif
 
-        <!-- Top Activities Section -->
-        @if(isset($data['top_activities']) && count($data['top_activities']) > 0)
-        <div class="section">
-            <div class="section-title">Top 10 Activities by Purchases</div>
-            
-            <table>
-                <thead>
-                    <tr>
-                        <th>Rank</th>
-                        <th>Activity Name</th>
-                        <th style="text-align: center;">Purchases</th>
-                        <th style="text-align: right;">Revenue</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    @foreach($data['top_activities'] as $index => $activity)
-                    <tr>
-                        <td><strong>{{ $index + 1 }}</strong></td>
-                        <td>{{ $activity['activity'] }}</td>
-                        <td style="text-align: center;">{{ $activity['purchases'] }}</td>
-                        <td style="text-align: right;">${{ number_format($activity['revenue'], 2) }}</td>
-                    </tr>
-                    @endforeach
-                    <tr style="background: #f3f4f6; font-weight: bold;">
-                        <td colspan="2">TOTAL</td>
-                        <td style="text-align: center;">{{ collect($data['top_activities'])->sum('purchases') }}</td>
-                        <td style="text-align: right;">${{ number_format(collect($data['top_activities'])->sum('revenue'), 2) }}</td>
-                    </tr>
-                </tbody>
-            </table>
-        </div>
-        @endif
+    <!-- Top Packages Section -->
+    @if(isset($data['top_packages']) && count($data['top_packages']) > 0)
+    <div class="section">
+        <div class="section-title">Top 10 Packages by Bookings</div>
+        
+        <table>
+            <thead>
+                <tr>
+                    <th class="col-rank">#</th>
+                    <th>Package Name</th>
+                    <th class="col-num">Bookings</th>
+                    <th class="col-amount">Revenue</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach($data['top_packages'] as $index => $package)
+                <tr>
+                    <td class="col-rank"><strong>{{ $index + 1 }}</strong></td>
+                    <td>{{ Str::limit($package['package'], 50) }}</td>
+                    <td class="col-num">{{ $package['bookings'] }}</td>
+                    <td class="col-amount">${{ number_format($package['revenue'], 2) }}</td>
+                </tr>
+                @endforeach
+                <tr class="total-row">
+                    <td colspan="2">TOTAL</td>
+                    <td class="text-center">{{ collect($data['top_packages'])->sum('bookings') }}</td>
+                    <td class="text-right">${{ number_format(collect($data['top_packages'])->sum('revenue'), 2) }}</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+    @endif
 
-        <!-- Top Packages Section -->
-        @if(isset($data['top_packages']) && count($data['top_packages']) > 0)
-        <div class="section">
-            <div class="section-title">Top 10 Packages by Bookings</div>
-            
-            <table>
-                <thead>
-                    <tr>
-                        <th>Rank</th>
-                        <th>Package Name</th>
-                        <th style="text-align: center;">Bookings</th>
-                        <th style="text-align: right;">Revenue</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    @foreach($data['top_packages'] as $index => $package)
-                    <tr>
-                        <td><strong>{{ $index + 1 }}</strong></td>
-                        <td>{{ $package['package'] }}</td>
-                        <td style="text-align: center;">{{ $package['bookings'] }}</td>
-                        <td style="text-align: right;">${{ number_format($package['revenue'], 2) }}</td>
-                    </tr>
-                    @endforeach
-                    <tr style="background: #f3f4f6; font-weight: bold;">
-                        <td colspan="2">TOTAL</td>
-                        <td style="text-align: center;">{{ collect($data['top_packages'])->sum('bookings') }}</td>
-                        <td style="text-align: right;">${{ number_format(collect($data['top_packages'])->sum('revenue'), 2) }}</td>
-                    </tr>
-                </tbody>
-            </table>
-        </div>
-        @endif
-
-        <!-- Footer -->
-        <div class="footer">
-            <p>This is an automated report generated by ZapZone Management System</p>
-            <p>For questions or concerns, please contact your system administrator</p>
-        </div>
+    <!-- Footer -->
+    <div class="footer">
+        <p>This is an automated report generated by ZapZone Management System</p>
+        <p>For questions or concerns, please contact your system administrator</p>
     </div>
 </body>
 </html>
