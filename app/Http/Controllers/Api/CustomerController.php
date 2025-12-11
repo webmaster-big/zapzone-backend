@@ -701,24 +701,81 @@ class CustomerController extends Controller
             ]);
 
         // 6. Customer Status Distribution
-        $activeCount = Booking::query()
+        // Get all unique customer emails with their first and last activity dates
+        $allCustomerEmails = Booking::query()
             ->when($locationId, fn($q) => $q->where('location_id', $locationId))
-            ->where('created_at', '>=', now()->subDays(30))
             ->whereNotNull('guest_email')
-            ->distinct('guest_email')
-            ->count();
+            ->selectRaw('guest_email, MIN(created_at) as first_activity, MAX(created_at) as last_activity')
+            ->groupBy('guest_email')
+            ->get();
 
-        $inactiveCount = Booking::query()
-            ->when($locationId, fn($q) => $q->where('location_id', $locationId))
-            ->where('created_at', '<', now()->subDays(30))
+        // Also get customer emails from purchases
+        $purchaseCustomerEmails = AttractionPurchase::query()
+            ->when($locationId, function($q) use ($locationId) {
+                $q->whereHas('attraction', fn($query) => $query->where('location_id', $locationId));
+            })
             ->whereNotNull('guest_email')
-            ->distinct('guest_email')
-            ->count();
+            ->selectRaw('guest_email, MIN(created_at) as first_activity, MAX(created_at) as last_activity')
+            ->groupBy('guest_email')
+            ->get();
+
+        // Merge and determine status for each customer
+        $customerStatuses = ['active' => 0, 'inactive' => 0, 'new' => 0];
+        $processedEmails = [];
+
+        foreach ($allCustomerEmails->concat($purchaseCustomerEmails) as $customer) {
+            if (in_array($customer->guest_email, $processedEmails)) {
+                continue;
+            }
+            $processedEmails[] = $customer->guest_email;
+
+            // Get combined first and last activity from both bookings and purchases
+            $bookingFirst = Booking::where('guest_email', $customer->guest_email)
+                ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+                ->min('created_at');
+            
+            $bookingLast = Booking::where('guest_email', $customer->guest_email)
+                ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+                ->max('created_at');
+
+            $purchaseFirst = AttractionPurchase::where('guest_email', $customer->guest_email)
+                ->when($locationId, function($q) use ($locationId) {
+                    $q->whereHas('attraction', fn($query) => $query->where('location_id', $locationId));
+                })
+                ->min('created_at');
+
+            $purchaseLast = AttractionPurchase::where('guest_email', $customer->guest_email)
+                ->when($locationId, function($q) use ($locationId) {
+                    $q->whereHas('attraction', fn($query) => $query->where('location_id', $locationId));
+                })
+                ->max('created_at');
+
+            $firstActivity = min(array_filter([$bookingFirst, $purchaseFirst]));
+            $lastActivity = max(array_filter([$bookingLast, $purchaseLast]));
+
+            // Determine status based on activity dates
+            $daysSinceFirst = now()->diffInDays($firstActivity);
+            $daysSinceLast = now()->diffInDays($lastActivity);
+
+            if ($daysSinceFirst <= 7) {
+                // New customer: first activity within 7 days
+                $customerStatuses['new']++;
+            } elseif ($daysSinceLast <= 30) {
+                // Active customer: last activity within 30 days
+                $customerStatuses['active']++;
+            } elseif ($daysSinceLast >= 60) {
+                // Inactive customer: last activity 60+ days ago
+                $customerStatuses['inactive']++;
+            } else {
+                // Edge case: between 30-60 days, consider active
+                $customerStatuses['active']++;
+            }
+        }
 
         $statusDistribution = [
-            ['status' => 'active', 'count' => $activeCount, 'color' => '#10b981'],
-            ['status' => 'inactive', 'count' => $inactiveCount, 'color' => '#ef4444'],
-            ['status' => 'new', 'count' => $newCustomers, 'color' => '#3b82f6'],
+            ['status' => 'active', 'count' => $customerStatuses['active'], 'color' => '#10b981'],
+            ['status' => 'inactive', 'count' => $customerStatuses['inactive'], 'color' => '#ef4444'],
+            ['status' => 'new', 'count' => $customerStatuses['new'], 'color' => '#3b82f6'],
         ];
 
         // 7. Activity Hours (hourly distribution)
@@ -859,7 +916,19 @@ class CustomerController extends Controller
                 ->when($locationId, fn($q) => $q->where('location_id', $locationId))
                 ->count();
 
-            $isActive = $customer->last_activity >= now()->subDays(30);
+            // Determine status based on first and last activity
+            $daysSinceFirst = now()->diffInDays($customer->join_date);
+            $daysSinceLast = now()->diffInDays($customer->last_activity);
+
+            if ($daysSinceFirst <= 7) {
+                $status = 'new';
+            } elseif ($daysSinceLast <= 30) {
+                $status = 'active';
+            } elseif ($daysSinceLast >= 60) {
+                $status = 'inactive';
+            } else {
+                $status = 'active'; // Edge case: 30-60 days
+            }
 
             return [
                 'id' => md5($customer->guest_email),
@@ -869,7 +938,7 @@ class CustomerController extends Controller
                 'totalSpent' => round($totalSpent + $purchaseSpent, 2),
                 'bookings' => $bookingCount,
                 'lastActivity' => $customer->last_activity,
-                'status' => $isActive ? 'active' : 'inactive',
+                'status' => $status,
             ];
         });
 
