@@ -23,6 +23,7 @@ class PackageResource extends JsonResource
             'features' => $this->features,
             'price' => $this->price,
             'price_per_additional' => $this->price_per_additional,
+            'min_participants' => $this->min_participants,
             'max_participants' => $this->max_participants,
             'duration' => $this->duration,
             'duration_unit' => $this->duration_unit,
