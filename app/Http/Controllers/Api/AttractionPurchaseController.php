@@ -162,6 +162,7 @@ class AttractionPurchaseController extends Controller
             'guest_country' => 'nullable|string|max:100',
 
             'quantity' => 'required|integer|min:1',
+            'amount_paid' => 'nullable|numeric|min:0',
             'payment_method' => ['nullable', Rule::in(['card', 'cash', 'paylater'])],
             'purchase_date' => 'required|date',
             'transaction_id' => 'nullable|string|max:255',
@@ -452,6 +453,7 @@ class AttractionPurchaseController extends Controller
             'guest_email' => 'sometimes|email|max:255',
             'guest_phone' => 'sometimes|nullable|string|max:20',
             'quantity' => 'sometimes|integer|min:1',
+            'amount_paid' => 'sometimes|nullable|numeric|min:0',
             'payment_method' => ['sometimes', 'nullable', Rule::in(['card', 'cash', 'paylater'])],
             'status' => ['sometimes', Rule::in(['pending', 'completed', 'cancelled'])],
             'purchase_date' => 'sometimes|date',

@@ -4,7 +4,6 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Payment;
-use App\Models\Booking;
 use App\Models\AuthorizeNetAccount;
 use App\Models\ActivityLog;
 use App\Models\CustomerNotification;
@@ -82,7 +81,7 @@ class PaymentController extends Controller
 
         // update booking payment method depenting on the validated method
         if ($payment->booking_id) {
-            $booking = Booking::findOrFail($payment->booking_id);
+            $booking = $payment->booking;
             if ($booking) {
                 $booking->payment_method = $payment->method;
                 $booking->save();

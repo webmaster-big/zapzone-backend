@@ -20,6 +20,7 @@ class AttractionPurchase extends Model
         'guest_country',
         'quantity',
         'total_amount',
+        'amount_paid',
         'payment_method',
         'status',
         'transaction_id',
@@ -30,6 +31,7 @@ class AttractionPurchase extends Model
     protected $casts = [
         'purchase_date' => 'date',
         'total_amount' => 'decimal:2',
+        'amount_paid' => 'decimal:2',
     ];
 
     /**
