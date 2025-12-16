@@ -268,7 +268,7 @@
                                                 <td style="font-weight: 500; color: #6b7280; width: 140px;">Status:</td>
                                                 <td style="color: #111827;">
                                                     <span style="display: inline-block; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 500; text-transform: capitalize; background-color: {{ $purchase->status === 'completed' ? '#d1fae5' : ($purchase->status === 'pending' ? '#fef3c7' : '#fee2e2') }}; color: {{ $purchase->status === 'completed' ? '#065f46' : ($purchase->status === 'pending' ? '#92400e' : '#991b1b') }};">
-                                                        {{ ucfirst($purchase->status) }}
+                                                        {{ $purchase->status === 'pending' ? 'Confirmed' : ucfirst($purchase->status) }}
                                                     </span>
                                                 </td>
                                             </tr>

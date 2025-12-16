@@ -196,7 +196,7 @@
                                         <table width="100%" cellpadding="0" cellspacing="0" border="0">
                                             <tr>
                                                 <td style="font-weight: 500; color: #6b7280; width: 140px;">Status:</td>
-                                                <td style="color: #111827; text-transform: capitalize;">{{ $booking->status }}</td>
+                                                <td style="color: #111827; text-transform: capitalize;">{{ $booking->status === 'pending' ? 'Confirmed' : ucfirst($booking->status) }}</td>
                                             </tr>
                                         </table>
                                     </td>
