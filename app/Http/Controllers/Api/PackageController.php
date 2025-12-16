@@ -102,7 +102,7 @@ class PackageController extends Controller
         $groupedPackages = [];
 
         $query = Package::with(['location'])
-            ->select(['id', 'name', 'description', 'price', 'category', 'max_participants', 'duration', 'image', 'location_id', 'is_active'])
+            ->select(['id', 'name', 'description', 'price', 'category', 'min_participants', 'max_participants', 'duration', 'image', 'location_id', 'is_active'])
             ->where('is_active', true);
 
         if ($search) {
