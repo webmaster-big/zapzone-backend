@@ -437,7 +437,7 @@ class BookingController extends Controller
             Log::info('Email sending skipped per user request', [
                 'booking_id' => $booking->id,
             ]);
-            
+
             return response()->json([
                 'success' => true,
                 'message' => 'Booking created successfully. Email sending skipped.',
