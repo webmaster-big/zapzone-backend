@@ -162,10 +162,11 @@ class AttractionPurchaseController extends Controller
             'guest_country' => 'nullable|string|max:100',
 
             'quantity' => 'required|integer|min:1',
-            'payment_method' => ['required', Rule::in(['card', 'cash'])],
+            'payment_method' => ['nullable', Rule::in(['card', 'cash', 'paylater'])],
             'purchase_date' => 'required|date',
             'transaction_id' => 'nullable|string|max:255',
             'notes' => 'nullable|string',
+            'send_email' => 'nullable|boolean', // Optional flag to control email sending
         ]);
 
         // Get attraction to calculate total amount
@@ -264,7 +265,20 @@ class AttractionPurchaseController extends Controller
 
         $validated = $request->validate([
             'qr_code' => 'required|string', // Base64 encoded QR code image
+            'send_email' => 'nullable|boolean', // Optional flag to control email sending
         ]);
+
+        // Check if email sending is disabled
+        if (isset($validated['send_email']) && $validated['send_email'] === false) {
+            Log::info('Email sending skipped per user request', [
+                'purchase_id' => $attractionPurchase->id,
+            ]);
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'Purchase created successfully. Email sending skipped.',
+            ]);
+        }
 
         // Get recipient email
         $recipientEmail = $attractionPurchase->customer
@@ -438,7 +452,7 @@ class AttractionPurchaseController extends Controller
             'guest_email' => 'sometimes|email|max:255',
             'guest_phone' => 'sometimes|nullable|string|max:20',
             'quantity' => 'sometimes|integer|min:1',
-            'payment_method' => ['sometimes', Rule::in(['card', 'cash'])],
+            'payment_method' => ['sometimes', 'nullable', Rule::in(['card', 'cash', 'paylater'])],
             'status' => ['sometimes', Rule::in(['pending', 'completed', 'cancelled'])],
             'purchase_date' => 'sometimes|date',
             'notes' => 'nullable|string',

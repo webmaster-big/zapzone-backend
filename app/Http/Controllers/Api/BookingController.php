@@ -205,7 +205,7 @@ class BookingController extends Controller
             'total_amount' => 'required|numeric|min:0',
             'amount_paid' => 'numeric|min:0',
             'discount_amount' => 'nullable|numeric|min:0',
-            'payment_method' => ['nullable', Rule::in(['card', 'cash'])],
+            'payment_method' => ['nullable', Rule::in(['card', 'cash', 'paylater'])],
             'payment_status' => ['sometimes', Rule::in(['paid', 'partial'])],
             'status' => ['sometimes', Rule::in(['pending', 'confirmed', 'checked-in', 'completed', 'cancelled'])],
             'notes' => 'nullable|string',
@@ -429,7 +429,20 @@ class BookingController extends Controller
 
         $validated = $request->validate([
             'qr_code' => 'required|string', // Base64 encoded QR code image
+            'send_email' => 'nullable|boolean', // Optional flag to control email sending
         ]);
+
+        // Check if email sending is disabled
+        if (isset($validated['send_email']) && $validated['send_email'] === false) {
+            Log::info('Email sending skipped per user request', [
+                'booking_id' => $booking->id,
+            ]);
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'Booking created successfully. Email sending skipped.',
+            ]);
+        }
 
         // Decode base64 QR code
         $qrCodeData = $validated['qr_code'];
@@ -682,7 +695,7 @@ class BookingController extends Controller
             'total_amount' => 'sometimes|numeric|min:0',
             'amount_paid' => 'sometimes|numeric|min:0',
             'discount_amount' => 'sometimes|nullable|numeric|min:0',
-            'payment_method' => ['sometimes', 'nullable', Rule::in(['card', 'cash'])],
+            'payment_method' => ['sometimes', 'nullable', Rule::in(['card', 'cash', 'paylater'])],
             'payment_status' => ['sometimes', Rule::in(['paid', 'partial'])],
             'status' => ['sometimes', Rule::in(['pending', 'confirmed', 'checked-in', 'completed', 'cancelled'])],
             'notes' => 'sometimes|nullable|string',
