@@ -94,7 +94,7 @@ class AddOnController extends Controller
             'name' => 'required|string|max:255',
             'price' => 'required|numeric|min:0',
             'description' => 'nullable|string',
-            'image' => 'nullable|string',
+            'image' => 'nullable|max:15360',
             'is_active' => 'boolean',
         ]);
 
@@ -144,7 +144,7 @@ class AddOnController extends Controller
             'name' => 'sometimes|string|max:255',
             'price' => 'sometimes|numeric|min:0',
             'description' => 'sometimes|nullable|string',
-            'image' => 'sometimes|nullable|string',
+            'image' => 'nullable|max:15360',
             'is_active' => 'sometimes|boolean',
         ]);
 

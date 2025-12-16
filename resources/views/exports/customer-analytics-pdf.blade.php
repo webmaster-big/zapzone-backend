@@ -119,8 +119,8 @@
     <div class="header">
         <h1>Customer Analytics Report</h1>
         <div class="header-info">
-            <strong>Location:</strong> {{ $locationName }} | 
-            <strong>Date Range:</strong> {{ strtoupper($dateRange) }} | 
+            <strong>Location:</strong> {{ $locationName }} |
+            <strong>Date Range:</strong> {{ strtoupper($dateRange) }} |
             <strong>Generated:</strong> {{ $generatedAt }} by {{ $generatedBy }}
         </div>
     </div>
@@ -133,7 +133,7 @@
     @if(isset($data['customers']) && count($data['customers']) > 0)
     <div class="section">
         <div class="section-title">Customer List ({{ count($data['customers']) }} Total)</div>
-        
+
         <table>
             <thead>
                 <tr>
@@ -167,7 +167,7 @@
     @if(isset($data['revenue_by_month']) && count($data['revenue_by_month']) > 0)
     <div class="section">
         <div class="section-title">Revenue Trend (Last 9 Months)</div>
-        
+
         <table>
             <thead>
                 <tr>
@@ -197,7 +197,7 @@
     @if(isset($data['top_customers']) && count($data['top_customers']) > 0)
     <div class="section">
         <div class="section-title">Top 20 Customers by Bookings</div>
-        
+
         <table>
             <thead>
                 <tr>
@@ -227,7 +227,7 @@
     @if(isset($data['top_activities']) && count($data['top_activities']) > 0)
     <div class="section">
         <div class="section-title">Top 10 Activities by Purchases</div>
-        
+
         <table>
             <thead>
                 <tr>
@@ -260,7 +260,7 @@
     @if(isset($data['top_packages']) && count($data['top_packages']) > 0)
     <div class="section">
         <div class="section-title">Top 10 Packages by Bookings</div>
-        
+
         <table>
             <thead>
                 <tr>

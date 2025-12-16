@@ -811,7 +811,7 @@ class CustomerController extends Controller
                     ->where('guest_email', $email)
                     ->where('created_at', '<', $monthStart)
                     ->count();
-                
+
                 if ($previousBookings > 0) {
                     $repeaters++;
                 }
@@ -1071,7 +1071,7 @@ class CustomerController extends Controller
                     ->when($startDate, fn($q) => $q->where('created_at', '>=', $startDate))
                     ->count();
 
-                $customerName = $firstBooking ? $firstBooking->guest_name : 
+                $customerName = $firstBooking ? $firstBooking->guest_name :
                                ($lastBooking ? $lastBooking->guest_name : 'Unknown');
 
                 $exportData['customers'][] = [
@@ -1193,7 +1193,7 @@ class CustomerController extends Controller
     private function generateCSVExport($data, $locationName, $dateRange)
     {
         $filename = 'customer_analytics_' . date('Y-m-d_His') . '.csv';
-        
+
         $headers = [
             'Content-Type' => 'text/csv',
             'Content-Disposition' => 'attachment; filename="' . $filename . '"',
@@ -1297,7 +1297,7 @@ class CustomerController extends Controller
     private function generatePDFExport($data, $locationName, $dateRange, $user)
     {
         $filename = 'customer_analytics_' . date('Y-m-d_His') . '.pdf';
-        
+
         $pdf = \PDF::loadView('exports.customer-analytics-pdf', [
             'data' => $data,
             'locationName' => $locationName,
@@ -1315,12 +1315,12 @@ class CustomerController extends Controller
     private function generateReceiptExport($data, $locationName, $dateRange, $user)
     {
         $filename = 'customer_analytics_receipt_' . date('Y-m-d_His') . '.png';
-        
+
         // Create image with GD
         $width = 600;
         $lineHeight = 20;
         $padding = 20;
-        
+
         // Calculate height based on content
         $contentLines = 15; // Header lines
         if (isset($data['customers'])) $contentLines += min(count($data['customers']), 10) + 3;
@@ -1328,34 +1328,34 @@ class CustomerController extends Controller
         if (isset($data['top_customers'])) $contentLines += min(count($data['top_customers']), 5) + 3;
         if (isset($data['top_activities'])) $contentLines += min(count($data['top_activities']), 5) + 3;
         if (isset($data['top_packages'])) $contentLines += min(count($data['top_packages']), 5) + 3;
-        
+
         $height = ($contentLines * $lineHeight) + ($padding * 2);
-        
+
         // Create image
         $image = imagecreate($width, $height);
-        
+
         // Colors
         $white = imagecolorallocate($image, 255, 255, 255);
         $black = imagecolorallocate($image, 0, 0, 0);
         $gray = imagecolorallocate($image, 100, 100, 100);
-        
+
         // Fill background
         imagefill($image, 0, 0, $white);
-        
+
         $y = $padding;
         $font = 3; // Built-in font
-        
+
         // Helper function to draw text
         $drawText = function($text, $isBold = false) use ($image, &$y, $padding, $black, $lineHeight, $font) {
             imagestring($image, $font, $padding, $y, $text, $black);
             $y += $lineHeight;
         };
-        
+
         $drawDivider = function() use ($image, &$y, $width, $gray, $lineHeight) {
             imageline($image, 10, $y + 5, $width - 10, $y + 5, $gray);
             $y += $lineHeight;
         };
-        
+
         // Header
         $drawText('CUSTOMER ANALYTICS REPORT', true);
         $drawText('Location: ' . $locationName);
@@ -1364,7 +1364,7 @@ class CustomerController extends Controller
         $generatedBy = $user ? $user->first_name . ' ' . $user->last_name : 'System';
         $drawText('By: ' . $generatedBy);
         $drawDivider();
-        
+
         // Customers section
         if (isset($data['customers']) && count($data['customers']) > 0) {
             $drawText('CUSTOMER LIST', true);
@@ -1374,7 +1374,7 @@ class CustomerController extends Controller
             }
             $drawDivider();
         }
-        
+
         // Revenue by month section
         if (isset($data['revenue_by_month']) && count($data['revenue_by_month']) > 0) {
             $drawText('REVENUE BY MONTH', true);
@@ -1384,7 +1384,7 @@ class CustomerController extends Controller
             }
             $drawDivider();
         }
-        
+
         // Top customers section
         if (isset($data['top_customers']) && count($data['top_customers']) > 0) {
             $drawText('TOP CUSTOMERS', true);
@@ -1394,7 +1394,7 @@ class CustomerController extends Controller
             }
             $drawDivider();
         }
-        
+
         // Top activities section
         if (isset($data['top_activities']) && count($data['top_activities']) > 0) {
             $drawText('TOP ACTIVITIES', true);
@@ -1404,7 +1404,7 @@ class CustomerController extends Controller
             }
             $drawDivider();
         }
-        
+
         // Top packages section
         if (isset($data['top_packages']) && count($data['top_packages']) > 0) {
             $drawText('TOP PACKAGES', true);
@@ -1413,13 +1413,13 @@ class CustomerController extends Controller
                 $drawText(substr($package['package'], 0, 30) . ' - ' . $package['bookings'] . ' bookings');
             }
         }
-        
+
         // Output image
         ob_start();
         imagepng($image);
         $imageData = ob_get_clean();
         imagedestroy($image);
-        
+
         return response($imageData, 200)
             ->header('Content-Type', 'image/png')
             ->header('Content-Disposition', 'attachment; filename="' . $filename . '"')

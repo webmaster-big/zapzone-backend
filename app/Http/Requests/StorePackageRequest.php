@@ -40,7 +40,7 @@ class StorePackageRequest extends FormRequest
             'available_days' => 'nullable|array',
             'available_week_days' => 'nullable|array',
             'available_month_days' => 'nullable|array',
-            'image' => 'nullable|string',
+            'image' => 'nullable|max:15360',
             // NEW: Time slot validation
             'time_slot_start' => 'required|date_format:H:i',
             'time_slot_end' => 'required|date_format:H:i|after:time_slot_start',

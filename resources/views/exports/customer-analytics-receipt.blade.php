@@ -138,7 +138,7 @@
                 background: white;
                 padding: 0;
             }
-            
+
             .receipt {
                 box-shadow: none;
                 max-width: 100%;
@@ -162,7 +162,7 @@
         <!-- Summary Section -->
         @if(isset($data['customers']) || isset($data['revenue_by_month']))
         <div class="section-title">═══ SUMMARY ═══</div>
-        
+
         @if(isset($data['customers']))
         <div class="row-item">
             <span class="label">Total Customers:</span>
