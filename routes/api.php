@@ -7,6 +7,7 @@ use App\Http\Controllers\Api\AttractionPurchaseController;
 use App\Http\Controllers\Api\AuthController as ApiAuthController;
 use App\Http\Controllers\Api\AuthorizeNetAccountController;
 use App\Http\Controllers\Api\BookingController;
+use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\CompanyController;
 use App\Http\Controllers\Api\CustomerController;
 use App\Http\Controllers\Api\CustomerNotificationController;
@@ -125,6 +126,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('customers/{customer}/toggle-status', [CustomerController::class, 'toggleStatus']);
     Route::get('customers/{customer}/statistics', [CustomerController::class, 'statistics']);
     Route::patch('customers/{customer}/update-last-visit', [CustomerController::class, 'updateLastVisit']);
+
+    // Category routes
+    Route::apiResource('categories', CategoryController::class);
 
     // Package routes
     Route::post('packages/room/create', [PackageController::class, 'storePackageRoom']);
