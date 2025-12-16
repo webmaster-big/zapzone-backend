@@ -149,6 +149,8 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Attraction Purchase routes
     Route::apiResource('attraction-purchases', AttractionPurchaseController::class)->except(['store']);
+    // update status
+    Route::patch('attraction-purchases/{attractionPurchase}/update-status', [AttractionPurchaseController::class, 'updateStatus']);
     Route::get('attraction-purchases/statistics', [AttractionPurchaseController::class, 'statistics']);
     Route::get('attraction-purchases/customer/{customerId}', [AttractionPurchaseController::class, 'getByCustomer']);
     Route::get('attraction-purchases/attraction/{attractionId}', [AttractionPurchaseController::class, 'getByAttraction']);

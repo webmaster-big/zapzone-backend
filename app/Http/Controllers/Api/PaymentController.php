@@ -79,15 +79,6 @@ class PaymentController extends Controller
         $payment = Payment::create($validated);
         $payment->load(['booking', 'customer']);
 
-        // update booking payment method depenting on the validated method
-        if ($payment->booking_id) {
-            $booking = $payment->booking;
-            if ($booking) {
-                $booking->payment_method = $payment->method;
-                $booking->save();
-            }
-        }
-
         // Create notification for customer if payment is completed
         if ($payment->customer_id && $payment->status === 'completed') {
             CustomerNotification::create([

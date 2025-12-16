@@ -274,7 +274,7 @@ class AttractionPurchaseController extends Controller
             Log::info('Email sending skipped per user request', [
                 'purchase_id' => $attractionPurchase->id,
             ]);
-            
+
             return response()->json([
                 'success' => true,
                 'message' => 'Purchase created successfully. Email sending skipped.',
@@ -524,6 +524,24 @@ class AttractionPurchaseController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Attraction purchase deleted successfully',
+        ]);
+    }
+
+    // update status, amount paid, payment method
+    public function updateStatus(Request $request, AttractionPurchase $attractionPurchase): JsonResponse
+    {
+        $validated = $request->validate([
+            'status' => ['required', Rule::in(['pending', 'completed', 'cancelled'])],
+            'amount_paid' => 'nullable|numeric|min:0',
+            'payment_method' => ['nullable', Rule::in(['card', 'cash', 'paylater'])],
+        ]);
+
+        $attractionPurchase->update($validated);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Attraction purchase status updated successfully',
+            'data' => $attractionPurchase,
         ]);
     }
 

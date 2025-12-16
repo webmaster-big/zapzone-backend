@@ -20,6 +20,7 @@ class Package extends Model
         'features',
         'price',
         'price_per_additional',
+        'min_participants',
         'max_participants',
         'duration',
         'duration_unit',

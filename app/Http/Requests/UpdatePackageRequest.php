@@ -31,7 +31,8 @@ class UpdatePackageRequest extends FormRequest
             'features.*' => 'string|max:255',
             'price' => 'sometimes|numeric|min:0|regex:/^\d+(\.\d{1,2})?$/',
             'price_per_additional' => 'nullable|numeric|min:0|regex:/^\d+(\.\d{1,2})?$/',
-            'max_participants' => 'sometimes|integer|min:1',
+            'min_participants' => 'nullable|integer|min:1',
+            'max_participants' => 'nullable|integer|min:1',
             'duration' => 'sometimes|integer|min:1',
             'duration_unit' => ['sometimes', Rule::in(['hours', 'minutes'])],
             'price_per_additional_30min' => 'nullable|numeric|min:0|regex:/^\d+(\.\d{1,2})?$/',
@@ -69,6 +70,7 @@ class UpdatePackageRequest extends FormRequest
         return [
             'location_id.exists' => 'Selected location does not exist',
             'price.min' => 'Package price must be greater than or equal to 0',
+            'min_participants.min' => 'Minimum participants must be at least 1',
             'max_participants.min' => 'Maximum participants must be at least 1',
             'duration.min' => 'Duration must be at least 1',
             'duration_unit.in' => 'Duration unit must be either hours or minutes',
