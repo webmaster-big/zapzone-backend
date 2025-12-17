@@ -11,9 +11,7 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::table('attractions', function (Blueprint $table) {
-            //
-        });
+        \DB::statement("ALTER TABLE bookings MODIFY COLUMN payment_status ENUM('paid', 'partial', 'pending') NULL");
     }
 
     /**
@@ -21,8 +19,6 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::table('attractions', function (Blueprint $table) {
-            //
-        });
+        \DB::statement("ALTER TABLE bookings MODIFY COLUMN payment_status ENUM('paid', 'partial') NULL");
     }
 };
