@@ -696,7 +696,7 @@ class BookingController extends Controller
             'amount_paid' => 'sometimes|numeric|min:0',
             'discount_amount' => 'sometimes|nullable|numeric|min:0',
             'payment_method' => ['sometimes', 'nullable', Rule::in(['card', 'cash', 'paylater'])],
-            'payment_status' => ['sometimes', Rule::in(['paid', 'partial'])],
+            'payment_status' => ['sometimes', Rule::in(['paid', 'partial', 'pending'])],
             'status' => ['sometimes', Rule::in(['pending', 'confirmed', 'checked-in', 'completed', 'cancelled'])],
             'notes' => 'sometimes|nullable|string',
             'special_requests' => 'sometimes|nullable|string',

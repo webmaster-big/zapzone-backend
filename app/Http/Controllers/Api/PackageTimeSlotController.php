@@ -74,7 +74,7 @@ class PackageTimeSlotController extends Controller
     {
         $validated = $request->validate([
             'package_id' => 'required|exists:packages,id',
-            'room_id' => 'required|exists:rooms,id',
+            'room_id' => 'nullable|exists:rooms,id',
             'booking_id' => 'required|exists:bookings,id',
             'customer_id' => 'required|exists:customers,id',
             'user_id' => 'nullable|exists:users,id',
@@ -86,20 +86,40 @@ class PackageTimeSlotController extends Controller
             'notes' => 'nullable|string',
         ]);
 
-        // Check for conflicts
-        $conflict = $this->checkTimeSlotConflict(
-            $validated['room_id'],
-            $validated['booked_date'],
-            $validated['time_slot_start'],
-            $validated['duration'],
-            $validated['duration_unit']
-        );
+        // Auto-assign room if not provided
+        if (empty($validated['room_id'])) {
+            $availableRoom = $this->findAvailableRoom(
+                $validated['package_id'],
+                $validated['booked_date'],
+                $validated['time_slot_start'],
+                $validated['duration'],
+                $validated['duration_unit']
+            );
 
-        if ($conflict) {
-            return response()->json([
-                'success' => false,
-                'message' => 'This time slot is already booked for the selected room and date.',
-            ], 422);
+            if (!$availableRoom) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No available rooms for the selected time slot.',
+                ], 422);
+            }
+
+            $validated['room_id'] = $availableRoom->id;
+        } else {
+            // If room_id provided, check for conflicts
+            $conflict = $this->checkTimeSlotConflict(
+                $validated['room_id'],
+                $validated['booked_date'],
+                $validated['time_slot_start'],
+                $validated['duration'],
+                $validated['duration_unit']
+            );
+
+            if ($conflict) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This time slot is already booked for the selected room and date.',
+                ], 422);
+            }
         }
 
         $timeSlot = PackageTimeSlot::create($validated);
@@ -200,11 +220,11 @@ class PackageTimeSlotController extends Controller
     }
 
     /**
-     * Get available time slots for a specific package, room, and date (SSE).
+     * Get available time slots for a package and date (auto-finds available rooms) - SSE.
      */
-    public function getAvailableSlots(int $packageId, int $roomId, string $date)
+    public function getAvailableSlotsAuto(int $packageId, string $date)
     {
-        return response()->stream(function () use ($packageId, $roomId, $date) {
+        return response()->stream(function () use ($packageId, $date) {
             // Set headers for SSE
             header('Content-Type: text/event-stream');
             header('Cache-Control: no-cache');
@@ -212,31 +232,36 @@ class PackageTimeSlotController extends Controller
             header('X-Accel-Buffering: no'); // Disable nginx buffering
 
             try {
-                $package = Package::findOrFail($packageId);
+                $package = Package::with('rooms')->findOrFail($packageId);
+
+                if ($package->rooms->isEmpty()) {
+                    echo "event: error\n";
+                    echo "data: " . json_encode([
+                        'error' => 'No rooms available',
+                        'message' => 'No rooms available for this package'
+                    ]) . "\n\n";
+                    ob_flush();
+                    flush();
+                    return;
+                }
 
                 $lastHash = '';
 
                 // Keep sending updates every 3 seconds
                 while (true) {
-                    // Get current booked slots
-                    $bookedSlots = PackageTimeSlot::where('room_id', $roomId)
-                        ->whereDate('booked_date', $date)
-                        ->where('status', 'booked')
-                        ->get(['time_slot_start', 'duration', 'duration_unit']);
-
-                    // Generate available slots
-                    $availableSlots = $this->generateAvailableSlots(
-                        $package->time_slot_start,
-                        $package->time_slot_end,
-                        $package->time_slot_interval,
-                        $package->duration,
-                        $package->duration_unit,
-                        $bookedSlots
+                    $availableSlots = $this->generateAvailableSlotsWithRooms(
+                        $package,
+                        $date
                     );
 
                     $data = [
                         'available_slots' => $availableSlots,
-                        'booked_slots' => $bookedSlots,
+                        'package' => [
+                            'id' => $package->id,
+                            'name' => $package->name,
+                            'duration' => $package->duration,
+                            'duration_unit' => $package->duration_unit,
+                        ],
                         'timestamp' => now()->toIso8601String(),
                     ];
 
@@ -260,9 +285,8 @@ class PackageTimeSlotController extends Controller
                     sleep(3);
                 }
             } catch (\Exception $e) {
-                Log::error('Error in SSE time slots stream', [
+                Log::error('Error in SSE available slots stream', [
                     'package_id' => $packageId,
-                    'room_id' => $roomId,
                     'date' => $date,
                     'error' => $e->getMessage(),
                 ]);
@@ -271,7 +295,7 @@ class PackageTimeSlotController extends Controller
                 echo "event: error\n";
                 echo "data: " . json_encode([
                     'error' => $e->getMessage(),
-                    'message' => 'Failed to load time slots'
+                    'message' => 'Failed to load available time slots'
                 ]) . "\n\n";
                 ob_flush();
                 flush();
@@ -327,42 +351,75 @@ class PackageTimeSlotController extends Controller
     }
 
     /**
-     * Generate available time slots for a package.
+     * Find an available room for a specific date and time.
      */
-    private function generateAvailableSlots($slotStart, $slotEnd, $interval, $duration, $durationUnit, $bookedSlots)
+    private function findAvailableRoom($packageId, $date, $startTime, $duration, $durationUnit)
+    {
+        $package = Package::with('rooms')->find($packageId);
+
+        if (!$package || $package->rooms->isEmpty()) {
+            return null;
+        }
+
+        // Check each room for availability
+        foreach ($package->rooms as $room) {
+            $hasConflict = $this->checkTimeSlotConflict(
+                $room->id,
+                $date,
+                $startTime,
+                $duration,
+                $durationUnit
+            );
+
+            if (!$hasConflict) {
+                return $room;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Generate available time slots considering all rooms for the package.
+     */
+    private function generateAvailableSlotsWithRooms($package, $date)
     {
         $availableSlots = [];
-        $currentTime = Carbon::parse($slotStart);
-        $endTime = Carbon::parse($slotEnd);
+        $currentTime = Carbon::parse($package->time_slot_start);
+        $endTime = Carbon::parse($package->time_slot_end);
+        $interval = $package->time_slot_interval;
+        $duration = $package->duration;
+        $durationUnit = $package->duration_unit;
 
-        // Calculate actual duration in minutes for slot generation
+        // Calculate actual duration in minutes
         $slotDuration = $durationUnit === 'hours' ? $duration * 60 : $duration;
 
         while ($currentTime->lt($endTime)) {
             $slotEndTime = (clone $currentTime)->addMinutes($slotDuration);
 
-            // Check if this slot fits before the end time
             if ($slotEndTime->lte($endTime)) {
-                $isBooked = false;
+                // Check if ANY room is available for this slot
+                $availableRoom = $this->findAvailableRoom(
+                    $package->id,
+                    $date,
+                    $currentTime->format('H:i'),
+                    $duration,
+                    $durationUnit
+                );
 
-                // Check if this slot overlaps with any booked slot
-                foreach ($bookedSlots as $booked) {
-                    $bookedStart = Carbon::parse($booked->time_slot_start);
-                    $bookedDuration = $booked->duration_unit === 'hours' ? $booked->duration * 60 : $booked->duration;
-                    $bookedEnd = (clone $bookedStart)->addMinutes($bookedDuration);
-
-                    if ($currentTime->lt($bookedEnd) && $slotEndTime->gt($bookedStart)) {
-                        $isBooked = true;
-                        break;
-                    }
-                }
-
-                if (!$isBooked) {
+                if ($availableRoom) {
                     $availableSlots[] = [
                         'start_time' => $currentTime->format('H:i'),
                         'end_time' => $slotEndTime->format('H:i'),
                         'duration' => $duration,
                         'duration_unit' => $durationUnit,
+                        'available_rooms_count' => $this->countAvailableRooms(
+                            $package->id,
+                            $date,
+                            $currentTime->format('H:i'),
+                            $duration,
+                            $durationUnit
+                        ),
                     ];
                 }
             }
@@ -372,4 +429,34 @@ class PackageTimeSlotController extends Controller
 
         return $availableSlots;
     }
+
+    /**
+     * Count how many rooms are available for a specific time slot.
+     */
+    private function countAvailableRooms($packageId, $date, $startTime, $duration, $durationUnit)
+    {
+        $package = Package::with('rooms')->find($packageId);
+
+        if (!$package || $package->rooms->isEmpty()) {
+            return 0;
+        }
+
+        $count = 0;
+        foreach ($package->rooms as $room) {
+            $hasConflict = $this->checkTimeSlotConflict(
+                $room->id,
+                $date,
+                $startTime,
+                $duration,
+                $durationUnit
+            );
+
+            if (!$hasConflict) {
+                $count++;
+            }
+        }
+
+        return $count;
+    }
+
 }

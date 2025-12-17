@@ -70,7 +70,7 @@ Route::post('users', [UserController::class, 'store']);
 
 // Package Time Slot routes
 Route::apiResource('package-time-slots', PackageTimeSlotController::class);
-Route::get('package-time-slots/available-slots/{packageId}/{roomId}/{date}', [PackageTimeSlotController::class, 'getAvailableSlots']);
+Route::get('package-time-slots/available-slots/{packageId}/{date}', [PackageTimeSlotController::class, 'getAvailableSlotsAuto']);
 
 // Server-Sent Events (SSE) streams - no authentication required
 Route::get('stream/bookings', [StreamController::class, 'bookingNotifications']);
