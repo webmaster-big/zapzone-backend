@@ -637,7 +637,7 @@ class PackageController extends Controller
             'packages.*.category' => 'required|string|max:100',
             'packages.*.max_guests' => 'nullable|integer|min:1',
             'packages.*.duration' => 'nullable|integer|min:1',
-            'packages.*.image' => 'nullable|string',
+            'packages.*.image' => 'nullable|string|max:27262976',
             'packages.*.is_active' => 'nullable|boolean',
             'packages.*.time_slot_start' => 'nullable|date_format:H:i:s',
             'packages.*.time_slot_end' => 'nullable|date_format:H:i:s',

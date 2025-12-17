@@ -110,7 +110,7 @@ class UserController extends Controller
             'email' => 'required|email|unique:users',
             'phone' => 'nullable|string|max:20',
             'password' => 'required|string|min:8|confirmed',
-            'profile_path' => 'nullable|string|max:20971520',
+            'profile_path' => 'nullable|string|max:27262976',
             'role' => ['required', Rule::in(['company_admin', 'location_manager', 'attendant'])],
             'employee_id' => 'nullable|string|unique:users',
             'department' => 'nullable|string|max:255',
@@ -171,7 +171,7 @@ class UserController extends Controller
             'email' => 'sometimes|email|unique:users,email,' . $user->id,
             'phone' => 'sometimes|nullable|string|max:20',
             'password' => 'sometimes|string|min:8|confirmed',
-            'profile_path' => 'sometimes|nullable|string|max:20971520',
+            'profile_path' => 'sometimes|nullable|string|max:27262976',
             'role' => ['sometimes', Rule::in(['company_admin', 'location_manager', 'attendant'])],
             'employee_id' => 'sometimes|nullable|string|unique:users,employee_id,' . $user->id,
             'department' => 'sometimes|nullable|string|max:255',
@@ -212,7 +212,7 @@ class UserController extends Controller
     public function updateProfilePath(Request $request, User $user): JsonResponse
     {
         $validated = $request->validate([
-            'profile_path' => 'required|string|max:20971520', // 15MB in base64 is ~20MB
+            'profile_path' => 'required|string|max:27262976', // 20MB in base64 is ~27MB
         ]);
 
         // Delete old profile image if it exists

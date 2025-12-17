@@ -192,7 +192,7 @@ class AttractionController extends Controller
             'duration_unit' => ['nullable', Rule::in(['hours', 'minutes'])],
             'availability' => 'nullable|array',
             'image' => 'nullable',
-            'image.*' => 'nullable',
+            'image.*' => 'nullable|max:20480',
             'rating' => 'nullable|numeric|between:0,5',
             'min_age' => 'nullable|integer|min:0',
             'is_active' => 'boolean',
@@ -277,8 +277,8 @@ class AttractionController extends Controller
             'duration' => 'nullable|integer|min:1',
             'duration_unit' => ['nullable', Rule::in(['hours', 'minutes'])],
             'availability' => 'nullable|array',
-            'image' => 'nullable|max:15360',
-            'image.*' => 'nullable|max:15360',
+            'image' => 'nullable|max:27262976',
+            'image.*' => 'nullable|max:27262976',
             'rating' => 'nullable|numeric|between:0,5',
             'min_age' => 'nullable|integer|min:0',
             'is_active' => 'boolean',
@@ -534,8 +534,8 @@ class AttractionController extends Controller
             'attractions.*.duration' => 'nullable|integer|min:1',
             'attractions.*.duration_unit' => ['nullable', Rule::in(['hours', 'minutes'])],
             'attractions.*.availability' => 'nullable|array',
-            'attractions.*.image' => 'nullable', // Can be string or array
-            'attractions.*.image.*' => 'nullable|string', // For array validation
+            'attractions.*.image' => 'nullable|max:27262976', // Can be string or array, 20MB max for base64
+            'attractions.*.image.*' => 'nullable|string|max:27262976', // For array validation
             'attractions.*.rating' => 'nullable|numeric|between:0,5',
             'attractions.*.min_age' => 'nullable|integer|min:0',
             'attractions.*.is_active' => 'nullable|boolean',
