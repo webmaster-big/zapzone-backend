@@ -35,6 +35,7 @@ class Package extends Model
         'time_slot_end',
         'time_slot_interval',
         'is_active',
+        'has_guest_of_honor',
         'partial_payment_percentage',
         'partial_payment_fixed',
     ];
@@ -51,6 +52,7 @@ class Package extends Model
         'features' => 'array',
         'image' => 'array',
         'is_active' => 'boolean',
+        'has_guest_of_honor' => 'boolean',
         // NEW: Time slot fields
         'time_slot_start' => 'string',
         'time_slot_end' => 'string',

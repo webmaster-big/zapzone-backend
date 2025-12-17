@@ -47,6 +47,7 @@ class StorePackageRequest extends FormRequest
             'time_slot_end' => 'required|date_format:H:i|after:time_slot_start',
             'time_slot_interval' => 'required|integer|min:15|max:240',
             'is_active' => 'boolean',
+            'has_guest_of_honor' => 'nullable|boolean',
             'attraction_ids' => 'nullable|array',
             'attraction_ids.*' => 'exists:attractions,id',
             'addon_ids' => 'nullable|array',

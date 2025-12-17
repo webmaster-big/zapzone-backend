@@ -47,6 +47,7 @@ class UpdatePackageRequest extends FormRequest
             'time_slot_end' => 'sometimes|date_format:H:i|after:time_slot_start',
             'time_slot_interval' => 'sometimes|integer|min:15|max:240',
             'is_active' => 'boolean',
+            'has_guest_of_honor' => 'sometimes|boolean',
             'attraction_ids' => 'sometimes|array',
             'attraction_ids.*' => 'exists:attractions,id',
             'addon_ids' => 'sometimes|array',

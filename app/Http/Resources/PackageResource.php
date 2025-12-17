@@ -38,6 +38,7 @@ class PackageResource extends JsonResource
             'time_slot_interval' => $this->time_slot_interval,
             'image' => $this->image,
             'is_active' => $this->is_active,
+            'has_guest_of_honor' => $this->has_guest_of_honor,
             'created_at' => $this->created_at,
             'updated_at' => $this->updated_at,
 
