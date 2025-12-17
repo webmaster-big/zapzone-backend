@@ -74,7 +74,7 @@ class PackageTimeSlotController extends Controller
     {
         $validated = $request->validate([
             'package_id' => 'required|exists:packages,id',
-            'room_id' => 'nullable|exists:rooms,id',
+            'room_id' => 'required|exists:rooms,id',
             'booking_id' => 'required|exists:bookings,id',
             'customer_id' => 'required|exists:customers,id',
             'user_id' => 'nullable|exists:users,id',
@@ -86,40 +86,20 @@ class PackageTimeSlotController extends Controller
             'notes' => 'nullable|string',
         ]);
 
-        // Auto-assign room if not provided
-        if (empty($validated['room_id'])) {
-            $availableRoom = $this->findAvailableRoom(
-                $validated['package_id'],
-                $validated['booked_date'],
-                $validated['time_slot_start'],
-                $validated['duration'],
-                $validated['duration_unit']
-            );
+        // Check for conflicts
+        $conflict = $this->checkTimeSlotConflict(
+            $validated['room_id'],
+            $validated['booked_date'],
+            $validated['time_slot_start'],
+            $validated['duration'],
+            $validated['duration_unit']
+        );
 
-            if (!$availableRoom) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'No available rooms for the selected time slot.',
-                ], 422);
-            }
-
-            $validated['room_id'] = $availableRoom->id;
-        } else {
-            // If room_id provided, check for conflicts
-            $conflict = $this->checkTimeSlotConflict(
-                $validated['room_id'],
-                $validated['booked_date'],
-                $validated['time_slot_start'],
-                $validated['duration'],
-                $validated['duration_unit']
-            );
-
-            if ($conflict) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'This time slot is already booked for the selected room and date.',
-                ], 422);
-            }
+        if ($conflict) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This time slot is already booked for the selected room and date.',
+            ], 422);
         }
 
         $timeSlot = PackageTimeSlot::create($validated);
@@ -413,6 +393,8 @@ class PackageTimeSlotController extends Controller
                         'end_time' => $slotEndTime->format('H:i'),
                         'duration' => $duration,
                         'duration_unit' => $durationUnit,
+                        'room_id' => $availableRoom->id,
+                        'room_name' => $availableRoom->name,
                         'available_rooms_count' => $this->countAvailableRooms(
                             $package->id,
                             $date,
