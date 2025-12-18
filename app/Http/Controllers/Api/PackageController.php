@@ -898,6 +898,13 @@ class PackageController extends Controller
      */
     public function storeAvailabilitySchedule(Request $request, Package $package): JsonResponse
     {
+        Log::info('Creating new availability schedule', [
+            'package_id' => $package->id,
+            'package_name' => $package->name,
+            'request_data' => $request->all(),
+            'user_id' => auth()->id(),
+        ]);
+
         $validated = $request->validate([
             'availability_type' => 'required|in:daily,weekly,monthly',
             'day_configuration' => 'nullable|array',
@@ -928,8 +935,21 @@ class PackageController extends Controller
             'is_active' => 'nullable|boolean',
         ]);
 
+        Log::info('Validation passed for availability schedule', [
+            'package_id' => $package->id,
+            'validated_data' => $validated,
+        ]);
+
         $validated['package_id'] = $package->id;
         $schedule = \App\Models\PackageAvailabilitySchedule::create($validated);
+
+        Log::info('Availability schedule created successfully', [
+            'schedule_id' => $schedule->id,
+            'package_id' => $package->id,
+            'availability_type' => $schedule->availability_type,
+            'day_configuration' => $schedule->day_configuration,
+            'time_range' => $schedule->time_slot_start . ' - ' . $schedule->time_slot_end,
+        ]);
 
         return response()->json([
             'success' => true,
@@ -947,17 +967,51 @@ class PackageController extends Controller
      */
     public function updateAvailabilitySchedules(\App\Http\Requests\StorePackageAvailabilityScheduleRequest $request, Package $package): JsonResponse
     {
+        Log::info('Bulk updating availability schedules', [
+            'package_id' => $package->id,
+            'package_name' => $package->name,
+            'schedules_count' => count($request->input('schedules', [])),
+            'request_data' => $request->all(),
+            'user_id' => auth()->id(),
+        ]);
+
         $validated = $request->validated();
+
+        Log::info('Validation passed for bulk schedule update', [
+            'package_id' => $package->id,
+            'schedules_to_create' => count($validated['schedules']),
+        ]);
+
+        // Get existing schedules count before deletion
+        $existingSchedulesCount = $package->availabilitySchedules()->count();
+        Log::info('Deleting existing schedules', [
+            'package_id' => $package->id,
+            'existing_count' => $existingSchedulesCount,
+        ]);
 
         // Delete existing schedules
         $package->availabilitySchedules()->delete();
 
         // Create new schedules
         $createdSchedules = [];
-        foreach ($validated['schedules'] as $scheduleData) {
+        foreach ($validated['schedules'] as $index => $scheduleData) {
             $scheduleData['package_id'] = $package->id;
+            
+            Log::info('Creating schedule', [
+                'index' => $index,
+                'package_id' => $package->id,
+                'availability_type' => $scheduleData['availability_type'],
+                'day_configuration' => $scheduleData['day_configuration'] ?? null,
+            ]);
+            
             $createdSchedules[] = \App\Models\PackageAvailabilitySchedule::create($scheduleData);
         }
+
+        Log::info('All schedules created successfully', [
+            'package_id' => $package->id,
+            'deleted_count' => $existingSchedulesCount,
+            'created_count' => count($createdSchedules),
+        ]);
 
         // Log the activity
         ActivityLog::log(
@@ -986,9 +1040,29 @@ class PackageController extends Controller
      */
     public function deleteAvailabilitySchedule(Package $package, int $scheduleId): JsonResponse
     {
+        Log::info('Deleting availability schedule', [
+            'package_id' => $package->id,
+            'package_name' => $package->name,
+            'schedule_id' => $scheduleId,
+            'user_id' => auth()->id(),
+        ]);
+
         $schedule = $package->availabilitySchedules()->findOrFail($scheduleId);
 
+        Log::info('Schedule found, proceeding with deletion', [
+            'schedule_id' => $schedule->id,
+            'package_id' => $package->id,
+            'availability_type' => $schedule->availability_type,
+            'day_configuration' => $schedule->day_configuration,
+            'time_range' => $schedule->time_slot_start . ' - ' . $schedule->time_slot_end,
+        ]);
+
         $schedule->delete();
+
+        Log::info('Availability schedule deleted successfully', [
+            'schedule_id' => $scheduleId,
+            'package_id' => $package->id,
+        ]);
 
         // Log the activity
         ActivityLog::log(
