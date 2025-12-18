@@ -26,14 +26,7 @@ class Package extends Model
         'duration_unit',
         'price_per_additional_30min',
         'price_per_additional_1hr',
-        'availability_type',
-        'available_days',
-        'available_week_days',
-        'available_month_days',
         'image',
-        'time_slot_start',
-        'time_slot_end',
-        'time_slot_interval',
         'is_active',
         'has_guest_of_honor',
         'partial_payment_percentage',
@@ -46,17 +39,10 @@ class Package extends Model
         'price_per_additional_30min' => 'decimal:2',
         'price_per_additional_1hr' => 'decimal:2',
         'partial_payment_fixed' => 'decimal:2',
-        'available_days' => 'array',
-        'available_week_days' => 'array',
-        'available_month_days' => 'array',
         'features' => 'array',
         'image' => 'array',
         'is_active' => 'boolean',
         'has_guest_of_honor' => 'boolean',
-        // NEW: Time slot fields
-        'time_slot_start' => 'string',
-        'time_slot_end' => 'string',
-        'time_slot_interval' => 'integer',
     ];
 
     // Relationships
@@ -95,6 +81,11 @@ class Package extends Model
         return $this->hasMany(Booking::class);
     }
 
+    public function availabilitySchedules(): HasMany
+    {
+        return $this->hasMany(PackageAvailabilitySchedule::class);
+    }
+
     // Scopes
     public function scopeActive($query)
     {
@@ -109,5 +100,33 @@ class Package extends Model
     public function scopeByCategory($query, $category)
     {
         return $query->where('category', $category);
+    }
+
+    /**
+     * Get available time slots for a specific date.
+     * Returns time slots from matching availability schedules.
+     *
+     * @param string $date Date in Y-m-d format
+     * @return array Array of time slots in H:i format
+     */
+    public function getTimeSlotsForDate(string $date): array
+    {
+        // Find matching schedules for the given date
+        $matchingSchedules = $this->availabilitySchedules()
+            ->active()
+            ->get()
+            ->filter(function ($schedule) use ($date) {
+                return $schedule->matchesDate($date);
+            })
+            ->sortByDesc('priority');
+
+        // If we have matching schedules, use the highest priority one
+        if ($matchingSchedules->isNotEmpty()) {
+            $schedule = $matchingSchedules->first();
+            return $schedule->getTimeSlotsForDate($date);
+        }
+
+        // No schedules found for this date
+        return [];
     }
 }

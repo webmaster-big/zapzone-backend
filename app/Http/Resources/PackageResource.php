@@ -29,13 +29,6 @@ class PackageResource extends JsonResource
             'duration_unit' => $this->duration_unit,
             'price_per_additional_30min' => $this->price_per_additional_30min,
             'price_per_additional_1hr' => $this->price_per_additional_1hr,
-            'availability_type' => $this->availability_type,
-            'available_days' => $this->available_days,
-            'available_week_days' => $this->available_week_days,
-            'available_month_days' => $this->available_month_days,
-            'time_slot_start' => $this->time_slot_start,
-            'time_slot_end' => $this->time_slot_end,
-            'time_slot_interval' => $this->time_slot_interval,
             'image' => $this->image,
             'is_active' => $this->is_active,
             'has_guest_of_honor' => $this->has_guest_of_honor,
@@ -49,6 +42,7 @@ class PackageResource extends JsonResource
             'rooms' => $this->whenLoaded('rooms'),
             'gift_cards' => $this->whenLoaded('giftCards'),
             'promos' => $this->whenLoaded('promos'),
+            'availability_schedules' => $this->whenLoaded('availabilitySchedules'),
             'bookings_count' => $this->when($this->relationLoaded('bookings'), function () {
                 return $this->bookings->count();
             }),

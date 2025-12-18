@@ -361,52 +361,56 @@ class PackageTimeSlotController extends Controller
 
     /**
      * Generate available time slots considering all rooms for the package.
+     * Uses the new availability schedules system.
      */
     private function generateAvailableSlotsWithRooms($package, $date)
     {
         $availableSlots = [];
-        $currentTime = Carbon::parse($package->time_slot_start);
-        $endTime = Carbon::parse($package->time_slot_end);
-        $interval = $package->time_slot_interval;
+        
+        // Get time slots from availability schedules
+        $timeSlots = $package->getTimeSlotsForDate($date);
+        
+        if (empty($timeSlots)) {
+            return [];
+        }
+        
         $duration = $package->duration;
         $durationUnit = $package->duration_unit;
 
         // Calculate actual duration in minutes
         $slotDuration = $durationUnit === 'hours' ? $duration * 60 : $duration;
 
-        while ($currentTime->lt($endTime)) {
+        // Iterate through each time slot from the schedule
+        foreach ($timeSlots as $timeSlot) {
+            $currentTime = Carbon::parse($date . ' ' . $timeSlot);
             $slotEndTime = (clone $currentTime)->addMinutes($slotDuration);
 
-            if ($slotEndTime->lte($endTime)) {
-                // Check if ANY room is available for this slot
-                $availableRoom = $this->findAvailableRoom(
-                    $package->id,
-                    $date,
-                    $currentTime->format('H:i'),
-                    $duration,
-                    $durationUnit
-                );
+            // Check if ANY room is available for this slot
+            $availableRoom = $this->findAvailableRoom(
+                $package->id,
+                $date,
+                $currentTime->format('H:i'),
+                $duration,
+                $durationUnit
+            );
 
-                if ($availableRoom) {
-                    $availableSlots[] = [
-                        'start_time' => $currentTime->format('H:i'),
-                        'end_time' => $slotEndTime->format('H:i'),
-                        'duration' => $duration,
-                        'duration_unit' => $durationUnit,
-                        'room_id' => $availableRoom->id,
-                        'room_name' => $availableRoom->name,
-                        'available_rooms_count' => $this->countAvailableRooms(
-                            $package->id,
-                            $date,
-                            $currentTime->format('H:i'),
-                            $duration,
-                            $durationUnit
-                        ),
-                    ];
-                }
+            if ($availableRoom) {
+                $availableSlots[] = [
+                    'start_time' => $currentTime->format('H:i'),
+                    'end_time' => $slotEndTime->format('H:i'),
+                    'duration' => $duration,
+                    'duration_unit' => $durationUnit,
+                    'room_id' => $availableRoom->id,
+                    'room_name' => $availableRoom->name,
+                    'available_rooms_count' => $this->countAvailableRooms(
+                        $package->id,
+                        $date,
+                        $currentTime->format('H:i'),
+                        $duration,
+                        $durationUnit
+                    ),
+                ];
             }
-
-            $currentTime->addMinutes($interval);
         }
 
         return $availableSlots;

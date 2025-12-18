@@ -26,7 +26,7 @@ class PackageController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
-        $query = Package::with(['location', 'rooms', 'giftCards', 'promos']);
+        $query = Package::with(['location', 'rooms', 'giftCards', 'promos', 'availabilitySchedules']);
 
            // Role-based filtering
         if ($request->has('user_id')) {
@@ -71,7 +71,7 @@ class PackageController extends Controller
         $packages = $query->paginate($perPage);
 
         // Load relationships after pagination to reduce memory usage
-        $packages->load(['location', 'attractions', 'addOns', 'rooms', 'giftCards', 'promos']);
+        $packages->load(['location', 'attractions', 'addOns', 'rooms', 'giftCards', 'promos', 'availabilitySchedules']);
 
         return response()->json([
             'success' => true,
@@ -268,7 +268,7 @@ class PackageController extends Controller
      */
     public function show($package): JsonResponse
     {
-        $package = Package::with(['location', 'attractions', 'addOns', 'rooms', 'giftCards', 'promos'])->findOrFail($package);
+        $package = Package::with(['location', 'attractions', 'addOns', 'rooms', 'giftCards', 'promos', 'availabilitySchedules'])->findOrFail($package);
 
         return response()->json([
             'success' => true,
@@ -281,7 +281,7 @@ class PackageController extends Controller
      */
     public function update(UpdatePackageRequest $request, $package): JsonResponse
     {
-        $package = Package::with(['location', 'attractions', 'addOns', 'rooms', 'giftCards', 'promos'])->findOrFail($package);
+        $package = Package::with(['location', 'attractions', 'addOns', 'rooms', 'giftCards', 'promos', 'availabilitySchedules'])->findOrFail($package);
 
         $validated = $request->validated();
 
@@ -871,5 +871,139 @@ class PackageController extends Controller
             'message' => 'Package room created successfully',
             'data' => $packageRoom,
         ], 201);
+    }
+
+    /**
+     * Get availability schedules for a package.
+     */
+    public function getAvailabilitySchedules(Package $package): JsonResponse
+    {
+        $schedules = $package->availabilitySchedules()
+            ->orderBy('priority', 'desc')
+            ->orderBy('availability_type')
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'package_id' => $package->id,
+                'package_name' => $package->name,
+                'schedules' => $schedules,
+            ],
+        ]);
+    }
+
+    /**
+     * Store a new availability schedule for a package.
+     */
+    public function storeAvailabilitySchedule(Request $request, Package $package): JsonResponse
+    {
+        $validated = $request->validate([
+            'availability_type' => 'required|in:daily,weekly,monthly',
+            'day_configuration' => 'nullable|array',
+            'day_configuration.*' => [
+                'string',
+                function ($attribute, $value, $fail) use ($request) {
+                    $type = $request->input('availability_type');
+
+                    if ($type === 'weekly' && $value) {
+                        $validDays = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+                        if (!in_array(strtolower($value), $validDays)) {
+                            $fail('Day configuration must be a valid day name (e.g., monday, tuesday).');
+                        }
+                    }
+
+                    if ($type === 'monthly' && $value) {
+                        $pattern = '/^(first|second|third|fourth|last)-(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i';
+                        if (!preg_match($pattern, $value)) {
+                            $fail('Day configuration must follow the pattern: occurrence-day (e.g., last-sunday, first-monday).');
+                        }
+                    }
+                },
+            ],
+            'time_slot_start' => 'required|date_format:H:i',
+            'time_slot_end' => 'required|date_format:H:i',
+            'time_slot_interval' => 'required|integer|min:15|max:240',
+            'priority' => 'nullable|integer|min:0',
+            'is_active' => 'nullable|boolean',
+        ]);
+
+        $validated['package_id'] = $package->id;
+        $schedule = \App\Models\PackageAvailabilitySchedule::create($validated);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Availability schedule created successfully',
+            'data' => [
+                'package_id' => $package->id,
+                'package_name' => $package->name,
+                'schedule' => $schedule,
+            ],
+        ], 201);
+    }
+
+    /**
+     * Update availability schedules for a package (bulk replace).
+     */
+    public function updateAvailabilitySchedules(\App\Http\Requests\StorePackageAvailabilityScheduleRequest $request, Package $package): JsonResponse
+    {
+        $validated = $request->validated();
+
+        // Delete existing schedules
+        $package->availabilitySchedules()->delete();
+
+        // Create new schedules
+        $createdSchedules = [];
+        foreach ($validated['schedules'] as $scheduleData) {
+            $scheduleData['package_id'] = $package->id;
+            $createdSchedules[] = \App\Models\PackageAvailabilitySchedule::create($scheduleData);
+        }
+
+        // Log the activity
+        ActivityLog::log(
+            action: 'Availability Schedules Updated',
+            category: 'update',
+            description: "Updated availability schedules for package '{$package->name}'",
+            userId: auth()->id() ?? null,
+            locationId: $package->location_id,
+            entityType: 'package',
+            entityId: $package->id
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Availability schedules updated successfully',
+            'data' => [
+                'package_id' => $package->id,
+                'package_name' => $package->name,
+                'schedules' => $createdSchedules,
+            ],
+        ]);
+    }
+
+    /**
+     * Delete a specific availability schedule.
+     */
+    public function deleteAvailabilitySchedule(Package $package, int $scheduleId): JsonResponse
+    {
+        $schedule = $package->availabilitySchedules()->findOrFail($scheduleId);
+
+        $schedule->delete();
+
+        // Log the activity
+        ActivityLog::log(
+            action: 'Availability Schedule Deleted',
+            category: 'delete',
+            description: "Deleted {$schedule->availability_type} schedule for package '{$package->name}'",
+            userId: auth()->id() ?? null,
+            locationId: $package->location_id,
+            entityType: 'package',
+            entityId: $package->id
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Availability schedule deleted successfully',
+        ]);
     }
 }
