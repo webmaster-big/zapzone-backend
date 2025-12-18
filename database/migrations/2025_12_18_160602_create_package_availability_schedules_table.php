@@ -39,9 +39,8 @@ return new class extends Migration
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
+
+
     public function down(): void
     {
         Schema::dropIfExists('package_availability_schedules');
