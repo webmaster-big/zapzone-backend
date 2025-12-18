@@ -229,8 +229,6 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('customer-notifications/mark-all-as-read/{customerId}', [CustomerNotificationController::class, 'markAllAsRead']);
     Route::get('customer-notifications/unread-count/{customerId}', [CustomerNotificationController::class, 'getUnreadCount']);
 
-
-
     // Authorize.Net Account Management (Protected routes for location managers)
     Route::prefix('authorize-net')->group(function () {
         Route::get('account', [AuthorizeNetAccountController::class, 'show']);
