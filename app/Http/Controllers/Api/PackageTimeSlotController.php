@@ -14,6 +14,12 @@ use Carbon\Carbon;
 class PackageTimeSlotController extends Controller
 {
     /**
+     * Cleanup/buffer time in minutes between bookings.
+     * This allows time for cleaning the room after a booking ends.
+     */
+    private const CLEANUP_BUFFER_MINUTES = 15;
+
+    /**
      * Display a listing of time slots with filters.
      */
     public function index(Request $request): JsonResponse
@@ -289,6 +295,7 @@ class PackageTimeSlotController extends Controller
 
     /**
      * Check if a time slot conflicts with existing bookings.
+     * Includes cleanup buffer time after each booking.
      */
     private function checkTimeSlotConflict($roomId, $date, $startTime, $duration, $durationUnit, $excludeId = null)
     {
@@ -321,8 +328,12 @@ class PackageTimeSlotController extends Controller
                 $existingEnd->addMinutes($slot->duration);
             }
 
-            // Check for overlap
-            if ($start->lt($existingEnd) && $end->gt($existingStart)) {
+            // Add cleanup buffer time after the booking ends
+            $existingEndWithBuffer = (clone $existingEnd)->addMinutes(self::CLEANUP_BUFFER_MINUTES);
+
+            // Check for overlap (considering the buffer time)
+            // New booking cannot start until after the buffer period
+            if ($start->lt($existingEndWithBuffer) && $end->gt($existingStart)) {
                 return true;
             }
         }
@@ -362,6 +373,7 @@ class PackageTimeSlotController extends Controller
     /**
      * Generate available time slots considering all rooms for the package.
      * Uses the new availability schedules system.
+     * Automatically excludes slots within the cleanup buffer period after existing bookings.
      */
     private function generateAvailableSlotsWithRooms($package, $date)
     {
@@ -371,6 +383,10 @@ class PackageTimeSlotController extends Controller
         $timeSlots = $package->getTimeSlotsForDate($date);
         
         if (empty($timeSlots)) {
+            Log::info('No time slots found for package', [
+                'package_id' => $package->id,
+                'date' => $date,
+            ]);
             return [];
         }
         
