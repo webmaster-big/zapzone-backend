@@ -33,9 +33,9 @@ return new class extends Migration
 
             $table->timestamps();
 
-            // Indexes for better query performance
-            $table->index(['package_id', 'availability_type']);
-            $table->index(['package_id', 'is_active']);
+            // Indexes for better query performance (with custom short names)
+            $table->index(['package_id', 'availability_type'], 'pkg_avail_schedule_pkg_type_idx');
+            $table->index(['package_id', 'is_active'], 'pkg_avail_schedule_pkg_active_idx');
         });
     }
 
