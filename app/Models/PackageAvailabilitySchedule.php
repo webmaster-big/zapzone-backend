@@ -127,6 +127,16 @@ class PackageAvailabilitySchedule extends Model
                     }
                 }
                 return false;
+
+            default:
+                return false;
+        }
+    }
+
+    /**
+     * Check if date matches a monthly configuration pattern.
+     *
+     * @param \Carbon\Carbon $date
      * @param string $config
      * @return bool
      */
