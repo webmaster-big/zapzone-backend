@@ -101,7 +101,7 @@ class PackageController extends Controller
         // Use chunk to reduce memory usage and avoid MySQL sort buffer errors
         $groupedPackages = [];
 
-        $query = Package::with(['location'])
+        $query = Package::with(['location', 'availabilitySchedules'])
             ->select(['id', 'name', 'description', 'price', 'category', 'min_participants', 'max_participants', 'duration', 'image', 'location_id', 'is_active'])
             ->where('is_active', true);
 
@@ -996,14 +996,14 @@ class PackageController extends Controller
         $createdSchedules = [];
         foreach ($validated['schedules'] as $index => $scheduleData) {
             $scheduleData['package_id'] = $package->id;
-            
+
             Log::info('Creating schedule', [
                 'index' => $index,
                 'package_id' => $package->id,
                 'availability_type' => $scheduleData['availability_type'],
                 'day_configuration' => $scheduleData['day_configuration'] ?? null,
             ]);
-            
+
             $createdSchedules[] = \App\Models\PackageAvailabilitySchedule::create($scheduleData);
         }
 

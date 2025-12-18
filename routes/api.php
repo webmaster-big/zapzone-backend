@@ -140,7 +140,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('packages/{package}/attractions/detach', [PackageController::class, 'detachAttractions']);
     Route::post('packages/{package}/addons/attach', [PackageController::class, 'attachAddOns']);
     Route::post('packages/{package}/addons/detach', [PackageController::class, 'detachAddOns']);
-    
+
     // Package Availability Schedules
     Route::get('packages/{package}/availability-schedules', [PackageController::class, 'getAvailabilitySchedules']);
     Route::post('packages/{package}/availability-schedules', [PackageController::class, 'storeAvailabilitySchedule']);

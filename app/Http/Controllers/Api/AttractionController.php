@@ -136,6 +136,7 @@ class AttractionController extends Controller
                     'image' => $attraction->image,
                     'rating' => $attraction->rating,
                     'min_age' => $attraction->min_age,
+                    'availability' => $attraction->availability,
                     'locations' => [],
                     'purchase_links' => [],
                 ];

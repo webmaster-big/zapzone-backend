@@ -115,7 +115,7 @@ class PackageAvailabilitySchedule extends Model
                     }
                 }
                 return false;
-                
+
             case 'monthly':
                 // Check if date matches any monthly configuration in the array
                 if (empty($this->day_configuration)) {

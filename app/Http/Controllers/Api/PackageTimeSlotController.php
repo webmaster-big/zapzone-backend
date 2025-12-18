@@ -378,10 +378,10 @@ class PackageTimeSlotController extends Controller
     private function generateAvailableSlotsWithRooms($package, $date)
     {
         $availableSlots = [];
-        
+
         // Get time slots from availability schedules
         $timeSlots = $package->getTimeSlotsForDate($date);
-        
+
         if (empty($timeSlots)) {
             Log::info('No time slots found for package', [
                 'package_id' => $package->id,
@@ -389,7 +389,7 @@ class PackageTimeSlotController extends Controller
             ]);
             return [];
         }
-        
+
         $duration = $package->duration;
         $durationUnit = $package->duration_unit;
 
