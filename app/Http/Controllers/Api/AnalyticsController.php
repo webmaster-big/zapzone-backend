@@ -47,6 +47,18 @@ class AnalyticsController extends Controller
         
         $locationIdList = $locations->pluck('id')->toArray();
         
+        // If no locations after filtering, return empty response
+        if (empty($locationIdList)) {
+            return response()->json([
+                'message' => 'No locations found for the specified criteria',
+                'company' => [
+                    'id' => $company->id,
+                    'name' => $company->name,
+                    'total_locations' => 0,
+                ],
+            ], 404);
+        }
+        
         // Compile all analytics data
         $analytics = [
             'company' => [
@@ -661,25 +673,30 @@ class AnalyticsController extends Controller
      */
     private function getLocationPerformance($locationIds, $startDate, $endDate)
     {
+        // Handle empty location IDs
+        if (empty($locationIds)) {
+            return [];
+        }
+        
         $locations = Location::whereIn('id', $locationIds)->get();
         
         return $locations->map(function ($location) use ($startDate, $endDate) {
             $bookingsRevenue = Booking::where('location_id', $location->id)
                 ->whereBetween('booking_date', [$startDate, $endDate])
                 ->whereNotIn('status', ['cancelled'])
-                ->sum('total_amount');
+                ->sum('total_amount') ?? 0;
             
             $bookingsCount = Booking::where('location_id', $location->id)
                 ->whereBetween('booking_date', [$startDate, $endDate])
                 ->whereNotIn('status', ['cancelled'])
-                ->count();
+                ->count() ?? 0;
             
             $attractionRevenue = AttractionPurchase::whereHas('attraction', function ($query) use ($location) {
                     $query->where('location_id', $location->id);
                 })
                 ->whereBetween('purchase_date', [$startDate, $endDate])
                 ->whereNotIn('status', ['cancelled'])
-                ->sum('total_amount');
+                ->sum('total_amount') ?? 0;
             
             $totalRevenue = $bookingsRevenue + $attractionRevenue;
             
@@ -703,7 +720,16 @@ class AnalyticsController extends Controller
             ->with('package')
             ->get();
         
+        // If no bookings, return empty array
+        if ($bookings->isEmpty()) {
+            return [];
+        }
+        
         $categoryGroups = $bookings->groupBy(function ($booking) {
+            // Handle null package or category
+            if (!$booking->package) {
+                return 'Other';
+            }
             return $booking->package->category ?? 'Other';
         });
         
@@ -809,11 +835,21 @@ class AnalyticsController extends Controller
      */
     private function getBookingStatus($locationIds, $startDate, $endDate)
     {
+        // Handle empty location IDs
+        if (empty($locationIds)) {
+            return [];
+        }
+        
         $bookings = Booking::whereIn('location_id', $locationIds)
             ->whereBetween('booking_date', [$startDate, $endDate])
             ->select('status', DB::raw('COUNT(*) as count'))
             ->groupBy('status')
             ->get();
+        
+        // If no bookings, return empty array
+        if ($bookings->isEmpty()) {
+            return [];
+        }
         
         $statusColors = [
             'confirmed' => '#10b981',
@@ -850,9 +886,12 @@ class AnalyticsController extends Controller
             return [
                 'id' => $attraction->id,
                 'name' => $attraction->name,
-                'tickets_sold' => $purchases->sum('quantity'),
-                'revenue' => round($purchases->sum('total_amount'), 2),
+                'tickets_sold' => $purchases->sum('quantity') ?? 0,
+                'revenue' => round($purchases->sum('total_amount') ?? 0, 2),
             ];
+        })->filter(function ($item) {
+            // Only include attractions with sales
+            return $item['revenue'] > 0 || $item['tickets_sold'] > 0;
         })->sortByDesc('revenue')->take(10)->values();
         
         return $attractionData;
