@@ -610,12 +610,24 @@ class AnalyticsController extends Controller
         $daysDiff = $endDate->diffInDays($startDate);
         $trendData = [];
         
-        // If more than 60 days, show monthly data
+        // If more than 60 days, show monthly data within the specified range
         if ($daysDiff > 60) {
-            // Get last 9 months
-            for ($i = 8; $i >= 0; $i--) {
-                $monthStart = now()->subMonths($i)->startOfMonth();
-                $monthEnd = now()->subMonths($i)->endOfMonth();
+            $currentMonth = $startDate->copy()->startOfMonth();
+            $endMonth = $endDate->copy()->endOfMonth();
+            
+            while ($currentMonth->lte($endMonth)) {
+                $monthStart = $currentMonth->copy();
+                $monthEnd = $currentMonth->copy()->endOfMonth();
+                
+                // Don't go beyond the specified end date
+                if ($monthEnd->gt($endDate)) {
+                    $monthEnd = $endDate->copy();
+                }
+                
+                // Don't start before the specified start date
+                if ($monthStart->lt($startDate)) {
+                    $monthStart = $startDate->copy();
+                }
                 
                 $bookingsRevenue = Booking::whereIn('location_id', $locationIds)
                     ->whereBetween('booking_date', [$monthStart, $monthEnd])
@@ -639,34 +651,38 @@ class AnalyticsController extends Controller
                     'revenue' => round($bookingsRevenue + $attractionRevenue, 2),
                     'bookings' => $bookingsCount,
                 ];
+                
+                $currentMonth->addMonth();
             }
         } else {
-            // Show daily data for shorter periods
-            for ($i = $daysDiff; $i >= 0; $i--) {
-                $date = now()->subDays($i);
-                
+            // Show daily data for the specified date range
+            $currentDate = $startDate->copy();
+            
+            while ($currentDate->lte($endDate)) {
                 $bookingsRevenue = Booking::whereIn('location_id', $locationIds)
-                    ->whereDate('booking_date', $date)
+                    ->whereDate('booking_date', $currentDate)
                     ->whereNotIn('status', ['cancelled'])
                     ->sum('total_amount') ?? 0;
                 
                 $bookingsCount = Booking::whereIn('location_id', $locationIds)
-                    ->whereDate('booking_date', $date)
+                    ->whereDate('booking_date', $currentDate)
                     ->whereNotIn('status', ['cancelled'])
                     ->count() ?? 0;
                 
                 $attractionRevenue = AttractionPurchase::whereHas('attraction', function ($query) use ($locationIds) {
                         $query->whereIn('location_id', $locationIds);
                     })
-                    ->whereDate('purchase_date', $date)
+                    ->whereDate('purchase_date', $currentDate)
                     ->whereNotIn('status', ['cancelled'])
                     ->sum('total_amount') ?? 0;
                 
                 $trendData[] = [
-                    'month' => $date->format('M d'),
+                    'month' => $currentDate->format('M d'),
                     'revenue' => round($bookingsRevenue + $attractionRevenue, 2),
                     'bookings' => $bookingsCount,
                 ];
+                
+                $currentDate->addDay();
             }
         }
         
