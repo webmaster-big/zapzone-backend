@@ -602,6 +602,11 @@ class AnalyticsController extends Controller
      */
     private function getRevenueTrend($locationIds, $startDate, $endDate)
     {
+        // Handle empty location IDs
+        if (empty($locationIds)) {
+            return [];
+        }
+        
         $daysDiff = $endDate->diffInDays($startDate);
         $trendData = [];
         
@@ -615,19 +620,19 @@ class AnalyticsController extends Controller
                 $bookingsRevenue = Booking::whereIn('location_id', $locationIds)
                     ->whereBetween('booking_date', [$monthStart, $monthEnd])
                     ->whereNotIn('status', ['cancelled'])
-                    ->sum('total_amount');
+                    ->sum('total_amount') ?? 0;
                 
                 $bookingsCount = Booking::whereIn('location_id', $locationIds)
                     ->whereBetween('booking_date', [$monthStart, $monthEnd])
                     ->whereNotIn('status', ['cancelled'])
-                    ->count();
+                    ->count() ?? 0;
                 
                 $attractionRevenue = AttractionPurchase::whereHas('attraction', function ($query) use ($locationIds) {
                         $query->whereIn('location_id', $locationIds);
                     })
                     ->whereBetween('purchase_date', [$monthStart, $monthEnd])
                     ->whereNotIn('status', ['cancelled'])
-                    ->sum('total_amount');
+                    ->sum('total_amount') ?? 0;
                 
                 $trendData[] = [
                     'month' => $monthStart->format('M y'),
@@ -643,19 +648,19 @@ class AnalyticsController extends Controller
                 $bookingsRevenue = Booking::whereIn('location_id', $locationIds)
                     ->whereDate('booking_date', $date)
                     ->whereNotIn('status', ['cancelled'])
-                    ->sum('total_amount');
+                    ->sum('total_amount') ?? 0;
                 
                 $bookingsCount = Booking::whereIn('location_id', $locationIds)
                     ->whereDate('booking_date', $date)
                     ->whereNotIn('status', ['cancelled'])
-                    ->count();
+                    ->count() ?? 0;
                 
                 $attractionRevenue = AttractionPurchase::whereHas('attraction', function ($query) use ($locationIds) {
                         $query->whereIn('location_id', $locationIds);
                     })
                     ->whereDate('purchase_date', $date)
                     ->whereNotIn('status', ['cancelled'])
-                    ->sum('total_amount');
+                    ->sum('total_amount') ?? 0;
                 
                 $trendData[] = [
                     'month' => $date->format('M d'),
