@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Api\ActivityLogController;
 use App\Http\Controllers\Api\AddOnController;
+use App\Http\Controllers\Api\AnalyticsController;
 use App\Http\Controllers\Api\AttractionController;
 use App\Http\Controllers\Api\AttractionPurchaseController;
 use App\Http\Controllers\Api\AuthController as ApiAuthController;
@@ -94,6 +95,14 @@ Route::middleware('auth:sanctum')->group(function () {
     // Metrics and Analytics - protected, role-based
     Route::get('metrics/dashboard/{user}', [MetricsController::class, 'dashboard']);
     Route::get('metrics/attendant', [MetricsController::class, 'attendant']);
+
+    // Company Analytics (Admin/Owner)
+    Route::get('analytics/company', [AnalyticsController::class, 'getCompanyAnalytics']);
+    Route::post('analytics/company/export', [AnalyticsController::class, 'exportAnalytics']);
+
+    // Location Manager Analytics
+    Route::get('analytics/location', [AnalyticsController::class, 'getLocationAnalytics']);
+    Route::post('analytics/location/export', [AnalyticsController::class, 'exportAnalytics']);
 
     // Company routes
     Route::apiResource('companies', CompanyController::class);
