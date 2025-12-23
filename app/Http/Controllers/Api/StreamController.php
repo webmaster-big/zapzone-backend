@@ -1,31 +1,33 @@
-<?php
+    <?php
 
-namespace App\Http\Controllers\Api;
+    namespace App\Http\Controllers\Api;
 
-use App\Http\Controllers\Controller;
-use App\Models\Booking;
-use App\Models\AttractionPurchase;
-use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Log;
+    use App\Http\Controllers\Controller;
+    use App\Models\Booking;
+    use App\Models\AttractionPurchase;
+    use Illuminate\Http\Request;
+    use Illuminate\Support\Facades\Log;
 
-class StreamController extends Controller
-{
-    /**
-     * Stream booking notifications using Server-Sent Events (SSE)
-     *
-     * @param Request $request
-     * @return \Symfony\Component\HttpFoundation\StreamedResponse
-     */
-    public function bookingNotifications(Request $request)
+    class StreamController extends Controller
     {
-        $locationId = $request->query('location_id');
+        /**
+         * Stream booking notifications using Server-Sent Events (SSE)
+         *
+         * @param Request $request
+         * @return \Symfony\Component\HttpFoundation\StreamedResponse
+         */
+        public function bookingNotifications(Request $request)
+        {
+            $locationId = $request->query('location_id');
+            $userId = $request->query('user_id'); // Filter out user's own notifications
 
-        Log::info('=== SSE Booking Stream Started ===', [
-            'location_id' => $locationId,
-            'timestamp' => now()->toDateTimeString(),
-        ]);
+            Log::info('=== SSE Booking Stream Started ===', [
+                'location_id' => $locationId,
+                'user_id' => $userId,
+                'timestamp' => now()->toDateTimeString(),
+            ]);
 
-        return response()->stream(function () use ($locationId) {
+return response()->stream(function () use ($locationId, $userId) {
             // Set headers for SSE
             header('Content-Type: text/event-stream');
             header('Cache-Control: no-cache');
@@ -45,75 +47,86 @@ class StreamController extends Controller
                     $query->where('location_id', $locationId);
                 }
 
-                $bookings = $query->orderBy('id', 'asc')
-                    ->limit(10)
-                    ->get();
+                // Filter out user's own bookings (only if created_by is not null)
+                if ($userId) {
+                    $query->where(function($q) use ($userId) {
+                        $q->whereNull('created_by')
+                          ->orWhere('created_by', '!=', $userId);
+                    });
+                    }
 
-                if ($bookings->isNotEmpty()) {
-                    foreach ($bookings as $booking) {
-                        $data = [
-                            'id' => $booking->id,
-                            'type' => 'booking',
-                            'reference_number' => $booking->reference_number,
-                            'customer_name' => $booking->customer
-                                ? $booking->customer->first_name . ' ' . $booking->customer->last_name
-                                : $booking->guest_name,
-                            'package_name' => $booking->package->name ?? null,
-                            'location_name' => $booking->location->name ?? null,
-                            'booking_date' => $booking->booking_date,
-                            'booking_time' => $booking->booking_time,
-                            'status' => $booking->status,
-                            'total_amount' => $booking->total_amount,
-                            'created_at' => $booking->created_at->toIso8601String(),
-                            'timestamp' => now()->toIso8601String(),
-                        ];
+                    $bookings = $query->orderBy('id', 'asc')
+                        ->limit(10)
+                        ->get();
 
-                        echo "id: {$booking->id}\n";
-                        echo "event: booking\n";
-                        echo "data: " . json_encode($data) . "\n\n";
+                    if ($bookings->isNotEmpty()) {
+                        foreach ($bookings as $booking) {
+                            $data = [
+                                'id' => $booking->id,
+                                'type' => 'booking',
+                                'reference_number' => $booking->reference_number,
+                                'customer_name' => $booking->customer
+                                    ? $booking->customer->first_name . ' ' . $booking->customer->last_name
+                                    : $booking->guest_name,
+                                'package_name' => $booking->package->name ?? null,
+                                'location_name' => $booking->location->name ?? null,
+                                'booking_date' => $booking->booking_date,
+                                'booking_time' => $booking->booking_time,
+                                'status' => $booking->status,
+                                'total_amount' => $booking->total_amount,
+                                'created_at' => $booking->created_at->toIso8601String(),
+                                'timestamp' => now()->toIso8601String(),
+                                'user_id' => $booking->created_by,
+                            ];
+
+                            echo "id: {$booking->id}\n";
+                            echo "event: booking\n";
+                            echo "data: " . json_encode($data) . "\n\n";
+                            ob_flush();
+                            flush();
+
+                            $lastId = $booking->id;
+                        }
+                    } else {
+                        // Send heartbeat to keep connection alive
+                        echo ": heartbeat\n\n";
                         ob_flush();
                         flush();
-
-                        $lastId = $booking->id;
                     }
-                } else {
-                    // Send heartbeat to keep connection alive
-                    echo ": heartbeat\n\n";
-                    ob_flush();
-                    flush();
+
+                    // Check if connection is still alive
+                    if (connection_aborted()) {
+                        break;
+                    }
+
+                    // Wait 3 seconds before next update
+                    sleep(3);
                 }
+            }, 200, [
+                'Content-Type' => 'text/event-stream',
+                'Cache-Control' => 'no-cache',
+                'X-Accel-Buffering' => 'no',
+            ]);
+        }
 
-                // Check if connection is still alive
-                if (connection_aborted()) {
-                    break;
-                }
+        /**
+         * Stream attraction purchase notifications using Server-Sent Events (SSE)
+         *
+         * @param Request $request
+         * @return \Symfony\Component\HttpFoundation\StreamedResponse
+         */
+        public function attractionPurchaseNotifications(Request $request)
+        {
+            $locationId = $request->query('location_id');
+            $userId = $request->query('user_id'); // Filter out user's own notifications
 
-                // Wait 3 seconds before next update
-                sleep(3);
-            }
-        }, 200, [
-            'Content-Type' => 'text/event-stream',
-            'Cache-Control' => 'no-cache',
-            'X-Accel-Buffering' => 'no',
-        ]);
-    }
+            Log::info('=== SSE Attraction Purchase Stream Started ===', [
+                'location_id' => $locationId,
+                'user_id' => $userId,
+                'timestamp' => now()->toDateTimeString(),
+            ]);
 
-    /**
-     * Stream attraction purchase notifications using Server-Sent Events (SSE)
-     *
-     * @param Request $request
-     * @return \Symfony\Component\HttpFoundation\StreamedResponse
-     */
-    public function attractionPurchaseNotifications(Request $request)
-    {
-        $locationId = $request->query('location_id');
-
-        Log::info('=== SSE Attraction Purchase Stream Started ===', [
-            'location_id' => $locationId,
-            'timestamp' => now()->toDateTimeString(),
-        ]);
-
-        return response()->stream(function () use ($locationId) {
+return response()->stream(function () use ($locationId, $userId) {
             // Set headers for SSE
             header('Content-Type: text/event-stream');
             header('Cache-Control: no-cache');
@@ -136,75 +149,86 @@ class StreamController extends Controller
                     });
                 }
 
-                $purchases = $query->orderBy('id', 'asc')
-                    ->limit(10)
-                    ->get();
+                // Filter out user's own purchases (only if created_by is not null)
+                if ($userId) {
+                    $query->where(function($q) use ($userId) {
+                        $q->whereNull('created_by')
+                          ->orWhere('created_by', '!=', $userId);
+                    });
+                    }
 
-                if ($purchases->isNotEmpty()) {
-                    foreach ($purchases as $purchase) {
-                        $data = [
-                            'id' => $purchase->id,
-                            'type' => 'attraction_purchase',
-                            'customer_name' => $purchase->customer
-                                ? $purchase->customer->first_name . ' ' . $purchase->customer->last_name
-                                : $purchase->guest_name,
-                            'attraction_name' => $purchase->attraction->name ?? null,
-                            'location_name' => $purchase->attraction->location->name ?? null,
-                            'quantity' => $purchase->quantity,
-                            'total_amount' => $purchase->total_amount,
-                            'status' => $purchase->status,
-                            'payment_method' => $purchase->payment_method,
-                            'purchase_date' => $purchase->purchase_date,
-                            'created_at' => $purchase->created_at->toIso8601String(),
-                            'timestamp' => now()->toIso8601String(),
-                        ];
+                    $purchases = $query->orderBy('id', 'asc')
+                        ->limit(10)
+                        ->get();
 
-                        echo "id: {$purchase->id}\n";
-                        echo "event: attraction_purchase\n";
-                        echo "data: " . json_encode($data) . "\n\n";
+                    if ($purchases->isNotEmpty()) {
+                        foreach ($purchases as $purchase) {
+                            $data = [
+                                'id' => $purchase->id,
+                                'type' => 'attraction_purchase',
+                                'customer_name' => $purchase->customer
+                                    ? $purchase->customer->first_name . ' ' . $purchase->customer->last_name
+                                    : $purchase->guest_name,
+                                'attraction_name' => $purchase->attraction->name ?? null,
+                                'location_name' => $purchase->attraction->location->name ?? null,
+                                'quantity' => $purchase->quantity,
+                                'total_amount' => $purchase->total_amount,
+                                'status' => $purchase->status,
+                                'payment_method' => $purchase->payment_method,
+                                'purchase_date' => $purchase->purchase_date,
+                                'created_at' => $purchase->created_at->toIso8601String(),
+                                'timestamp' => now()->toIso8601String(),
+                                'user_id' => $purchase->created_by,
+                            ];
+
+                            echo "id: {$purchase->id}\n";
+                            echo "event: attraction_purchase\n";
+                            echo "data: " . json_encode($data) . "\n\n";
+                            ob_flush();
+                            flush();
+
+                            $lastId = $purchase->id;
+                        }
+                    } else {
+                        // Send heartbeat to keep connection alive
+                        echo ": heartbeat\n\n";
                         ob_flush();
                         flush();
-
-                        $lastId = $purchase->id;
                     }
-                } else {
-                    // Send heartbeat to keep connection alive
-                    echo ": heartbeat\n\n";
-                    ob_flush();
-                    flush();
+
+                    // Check if connection is still alive
+                    if (connection_aborted()) {
+                        break;
+                    }
+
+                    // Wait 3 seconds before next update
+                    sleep(3);
                 }
+            }, 200, [
+                'Content-Type' => 'text/event-stream',
+                'Cache-Control' => 'no-cache',
+                'X-Accel-Buffering' => 'no',
+            ]);
+        }
 
-                // Check if connection is still alive
-                if (connection_aborted()) {
-                    break;
-                }
+        /**
+         * Stream combined notifications (bookings and attraction purchases) using Server-Sent Events (SSE)
+         *
+         * @param Request $request
+         * @return \Symfony\Component\HttpFoundation\StreamedResponse
+         */
+        public function combinedNotifications(Request $request)
+        {
+            $locationId = $request->query('location_id');
+            $userId = $request->query('user_id'); // Filter out user's own notifications
 
-                // Wait 3 seconds before next update
-                sleep(3);
-            }
-        }, 200, [
-            'Content-Type' => 'text/event-stream',
-            'Cache-Control' => 'no-cache',
-            'X-Accel-Buffering' => 'no',
-        ]);
-    }
+            Log::info('=== SSE Combined Stream Started ===', [
+                'location_id' => $locationId,
+                'user_id' => $userId,
+                'timestamp' => now()->toDateTimeString(),
+            ]);
 
-    /**
-     * Stream combined notifications (bookings and attraction purchases) using Server-Sent Events (SSE)
-     *
-     * @param Request $request
-     * @return \Symfony\Component\HttpFoundation\StreamedResponse
-     */
-    public function combinedNotifications(Request $request)
-    {
-        $locationId = $request->query('location_id');
-
-        Log::info('=== SSE Combined Stream Started ===', [
-            'location_id' => $locationId,
-            'timestamp' => now()->toDateTimeString(),
-        ]);
-
-        return response()->stream(function () use ($locationId) {
+return response()->stream(function () use ($locationId, $userId) {
             // Set headers for SSE
             header('Content-Type: text/event-stream');
             header('Cache-Control: no-cache');
@@ -226,101 +250,111 @@ class StreamController extends Controller
                     $bookingQuery->where('location_id', $locationId);
                 }
 
-                $bookings = $bookingQuery->orderBy('id', 'asc')->limit(5)->get();
-
-                if ($bookings->isNotEmpty()) {
-                    foreach ($bookings as $booking) {
-                        $data = [
-                            'id' => $booking->id,
-                            'type' => 'booking',
-                            'reference_number' => $booking->reference_number,
-                            'customer_name' => $booking->customer
-                                ? $booking->customer->first_name . ' ' . $booking->customer->last_name
-                                : $booking->guest_name,
-                            'package_name' => $booking->package->name ?? null,
-                            'location_name' => $booking->location->name ?? null,
-                            'booking_date' => $booking->booking_date,
-                            'booking_time' => $booking->booking_time,
-                            'status' => $booking->status,
-                            'total_amount' => $booking->total_amount,
-                            'created_at' => $booking->created_at->toIso8601String(),
-                            'timestamp' => now()->toIso8601String(),
-                            'user_id' => $booking->created_by,
-                        ];
-
-                        echo "id: booking_{$booking->id}\n";
-                        echo "event: notification\n";
-                        echo "data: " . json_encode($data) . "\n\n";
-                        ob_flush();
-                        flush();
-
-                        $lastBookingId = $booking->id;
-                        $hasNewData = true;
-                    }
-                }
-
-                // Query for new attraction purchases
-                $purchaseQuery = AttractionPurchase::with(['customer', 'attraction', 'createdBy'])
-                    ->where('id', '>', $lastPurchaseId);
-
-                if ($locationId) {
-                    $purchaseQuery->whereHas('attraction', function ($q) use ($locationId) {
-                        $q->where('location_id', $locationId);
+                // Filter out user's own bookings (only if created_by is not null)
+                if ($userId) {
+                    $bookingQuery->where(function($q) use ($userId) {
+                        $q->whereNull('created_by')
+                          ->orWhere('created_by', '!=', $userId);
                     });
-                }
+                    }
 
-                $purchases = $purchaseQuery->orderBy('id', 'asc')->limit(5)->get();
+                    $bookings = $bookingQuery->orderBy('id', 'asc')->limit(5)->get();
 
-                if ($purchases->isNotEmpty()) {
-                    foreach ($purchases as $purchase) {
-                        $data = [
-                            'id' => $purchase->id,
-                            'type' => 'attraction_purchase',
-                            'customer_name' => $purchase->customer
-                                ? $purchase->customer->first_name . ' ' . $purchase->customer->last_name
-                                : $purchase->guest_name,
-                            'attraction_name' => $purchase->attraction->name ?? null,
-                            'location_name' => $purchase->attraction->location->name ?? null,
-                            'quantity' => $purchase->quantity,
-                            'total_amount' => $purchase->total_amount,
-                            'status' => $purchase->status,
-                            'payment_method' => $purchase->payment_method,
-                            'purchase_date' => $purchase->purchase_date,
-                            'created_at' => $purchase->created_at->toIso8601String(),
-                            'timestamp' => now()->toIso8601String(),
-                            'user_id' => $purchase->created_by,
-                        ];
+                    if ($bookings->isNotEmpty()) {
+                        foreach ($bookings as $booking) {
+                            $data = [
+                                'id' => $booking->id,
+                                'type' => 'booking',
+                                'reference_number' => $booking->reference_number,
+                                'customer_name' => $booking->customer
+                                    ? $booking->customer->first_name . ' ' . $booking->customer->last_name
+                                    : $booking->guest_name,
+                                'package_name' => $booking->package->name ?? null,
+                                'location_name' => $booking->location->name ?? null,
+                                'booking_date' => $booking->booking_date,
+                                'booking_time' => $booking->booking_time,
+                                'status' => $booking->status,
+                                'total_amount' => $booking->total_amount,
+                                'created_at' => $booking->created_at->toIso8601String(),
+                                'timestamp' => now()->toIso8601String(),
+                                'user_id' => $booking->created_by,
+                            ];
 
-                        echo "id: purchase_{$purchase->id}\n";
-                        echo "event: notification\n";
-                        echo "data: " . json_encode($data) . "\n\n";
+                            echo "id: booking_{$booking->id}\n";
+                            echo "event: notification\n";
+                            echo "data: " . json_encode($data) . "\n\n";
+                            ob_flush();
+                            flush();
+
+                            $lastBookingId = $booking->id;
+                            $hasNewData = true;
+                        }
+                    }
+
+                    // Query for new attraction purchases
+                    $purchaseQuery = AttractionPurchase::with(['customer', 'attraction', 'createdBy'])
+                        ->where('id', '>', $lastPurchaseId);
+
+                    if ($locationId) {
+                        $purchaseQuery->whereHas('attraction', function ($q) use ($locationId) {
+                            $q->where('location_id', $locationId);
+                        });
+                    }
+
+                // Filter out user's own purchases (only if created_by is not null)
+                if ($userId) {
+                    $purchaseQuery->where(function($q) use ($userId) {
+                        $q->whereNull('created_by')
+                          ->orWhere('created_by', '!=', $userId);
+                    });
+                            $data = [
+                                'id' => $purchase->id,
+                                'type' => 'attraction_purchase',
+                                'customer_name' => $purchase->customer
+                                    ? $purchase->customer->first_name . ' ' . $purchase->customer->last_name
+                                    : $purchase->guest_name,
+                                'attraction_name' => $purchase->attraction->name ?? null,
+                                'location_name' => $purchase->attraction->location->name ?? null,
+                                'quantity' => $purchase->quantity,
+                                'total_amount' => $purchase->total_amount,
+                                'status' => $purchase->status,
+                                'payment_method' => $purchase->payment_method,
+                                'purchase_date' => $purchase->purchase_date,
+                                'created_at' => $purchase->created_at->toIso8601String(),
+                                'timestamp' => now()->toIso8601String(),
+                                'user_id' => $purchase->created_by,
+                            ];
+
+                            echo "id: purchase_{$purchase->id}\n";
+                            echo "event: notification\n";
+                            echo "data: " . json_encode($data) . "\n\n";
+                            ob_flush();
+                            flush();
+
+                            $lastPurchaseId = $purchase->id;
+                            $hasNewData = true;
+                        }
+                    }
+
+                    // Send heartbeat if no new data
+                    if (!$hasNewData) {
+                        echo ": heartbeat\n\n";
                         ob_flush();
                         flush();
-
-                        $lastPurchaseId = $purchase->id;
-                        $hasNewData = true;
                     }
-                }
 
-                // Send heartbeat if no new data
-                if (!$hasNewData) {
-                    echo ": heartbeat\n\n";
-                    ob_flush();
-                    flush();
-                }
+                    // Check if connection is still alive
+                    if (connection_aborted()) {
+                        break;
+                    }
 
-                // Check if connection is still alive
-                if (connection_aborted()) {
-                    break;
+                    // Wait 3 seconds before next update
+                    sleep(3);
                 }
-
-                // Wait 3 seconds before next update
-                sleep(3);
-            }
-        }, 200, [
-            'Content-Type' => 'text/event-stream',
-            'Cache-Control' => 'no-cache',
-            'X-Accel-Buffering' => 'no',
-        ]);
+            }, 200, [
+                'Content-Type' => 'text/event-stream',
+                'Cache-Control' => 'no-cache',
+                'X-Accel-Buffering' => 'no',
+            ]);
+        }
     }
-}
