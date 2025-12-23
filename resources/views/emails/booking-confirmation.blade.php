@@ -144,7 +144,7 @@
                                     <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
                                         <table width="100%" cellpadding="0" cellspacing="0" border="0">
                                             <tr>
-                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Room:</td>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Space:</td>
                                                 <td style="color: #111827;">{{ $roomName }}</td>
                                             </tr>
                                         </table>
