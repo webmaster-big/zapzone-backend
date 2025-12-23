@@ -245,6 +245,7 @@ class StreamController extends Controller
                             'total_amount' => $booking->total_amount,
                             'created_at' => $booking->created_at->toIso8601String(),
                             'timestamp' => now()->toIso8601String(),
+                            'user_id' => $booking->created_by,
                         ];
 
                         echo "id: booking_{$booking->id}\n";
@@ -287,6 +288,7 @@ class StreamController extends Controller
                             'purchase_date' => $purchase->purchase_date,
                             'created_at' => $purchase->created_at->toIso8601String(),
                             'timestamp' => now()->toIso8601String(),
+                            'user_id' => $purchase->created_by,
                         ];
 
                         echo "id: purchase_{$purchase->id}\n";

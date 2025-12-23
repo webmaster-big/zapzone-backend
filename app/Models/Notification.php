@@ -22,7 +22,6 @@ class Notification extends Model
         'metadata',
         'read_at',
         'user_id',
-
     ];
 
     protected $casts = [
