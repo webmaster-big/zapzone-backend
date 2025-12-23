@@ -53,14 +53,14 @@ return response()->stream(function () use ($locationId, $userId) {
                         $q->whereNull('created_by')
                           ->orWhere('created_by', '!=', $userId);
                     });
-                    }
+                }
 
-                    $bookings = $query->orderBy('id', 'asc')
-                        ->limit(10)
-                        ->get();
+                $bookings = $query->orderBy('id', 'asc')
+                    ->limit(10)
+                    ->get();
 
-                    if ($bookings->isNotEmpty()) {
-                        foreach ($bookings as $booking) {
+                if ($bookings->isNotEmpty()) {
+                    foreach ($bookings as $booking) {
                             $data = [
                                 'id' => $booking->id,
                                 'type' => 'booking',
@@ -85,23 +85,23 @@ return response()->stream(function () use ($locationId, $userId) {
                             ob_flush();
                             flush();
 
-                            $lastId = $booking->id;
-                        }
-                    } else {
-                        // Send heartbeat to keep connection alive
-                        echo ": heartbeat\n\n";
-                        ob_flush();
-                        flush();
+                        $lastId = $booking->id;
                     }
-
-                    // Check if connection is still alive
-                    if (connection_aborted()) {
-                        break;
-                    }
-
-                    // Wait 3 seconds before next update
-                    sleep(3);
+                } else {
+                    // Send heartbeat to keep connection alive
+                    echo ": heartbeat\n\n";
+                    ob_flush();
+                    flush();
                 }
+
+                // Check if connection is still alive
+                if (connection_aborted()) {
+                    break;
+                }
+
+                // Wait 3 seconds before next update
+                sleep(3);
+            }
             }, 200, [
                 'Content-Type' => 'text/event-stream',
                 'Cache-Control' => 'no-cache',
@@ -155,14 +155,14 @@ return response()->stream(function () use ($locationId, $userId) {
                         $q->whereNull('created_by')
                           ->orWhere('created_by', '!=', $userId);
                     });
-                    }
+                }
 
-                    $purchases = $query->orderBy('id', 'asc')
-                        ->limit(10)
-                        ->get();
+                $purchases = $query->orderBy('id', 'asc')
+                    ->limit(10)
+                    ->get();
 
-                    if ($purchases->isNotEmpty()) {
-                        foreach ($purchases as $purchase) {
+                if ($purchases->isNotEmpty()) {
+                    foreach ($purchases as $purchase) {
                             $data = [
                                 'id' => $purchase->id,
                                 'type' => 'attraction_purchase',
@@ -187,23 +187,23 @@ return response()->stream(function () use ($locationId, $userId) {
                             ob_flush();
                             flush();
 
-                            $lastId = $purchase->id;
-                        }
-                    } else {
-                        // Send heartbeat to keep connection alive
-                        echo ": heartbeat\n\n";
-                        ob_flush();
-                        flush();
+                        $lastId = $purchase->id;
                     }
-
-                    // Check if connection is still alive
-                    if (connection_aborted()) {
-                        break;
-                    }
-
-                    // Wait 3 seconds before next update
-                    sleep(3);
+                } else {
+                    // Send heartbeat to keep connection alive
+                    echo ": heartbeat\n\n";
+                    ob_flush();
+                    flush();
                 }
+
+                // Check if connection is still alive
+                if (connection_aborted()) {
+                    break;
+                }
+
+                // Wait 3 seconds before next update
+                sleep(3);
+            }
             }, 200, [
                 'Content-Type' => 'text/event-stream',
                 'Cache-Control' => 'no-cache',
@@ -256,12 +256,12 @@ return response()->stream(function () use ($locationId, $userId) {
                         $q->whereNull('created_by')
                           ->orWhere('created_by', '!=', $userId);
                     });
-                    }
+                }
 
-                    $bookings = $bookingQuery->orderBy('id', 'asc')->limit(5)->get();
+                $bookings = $bookingQuery->orderBy('id', 'asc')->limit(5)->get();
 
-                    if ($bookings->isNotEmpty()) {
-                        foreach ($bookings as $booking) {
+                if ($bookings->isNotEmpty()) {
+                    foreach ($bookings as $booking) {
                             $data = [
                                 'id' => $booking->id,
                                 'type' => 'booking',
@@ -286,16 +286,16 @@ return response()->stream(function () use ($locationId, $userId) {
                             ob_flush();
                             flush();
 
-                            $lastBookingId = $booking->id;
-                            $hasNewData = true;
-                        }
+                        $lastBookingId = $booking->id;
+                        $hasNewData = true;
                     }
+                }
 
-                    // Query for new attraction purchases
-                    $purchaseQuery = AttractionPurchase::with(['customer', 'attraction', 'createdBy'])
-                        ->where('id', '>', $lastPurchaseId);
+                // Query for new attraction purchases
+                $purchaseQuery = AttractionPurchase::with(['customer', 'attraction', 'createdBy'])
+                    ->where('id', '>', $lastPurchaseId);
 
-                    if ($locationId) {
+                if ($locationId) {
                         $purchaseQuery->whereHas('attraction', function ($q) use ($locationId) {
                             $q->where('location_id', $locationId);
                         });
@@ -307,23 +307,29 @@ return response()->stream(function () use ($locationId, $userId) {
                         $q->whereNull('created_by')
                           ->orWhere('created_by', '!=', $userId);
                     });
-                            $data = [
-                                'id' => $purchase->id,
-                                'type' => 'attraction_purchase',
-                                'customer_name' => $purchase->customer
-                                    ? $purchase->customer->first_name . ' ' . $purchase->customer->last_name
-                                    : $purchase->guest_name,
-                                'attraction_name' => $purchase->attraction->name ?? null,
-                                'location_name' => $purchase->attraction->location->name ?? null,
-                                'quantity' => $purchase->quantity,
-                                'total_amount' => $purchase->total_amount,
-                                'status' => $purchase->status,
-                                'payment_method' => $purchase->payment_method,
-                                'purchase_date' => $purchase->purchase_date,
-                                'created_at' => $purchase->created_at->toIso8601String(),
-                                'timestamp' => now()->toIso8601String(),
-                                'user_id' => $purchase->created_by,
-                            ];
+                }
+
+                $purchases = $purchaseQuery->orderBy('id', 'asc')->limit(5)->get();
+
+                if ($purchases->isNotEmpty()) {
+                    foreach ($purchases as $purchase) {
+                        $data = [
+                            'id' => $purchase->id,
+                            'type' => 'attraction_purchase',
+                            'customer_name' => $purchase->customer
+                                ? $purchase->customer->first_name . ' ' . $purchase->customer->last_name
+                                : $purchase->guest_name,
+                            'attraction_name' => $purchase->attraction->name ?? null,
+                            'location_name' => $purchase->attraction->location->name ?? null,
+                            'quantity' => $purchase->quantity,
+                            'total_amount' => $purchase->total_amount,
+                            'status' => $purchase->status,
+                            'payment_method' => $purchase->payment_method,
+                            'purchase_date' => $purchase->purchase_date,
+                            'created_at' => $purchase->created_at->toIso8601String(),
+                            'timestamp' => now()->toIso8601String(),
+                            'user_id' => $purchase->created_by,
+                        ];
 
                             echo "id: purchase_{$purchase->id}\n";
                             echo "event: notification\n";
@@ -331,26 +337,26 @@ return response()->stream(function () use ($locationId, $userId) {
                             ob_flush();
                             flush();
 
-                            $lastPurchaseId = $purchase->id;
-                            $hasNewData = true;
-                        }
+                        $lastPurchaseId = $purchase->id;
+                        $hasNewData = true;
                     }
-
-                    // Send heartbeat if no new data
-                    if (!$hasNewData) {
-                        echo ": heartbeat\n\n";
-                        ob_flush();
-                        flush();
-                    }
-
-                    // Check if connection is still alive
-                    if (connection_aborted()) {
-                        break;
-                    }
-
-                    // Wait 3 seconds before next update
-                    sleep(3);
                 }
+
+                // Send heartbeat if no new data
+                if (!$hasNewData) {
+                    echo ": heartbeat\n\n";
+                    ob_flush();
+                    flush();
+                }
+
+                // Check if connection is still alive
+                if (connection_aborted()) {
+                    break;
+                }
+
+                // Wait 3 seconds before next update
+                sleep(3);
+            }
             }, 200, [
                 'Content-Type' => 'text/event-stream',
                 'Cache-Control' => 'no-cache',
