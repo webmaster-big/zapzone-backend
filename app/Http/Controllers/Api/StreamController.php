@@ -1,14 +1,14 @@
-    <?php
+<?php
 
-    namespace App\Http\Controllers\Api;
+namespace App\Http\Controllers\Api;
 
-    use App\Http\Controllers\Controller;
-    use App\Models\Booking;
-    use App\Models\AttractionPurchase;
-    use Illuminate\Http\Request;
-    use Illuminate\Support\Facades\Log;
+use App\Http\Controllers\Controller;
+use App\Models\Booking;
+use App\Models\AttractionPurchase;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 
-    class StreamController extends Controller
+class StreamController extends Controller
     {
         /**
          * Stream booking notifications using Server-Sent Events (SSE)
