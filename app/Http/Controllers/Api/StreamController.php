@@ -33,6 +33,9 @@ return response()->stream(function () use ($locationId, $userId) {
             header('Cache-Control: no-cache');
             header('Connection: keep-alive');
             header('X-Accel-Buffering: no'); // Disable nginx buffering
+            header('Access-Control-Allow-Origin: *');
+            header('Access-Control-Allow-Methods: GET, OPTIONS');
+            header('Access-Control-Allow-Headers: Content-Type, Authorization');
 
             $lastId = 0;
 
@@ -106,6 +109,9 @@ return response()->stream(function () use ($locationId, $userId) {
                 'Content-Type' => 'text/event-stream',
                 'Cache-Control' => 'no-cache',
                 'X-Accel-Buffering' => 'no',
+                'Access-Control-Allow-Origin' => '*',
+                'Access-Control-Allow-Methods' => 'GET, OPTIONS',
+                'Access-Control-Allow-Headers' => 'Content-Type, Authorization',
             ]);
         }
 
@@ -132,6 +138,9 @@ return response()->stream(function () use ($locationId, $userId) {
             header('Cache-Control: no-cache');
             header('Connection: keep-alive');
             header('X-Accel-Buffering: no'); // Disable nginx buffering
+            header('Access-Control-Allow-Origin: *');
+            header('Access-Control-Allow-Methods: GET, OPTIONS');
+            header('Access-Control-Allow-Headers: Content-Type, Authorization');
 
             $lastId = 0;
             $lastHash = '';
@@ -208,6 +217,9 @@ return response()->stream(function () use ($locationId, $userId) {
                 'Content-Type' => 'text/event-stream',
                 'Cache-Control' => 'no-cache',
                 'X-Accel-Buffering' => 'no',
+                'Access-Control-Allow-Origin' => '*',
+                'Access-Control-Allow-Methods' => 'GET, OPTIONS',
+                'Access-Control-Allow-Headers' => 'Content-Type, Authorization',
             ]);
         }
 
@@ -234,6 +246,9 @@ return response()->stream(function () use ($locationId, $userId) {
             header('Cache-Control: no-cache');
             header('Connection: keep-alive');
             header('X-Accel-Buffering: no'); // Disable nginx buffering
+            header('Access-Control-Allow-Origin: *');
+            header('Access-Control-Allow-Methods: GET, OPTIONS');
+            header('Access-Control-Allow-Headers: Content-Type, Authorization');
 
             $lastBookingId = 0;
             $lastPurchaseId = 0;
@@ -361,6 +376,9 @@ return response()->stream(function () use ($locationId, $userId) {
                 'Content-Type' => 'text/event-stream',
                 'Cache-Control' => 'no-cache',
                 'X-Accel-Buffering' => 'no',
+                'Access-Control-Allow-Origin' => '*',
+                'Access-Control-Allow-Methods' => 'GET, OPTIONS',
+                'Access-Control-Allow-Headers' => 'Content-Type, Authorization',
             ]);
         }
     }
