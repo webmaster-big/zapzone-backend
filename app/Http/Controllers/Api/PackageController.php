@@ -510,44 +510,19 @@ class PackageController extends Controller
         ]);
     }
 
-    /**
-     * Toggle package active status.
-     */
-    public function toggleStatus(Request $request, Package $package): JsonResponse
+    public function toggleIsActiveStatus($id): JsonResponse
     {
-        $user = $request->user();
-
-        // Check if user has access to toggle this package
-        if ($user) {
-            if ($user->role === 'company_admin') {
-                // Company admin can only toggle packages from their company's locations
-                $companyLocationIds = \App\Models\Location::where('company_id', $user->company_id)
-                    ->pluck('id')
-                    ->toArray();
-
-                if (!in_array($package->location_id, $companyLocationIds)) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'Unauthorized to toggle this package status',
-                    ], 403);
-                }
-            } else {
-                // Other users can only toggle packages from their location
-                if ($package->location_id !== $user->location_id) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'Unauthorized to toggle this package status',
-                    ], 403);
-                }
-            }
-        }
-
-        $package->update(['is_active' => !$package->is_active]);
+        $package = Package::findOrFail($id);
+        $package->is_active = !$package->is_active;
+        $package->save();
 
         return response()->json([
             'success' => true,
             'message' => 'Package status updated successfully',
-            'data' => new PackageResource($package),
+            'data' => [
+                'package_id' => $package->id,
+                'is_active' => $package->is_active,
+            ],
         ]);
     }
 

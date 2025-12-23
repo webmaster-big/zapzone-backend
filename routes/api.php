@@ -144,7 +144,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::apiResource('packages', PackageController::class);
     Route::post('packages/bulk-import', [PackageController::class, 'bulkImport']);
     Route::get('packages/category/{category}', [PackageController::class, 'getByCategory']);
-    Route::patch('packages/{package}/toggle-status', [PackageController::class, 'toggleStatus']);
+    Route::patch('packages/{package}/toggle-status', [PackageController::class, 'toggleIsActiveStatus']);
     Route::post('packages/{package}/attractions/attach', [PackageController::class, 'attachAttractions']);
     Route::post('packages/{package}/attractions/detach', [PackageController::class, 'detachAttractions']);
     Route::post('packages/{package}/addons/attach', [PackageController::class, 'attachAddOns']);

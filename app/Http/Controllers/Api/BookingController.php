@@ -188,7 +188,18 @@ class BookingController extends Controller
             'guest_state' => 'nullable|string|max:50',
             'guest_zip' => 'nullable|string|max:20',
             'guest_country' => 'nullable|string|max:100',
-            'package_id' => 'nullable|exists:packages,id',
+            'package_id' => [
+                'nullable',
+                'exists:packages,id',
+                function ($attribute, $value, $fail) {
+                    if ($value) {
+                        $package = \App\Models\Package::find($value);
+                        if ($package && !$package->is_active) {
+                            $fail('The selected package is currently not available for booking.');
+                        }
+                    }
+                },
+            ],
             'location_id' => 'required|exists:locations,id',
             'room_id' => 'nullable|exists:rooms,id',
             'created_by' => 'nullable|exists:users,id',
@@ -685,7 +696,19 @@ class BookingController extends Controller
             'guest_name' => 'sometimes|nullable|string|max:255',
             'guest_email' => 'sometimes|nullable|email|max:255',
             'guest_phone' => 'sometimes|nullable|string|max:20',
-            'package_id' => 'sometimes|nullable|exists:packages,id',
+            'package_id' => [
+                'sometimes',
+                'nullable',
+                'exists:packages,id',
+                function ($attribute, $value, $fail) {
+                    if ($value) {
+                        $package = \App\Models\Package::find($value);
+                        if ($package && !$package->is_active) {
+                            $fail('The selected package is currently not available for booking.');
+                        }
+                    }
+                },
+            ],
             'location_id' => 'sometimes|exists:locations,id',
             'room_id' => 'sometimes|nullable|exists:rooms,id',
             'gift_card_id' => 'sometimes|nullable|exists:gift_cards,id',

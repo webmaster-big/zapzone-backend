@@ -180,9 +180,13 @@ class AnalyticsController extends Controller
             ->where('is_active', true)
             ->count();
 
+        $totalPackages = Package::where('location_id', $locationId)->count();
+
         $activeAttractions = Attraction::where('location_id', $locationId)
             ->where('is_active', true)
             ->count();
+
+        $totalAttractions = Attraction::where('location_id', $locationId)->count();
 
         // Calculate previous period for comparison
         $prevStartDate = $startDate->copy()->sub($endDate->diffInDays($startDate), 'days');
@@ -202,6 +206,15 @@ class AnalyticsController extends Controller
         $prevTotalBookings = $prevBookings->count();
         $prevTotalTickets = $prevAttractionPurchases->sum('quantity');
         $prevTotalParticipants = $prevBookings->sum('participants');
+
+        // Determine operational status messages
+        $packageStatus = $activePackages === $totalPackages ? 'All operational' : 
+                         ($activePackages === 0 ? 'None operational' : 
+                         ($totalPackages - $activePackages) . ' inactive');
+
+        $attractionStatus = $activeAttractions === $totalAttractions ? 'All operational' : 
+                            ($activeAttractions === 0 ? 'None operational' : 
+                            ($totalAttractions - $activeAttractions) . ' inactive');
 
         return [
             'location_revenue' => [
@@ -229,14 +242,11 @@ class AnalyticsController extends Controller
             ],
             'active_packages' => [
                 'value' => $activePackages,
-                'info' => Package::where('location_id', $locationId)
-                    ->where('is_active', true)
-                    ->whereBetween('created_at', [$startDate, $endDate])
-                    ->count() . ' new packages',
+                'info' => $packageStatus,
             ],
             'active_attractions' => [
                 'value' => $activeAttractions,
-                'info' => 'All operational',
+                'info' => $attractionStatus,
             ],
         ];
     }
