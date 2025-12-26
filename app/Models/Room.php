@@ -16,10 +16,12 @@ class Room extends Model
         'name',
         'capacity',
         'is_available',
+        'break_time',
     ];
 
     protected $casts = [
         'is_available' => 'boolean',
+        'break_time' => 'array',
     ];
 
     // Relationships

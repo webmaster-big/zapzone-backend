@@ -12,6 +12,7 @@ use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\CompanyController;
 use App\Http\Controllers\Api\CustomerController;
 use App\Http\Controllers\Api\CustomerNotificationController;
+use App\Http\Controllers\Api\DayOffController;
 use App\Http\Controllers\Api\GiftCardController;
 use App\Http\Controllers\Api\LocationController;
 use App\Http\Controllers\Api\MetricsController;
@@ -186,6 +187,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('rooms/{room}/toggle-availability', [RoomController::class, 'toggleAvailability']);
     Route::get('rooms/available', [RoomController::class, 'getAvailableRooms']);
     Route::post('rooms/bulk-delete', [RoomController::class, 'bulkDelete']);
+
+    // Day Off routes
+    Route::apiResource('day-offs', DayOffController::class);
+    Route::get('day-offs/location/{locationId}', [DayOffController::class, 'getByLocation']);
+    Route::post('day-offs/check-date', [DayOffController::class, 'checkDate']);
+    Route::post('day-offs/bulk-delete', [DayOffController::class, 'bulkDelete']);
 
     // Add-on routes
     Route::apiResource('addons', AddOnController::class);

@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\ActivityLog;
 use App\Models\PackageTimeSlot;
 use App\Models\Package;
+use App\Models\Room;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Log;
@@ -294,6 +295,67 @@ class PackageTimeSlotController extends Controller
     }
 
     /**
+     * Check if a time slot conflicts with room break times.
+     */
+    private function checkBreakTimeConflict($roomId, $date, $startTime, $duration, $durationUnit)
+    {
+        $room = Room::find($roomId);
+
+        if (!$room || !$room->break_time || empty($room->break_time)) {
+            return false;
+        }
+
+        // Get the day of the week for the booking date
+        $bookingDate = Carbon::parse($date);
+        $dayOfWeek = strtolower($bookingDate->format('l')); // 'monday', 'tuesday', etc.
+
+        // Calculate booking time range
+        $bookingStart = Carbon::parse($date . ' ' . $startTime);
+        $bookingEnd = clone $bookingStart;
+
+        if ($durationUnit === 'hours') {
+            $bookingEnd->addHours($duration);
+        } else {
+            $bookingEnd->addMinutes($duration);
+        }
+
+        // Check each break time period
+        foreach ($room->break_time as $breakPeriod) {
+            // Check if this break period applies to the booking day
+            if (!isset($breakPeriod['days']) || !is_array($breakPeriod['days'])) {
+                continue;
+            }
+
+            $breakDays = array_map('strtolower', $breakPeriod['days']);
+
+            if (!in_array($dayOfWeek, $breakDays)) {
+                continue;
+            }
+
+            // Parse break time range
+            $breakStart = Carbon::parse($date . ' ' . $breakPeriod['start_time']);
+            $breakEnd = Carbon::parse($date . ' ' . $breakPeriod['end_time']);
+
+            // Check for overlap
+            // Booking conflicts if it starts before break ends AND ends after break starts
+            if ($bookingStart->lt($breakEnd) && $bookingEnd->gt($breakStart)) {
+                Log::info('Break time conflict detected', [
+                    'room_id' => $roomId,
+                    'date' => $date,
+                    'day' => $dayOfWeek,
+                    'booking_start' => $bookingStart->format('H:i'),
+                    'booking_end' => $bookingEnd->format('H:i'),
+                    'break_start' => $breakStart->format('H:i'),
+                    'break_end' => $breakEnd->format('H:i'),
+                ]);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Check if a time slot conflicts with existing bookings.
      * Includes cleanup buffer time after each booking.
      */
@@ -354,7 +416,8 @@ class PackageTimeSlotController extends Controller
 
         // Check each room for availability
         foreach ($package->rooms as $room) {
-            $hasConflict = $this->checkTimeSlotConflict(
+            // Check for booking conflicts
+            $hasBookingConflict = $this->checkTimeSlotConflict(
                 $room->id,
                 $date,
                 $startTime,
@@ -362,7 +425,16 @@ class PackageTimeSlotController extends Controller
                 $durationUnit
             );
 
-            if (!$hasConflict) {
+            // Check for break time conflicts
+            $hasBreakTimeConflict = $this->checkBreakTimeConflict(
+                $room->id,
+                $date,
+                $startTime,
+                $duration,
+                $durationUnit
+            );
+
+            if (!$hasBookingConflict && !$hasBreakTimeConflict) {
                 return $room;
             }
         }
@@ -445,7 +517,8 @@ class PackageTimeSlotController extends Controller
 
         $count = 0;
         foreach ($package->rooms as $room) {
-            $hasConflict = $this->checkTimeSlotConflict(
+            // Check for booking conflicts
+            $hasBookingConflict = $this->checkTimeSlotConflict(
                 $room->id,
                 $date,
                 $startTime,
@@ -453,7 +526,16 @@ class PackageTimeSlotController extends Controller
                 $durationUnit
             );
 
-            if (!$hasConflict) {
+            // Check for break time conflicts
+            $hasBreakTimeConflict = $this->checkBreakTimeConflict(
+                $room->id,
+                $date,
+                $startTime,
+                $duration,
+                $durationUnit
+            );
+
+            if (!$hasBookingConflict && !$hasBreakTimeConflict) {
                 $count++;
             }
         }

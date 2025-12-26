@@ -96,6 +96,7 @@ class RoomController extends Controller
             'capacity' => 'nullable|integer|min:1',
             'price' => 'nullable|numeric|min:0',
             'is_available' => 'boolean',
+            'break_time' => 'nullable|array',
         ]);
 
         $room = Room::create($validated);
@@ -132,6 +133,7 @@ class RoomController extends Controller
             'capacity' => 'sometimes|nullable|integer|min:1',
             'price' => 'sometimes|nullable|numeric|min:0',
             'is_available' => 'boolean',
+            'break_time' => 'nullable|array',
         ]);
 
         $room->update($validated);
@@ -245,7 +247,7 @@ class RoomController extends Controller
             if ($room) {
                 $roomName = $room->name;
                 $locationId = $room->location_id;
-                
+
                 $room->delete();
                 $deletedCount++;
 

@@ -208,12 +208,12 @@ class AnalyticsController extends Controller
         $prevTotalParticipants = $prevBookings->sum('participants');
 
         // Determine operational status messages
-        $packageStatus = $activePackages === $totalPackages ? 'All operational' : 
-                         ($activePackages === 0 ? 'None operational' : 
+        $packageStatus = $activePackages === $totalPackages ? 'All operational' :
+                         ($activePackages === 0 ? 'None operational' :
                          ($totalPackages - $activePackages) . ' inactive');
 
-        $attractionStatus = $activeAttractions === $totalAttractions ? 'All operational' : 
-                            ($activeAttractions === 0 ? 'None operational' : 
+        $attractionStatus = $activeAttractions === $totalAttractions ? 'All operational' :
+                            ($activeAttractions === 0 ? 'None operational' :
                             ($totalAttractions - $activeAttractions) . ' inactive');
 
         return [
