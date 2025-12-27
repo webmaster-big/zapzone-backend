@@ -134,6 +134,7 @@ class PackageController extends Controller
                         'image' => $package->image,
                         'locations' => [],
                         'booking_links' => [],
+                        'package_type' => $package->package_type,
                     ];
                 }
 
