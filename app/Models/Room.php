@@ -17,11 +17,14 @@ class Room extends Model
         'capacity',
         'is_available',
         'break_time',
+        'area_group',
+        'booking_interval',
     ];
 
     protected $casts = [
         'is_available' => 'boolean',
         'break_time' => 'array',
+        'booking_interval' => 'integer',
     ];
 
     // Relationships
@@ -49,5 +52,24 @@ class Room extends Model
     public function scopeByCapacity($query, $minCapacity)
     {
         return $query->where('capacity', '>=', $minCapacity);
+    }
+
+    public function scopeByAreaGroup($query, $areaGroup)
+    {
+        return $query->where('area_group', $areaGroup);
+    }
+
+    /**
+     * Get all rooms in the same area group (for stagger checking)
+     */
+    public function getRoomsInSameAreaGroup()
+    {
+        if (!$this->area_group) {
+            return collect([$this]);
+        }
+
+        return self::where('area_group', $this->area_group)
+            ->where('location_id', $this->location_id)
+            ->get();
     }
 }

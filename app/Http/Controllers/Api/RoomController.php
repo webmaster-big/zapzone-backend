@@ -97,6 +97,8 @@ class RoomController extends Controller
             'price' => 'nullable|numeric|min:0',
             'is_available' => 'boolean',
             'break_time' => 'nullable|array',
+            'area_group' => 'nullable|string|max:255',
+            'booking_interval' => 'nullable|integer|min:0',
         ]);
 
         $room = Room::create($validated);
@@ -134,6 +136,8 @@ class RoomController extends Controller
             'price' => 'sometimes|nullable|numeric|min:0',
             'is_available' => 'boolean',
             'break_time' => 'nullable|array',
+            'area_group' => 'nullable|string|max:255',
+            'booking_interval' => 'nullable|integer|min:0',
         ]);
 
         $room->update($validated);
