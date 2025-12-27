@@ -48,6 +48,11 @@ class PackageController extends Controller
             $query->byCategory($request->category);
         }
 
+        // Filter by package type
+        if ($request->has('package_type')) {
+            $query->byPackageType($request->package_type);
+        }
+
         // Search by name or description
         if ($request->has('search')) {
             $search = $request->search;

@@ -27,6 +27,7 @@ class StorePackageRequest extends FormRequest
             'name' => 'required|string|max:255',
             'description' => 'required|string',
             'category' => 'required|string|max:255',
+            'package_type' => ['nullable', 'string', Rule::in(['regular', 'custom', 'seasonal', 'holiday', 'special'])],
             'features' => 'nullable|array',
             'features.*' => 'string|max:255',
             'price' => 'required|numeric|min:0|regex:/^\d+(\.\d{1,2})?$/',

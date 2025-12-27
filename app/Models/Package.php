@@ -17,6 +17,7 @@ class Package extends Model
         'name',
         'description',
         'category',
+        'package_type',
         'features',
         'price',
         'price_per_additional',
@@ -100,6 +101,21 @@ class Package extends Model
     public function scopeByCategory($query, $category)
     {
         return $query->where('category', $category);
+    }
+
+    public function scopeByPackageType($query, $packageType)
+    {
+        return $query->where('package_type', $packageType);
+    }
+
+    public function scopeRegular($query)
+    {
+        return $query->where('package_type', 'regular');
+    }
+
+    public function scopeCustom($query)
+    {
+        return $query->where('package_type', '!=', 'regular');
     }
 
     /**
