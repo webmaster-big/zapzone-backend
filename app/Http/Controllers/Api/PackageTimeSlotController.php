@@ -389,7 +389,7 @@ class PackageTimeSlotController extends Controller
 
     /**
      * Check if a time slot conflicts with area group stagger interval.
-     * Rooms in the same area_group cannot have bookings starting within the booking_interval of each other.
+     * Rooms in the same area_group (or same location if no area_group) cannot have bookings starting within the booking_interval of each other.
      * This creates a staggered booking system across rooms in the same area.
      */
     private function checkAreaGroupStaggerConflict($roomId, $date, $startTime, $excludeId = null)
@@ -400,8 +400,6 @@ class PackageTimeSlotController extends Controller
             return false;
         }
 
-        // If room has no area_group, only check for conflicts on this specific room's start time
-        // If room has area_group, check all rooms in the same area_group
         $bookingInterval = $room->booking_interval ?? 15; // Default 15 minutes
 
         if ($bookingInterval <= 0) {
@@ -410,14 +408,9 @@ class PackageTimeSlotController extends Controller
 
         $bookingStart = Carbon::parse($date . ' ' . $startTime);
 
-        // Define the blocked window: from (start - interval) to (start + interval)
-        // This means no other booking can START within this window
-        $windowStart = (clone $bookingStart)->subMinutes($bookingInterval);
-        $windowEnd = (clone $bookingStart)->addMinutes($bookingInterval);
-
-        // Get room IDs to check (same area_group or just this room if no group)
-        $roomIdsToCheck = [];
-        
+        // Get room IDs to check:
+        // - If room has area_group: check all rooms in same area_group and location
+        // - If room has NO area_group: check ALL rooms in the same location (global stagger)
         if ($room->area_group) {
             // Get all rooms in the same area_group and location
             $roomIdsToCheck = Room::where('area_group', $room->area_group)
@@ -425,11 +418,13 @@ class PackageTimeSlotController extends Controller
                 ->pluck('id')
                 ->toArray();
         } else {
-            // Only check this room
-            $roomIdsToCheck = [$roomId];
+            // No area_group set - apply global stagger across ALL rooms in the same location
+            $roomIdsToCheck = Room::where('location_id', $room->location_id)
+                ->pluck('id')
+                ->toArray();
         }
 
-        // Check for existing bookings in ANY of these rooms that start within the blocked window
+        // Check for existing bookings in ANY of these rooms that start at the same time or within interval
         $query = PackageTimeSlot::whereIn('room_id', $roomIdsToCheck)
             ->whereDate('booked_date', $date)
             ->where('status', 'booked');
@@ -443,10 +438,24 @@ class PackageTimeSlotController extends Controller
         foreach ($existingSlots as $slot) {
             $existingStart = Carbon::parse($date . ' ' . $slot->time_slot_start);
 
-            // Check if existing booking starts within the interval window of the new booking
-            // OR if the new booking starts within the interval window of the existing booking
-            if ($existingStart->gte($windowStart) && $existingStart->lt($windowEnd)) {
-                Log::info('Area group stagger conflict detected', [
+            // Check if booking starts at EXACTLY the same time (primary conflict)
+            if ($bookingStart->eq($existingStart)) {
+                Log::info('Area group stagger conflict - same start time', [
+                    'room_id' => $roomId,
+                    'area_group' => $room->area_group,
+                    'date' => $date,
+                    'new_booking_start' => $bookingStart->format('H:i'),
+                    'existing_booking_start' => $existingStart->format('H:i'),
+                    'existing_room_id' => $slot->room_id,
+                ]);
+                return true;
+            }
+
+            // Check if new booking is within the interval window of existing booking
+            $intervalEnd = (clone $existingStart)->addMinutes($bookingInterval);
+            
+            if ($bookingStart->gt($existingStart) && $bookingStart->lt($intervalEnd)) {
+                Log::info('Area group stagger conflict - within interval after existing', [
                     'room_id' => $roomId,
                     'area_group' => $room->area_group,
                     'date' => $date,
@@ -458,12 +467,11 @@ class PackageTimeSlotController extends Controller
                 return true;
             }
 
-            // Also check the reverse: if we're trying to book at a time that's within interval of existing
-            $existingWindowStart = (clone $existingStart)->subMinutes($bookingInterval);
-            $existingWindowEnd = (clone $existingStart)->addMinutes($bookingInterval);
+            // Check if existing booking is within the interval window of new booking
+            $newIntervalEnd = (clone $bookingStart)->addMinutes($bookingInterval);
             
-            if ($bookingStart->gt($existingWindowStart) && $bookingStart->lt($existingWindowEnd)) {
-                Log::info('Area group stagger conflict detected (reverse)', [
+            if ($existingStart->gt($bookingStart) && $existingStart->lt($newIntervalEnd)) {
+                Log::info('Area group stagger conflict - existing within interval of new', [
                     'room_id' => $roomId,
                     'area_group' => $room->area_group,
                     'date' => $date,

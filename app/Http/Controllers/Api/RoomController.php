@@ -150,6 +150,23 @@ class RoomController extends Controller
         ]);
     }
 
+    // update all booking interval based on area_group they belong to
+    public function updateBookingIntervalByAreaGroup(Request $request, string $areaGroup): JsonResponse
+    {
+        $validated = $request->validate([
+            'booking_interval' => 'required|integer|min:0',
+        ]);
+
+        $updatedCount = Room::where('area_group', $areaGroup)
+            ->update(['booking_interval' => $validated['booking_interval']]);
+
+        return response()->json([
+            'success' => true,
+            'message' => "Booking interval updated for {$updatedCount} rooms in area group '{$areaGroup}'",
+            'data' => ['updated_count' => $updatedCount],
+        ]);
+    }
+
     /**
      * Remove the specified room.
      */
