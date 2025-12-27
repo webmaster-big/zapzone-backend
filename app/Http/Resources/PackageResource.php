@@ -34,6 +34,7 @@ class PackageResource extends JsonResource
             'has_guest_of_honor' => $this->has_guest_of_honor,
             'created_at' => $this->created_at,
             'updated_at' => $this->updated_at,
+            'package_type' => $this->package_type,
 
             // Relationships
             'location' => $this->whenLoaded('location'),
