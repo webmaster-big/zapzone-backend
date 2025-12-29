@@ -10,7 +10,7 @@ class BookingAttraction extends Model
         'booking_id',
         'attraction_id',
         'quantity',
-        'price',
+        'price_at_booking',
     ];
 
     public function booking()
