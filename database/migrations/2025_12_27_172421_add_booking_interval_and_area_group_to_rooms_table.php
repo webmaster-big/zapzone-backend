@@ -14,7 +14,7 @@ return new class extends Migration
         Schema::table('rooms', function (Blueprint $table) {
             $table->string('area_group')->nullable()->after('break_time');
             $table->integer('booking_interval')->default(15)->after('area_group'); // Interval in minutes
-            
+
             $table->index('area_group');
         });
     }

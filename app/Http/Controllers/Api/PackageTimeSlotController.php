@@ -21,6 +21,21 @@ class PackageTimeSlotController extends Controller
     private const CLEANUP_BUFFER_MINUTES = 15;
 
     /**
+     * Convert duration to minutes based on unit type.
+     * Handles decimal values (e.g., 1.75 hours = 105 minutes)
+     */
+    private function getDurationInMinutes($duration, $durationUnit): int
+    {
+        $duration = (float) $duration;
+        
+        if ($durationUnit === 'hours' || $durationUnit === 'hours and minutes') {
+            return (int) round($duration * 60);
+        }
+        
+        return (int) round($duration);
+    }
+
+    /**
      * Display a listing of time slots with filters.
      */
     public function index(Request $request): JsonResponse
@@ -87,8 +102,8 @@ class PackageTimeSlotController extends Controller
             'user_id' => 'nullable|exists:users,id',
             'booked_date' => 'required|date',
             'time_slot_start' => 'required|date_format:H:i',
-            'duration' => 'required|integer|min:1',
-            'duration_unit' => 'required|in:hours,minutes',
+            'duration' => 'required|numeric|min:0.25',
+            'duration_unit' => 'required|in:hours,minutes,hours and minutes',
             'status' => 'sometimes|in:booked,completed,cancelled,no_show',
             'notes' => 'nullable|string',
         ]);
@@ -154,8 +169,8 @@ class PackageTimeSlotController extends Controller
         $validated = $request->validate([
             'booked_date' => 'sometimes|date',
             'time_slot_start' => 'sometimes|date_format:H:i',
-            'duration' => 'sometimes|integer|min:1',
-            'duration_unit' => 'sometimes|in:hours,minutes',
+            'duration' => 'sometimes|numeric|min:0.25',
+            'duration_unit' => 'sometimes|in:hours,minutes,hours and minutes',
             'status' => 'sometimes|in:booked,completed,cancelled,no_show',
             'notes' => 'nullable|string',
         ]);
@@ -341,15 +356,10 @@ class PackageTimeSlotController extends Controller
         $bookingDate = Carbon::parse($date);
         $dayOfWeek = strtolower($bookingDate->format('l')); // 'monday', 'tuesday', etc.
 
-        // Calculate booking time range
+        // Calculate booking time range using minutes for precision with decimal durations
         $bookingStart = Carbon::parse($date . ' ' . $startTime);
-        $bookingEnd = clone $bookingStart;
-
-        if ($durationUnit === 'hours') {
-            $bookingEnd->addHours($duration);
-        } else {
-            $bookingEnd->addMinutes($duration);
-        }
+        $durationInMinutes = $this->getDurationInMinutes($duration, $durationUnit);
+        $bookingEnd = (clone $bookingStart)->addMinutes($durationInMinutes);
 
         // Check each break time period
         foreach ($room->break_time as $breakPeriod) {
@@ -453,7 +463,7 @@ class PackageTimeSlotController extends Controller
 
             // Check if new booking is within the interval window of existing booking
             $intervalEnd = (clone $existingStart)->addMinutes($bookingInterval);
-            
+
             if ($bookingStart->gt($existingStart) && $bookingStart->lt($intervalEnd)) {
                 Log::info('Area group stagger conflict - within interval after existing', [
                     'room_id' => $roomId,
@@ -469,7 +479,7 @@ class PackageTimeSlotController extends Controller
 
             // Check if existing booking is within the interval window of new booking
             $newIntervalEnd = (clone $bookingStart)->addMinutes($bookingInterval);
-            
+
             if ($existingStart->gt($bookingStart) && $existingStart->lt($newIntervalEnd)) {
                 Log::info('Area group stagger conflict - existing within interval of new', [
                     'room_id' => $roomId,
@@ -494,13 +504,8 @@ class PackageTimeSlotController extends Controller
     private function checkTimeSlotConflict($roomId, $date, $startTime, $duration, $durationUnit, $excludeId = null)
     {
         $start = Carbon::parse($date . ' ' . $startTime);
-        $end = clone $start;
-
-        if ($durationUnit === 'hours') {
-            $end->addHours($duration);
-        } else {
-            $end->addMinutes($duration);
-        }
+        $durationInMinutes = $this->getDurationInMinutes($duration, $durationUnit);
+        $end = (clone $start)->addMinutes($durationInMinutes);
 
         $query = PackageTimeSlot::where('room_id', $roomId)
             ->whereDate('booked_date', $date)
@@ -514,13 +519,8 @@ class PackageTimeSlotController extends Controller
 
         foreach ($existingSlots as $slot) {
             $existingStart = Carbon::parse($date . ' ' . $slot->time_slot_start);
-            $existingEnd = clone $existingStart;
-
-            if ($slot->duration_unit === 'hours') {
-                $existingEnd->addHours($slot->duration);
-            } else {
-                $existingEnd->addMinutes($slot->duration);
-            }
+            $existingDurationInMinutes = $this->getDurationInMinutes($slot->duration, $slot->duration_unit);
+            $existingEnd = (clone $existingStart)->addMinutes($existingDurationInMinutes);
 
             // Add cleanup buffer time after the booking ends
             $existingEndWithBuffer = (clone $existingEnd)->addMinutes(self::CLEANUP_BUFFER_MINUTES);
@@ -604,13 +604,13 @@ class PackageTimeSlotController extends Controller
         $duration = $package->duration;
         $durationUnit = $package->duration_unit;
 
-        // Calculate actual duration in minutes
-        $slotDuration = $durationUnit === 'hours' ? $duration * 60 : $duration;
+        // Calculate actual duration in minutes using helper method
+        $slotDurationInMinutes = $this->getDurationInMinutes($duration, $durationUnit);
 
         // Iterate through each time slot from the schedule
         foreach ($timeSlots as $timeSlot) {
             $currentTime = Carbon::parse($date . ' ' . $timeSlot);
-            $slotEndTime = (clone $currentTime)->addMinutes($slotDuration);
+            $slotEndTime = (clone $currentTime)->addMinutes($slotDurationInMinutes);
 
             // Check if ANY room is available for this slot
             $availableRoom = $this->findAvailableRoom(

@@ -26,7 +26,7 @@ class PackageTimeSlot extends Model
 
     protected $casts = [
         'booked_date' => 'date',
-        'duration' => 'integer',
+        'duration' => 'decimal:2',
     ];
 
     // Relationships
@@ -59,12 +59,26 @@ class PackageTimeSlot extends Model
     public function getTimeSlotEndAttribute()
     {
         $start = Carbon::parse($this->time_slot_start);
+        
+        // Convert duration to minutes for precise calculation
+        $durationInMinutes = $this->getDurationInMinutes();
+        
+        return $start->addMinutes($durationInMinutes)->format('H:i:s');
+    }
 
-        if ($this->duration_unit === 'hours') {
-            return $start->addHours($this->duration)->format('H:i:s');
-        } else {
-            return $start->addMinutes($this->duration)->format('H:i:s');
+    /**
+     * Get duration in minutes regardless of unit type.
+     * Handles decimal values (e.g., 1.75 hours = 105 minutes)
+     */
+    public function getDurationInMinutes(): int
+    {
+        $duration = (float) $this->duration;
+        
+        if ($this->duration_unit === 'hours' || $this->duration_unit === 'hours and minutes') {
+            return (int) round($duration * 60);
         }
+        
+        return (int) round($duration);
     }
 
     // Scopes

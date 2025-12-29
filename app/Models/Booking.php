@@ -59,6 +59,7 @@ class Booking extends Model
         'total_amount' => 'decimal:2',
         'amount_paid' => 'decimal:2',
         'discount_amount' => 'decimal:2',
+        'duration' => 'decimal:2',
         'guest_of_honor_age' => 'integer',
         'checked_in_at' => 'datetime',
         'completed_at' => 'datetime',
