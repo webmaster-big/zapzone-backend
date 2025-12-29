@@ -517,104 +517,141 @@ class AttractionController extends Controller
         ]);
     }
 
-    /**
-     * Bulk import attractions
-     */
-    public function bulkImport(Request $request): JsonResponse
-    {
-        $validated = $request->validate([
-            'attractions' => 'required|array|min:1',
-            'attractions.*.location_id' => 'required|exists:locations,id',
-            'attractions.*.name' => 'required|string|max:255',
-            'attractions.*.description' => 'required|string',
-            'attractions.*.price' => 'required|numeric|min:0',
-            'attractions.*.pricing_type' => ['nullable', Rule::in(['per_person', 'per_unit', 'fixed', 'per_lane'])],
-            'attractions.*.max_capacity' => 'required|integer|min:1',
-            'attractions.*.category' => 'required|string|max:255',
-            'attractions.*.unit' => 'nullable|string|max:50',
-            'attractions.*.duration' => 'nullable|numeric|min:0.01',
-            'attractions.*.duration_unit' => ['nullable', Rule::in(['hours', 'minutes', 'hours and minutes'])],
-            'attractions.*.availability' => 'nullable|array',
-            'attractions.*.image' => 'nullable|max:27262976', // Can be string or array, 20MB max for base64
-            'attractions.*.image.*' => 'nullable|string|max:27262976', // For array validation
-            'attractions.*.rating' => 'nullable|numeric|between:0,5',
-            'attractions.*.min_age' => 'nullable|integer|min:0',
-            'attractions.*.is_active' => 'nullable|boolean',
-        ]);
+        /**
+         * Bulk import attractions
+         */
+        public function bulkImport(Request $request): JsonResponse
+        {
+            $validated = $request->validate([
+                'attractions' => 'required|array|min:1',
+                // Support both snake_case and camelCase field names
+                'attractions.*.location_id' => 'nullable|exists:locations,id',
+                'attractions.*.locationId' => 'nullable|exists:locations,id',
+                'attractions.*.name' => 'required|string|max:255',
+                'attractions.*.description' => 'required|string',
+                'attractions.*.price' => 'required|numeric|min:0',
+                'attractions.*.pricing_type' => 'nullable|string',
+                'attractions.*.pricingType' => 'nullable|string',
+                'attractions.*.max_capacity' => 'nullable|integer|min:1',
+                'attractions.*.maxCapacity' => 'nullable|integer|min:1',
+                'attractions.*.category' => 'required|string|max:255',
+                'attractions.*.unit' => 'nullable|string|max:50',
+                'attractions.*.duration' => 'nullable|numeric|min:0',
+                'attractions.*.duration_unit' => 'nullable|string',
+                'attractions.*.durationUnit' => 'nullable|string',
+                'attractions.*.availability' => 'nullable|array',
+                'attractions.*.image' => 'nullable', // Can be string or array
+                'attractions.*.images' => 'nullable|array', // Export format uses 'images'
+                'attractions.*.rating' => 'nullable|numeric|between:0,5',
+                'attractions.*.min_age' => 'nullable|integer|min:0',
+                'attractions.*.minAge' => 'nullable|integer|min:0',
+                'attractions.*.is_active' => 'nullable|boolean',
+                'attractions.*.status' => 'nullable|string', // Export format uses 'status'
+            ]);
 
-        $importedAttractions = [];
-        $errors = [];
+            $importedAttractions = [];
+            $errors = [];
 
-        foreach ($validated['attractions'] as $index => $attractionData) {
-            try {
-                // Set default pricing type
-                $attractionData['pricing_type'] = $attractionData['pricing_type'] ?? 'per_person';
+            foreach ($validated['attractions'] as $index => $attractionData) {
+                try {
+                    // Map camelCase to snake_case fields
+                    $mappedData = [
+                        'name' => $attractionData['name'],
+                        'description' => $attractionData['description'],
+                        'price' => $attractionData['price'],
+                        'category' => $attractionData['category'],
+                        'location_id' => $attractionData['location_id'] ?? $attractionData['locationId'] ?? null,
+                        'pricing_type' => $attractionData['pricing_type'] ?? $attractionData['pricingType'] ?? 'per_person',
+                        'max_capacity' => $attractionData['max_capacity'] ?? $attractionData['maxCapacity'] ?? 1,
+                        'duration' => $attractionData['duration'] ?? null,
+                        'duration_unit' => $attractionData['duration_unit'] ?? $attractionData['durationUnit'] ?? null,
+                        'availability' => $attractionData['availability'] ?? null,
+                        'rating' => $attractionData['rating'] ?? null,
+                        'min_age' => $attractionData['min_age'] ?? $attractionData['minAge'] ?? null,
+                        'unit' => $attractionData['unit'] ?? null,
+                    ];
 
-                // Set default is_active
-                $attractionData['is_active'] = $attractionData['is_active'] ?? true;
+                    // Handle is_active from status or is_active field
+                    if (isset($attractionData['status'])) {
+                        $mappedData['is_active'] = $attractionData['status'] === 'active';
+                    } elseif (isset($attractionData['is_active'])) {
+                        $mappedData['is_active'] = $attractionData['is_active'];
+                    } else {
+                        $mappedData['is_active'] = true;
+                    }
 
-                // Handle image upload if provided (array of images)
-                if (isset($attractionData['image'])) {
-                    if (is_array($attractionData['image']) && count($attractionData['image']) > 0) {
-                        $uploadedImages = [];
-                        foreach ($attractionData['image'] as $image) {
-                            if (!empty($image)) {
-                                // Check if it's a base64 string
-                                if (is_string($image) && strpos($image, 'data:image') === 0) {
-                                    $uploadedImages[] = $this->handleBase64Upload($image);
-                                } else {
-                                    $uploadedImages[] = $this->handleImageUpload($image);
+                    // Handle image - support both 'image' and 'images' fields
+                    $imageData = $attractionData['images'] ?? $attractionData['image'] ?? null;
+                    
+                    if ($imageData) {
+                        if (is_array($imageData) && count($imageData) > 0) {
+                            $uploadedImages = [];
+                            foreach ($imageData as $image) {
+                                if (!empty($image)) {
+                                    // Check if it's a base64 string
+                                    if (is_string($image) && strpos($image, 'data:image') === 0) {
+                                        $uploadedImages[] = $this->handleBase64Upload($image);
+                                    } else {
+                                        // Keep existing path as-is
+                                        $uploadedImages[] = $image;
+                                    }
                                 }
                             }
-                        }
-                        $attractionData['image'] = !empty($uploadedImages) ? $uploadedImages : [];
-                    } elseif (is_string($attractionData['image']) && !empty($attractionData['image'])) {
-                        // If single image string is provided
-                        if (strpos($attractionData['image'], 'data:image') === 0) {
-                            $uploadedImage = $this->handleBase64Upload($attractionData['image']);
+                            $mappedData['image'] = !empty($uploadedImages) ? $uploadedImages : [];
+                        } elseif (is_string($imageData) && !empty($imageData)) {
+                            // If single image string is provided
+                            if (strpos($imageData, 'data:image') === 0) {
+                                $uploadedImage = $this->handleBase64Upload($imageData);
+                            } else {
+                                $uploadedImage = $imageData;
+                            }
+                            $mappedData['image'] = [$uploadedImage];
                         } else {
-                            $uploadedImage = $this->handleImageUpload($attractionData['image']);
+                            $mappedData['image'] = [];
                         }
-                        $attractionData['image'] = [$uploadedImage];
                     } else {
-                        $attractionData['image'] = [];
+                        $mappedData['image'] = [];
                     }
-                } else {
-                    $attractionData['image'] = [];
+
+                    // Create the attraction
+                    $attraction = Attraction::create($mappedData);
+
+                    // Load relationships
+                    $attraction->load(['location', 'packages']);
+                    $importedAttractions[] = $attraction;
+
+                } catch (\Exception $e) {
+                    Log::error('Failed to import attraction', [
+                        'index' => $index,
+                        'name' => $attractionData['name'] ?? 'Unknown',
+                        'error' => $e->getMessage(),
+                        'trace' => $e->getTraceAsString(),
+                    ]);
+                    
+                    $errors[] = [
+                        'index' => $index,
+                        'name' => $attractionData['name'] ?? 'Unknown',
+                        'error' => $e->getMessage(),
+                    ];
                 }
-
-                // Create the attraction with a unique ID
-                $attraction = Attraction::create($attractionData);
-
-                // Load relationships
-                $attraction->load(['location', 'packages']);
-                $importedAttractions[] = $attraction;
-
-            } catch (\Exception $e) {
-                $errors[] = [
-                    'index' => $index,
-                    'name' => $attractionData['name'] ?? 'Unknown',
-                    'error' => $e->getMessage(),
-                ];
             }
+
+            $response = [
+                'success' => true,
+                'message' => count($importedAttractions) . ' attractions imported successfully',
+                'data' => [
+                    'imported' => $importedAttractions,
+                    'imported_count' => count($importedAttractions),
+                    'failed_count' => count($errors),
+                ],
+            ];
+
+            if (!empty($errors)) {
+                $response['errors'] = $errors;
+            }
+
+            return response()->json($response, count($errors) > 0 ? 207 : 201);
         }
-
-        $response = [
-            'success' => true,
-            'message' => count($importedAttractions) . ' attractions imported successfully',
-            'data' => [
-                'imported' => $importedAttractions,
-                'imported_count' => count($importedAttractions),
-                'failed_count' => count($errors),
-            ],
-        ];
-
-        if (!empty($errors)) {
-            $response['errors'] = $errors;
-        }
-
-        return response()->json($response, count($errors) > 0 ? 207 : 201);
-    }
 
     /**
      * Handle actual file upload from request
