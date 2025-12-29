@@ -419,12 +419,15 @@ class PackageTimeSlotController extends Controller
         $bookingStart = Carbon::parse($date . ' ' . $startTime);
 
         // Get room IDs to check:
-        // - If room has area_group: check all rooms in same area_group and location
+        // - If room has area_group: check rooms in same area_group + rooms with NO area_group (global blockers)
         // - If room has NO area_group: check ALL rooms in the same location (global stagger)
         if ($room->area_group) {
-            // Get all rooms in the same area_group and location
-            $roomIdsToCheck = Room::where('area_group', $room->area_group)
-                ->where('location_id', $room->location_id)
+            // Get all rooms in the same area_group AND rooms with no area_group (global blockers)
+            $roomIdsToCheck = Room::where('location_id', $room->location_id)
+                ->where(function ($query) use ($room) {
+                    $query->where('area_group', $room->area_group)
+                          ->orWhereNull('area_group');
+                })
                 ->pluck('id')
                 ->toArray();
         } else {

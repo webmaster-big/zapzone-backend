@@ -105,12 +105,12 @@ class Booking extends Model
 
     public function attractions(): BelongsToMany
     {
-        return $this->belongsToMany(Attraction::class, 'booking_attractions');
+        return $this->belongsToMany(BookingAttraction::class, 'booking_attractions');
     }
 
     public function addOns(): BelongsToMany
     {
-        return $this->belongsToMany(AddOn::class, 'booking_add_ons');
+        return $this->belongsToMany(BookingAddOn::class, 'booking_add_ons');
     }
 
     public function payments(): HasMany
