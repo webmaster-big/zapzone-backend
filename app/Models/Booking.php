@@ -44,6 +44,7 @@ class Booking extends Model
         'transaction_id',
         'status',
         'notes',
+        'internal_notes',
         'special_requests',
         'guest_of_honor_name',
         'guest_of_honor_age',

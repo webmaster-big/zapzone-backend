@@ -226,6 +226,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('bookings/search', [BookingController::class, 'search']);
     Route::patch('bookings/{booking}/status', [BookingController::class, 'updateStatus']);
     Route::patch('bookings/{booking}/payment-status', [BookingController::class, 'updatePaymentStatus']);
+    Route::patch('bookings/{booking}/internal-notes', [BookingController::class, 'updateInternalNotes']);
     Route::post('bookings/bulk-delete', [BookingController::class, 'bulkDelete']);
 
     // Payment routes

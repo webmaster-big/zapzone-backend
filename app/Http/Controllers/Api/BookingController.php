@@ -220,6 +220,8 @@ class BookingController extends Controller
             'payment_status' => ['sometimes', Rule::in(['paid', 'partial', 'pending'])],
             'status' => ['sometimes', Rule::in(['pending', 'confirmed', 'checked-in', 'completed', 'cancelled'])],
             'notes' => 'nullable|string',
+            'internal_notes' => 'nullable|string',
+            'send_notification' => 'nullable|boolean',
             'special_requests' => 'nullable|string',
             'guest_of_honor_name' => 'nullable|string|max:255',
             'guest_of_honor_age' => 'nullable|integer|min:0|max:150',
@@ -725,6 +727,8 @@ class BookingController extends Controller
             'payment_status' => ['sometimes', Rule::in(['paid', 'partial', 'pending'])],
             'status' => ['sometimes', Rule::in(['pending', 'confirmed', 'checked-in', 'completed', 'cancelled'])],
             'notes' => 'sometimes|nullable|string',
+            'internal_notes' => 'sometimes|nullable|string',
+            'send_notification' => 'sometimes|nullable|boolean',
             'special_requests' => 'sometimes|nullable|string',
             'guest_of_honor_name' => 'sometimes|nullable|string|max:255',
             'guest_of_honor_age' => 'sometimes|nullable|integer|min:0|max:150',
@@ -829,6 +833,11 @@ class BookingController extends Controller
         }
 
         $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
+
+        // Send notification email if requested
+        if (isset($validated['send_notification']) && $validated['send_notification'] === true) {
+            $this->sendNotificationEmail($booking, 'updated');
+        }
 
         // Log booking update activity
         $customerName = $booking->customer ? "{$booking->customer->first_name} {$booking->customer->last_name}" : $booking->guest_name;
@@ -1206,6 +1215,116 @@ class BookingController extends Controller
             'message' => "{$deletedCount} bookings deleted successfully",
             'data' => ['deleted_count' => $deletedCount],
         ]);
+    }
+
+    /**
+     * Update internal notes only for a booking
+     */
+    public function updateInternalNotes(Request $request, Booking $booking): JsonResponse
+    {
+        $validated = $request->validate([
+            'internal_notes' => 'required|string',
+        ]);
+
+        $booking->update([
+            'internal_notes' => $validated['internal_notes'],
+        ]);
+
+        // Log internal notes update
+        ActivityLog::log(
+            action: 'Booking Internal Notes Updated',
+            category: 'update',
+            description: "Internal notes updated for booking {$booking->reference_number}",
+            userId: auth()->id(),
+            locationId: $booking->location_id,
+            entityType: 'booking',
+            entityId: $booking->id,
+            metadata: ['reference_number' => $booking->reference_number]
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Internal notes updated successfully',
+            'data' => $booking,
+        ]);
+    }
+
+    /**
+     * Send notification email to customer
+     */
+    private function sendNotificationEmail(Booking $booking, string $action = 'updated'): void
+    {
+        // Get recipient email
+        $recipientEmail = $booking->customer
+            ? $booking->customer->email
+            : $booking->guest_email;
+
+        if (!$recipientEmail) {
+            Log::warning('No recipient email available for booking notification', [
+                'booking_id' => $booking->id,
+                'reference_number' => $booking->reference_number,
+            ]);
+            return;
+        }
+
+        try {
+            Log::info('Sending booking notification email', [
+                'booking_id' => $booking->id,
+                'recipient_email' => $recipientEmail,
+                'action' => $action,
+            ]);
+
+            // Prepare email data
+            $customerName = $booking->customer
+                ? "{$booking->customer->first_name} {$booking->customer->last_name}"
+                : $booking->guest_name;
+
+            $subject = $action === 'updated'
+                ? 'Your Booking Has Been Updated - Zap Zone'
+                : 'Booking Notification - Zap Zone';
+
+            $emailBody = view('emails.booking-update', [
+                'booking' => $booking,
+                'customerName' => $customerName,
+                'action' => $action,
+            ])->render();
+
+            // Check if Gmail API should be used
+            $useGmailApi = config('gmail.enabled', false) &&
+                          (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
+
+            if ($useGmailApi) {
+                // Send using Gmail API
+                $gmailService = new GmailApiService();
+                $gmailService->sendEmail(
+                    $recipientEmail,
+                    $subject,
+                    $emailBody,
+                    'Zap Zone'
+                );
+            } else {
+                // Send using Laravel Mail (SMTP)
+                \Illuminate\Support\Facades\Mail::send([], [], function ($message) use ($recipientEmail, $subject, $emailBody) {
+                    $message->to($recipientEmail)
+                        ->subject($subject)
+                        ->html($emailBody);
+                });
+            }
+
+            Log::info('Booking notification email sent successfully', [
+                'email' => $recipientEmail,
+                'booking_id' => $booking->id,
+                'action' => $action,
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('Failed to send booking notification email', [
+                'email' => $recipientEmail,
+                'booking_id' => $booking->id,
+                'action' => $action,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     // detroy method
