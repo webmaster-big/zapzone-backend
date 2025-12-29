@@ -107,7 +107,7 @@ class PackageController extends Controller
         $groupedPackages = [];
 
         $query = Package::with(['location', 'availabilitySchedules'])
-            ->select(['id', 'name', 'description', 'price', 'category', 'min_participants', 'max_participants', 'duration', 'image', 'location_id', 'is_active', 'package_type'])
+            ->select(['id', 'name', 'description', 'price', 'category', 'min_participants', 'max_participants', 'duration', 'image', 'location_id', 'is_active', 'package_type', 'duration_unit'])
             ->where('is_active', true);
 
         if ($search) {
@@ -131,6 +131,7 @@ class PackageController extends Controller
                         'category' => $package->category,
                         'max_guests' => $package->max_participants,
                         'duration' => $package->duration,
+                        'duration_unit' => $package->duration_unit,
                         'image' => $package->image,
                         'locations' => [],
                         'booking_links' => [],
@@ -618,6 +619,7 @@ class PackageController extends Controller
             'packages.*.category' => 'required|string|max:100',
             'packages.*.max_guests' => 'nullable|integer|min:1',
             'packages.*.duration' => 'nullable|numeric|min:0.01',
+            'packages.*.duration_unit' => ['nullable', Rule::in(['hours', 'minutes', 'hours and minutes'])],
             'packages.*.image' => 'nullable|string|max:27262976',
             'packages.*.is_active' => 'nullable|boolean',
             'packages.*.time_slot_start' => 'nullable|date_format:H:i:s',
