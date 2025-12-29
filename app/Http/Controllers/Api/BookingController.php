@@ -256,18 +256,11 @@ class BookingController extends Controller
         // Attach attractions with individual quantity and price (new format)
         if (isset($validated['additional_attractions']) && is_array($validated['additional_attractions'])) {
             foreach ($validated['additional_attractions'] as $attraction) {
-                // Fetch current price from database if not provided
-                $priceAtBooking = $attraction['price_at_booking'] ?? null;
-                if ($priceAtBooking === null || $priceAtBooking == 0) {
-                    $attractionModel = \App\Models\Attraction::find($attraction['attraction_id']);
-                    $priceAtBooking = $attractionModel ? $attractionModel->price : 0;
-                }
-                
                 BookingAttraction::create([
                     'booking_id' => $booking->id,
                     'attraction_id' => $attraction['attraction_id'],
                     'quantity' => $attraction['quantity'] ?? 1,
-                    'price_at_booking' => $priceAtBooking,
+                    'price_at_booking' => $attraction['price_at_booking'] ?? 0,
                 ]);
             }
         }
@@ -275,18 +268,11 @@ class BookingController extends Controller
         // Attach add-ons with individual quantity and price (new format)
         if (isset($validated['additional_addons']) && is_array($validated['additional_addons'])) {
             foreach ($validated['additional_addons'] as $addon) {
-                // Fetch current price from database if not provided
-                $priceAtBooking = $addon['price_at_booking'] ?? null;
-                if ($priceAtBooking === null || $priceAtBooking == 0) {
-                    $addonModel = \App\Models\AddOn::find($addon['addon_id']);
-                    $priceAtBooking = $addonModel ? $addonModel->price : 0;
-                }
-                
                 BookingAddOn::create([
                     'booking_id' => $booking->id,
                     'add_on_id' => $addon['addon_id'],
                     'quantity' => $addon['quantity'] ?? 1,
-                    'price_at_booking' => $priceAtBooking,
+                    'price_at_booking' => $addon['price_at_booking'] ?? 0,
                 ]);
             }
         }
@@ -787,18 +773,11 @@ class BookingController extends Controller
             // Add new attractions
             if (is_array($validated['additional_attractions'])) {
                 foreach ($validated['additional_attractions'] as $attraction) {
-                    // Fetch current price from database if not provided
-                    $priceAtBooking = $attraction['price_at_booking'] ?? null;
-                    if ($priceAtBooking === null || $priceAtBooking == 0) {
-                        $attractionModel = \App\Models\Attraction::find($attraction['attraction_id']);
-                        $priceAtBooking = $attractionModel ? $attractionModel->price : 0;
-                    }
-                    
                     BookingAttraction::create([
                         'booking_id' => $booking->id,
                         'attraction_id' => $attraction['attraction_id'],
                         'quantity' => $attraction['quantity'] ?? 1,
-                        'price_at_booking' => $priceAtBooking,
+                        'price_at_booking' => $attraction['price_at_booking'] ?? 0,
                     ]);
                 }
             }
@@ -812,18 +791,11 @@ class BookingController extends Controller
             // Add new add-ons
             if (is_array($validated['additional_addons'])) {
                 foreach ($validated['additional_addons'] as $addon) {
-                    // Fetch current price from database if not provided
-                    $priceAtBooking = $addon['price_at_booking'] ?? null;
-                    if ($priceAtBooking === null || $priceAtBooking == 0) {
-                        $addonModel = \App\Models\AddOn::find($addon['addon_id']);
-                        $priceAtBooking = $addonModel ? $addonModel->price : 0;
-                    }
-                    
                     BookingAddOn::create([
                         'booking_id' => $booking->id,
                         'add_on_id' => $addon['addon_id'],
                         'quantity' => $addon['quantity'] ?? 1,
-                        'price_at_booking' => $priceAtBooking,
+                        'price_at_booking' => $addon['price_at_booking'] ?? 0,
                     ]);
                 }
             }

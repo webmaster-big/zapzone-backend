@@ -617,14 +617,22 @@ class PackageController extends Controller
             'packages.*.description' => 'nullable|string',
             'packages.*.price' => 'required|numeric|min:0',
             'packages.*.category' => 'required|string|max:100',
-            'packages.*.max_guests' => 'nullable|integer|min:1',
+            'packages.*.features' => 'nullable|array',
+            'packages.*.features.*' => 'nullable|string',
+            'packages.*.price_per_additional' => 'nullable|numeric|min:0',
+            'packages.*.min_participants' => 'nullable|integer|min:1',
+            'packages.*.max_participants' => 'nullable|integer|min:1',
             'packages.*.duration' => 'nullable|numeric|min:0.01',
-            'packages.*.duration_unit' => ['nullable', Rule::in(['hours', 'minutes', 'hours and minutes'])],
-            'packages.*.image' => 'nullable|string|max:27262976',
+            'packages.*.duration_unit' => 'nullable|string',
+            'packages.*.price_per_additional_30min' => 'nullable|numeric|min:0',
+            'packages.*.price_per_additional_1hr' => 'nullable|numeric|min:0',
+            'packages.*.image' => 'nullable',
             'packages.*.is_active' => 'nullable|boolean',
-            'packages.*.time_slot_start' => 'nullable|date_format:H:i:s',
-            'packages.*.time_slot_end' => 'nullable|date_format:H:i:s',
-            'packages.*.time_slot_interval' => 'nullable|integer|min:1',
+            'packages.*.has_guest_of_honor' => 'nullable|boolean',
+            'packages.*.package_type' => 'nullable|string',
+            'packages.*.partial_payment_percentage' => 'nullable|numeric|min:0|max:100',
+            'packages.*.partial_payment_fixed' => 'nullable|numeric|min:0',
+            // Support both ID arrays and full object arrays
             'packages.*.attraction_ids' => 'nullable|array',
             'packages.*.attraction_ids.*' => 'exists:attractions,id',
             'packages.*.addon_ids' => 'nullable|array',
@@ -635,6 +643,26 @@ class PackageController extends Controller
             'packages.*.gift_card_ids.*' => 'exists:gift_cards,id',
             'packages.*.promo_ids' => 'nullable|array',
             'packages.*.promo_ids.*' => 'exists:promos,id',
+            // Full object arrays from export
+            'packages.*.attractions' => 'nullable|array',
+            'packages.*.attractions.*.id' => 'nullable|exists:attractions,id',
+            'packages.*.add_ons' => 'nullable|array',
+            'packages.*.add_ons.*.id' => 'nullable|exists:add_ons,id',
+            'packages.*.rooms' => 'nullable|array',
+            'packages.*.rooms.*.id' => 'nullable|exists:rooms,id',
+            'packages.*.gift_cards' => 'nullable|array',
+            'packages.*.gift_cards.*.id' => 'nullable|exists:gift_cards,id',
+            'packages.*.promos' => 'nullable|array',
+            'packages.*.promos.*.id' => 'nullable|exists:promos,id',
+            // Availability schedules
+            'packages.*.availability_schedules' => 'nullable|array',
+            'packages.*.availability_schedules.*.availability_type' => 'nullable|in:daily,weekly,monthly',
+            'packages.*.availability_schedules.*.day_configuration' => 'nullable|array',
+            'packages.*.availability_schedules.*.time_slot_start' => 'nullable|string',
+            'packages.*.availability_schedules.*.time_slot_end' => 'nullable|string',
+            'packages.*.availability_schedules.*.time_slot_interval' => 'nullable|integer|min:15',
+            'packages.*.availability_schedules.*.priority' => 'nullable|integer|min:0',
+            'packages.*.availability_schedules.*.is_active' => 'nullable|boolean',
         ]);
 
         $importedPackages = [];
@@ -655,21 +683,59 @@ class PackageController extends Controller
                     $packageData['image'] = null;
                 }
 
-                // Extract relationship IDs
+                // Extract relationship IDs - support both formats
+                // 1. Direct ID arrays (attraction_ids, addon_ids, etc.)
+                // 2. Full object arrays from export (attractions, add_ons, etc.)
+                
                 $attractionIds = $packageData['attraction_ids'] ?? [];
+                if (empty($attractionIds) && isset($packageData['attractions']) && is_array($packageData['attractions'])) {
+                    $attractionIds = array_filter(array_column($packageData['attractions'], 'id'));
+                }
+                
                 $addonIds = $packageData['addon_ids'] ?? [];
+                if (empty($addonIds) && isset($packageData['add_ons']) && is_array($packageData['add_ons'])) {
+                    $addonIds = array_filter(array_column($packageData['add_ons'], 'id'));
+                }
+                
                 $roomIds = $packageData['room_ids'] ?? [];
+                if (empty($roomIds) && isset($packageData['rooms']) && is_array($packageData['rooms'])) {
+                    $roomIds = array_filter(array_column($packageData['rooms'], 'id'));
+                }
+                
                 $giftCardIds = $packageData['gift_card_ids'] ?? [];
+                if (empty($giftCardIds) && isset($packageData['gift_cards']) && is_array($packageData['gift_cards'])) {
+                    $giftCardIds = array_filter(array_column($packageData['gift_cards'], 'id'));
+                }
+                
                 $promoIds = $packageData['promo_ids'] ?? [];
+                if (empty($promoIds) && isset($packageData['promos']) && is_array($packageData['promos'])) {
+                    $promoIds = array_filter(array_column($packageData['promos'], 'id'));
+                }
 
-                // Remove relationship IDs from package data
+                // Extract availability schedules
+                $availabilitySchedules = $packageData['availability_schedules'] ?? [];
+
+                // Remove relationship data from package data
                 unset(
                     $packageData['attraction_ids'],
                     $packageData['addon_ids'],
                     $packageData['room_ids'],
                     $packageData['gift_card_ids'],
-                    $packageData['promo_ids']
+                    $packageData['promo_ids'],
+                    $packageData['attractions'],
+                    $packageData['add_ons'],
+                    $packageData['rooms'],
+                    $packageData['gift_cards'],
+                    $packageData['promos'],
+                    $packageData['availability_schedules'],
+                    $packageData['location'] // Remove nested location object
                 );
+
+                // Map max_guests to max_participants if present
+                if (isset($packageData['max_guests'])) {
+                    $packageData['max_participants'] = $packageData['max_guests'];
+                    unset($packageData['max_guests']);
+                }
 
                 // Create the package with a unique ID
                 $package = Package::create($packageData);
@@ -724,11 +790,42 @@ class PackageController extends Controller
                     }
                 }
 
+                // Create availability schedules
+                if (!empty($availabilitySchedules)) {
+                    foreach ($availabilitySchedules as $scheduleData) {
+                        // Skip if missing required fields
+                        if (empty($scheduleData['availability_type']) || 
+                            empty($scheduleData['time_slot_start']) || 
+                            empty($scheduleData['time_slot_end']) ||
+                            empty($scheduleData['time_slot_interval'])) {
+                            continue;
+                        }
+
+                        \App\Models\PackageAvailabilitySchedule::create([
+                            'package_id' => $package->id,
+                            'availability_type' => $scheduleData['availability_type'],
+                            'day_configuration' => $scheduleData['day_configuration'] ?? null,
+                            'time_slot_start' => $scheduleData['time_slot_start'],
+                            'time_slot_end' => $scheduleData['time_slot_end'],
+                            'time_slot_interval' => $scheduleData['time_slot_interval'],
+                            'priority' => $scheduleData['priority'] ?? 0,
+                            'is_active' => $scheduleData['is_active'] ?? true,
+                        ]);
+                    }
+                }
+
                 // Load relationships
-                $package->load(['location', 'attractions', 'addOns', 'rooms', 'giftCards', 'promos']);
+                $package->load(['location', 'attractions', 'addOns', 'rooms', 'giftCards', 'promos', 'availabilitySchedules']);
                 $importedPackages[] = new PackageResource($package);
 
             } catch (\Exception $e) {
+                Log::error('Failed to import package', [
+                    'index' => $index,
+                    'name' => $packageData['name'] ?? 'Unknown',
+                    'error' => $e->getMessage(),
+                    'trace' => $e->getTraceAsString(),
+                ]);
+                
                 $errors[] = [
                     'index' => $index,
                     'name' => $packageData['name'] ?? 'Unknown',
