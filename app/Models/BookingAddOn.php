@@ -10,7 +10,7 @@ class BookingAddOn extends Model
         'booking_id',
         'add_on_id',
         'quantity',
-        'price',
+        'price_at_booking',
     ];
 
     public function booking()
