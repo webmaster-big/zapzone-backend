@@ -33,6 +33,7 @@ class Attraction extends Model
     protected $casts = [
         'price' => 'decimal:2',
         'rating' => 'decimal:2',
+        'duration' => 'decimal:2',
         'availability' => 'array',
         'image' => 'array',
         'is_active' => 'boolean',
