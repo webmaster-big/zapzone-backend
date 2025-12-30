@@ -1046,7 +1046,7 @@ class PaymentController extends Controller
 
     /**
      * Export invoices with comprehensive filtering options
-     * 
+     *
      * Query params:
      * - payment_ids: comma-separated or array of payment IDs
      * - payable_type: 'booking' or 'attraction_purchase'
@@ -1086,8 +1086,8 @@ class PaymentController extends Controller
 
         // Filter by specific payment IDs
         if ($request->has('payment_ids')) {
-            $ids = is_array($request->payment_ids) 
-                ? $request->payment_ids 
+            $ids = is_array($request->payment_ids)
+                ? $request->payment_ids
                 : explode(',', $request->payment_ids);
             $query->whereIn('id', $ids);
         }
@@ -1123,7 +1123,7 @@ class PaymentController extends Controller
         // Filter by week
         if ($request->has('week') && !$request->has('start_date') && !$request->has('date')) {
             $weekParam = $request->week;
-            
+
             if ($weekParam === 'current') {
                 $startOfWeek = now()->startOfWeek();
                 $endOfWeek = now()->endOfWeek();
@@ -1225,7 +1225,7 @@ class PaymentController extends Controller
                 if ($dateRange['start'] === $dateRange['end']) {
                     $filters['date_range'] = Carbon::parse($dateRange['start'])->format('l, F j, Y');
                 } else {
-                    $filters['date_range'] = Carbon::parse($dateRange['start'])->format('M d, Y') . 
+                    $filters['date_range'] = Carbon::parse($dateRange['start'])->format('M d, Y') .
                                              ' - ' . Carbon::parse($dateRange['end'])->format('M d, Y');
                 }
             }
@@ -1319,8 +1319,8 @@ class PaymentController extends Controller
         $title = 'Payment Invoices';
 
         if ($request->has('payable_type')) {
-            $title = $request->payable_type === Payment::TYPE_BOOKING 
-                ? 'Package Booking Invoices' 
+            $title = $request->payable_type === Payment::TYPE_BOOKING
+                ? 'Package Booking Invoices'
                 : 'Attraction Purchase Invoices';
         }
 
