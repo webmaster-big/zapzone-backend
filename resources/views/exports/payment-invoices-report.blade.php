@@ -9,13 +9,14 @@
         body { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 8pt; line-height: 1.5; color: #2d3748; padding: 10px; }
         
         /* Header */
-        .header { display: table; width: 100%; margin-bottom: 25px; padding-bottom: 20px; border-bottom: 2px solid #e2e8f0; }
+        .header { display: table; width: 100%; margin-bottom: 20px; padding-bottom: 15px; border-bottom: 2px solid #e2e8f0; }
         .header-left { display: table-cell; width: 60%; vertical-align: top; }
         .header-right { display: table-cell; width: 40%; text-align: right; vertical-align: top; }
-        .report-title { font-size: 18pt; font-weight: 700; color: #1a202c; }
-        .report-subtitle { font-size: 10pt; color: #718096; margin-top: 6px; }
-        .company-name { font-size: 11pt; font-weight: 600; color: #4a5568; }
-        .report-meta { font-size: 8pt; color: #a0aec0; margin-top: 6px; }
+        .company-logo { max-height: 40px; max-width: 140px; margin-bottom: 6px; }
+        .report-title { font-size: 14pt; font-weight: 700; color: #1a202c; }
+        .report-subtitle { font-size: 9pt; color: #718096; margin-top: 4px; }
+        .company-name { font-size: 10pt; font-weight: 600; color: #4a5568; }
+        .report-meta { font-size: 8pt; color: #a0aec0; margin-top: 4px; }
         
         /* Filters */
         .filters { background: #f7fafc; padding: 14px 18px; border-radius: 4px; margin-bottom: 20px; font-size: 9pt; }
@@ -24,12 +25,12 @@
         .filter-value { font-weight: 600; color: #2d3748; }
         
         /* Summary */
-        .summary { display: table; width: 100%; margin-bottom: 25px; }
-        .summary-item { display: table-cell; width: 25%; text-align: center; padding: 18px 12px; background: #f7fafc; }
+        .summary { display: table; width: 100%; margin-bottom: 20px; }
+        .summary-item { display: table-cell; width: 25%; text-align: center; padding: 14px 10px; background: #f7fafc; }
         .summary-item:first-child { border-radius: 4px 0 0 4px; }
         .summary-item:last-child { border-radius: 0 4px 4px 0; }
-        .summary-value { font-size: 16pt; font-weight: 700; color: #1a202c; }
-        .summary-label { font-size: 8pt; color: #718096; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; }
+        .summary-value { font-size: 13pt; font-weight: 700; color: #1a202c; }
+        .summary-label { font-size: 7pt; color: #718096; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 3px; }
         
         /* Table */
         table { width: 100%; border-collapse: collapse; }
@@ -72,7 +73,11 @@
             <div class="report-subtitle">{{ $locationName ?? 'All Locations' }}</div>
         </div>
         <div class="header-right">
-            <div class="company-name">{{ $companyName ?? 'ZapZone' }}</div>
+            @if(isset($company) && $company && $company->logo_path)
+                <img src="https://zapzone-backend-yt1lm2w5.on-forge.com/storage/{{ $company->logo_path }}" alt="{{ $company->name }}" class="company-logo" />
+            @else
+                <div class="company-name">{{ $companyName ?? 'ZapZone' }}</div>
+            @endif
             <div class="report-meta">Generated {{ now()->format('M j, Y g:i A') }}</div>
         </div>
     </div>

@@ -30,7 +30,7 @@
                                     <td align="center">
                             <![endif]-->
                             @if($purchase->attraction && $purchase->attraction->location && $purchase->attraction->location->company && $purchase->attraction->location->company->logo_path)
-                                <img src="{{ $purchase->attraction->location->company->logo_path }}" alt="{{ $purchase->attraction->location->company->name }}" style="max-height: 50px; max-width: 180px; margin-bottom: 12px;" />
+                                <img src="https://zapzone-backend-yt1lm2w5.on-forge.com/storage/{{ $purchase->attraction->location->company->logo_path }}" alt="{{ $purchase->attraction->location->company->name }}" style="max-height: 50px; max-width: 180px; margin-bottom: 12px;" />
                             @elseif($purchase->attraction && $purchase->attraction->location && $purchase->attraction->location->company)
                                 <p style="margin: 0 0 8px 0; padding: 0; font-size: 18px; font-weight: 700; color: #ffffff;">{{ $purchase->attraction->location->company->name }}</p>
                             @endif

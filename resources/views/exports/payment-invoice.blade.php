@@ -11,14 +11,15 @@
         .invoice { max-width: 100%; padding: 10px; }
         
         /* Header */
-        .header { display: table; width: 100%; margin-bottom: 30px; padding-bottom: 15px; border-bottom: 1px solid #e2e8f0; }
+        .header { display: table; width: 100%; margin-bottom: 25px; padding-bottom: 15px; border-bottom: 1px solid #e2e8f0; }
         .header-left { display: table-cell; width: 60%; vertical-align: top; }
         .header-right { display: table-cell; width: 40%; text-align: right; vertical-align: top; }
-        .company-name { font-size: 20pt; font-weight: 700; color: #1a202c; letter-spacing: -0.5px; }
+        .company-logo { max-height: 45px; max-width: 160px; margin-bottom: 8px; }
+        .company-name { font-size: 16pt; font-weight: 700; color: #1a202c; letter-spacing: -0.5px; }
         .company-details { font-size: 8pt; color: #718096; margin-top: 4px; line-height: 1.6; }
-        .invoice-label { font-size: 10pt; color: #a0aec0; text-transform: uppercase; letter-spacing: 2px; }
-        .invoice-number { font-size: 14pt; font-weight: 600; color: #1a202c; margin-top: 2px; }
-        .invoice-date { font-size: 9pt; color: #718096; margin-top: 4px; }
+        .invoice-label { font-size: 9pt; color: #a0aec0; text-transform: uppercase; letter-spacing: 1.5px; }
+        .invoice-number { font-size: 12pt; font-weight: 600; color: #1a202c; margin-top: 2px; }
+        .invoice-date { font-size: 8pt; color: #718096; margin-top: 4px; }
         
         /* Status */
         .status { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 7pt; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 8px; }
@@ -31,16 +32,16 @@
         .divider { height: 1px; background: #e2e8f0; margin: 20px 0; }
         
         /* Party/Event Info */
-        .event-banner { background: #f7fafc; border-left: 3px solid #4a5568; padding: 15px 20px; margin-bottom: 25px; }
-        .event-title { font-size: 13pt; font-weight: 600; color: #1a202c; }
-        .event-details { font-size: 10pt; color: #4a5568; margin-top: 6px; }
-        .event-meta { font-size: 9pt; color: #718096; margin-top: 8px; }
+        .event-banner { background: #f7fafc; border-left: 3px solid #4a5568; padding: 12px 18px; margin-bottom: 20px; }
+        .event-title { font-size: 11pt; font-weight: 600; color: #1a202c; }
+        .event-details { font-size: 9pt; color: #4a5568; margin-top: 4px; }
+        .event-meta { font-size: 8pt; color: #718096; margin-top: 6px; }
         
         /* Guest of Honor */
-        .guest-banner { text-align: center; padding: 15px 20px; margin-bottom: 20px; border: 1px solid #e2e8f0; border-radius: 4px; }
-        .guest-label { font-size: 8pt; color: #a0aec0; text-transform: uppercase; letter-spacing: 1px; }
-        .guest-name { font-size: 15pt; font-weight: 600; color: #2d3748; margin-top: 4px; }
-        .guest-info { font-size: 9pt; color: #718096; margin-top: 4px; }
+        .guest-banner { text-align: center; padding: 12px 18px; margin-bottom: 18px; border: 1px solid #e2e8f0; border-radius: 4px; }
+        .guest-label { font-size: 7pt; color: #a0aec0; text-transform: uppercase; letter-spacing: 1px; }
+        .guest-name { font-size: 13pt; font-weight: 600; color: #2d3748; margin-top: 3px; }
+        .guest-info { font-size: 8pt; color: #718096; margin-top: 3px; }
         
         /* Two Column */
         .row { display: table; width: 100%; margin-bottom: 25px; }
@@ -72,9 +73,9 @@
         .total-line { display: table; width: 100%; margin-bottom: 10px; }
         .total-label { display: table-cell; font-size: 9pt; color: #718096; padding: 4px 0; }
         .total-value { display: table-cell; text-align: right; font-size: 9pt; color: #2d3748; padding: 4px 0; }
-        .total-main { border-top: 2px solid #cbd5e0; padding-top: 12px; margin-top: 12px; }
-        .total-main .total-label { font-weight: 600; color: #1a202c; font-size: 11pt; }
-        .total-main .total-value { font-weight: 700; color: #1a202c; font-size: 13pt; }
+        .total-main { border-top: 2px solid #cbd5e0; padding-top: 10px; margin-top: 10px; }
+        .total-main .total-label { font-weight: 600; color: #1a202c; font-size: 10pt; }
+        .total-main .total-value { font-weight: 700; color: #1a202c; font-size: 11pt; }
         .total-paid { color: #38a169; }
         .total-balance { color: #e53e3e; font-weight: 600; }
         
@@ -94,9 +95,9 @@
         .footer-refund { font-size: 9pt; color: #c53030; font-weight: 600; margin-top: 8px; }
         
         /* Payment Box */
-        .payment-summary { background: #f0fff4; border: 1px solid #9ae6b4; border-radius: 4px; padding: 25px 20px; text-align: center; margin: 20px 0; }
-        .payment-amount { font-size: 24pt; font-weight: 700; color: #276749; }
-        .payment-label { font-size: 9pt; color: #68d391; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 5px; }
+        .payment-summary { background: #f0fff4; border: 1px solid #9ae6b4; border-radius: 4px; padding: 20px 18px; text-align: center; margin: 20px 0; }
+        .payment-amount { font-size: 18pt; font-weight: 700; color: #276749; }
+        .payment-label { font-size: 8pt; color: #68d391; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }
     </style>
 </head>
 <body>
@@ -104,7 +105,11 @@
         <!-- Header -->
         <div class="header">
             <div class="header-left">
-                <div class="company-name">{{ $companyName ?? 'ZapZone' }}</div>
+                @if(isset($company) && $company && $company->logo_path)
+                    <img src="https://zapzone-backend-yt1lm2w5.on-forge.com/storage/{{ $company->logo_path }}" alt="{{ $company->name }}" class="company-logo" />
+                @else
+                    <div class="company-name">{{ $companyName ?? 'ZapZone' }}</div>
+                @endif
                 <div class="company-details">
                     @if($location)
                         {{ $location->name }}<br>

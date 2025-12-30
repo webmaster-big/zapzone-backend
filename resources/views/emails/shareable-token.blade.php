@@ -11,7 +11,12 @@
                 <table width="100%" border="0" cellpadding="0" cellspacing="0" style="max-width: 480px; background-color: #ffffff; padding: 32px; border-radius: 8px; border: 1px solid #e5e7eb;">
                     <tr>
                         <td>
-                            <h2 style="color: #111827; font-size: 20px; font-weight: 600; margin: 0 0 16px 0; letter-spacing: -0.01em; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;">Welcome to Zap Zone!</h2>
+                            @if(isset($company) && $company && $company->logo_path)
+                                <img src="https://zapzone-backend-yt1lm2w5.on-forge.com/storage/{{ $company->logo_path }}" alt="{{ $company->name }}" style="max-height: 50px; max-width: 180px; margin-bottom: 16px;" />
+                                <h2 style="color: #111827; font-size: 20px; font-weight: 600; margin: 0 0 16px 0; letter-spacing: -0.01em; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;">Welcome to {{ $company->name }}!</h2>
+                            @else
+                                <h2 style="color: #111827; font-size: 20px; font-weight: 600; margin: 0 0 16px 0; letter-spacing: -0.01em; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;">Welcome to Zap Zone!</h2>
+                            @endif
 
                             <p style="font-size: 14px; line-height: 1.6; margin: 0 0 16px 0; color: #4b5563; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;">
                                 You've been invited to register as a <strong>{{ ucwords(str_replace('_', ' ', $role)) }}</strong>.

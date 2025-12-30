@@ -38,12 +38,19 @@ class ShareableTokenMail extends Mailable
      */
     public function content(): Content
     {
+        // Get company if available
+        $company = null;
+        if ($this->token->company_id) {
+            $company = \App\Models\Company::find($this->token->company_id);
+        }
+
         return new Content(
             view: 'emails.shareable-token',
             with: [
                 'link' => $this->token->getShareableLink(),
                 'role' => $this->token->role,
                 'email' => $this->token->email,
+                'company' => $company,
             ],
         );
     }

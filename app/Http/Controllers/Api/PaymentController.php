@@ -690,7 +690,8 @@ class PaymentController extends Controller
         // Get location info
         $location = $payment->location;
 
-        // Get company name
+        // Get company info
+        $company = null;
         $companyName = 'ZapZone';
         if ($location && $location->company_id) {
             $company = Company::find($location->company_id);
@@ -707,6 +708,7 @@ class PaymentController extends Controller
             'payable' => $payable,
             'customer' => $customer,
             'location' => $location,
+            'company' => $company,
             'companyName' => $companyName,
         ]);
 
@@ -742,7 +744,8 @@ class PaymentController extends Controller
         // Get location info
         $location = $payment->location;
 
-        // Get company name
+        // Get company info
+        $company = null;
         $companyName = 'ZapZone';
         if ($location && $location->company_id) {
             $company = Company::find($location->company_id);
@@ -759,6 +762,7 @@ class PaymentController extends Controller
             'payable' => $payable,
             'customer' => $customer,
             'location' => $location,
+            'company' => $company,
             'companyName' => $companyName,
         ]);
 
@@ -855,6 +859,7 @@ class PaymentController extends Controller
         // Get location and company info
         $locationName = 'All Locations';
         $companyName = 'ZapZone';
+        $company = null;
 
         if ($request->has('location_id')) {
             $location = Location::find($request->location_id);
@@ -893,6 +898,7 @@ class PaymentController extends Controller
         $pdf = Pdf::loadView('exports.payment-invoices-report', [
             'payments' => $payments,
             'summary' => $summary,
+            'company' => $company,
             'companyName' => $companyName,
             'locationName' => $locationName,
             'filters' => count($filters) > 0 ? $filters : null,
@@ -958,7 +964,8 @@ class PaymentController extends Controller
             // Get location info
             $location = $payment->location;
 
-            // Get company name
+            // Get company info
+            $company = null;
             $companyName = 'ZapZone';
             if ($location && $location->company_id) {
                 $company = Company::find($location->company_id);
@@ -975,6 +982,7 @@ class PaymentController extends Controller
                 'payable' => $payable,
                 'customer' => $customer,
                 'location' => $location,
+                'company' => $company,
                 'companyName' => $companyName,
             ])->render();
 
@@ -1187,6 +1195,7 @@ class PaymentController extends Controller
         // Get location and company info
         $location = null;
         $locationName = 'All Locations';
+        $company = null;
         $companyName = 'ZapZone';
 
         if ($request->has('location_id')) {
@@ -1242,6 +1251,7 @@ class PaymentController extends Controller
             $pdf = Pdf::loadView('exports.payment-invoices-report', [
                 'payments' => $payments,
                 'summary' => $summary,
+                'company' => $company,
                 'companyName' => $companyName,
                 'locationName' => $locationName,
                 'filters' => count($filters) > 0 ? $filters : null,
@@ -1258,12 +1268,13 @@ class PaymentController extends Controller
 
                 $payable = $payment->payable;
                 $paymentLocation = $payment->location ?? $location;
+                $paymentCompany = null;
                 $paymentCompanyName = $companyName;
 
                 if ($paymentLocation && $paymentLocation->company_id) {
-                    $company = Company::find($paymentLocation->company_id);
-                    if ($company) {
-                        $paymentCompanyName = $company->name;
+                    $paymentCompany = Company::find($paymentLocation->company_id);
+                    if ($paymentCompany) {
+                        $paymentCompanyName = $paymentCompany->name;
                     }
                 }
 
@@ -1272,6 +1283,7 @@ class PaymentController extends Controller
                     'payable' => $payable,
                     'customer' => $payment->customer,
                     'location' => $paymentLocation,
+                    'company' => $paymentCompany,
                     'companyName' => $paymentCompanyName,
                 ])->render();
 
