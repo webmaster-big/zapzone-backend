@@ -7,8 +7,7 @@ use App\Models\ActivityLog;
 use App\Models\Company;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Support\Facades\Storage;
-use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Log;
 
 class CompanyController extends Controller
 {
@@ -52,11 +51,8 @@ class CompanyController extends Controller
         ]);
 
         // Handle logo upload if base64 image provided
-        if (isset($validated['logo_path']) && Str::startsWith($validated['logo_path'], 'data:image/')) {
-            $imageData = $validated['logo_path'];
-            $imageName = 'company-logos/' . Str::uuid() . '.png';
-            Storage::disk('public')->put($imageName, base64_decode(preg_replace('#^data:image/\w+;base64,#i', '', $imageData)));
-            $validated['logo_path'] = '/storage/' . $imageName;
+        if (isset($validated['logo_path'])) {
+            $validated['logo_path'] = $this->handleImageUpload($validated['logo_path']);
         }
 
         $company = Company::create($validated);
@@ -111,21 +107,13 @@ class CompanyController extends Controller
 
         // Handle logo upload if base64 image provided
         if (isset($validated['logo_path'])) {
-            if (Str::startsWith($validated['logo_path'], 'data:image/')) {
-                // Delete old logo if it exists
-                if ($company->logo_path && Str::startsWith($company->logo_path, '/storage/company-logos/')) {
-                    $oldLogoPath = str_replace('/storage/', '', $company->logo_path);
-                    if (Storage::disk('public')->exists($oldLogoPath)) {
-                        Storage::disk('public')->delete($oldLogoPath);
-                    }
-                }
-
-                // Upload new logo
-                $imageData = $validated['logo_path'];
-                $imageName = 'company-logos/' . Str::uuid() . '.png';
-                Storage::disk('public')->put($imageName, base64_decode(preg_replace('#^data:image/\w+;base64,#i', '', $imageData)));
-                $validated['logo_path'] = '/storage/' . $imageName;
+            // Delete old logo if it exists
+            if ($company->logo_path && file_exists(storage_path('app/public/' . $company->logo_path))) {
+                unlink(storage_path('app/public/' . $company->logo_path));
             }
+
+            // Upload new logo
+            $validated['logo_path'] = $this->handleImageUpload($validated['logo_path']);
         }
 
         $company->update($validated);
@@ -147,11 +135,8 @@ class CompanyController extends Controller
         $companyId = $company->id;
 
         // Delete company logo if it exists
-        if ($company->logo_path && Str::startsWith($company->logo_path, '/storage/company-logos/')) {
-            $logoPath = str_replace('/storage/', '', $company->logo_path);
-            if (Storage::disk('public')->exists($logoPath)) {
-                Storage::disk('public')->delete($logoPath);
-            }
+        if ($company->logo_path && file_exists(storage_path('app/public/' . $company->logo_path))) {
+            unlink(storage_path('app/public/' . $company->logo_path));
         }
 
         $company->delete();
@@ -205,22 +190,14 @@ class CompanyController extends Controller
         ]);
 
         // Delete old logo if it exists
-        if ($company->logo_path && Str::startsWith($company->logo_path, '/storage/company-logos/')) {
-            $oldLogoPath = str_replace('/storage/', '', $company->logo_path);
-            if (Storage::disk('public')->exists($oldLogoPath)) {
-                Storage::disk('public')->delete($oldLogoPath);
-            }
+        if ($company->logo_path && file_exists(storage_path('app/public/' . $company->logo_path))) {
+            unlink(storage_path('app/public/' . $company->logo_path));
         }
 
         // Upload new logo
-        if (Str::startsWith($validated['logo_path'], 'data:image/')) {
-            $imageData = $validated['logo_path'];
-            $imageName = 'company-logos/' . Str::uuid() . '.png';
-            Storage::disk('public')->put($imageName, base64_decode(preg_replace('#^data:image/\w+;base64,#i', '', $imageData)));
-            $validated['logo_path'] = '/storage/' . $imageName;
-        }
+        $newLogoPath = $this->handleImageUpload($validated['logo_path']);
 
-        $company->update(['logo_path' => $validated['logo_path']]);
+        $company->update(['logo_path' => $newLogoPath]);
         $company->load(['locations', 'users']);
 
         return response()->json([
@@ -228,5 +205,49 @@ class CompanyController extends Controller
             'message' => 'Company logo updated successfully',
             'data' => $company,
         ]);
+    }
+
+    /**
+     * Handle image upload - base64 or file path
+     */
+    private function handleImageUpload($image): string
+    {
+        // Check if it's a base64 string
+        if (is_string($image) && strpos($image, 'data:image') === 0) {
+            // Extract base64 data
+            preg_match('/data:image\/(\w+);base64,/', $image, $matches);
+            $imageType = $matches[1] ?? 'png';
+            $imageData = substr($image, strpos($image, ',') + 1);
+            $imageData = base64_decode($imageData);
+
+            // Generate unique filename
+            $filename = uniqid() . '.' . $imageType;
+            $path = 'images/company-logos';
+            $fullPath = storage_path('app/public/' . $path);
+
+            Log::info('Company logo upload attempt', [
+                'filename' => $filename,
+                'path' => $path,
+                'fullPath' => $fullPath,
+                'imageType' => $imageType
+            ]);
+
+            // Create directory if it doesn't exist
+            if (!file_exists($fullPath)) {
+                mkdir($fullPath, 0755, true);
+                Log::info('Created directory', ['path' => $fullPath]);
+            }
+
+            // Save the file
+            file_put_contents($fullPath . '/' . $filename, $imageData);
+            Log::info('Company logo saved successfully', ['file' => $fullPath . '/' . $filename]);
+
+            // Return the relative path (for storage URL)
+            return $path . '/' . $filename;
+        }
+
+        // If it's already a file path or URL, return as is
+        Log::info('Company logo path returned as-is', ['image' => $image]);
+        return $image;
     }
 }
