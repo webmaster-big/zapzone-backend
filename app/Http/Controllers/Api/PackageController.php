@@ -626,7 +626,7 @@ class PackageController extends Controller
             'packages.*.duration_unit' => 'nullable|string',
             'packages.*.price_per_additional_30min' => 'nullable|numeric|min:0',
             'packages.*.price_per_additional_1hr' => 'nullable|numeric|min:0',
-            'packages.*.image' => 'nullable',
+            'packages.*.image' => 'nullable|max:30000000',
             'packages.*.is_active' => 'nullable|boolean',
             'packages.*.has_guest_of_honor' => 'nullable|boolean',
             'packages.*.package_type' => 'nullable|string',

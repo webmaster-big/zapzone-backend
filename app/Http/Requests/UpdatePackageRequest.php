@@ -37,7 +37,7 @@ class UpdatePackageRequest extends FormRequest
             'duration_unit' => ['sometimes', Rule::in(['hours', 'minutes', 'hours and minutes'])],
             'price_per_additional_30min' => 'nullable|numeric|min:0|regex:/^\d+(\.\d{1,2})?$/',
             'price_per_additional_1hr' => 'nullable|numeric|min:0|regex:/^\d+(\.\d{1,2})?$/',
-            'image' => 'nullable|max:15360',
+            'image' => 'nullable|max:30000000',
             'is_active' => 'boolean',
             'has_guest_of_honor' => 'sometimes|boolean',
             'attraction_ids' => 'sometimes|array',
