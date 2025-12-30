@@ -12,7 +12,13 @@
                     <tr>
                         <td>
                             @if(isset($company) && $company && $company->logo_path)
-                                <img src="https://zapzone-backend-yt1lm2w5.on-forge.com/storage/{{ $company->logo_path }}" alt="{{ $company->name }}" style="max-height: 50px; max-width: 180px; margin-bottom: 16px;" />
+                                @php
+                                    $logoUrl = $company->logo_path;
+                                    if (!str_starts_with($logoUrl, 'http://') && !str_starts_with($logoUrl, 'https://') && !str_starts_with($logoUrl, 'data:')) {
+                                        $logoUrl = 'https://zapzone-backend-yt1lm2w5.on-forge.com/storage/' . $logoUrl;
+                                    }
+                                @endphp
+                                <img src="{{ $logoUrl }}" alt="{{ $company->name }}" style="max-height: 50px; max-width: 180px; margin-bottom: 16px;" />
                                 <h2 style="color: #111827; font-size: 20px; font-weight: 600; margin: 0 0 16px 0; letter-spacing: -0.01em; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;">Welcome to {{ $company->name }}!</h2>
                             @else
                                 <h2 style="color: #111827; font-size: 20px; font-weight: 600; margin: 0 0 16px 0; letter-spacing: -0.01em; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;">Welcome to Zap Zone!</h2>

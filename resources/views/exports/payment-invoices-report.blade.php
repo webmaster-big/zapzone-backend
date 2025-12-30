@@ -74,7 +74,13 @@
         </div>
         <div class="header-right">
             @if(isset($company) && $company && $company->logo_path)
-                <img src="https://zapzone-backend-yt1lm2w5.on-forge.com/storage/{{ $company->logo_path }}" alt="{{ $company->name }}" class="company-logo" />
+                @php
+                    $logoUrl = $company->logo_path;
+                    if (!str_starts_with($logoUrl, 'http://') && !str_starts_with($logoUrl, 'https://') && !str_starts_with($logoUrl, 'data:')) {
+                        $logoUrl = 'https://zapzone-backend-yt1lm2w5.on-forge.com/storage/' . $logoUrl;
+                    }
+                @endphp
+                <img src="{{ $logoUrl }}" alt="{{ $company->name }}" class="company-logo" />
             @else
                 <div class="company-name">{{ $companyName ?? 'ZapZone' }}</div>
             @endif

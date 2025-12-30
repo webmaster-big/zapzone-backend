@@ -25,7 +25,13 @@
                                     <td align="center">
                             <![endif]-->
                             @if($booking->location && $booking->location->company && $booking->location->company->logo_path)
-                                <img src="https://zapzone-backend-yt1lm2w5.on-forge.com/storage/{{ $booking->location->company->logo_path }}" alt="{{ $booking->location->company->name }}" style="max-height: 50px; max-width: 180px; margin-bottom: 12px;" />
+                                @php
+                                    $logoUrl = $booking->location->company->logo_path;
+                                    if (!str_starts_with($logoUrl, 'http://') && !str_starts_with($logoUrl, 'https://') && !str_starts_with($logoUrl, 'data:')) {
+                                        $logoUrl = 'https://zapzone-backend-yt1lm2w5.on-forge.com/storage/' . $logoUrl;
+                                    }
+                                @endphp
+                                <img src="{{ $logoUrl }}" alt="{{ $booking->location->company->name }}" style="max-height: 50px; max-width: 180px; margin-bottom: 12px;" />
                             @elseif($booking->location && $booking->location->company)
                                 <p style="margin: 0 0 8px 0; padding: 0; font-size: 18px; font-weight: 700; color: #ffffff;">{{ $booking->location->company->name }}</p>
                             @endif
