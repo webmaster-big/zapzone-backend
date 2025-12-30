@@ -35,10 +35,9 @@ class AnalyticsController extends Controller
         $locationIds = $request->location_ids ?? [];
 
         // Calculate date range - use custom dates if provided, otherwise use preset
-        if ($dateRange === 'custom' || ($request->has('start_date') && $request->has('end_date'))) {
+        if ($dateRange === 'custom' && $request->filled('start_date') && $request->filled('end_date')) {
             $startDate = Carbon::parse($request->start_date)->startOfDay();
             $endDate = Carbon::parse($request->end_date)->endOfDay();
-            $dateRange = 'custom';
         } else {
             $startDate = $this->getStartDate($dateRange);
             $endDate = now();
@@ -110,10 +109,9 @@ class AnalyticsController extends Controller
         $dateRange = $request->date_range ?? '30d';
 
         // Calculate date range - use custom dates if provided, otherwise use preset
-        if ($dateRange === 'custom' || ($request->has('start_date') && $request->has('end_date'))) {
+        if ($dateRange === 'custom' && $request->filled('start_date') && $request->filled('end_date')) {
             $startDate = Carbon::parse($request->start_date)->startOfDay();
             $endDate = Carbon::parse($request->end_date)->endOfDay();
-            $dateRange = 'custom';
         } else {
             $startDate = $this->getStartDate($dateRange);
             $endDate = now();
