@@ -27,7 +27,7 @@ class PaymentController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
-        $query = Payment::with(['customer', 'location']);
+        $query = Payment::with(['customer', 'location', 'payable']);
 
         // Filter by payable_id (the ID of the booking or attraction purchase)
         if ($request->has('payable_id')) {
