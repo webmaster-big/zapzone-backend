@@ -46,7 +46,7 @@ class Payment extends Model
      */
     public function payable(): MorphTo
     {
-        return $this->morphTo('payable');
+        return $this->morphTo();
     }
 
     /**
