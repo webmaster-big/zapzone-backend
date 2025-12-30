@@ -4,14 +4,14 @@
     <meta charset="UTF-8">
     <title>Invoice #{{ $payment->id }}</title>
     <style>
-        @page { margin: 15mm; size: A4; }
+        @page { margin: 20mm; size: A4; }
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 9pt; line-height: 1.5; color: #2d3748; }
+        body { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 9pt; line-height: 1.6; color: #2d3748; }
         
-        .invoice { max-width: 100%; }
+        .invoice { max-width: 100%; padding: 10px; }
         
         /* Header */
-        .header { display: table; width: 100%; margin-bottom: 25px; }
+        .header { display: table; width: 100%; margin-bottom: 30px; padding-bottom: 15px; border-bottom: 1px solid #e2e8f0; }
         .header-left { display: table-cell; width: 60%; vertical-align: top; }
         .header-right { display: table-cell; width: 40%; text-align: right; vertical-align: top; }
         .company-name { font-size: 20pt; font-weight: 700; color: #1a202c; letter-spacing: -0.5px; }
@@ -31,72 +31,72 @@
         .divider { height: 1px; background: #e2e8f0; margin: 20px 0; }
         
         /* Party/Event Info */
-        .event-banner { background: #f7fafc; border-left: 3px solid #4a5568; padding: 12px 15px; margin-bottom: 20px; }
-        .event-title { font-size: 12pt; font-weight: 600; color: #1a202c; }
-        .event-details { font-size: 9pt; color: #4a5568; margin-top: 4px; }
-        .event-meta { font-size: 8pt; color: #718096; margin-top: 6px; }
+        .event-banner { background: #f7fafc; border-left: 3px solid #4a5568; padding: 15px 20px; margin-bottom: 25px; }
+        .event-title { font-size: 13pt; font-weight: 600; color: #1a202c; }
+        .event-details { font-size: 10pt; color: #4a5568; margin-top: 6px; }
+        .event-meta { font-size: 9pt; color: #718096; margin-top: 8px; }
         
         /* Guest of Honor */
-        .guest-banner { text-align: center; padding: 10px; margin-bottom: 15px; border: 1px solid #e2e8f0; border-radius: 4px; }
-        .guest-label { font-size: 7pt; color: #a0aec0; text-transform: uppercase; letter-spacing: 1px; }
-        .guest-name { font-size: 14pt; font-weight: 600; color: #2d3748; margin-top: 2px; }
-        .guest-info { font-size: 9pt; color: #718096; }
+        .guest-banner { text-align: center; padding: 15px 20px; margin-bottom: 20px; border: 1px solid #e2e8f0; border-radius: 4px; }
+        .guest-label { font-size: 8pt; color: #a0aec0; text-transform: uppercase; letter-spacing: 1px; }
+        .guest-name { font-size: 15pt; font-weight: 600; color: #2d3748; margin-top: 4px; }
+        .guest-info { font-size: 9pt; color: #718096; margin-top: 4px; }
         
         /* Two Column */
-        .row { display: table; width: 100%; margin-bottom: 15px; }
+        .row { display: table; width: 100%; margin-bottom: 25px; }
         .col { display: table-cell; width: 50%; vertical-align: top; }
-        .col:first-child { padding-right: 15px; }
-        .col:last-child { padding-left: 15px; }
+        .col:first-child { padding-right: 20px; }
+        .col:last-child { padding-left: 20px; }
         
         /* Info Block */
-        .info-block { margin-bottom: 15px; }
-        .info-title { font-size: 8pt; font-weight: 600; color: #a0aec0; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+        .info-block { margin-bottom: 20px; }
+        .info-title { font-size: 8pt; font-weight: 600; color: #a0aec0; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; padding-bottom: 5px; border-bottom: 1px solid #edf2f7; }
         .info-content { font-size: 9pt; color: #2d3748; }
         .info-content strong { font-weight: 600; }
-        .info-line { margin-bottom: 3px; }
+        .info-line { margin-bottom: 5px; }
         .info-muted { color: #718096; font-size: 8pt; }
         
         /* Table */
-        table { width: 100%; border-collapse: collapse; margin-bottom: 15px; }
-        thead th { font-size: 7pt; font-weight: 600; color: #a0aec0; text-transform: uppercase; letter-spacing: 0.5px; padding: 8px 0; border-bottom: 2px solid #e2e8f0; text-align: left; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 25px; }
+        thead th { font-size: 8pt; font-weight: 600; color: #718096; text-transform: uppercase; letter-spacing: 0.5px; padding: 12px 8px; border-bottom: 2px solid #e2e8f0; text-align: left; }
         thead th.right { text-align: right; }
-        tbody td { font-size: 9pt; padding: 10px 0; border-bottom: 1px solid #f7fafc; color: #2d3748; vertical-align: top; }
+        tbody td { font-size: 9pt; padding: 14px 8px; border-bottom: 1px solid #edf2f7; color: #2d3748; vertical-align: top; }
         tbody td.right { text-align: right; }
         tbody td.center { text-align: center; }
-        .item-desc { font-size: 8pt; color: #a0aec0; margin-top: 2px; }
+        .item-desc { font-size: 8pt; color: #a0aec0; margin-top: 4px; }
         
         /* Totals */
-        .totals { display: table; width: 100%; margin-bottom: 20px; }
+        .totals { display: table; width: 100%; margin-bottom: 30px; }
         .totals-spacer { display: table-cell; width: 55%; }
-        .totals-box { display: table-cell; width: 45%; }
-        .total-line { display: table; width: 100%; margin-bottom: 6px; }
-        .total-label { display: table-cell; font-size: 9pt; color: #718096; }
-        .total-value { display: table-cell; text-align: right; font-size: 9pt; color: #2d3748; }
-        .total-main { border-top: 2px solid #2d3748; padding-top: 8px; margin-top: 8px; }
-        .total-main .total-label { font-weight: 600; color: #1a202c; font-size: 10pt; }
-        .total-main .total-value { font-weight: 700; color: #1a202c; font-size: 12pt; }
+        .totals-box { display: table-cell; width: 45%; padding: 15px; background: #f7fafc; border-radius: 4px; }
+        .total-line { display: table; width: 100%; margin-bottom: 10px; }
+        .total-label { display: table-cell; font-size: 9pt; color: #718096; padding: 4px 0; }
+        .total-value { display: table-cell; text-align: right; font-size: 9pt; color: #2d3748; padding: 4px 0; }
+        .total-main { border-top: 2px solid #cbd5e0; padding-top: 12px; margin-top: 12px; }
+        .total-main .total-label { font-weight: 600; color: #1a202c; font-size: 11pt; }
+        .total-main .total-value { font-weight: 700; color: #1a202c; font-size: 13pt; }
         .total-paid { color: #38a169; }
         .total-balance { color: #e53e3e; font-weight: 600; }
         
         /* Notes */
-        .notes { background: #f7fafc; padding: 10px 12px; border-radius: 4px; margin-bottom: 15px; }
-        .notes-title { font-size: 7pt; font-weight: 600; color: #a0aec0; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
-        .notes-content { font-size: 8pt; color: #4a5568; white-space: pre-wrap; }
+        .notes { background: #f7fafc; padding: 15px 18px; border-radius: 4px; margin-bottom: 20px; }
+        .notes-title { font-size: 8pt; font-weight: 600; color: #a0aec0; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+        .notes-content { font-size: 9pt; color: #4a5568; white-space: pre-wrap; line-height: 1.6; }
         
         .internal-notes { background: #fff5f5; border-left: 3px solid #fc8181; }
         .internal-notes .notes-title { color: #c53030; }
         .internal-notes .notes-content { color: #742a2a; }
         
         /* Footer */
-        .footer { text-align: center; padding-top: 20px; border-top: 1px solid #e2e8f0; }
-        .footer-thanks { font-size: 10pt; color: #4a5568; margin-bottom: 4px; }
-        .footer-meta { font-size: 7pt; color: #a0aec0; }
-        .footer-refund { font-size: 8pt; color: #c53030; font-weight: 600; margin-top: 6px; }
+        .footer { text-align: center; padding-top: 25px; margin-top: 30px; border-top: 1px solid #e2e8f0; }
+        .footer-thanks { font-size: 11pt; color: #4a5568; margin-bottom: 6px; }
+        .footer-meta { font-size: 8pt; color: #a0aec0; }
+        .footer-refund { font-size: 9pt; color: #c53030; font-weight: 600; margin-top: 8px; }
         
         /* Payment Box */
-        .payment-summary { background: #f0fff4; border: 1px solid #9ae6b4; border-radius: 4px; padding: 12px; text-align: center; }
-        .payment-amount { font-size: 20pt; font-weight: 700; color: #276749; }
-        .payment-label { font-size: 8pt; color: #68d391; text-transform: uppercase; letter-spacing: 1px; }
+        .payment-summary { background: #f0fff4; border: 1px solid #9ae6b4; border-radius: 4px; padding: 25px 20px; text-align: center; margin: 20px 0; }
+        .payment-amount { font-size: 24pt; font-weight: 700; color: #276749; }
+        .payment-label { font-size: 9pt; color: #68d391; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 5px; }
     </style>
 </head>
 <body>
