@@ -66,6 +66,14 @@ class AnalyticsController extends Controller
             ], 404);
         }
 
+        // Get all company locations for the filter dropdown (unfiltered)
+        $allCompanyLocations = $company->locations->map(function ($location) {
+            return [
+                'id' => $location->id,
+                'name' => $location->name,
+            ];
+        })->values();
+
         // Compile all analytics data
         $analytics = [
             'company' => [
@@ -79,6 +87,7 @@ class AnalyticsController extends Controller
                 'end_date' => $endDate->toDateString(),
             ],
             'selected_locations' => $locationIds,
+            'available_locations' => $allCompanyLocations,
             'key_metrics' => $this->getCompanyKeyMetrics($locationIdList, $startDate, $endDate),
             'revenue_trend' => $this->getRevenueTrend($locationIdList, $startDate, $endDate),
             'location_performance' => $this->getLocationPerformance($locationIdList, $startDate, $endDate),
@@ -203,7 +212,8 @@ class AnalyticsController extends Controller
         $totalAttractions = Attraction::where('location_id', $locationId)->count();
 
         // Calculate previous period for comparison
-        $prevStartDate = $startDate->copy()->sub($endDate->diffInDays($startDate), 'days');
+        $periodDays = $endDate->diffInDays($startDate);
+        $prevStartDate = $startDate->copy()->subDays($periodDays);
         $prevEndDate = $startDate->copy();
 
         $prevBookings = Booking::where('location_id', $locationId)
@@ -558,7 +568,8 @@ class AnalyticsController extends Controller
             ->count();
 
         // Previous period comparison
-        $prevStartDate = $startDate->copy()->sub($endDate->diffInDays($startDate), 'days');
+        $periodDays = $endDate->diffInDays($startDate);
+        $prevStartDate = $startDate->copy()->subDays($periodDays);
         $prevEndDate = $startDate->copy();
 
         $prevBookings = Booking::whereIn('location_id', $locationIds)
