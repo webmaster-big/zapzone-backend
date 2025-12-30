@@ -396,48 +396,52 @@ class AnalyticsController extends Controller
      */
     private function getPackagePerformance($locationId, $startDate, $endDate)
     {
+        // Get active packages for this location
         $packages = Package::where('location_id', $locationId)
             ->where('is_active', true)
-            ->withCount([
-                'bookings as bookings_count' => function ($query) use ($startDate, $endDate) {
-                    $query->whereBetween('booking_date', [$startDate, $endDate])
-                          ->whereNotIn('status', ['cancelled']);
-                }
-            ])
-            ->withSum([
-                'bookings as total_revenue' => function ($query) use ($startDate, $endDate) {
-                    $query->whereBetween('booking_date', [$startDate, $endDate])
-                          ->whereNotIn('status', ['cancelled']);
-                }
-            ], 'total_amount')
-            ->withSum([
-                'bookings as total_participants' => function ($query) use ($startDate, $endDate) {
-                    $query->whereBetween('booking_date', [$startDate, $endDate])
-                          ->whereNotIn('status', ['cancelled']);
-                }
-            ], 'participants')
-            ->withAvg([
-                'bookings as avg_party_size' => function ($query) use ($startDate, $endDate) {
-                    $query->whereBetween('booking_date', [$startDate, $endDate])
-                          ->whereNotIn('status', ['cancelled']);
-                }
-            ], 'participants')
-            ->having('bookings_count', '>', 0)
-            ->orderByDesc('total_revenue')
             ->get();
 
-        return $packages->map(function ($package) {
+        if ($packages->isEmpty()) {
+            return collect([]);
+        }
+
+        $packageIds = $packages->pluck('id')->toArray();
+
+        // Get aggregated booking stats in a single efficient query
+        $bookingStats = Booking::whereIn('package_id', $packageIds)
+            ->whereBetween('booking_date', [$startDate, $endDate])
+            ->whereNotIn('status', ['cancelled'])
+            ->select(
+                'package_id',
+                DB::raw('COUNT(*) as bookings_count'),
+                DB::raw('COALESCE(SUM(total_amount), 0) as total_revenue'),
+                DB::raw('COALESCE(SUM(participants), 0) as total_participants'),
+                DB::raw('COALESCE(AVG(participants), 0) as avg_party_size')
+            )
+            ->groupBy('package_id')
+            ->get()
+            ->keyBy('package_id');
+
+        // Combine package data with booking stats
+        return $packages->map(function ($package) use ($bookingStats) {
+            $stats = $bookingStats->get($package->id);
+            
+            // Skip packages with no bookings
+            if (!$stats || $stats->bookings_count == 0) {
+                return null;
+            }
+
             return [
                 'id' => $package->id,
                 'name' => $package->name,
                 'category' => $package->category,
-                'bookings' => $package->bookings_count ?? 0,
-                'revenue' => round($package->total_revenue ?? 0, 2),
-                'participants' => $package->total_participants ?? 0,
-                'avg_party_size' => round($package->avg_party_size ?? 0, 1),
+                'bookings' => (int) $stats->bookings_count,
+                'revenue' => round((float) $stats->total_revenue, 2),
+                'participants' => (int) $stats->total_participants,
+                'avg_party_size' => round((float) $stats->avg_party_size, 1),
                 'price' => round($package->price, 2),
             ];
-        })->values();
+        })->filter()->sortByDesc('revenue')->values();
     }
 
     /**
