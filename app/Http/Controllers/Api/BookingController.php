@@ -1254,6 +1254,9 @@ class BookingController extends Controller
      */
     private function sendNotificationEmail(Booking $booking, string $action = 'updated'): void
     {
+        // Ensure location.company relationship is loaded for email template
+        $booking->loadMissing(['location.company', 'customer', 'package']);
+
         // Get recipient email
         $recipientEmail = $booking->customer
             ? $booking->customer->email

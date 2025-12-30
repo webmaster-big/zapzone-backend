@@ -22,6 +22,8 @@ class AttractionPurchaseReceipt extends Mailable
      */
     public function __construct(AttractionPurchase $purchase, ?string $qrCodeBase64 = null)
     {
+        // Ensure attraction.location.company relationship is loaded for email template
+        $purchase->loadMissing(['attraction.location.company', 'customer']);
         $this->purchase = $purchase;
         $this->qrCodeBase64 = $qrCodeBase64;
     }

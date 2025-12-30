@@ -7,6 +7,8 @@ use App\Models\ActivityLog;
 use App\Models\Company;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 
 class CompanyController extends Controller
 {
@@ -29,7 +31,7 @@ class CompanyController extends Controller
     {
         $validated = $request->validate([
             'company_name' => 'required|string|max:255|unique:companies',
-            'logo_path' => 'nullable|string|max:500',
+            'logo_path' => 'nullable|string|max:27262976', // 20MB in base64 is ~27MB
             'email' => 'required|email|unique:companies',
             'website' => 'nullable|url|max:255',
             'phone' => 'required|string|max:20',
@@ -48,6 +50,14 @@ class CompanyController extends Controller
             'total_employees' => 'integer|min:0',
             'status' => 'nullable|in:active,inactive,suspended',
         ]);
+
+        // Handle logo upload if base64 image provided
+        if (isset($validated['logo_path']) && Str::startsWith($validated['logo_path'], 'data:image/')) {
+            $imageData = $validated['logo_path'];
+            $imageName = 'company-logos/' . Str::uuid() . '.png';
+            Storage::disk('public')->put($imageName, base64_decode(preg_replace('#^data:image/\w+;base64,#i', '', $imageData)));
+            $validated['logo_path'] = '/storage/' . $imageName;
+        }
 
         $company = Company::create($validated);
         $company->load(['locations', 'users']);
@@ -79,7 +89,7 @@ class CompanyController extends Controller
     {
         $validated = $request->validate([
             'company_name' => 'sometimes|string|max:255|unique:companies,company_name,' . $company->id,
-            'logo_path' => 'sometimes|nullable|string|max:500',
+            'logo_path' => 'sometimes|nullable|max:27262976', // 20MB in base64 is ~27MB
             'email' => 'sometimes|email|unique:companies,email,' . $company->id,
             'website' => 'sometimes|nullable|url|max:255',
             'phone' => 'sometimes|string|max:20',
@@ -99,6 +109,25 @@ class CompanyController extends Controller
             'status' => 'sometimes|in:active,inactive,suspended',
         ]);
 
+        // Handle logo upload if base64 image provided
+        if (isset($validated['logo_path'])) {
+            if (Str::startsWith($validated['logo_path'], 'data:image/')) {
+                // Delete old logo if it exists
+                if ($company->logo_path && Str::startsWith($company->logo_path, '/storage/company-logos/')) {
+                    $oldLogoPath = str_replace('/storage/', '', $company->logo_path);
+                    if (Storage::disk('public')->exists($oldLogoPath)) {
+                        Storage::disk('public')->delete($oldLogoPath);
+                    }
+                }
+
+                // Upload new logo
+                $imageData = $validated['logo_path'];
+                $imageName = 'company-logos/' . Str::uuid() . '.png';
+                Storage::disk('public')->put($imageName, base64_decode(preg_replace('#^data:image/\w+;base64,#i', '', $imageData)));
+                $validated['logo_path'] = '/storage/' . $imageName;
+            }
+        }
+
         $company->update($validated);
         $company->load(['locations', 'users']);
 
@@ -116,6 +145,14 @@ class CompanyController extends Controller
     {
         $companyName = $company->company_name;
         $companyId = $company->id;
+
+        // Delete company logo if it exists
+        if ($company->logo_path && Str::startsWith($company->logo_path, '/storage/company-logos/')) {
+            $logoPath = str_replace('/storage/', '', $company->logo_path);
+            if (Storage::disk('public')->exists($logoPath)) {
+                Storage::disk('public')->delete($logoPath);
+            }
+        }
 
         $company->delete();
 
@@ -155,6 +192,41 @@ class CompanyController extends Controller
         return response()->json([
             'success' => true,
             'data' => $stats,
+        ]);
+    }
+
+    /**
+     * Update company logo.
+     */
+    public function updateLogo(Request $request, Company $company): JsonResponse
+    {
+        $validated = $request->validate([
+            'logo_path' => 'required|string|max:27262976', // 20MB in base64 is ~27MB
+        ]);
+
+        // Delete old logo if it exists
+        if ($company->logo_path && Str::startsWith($company->logo_path, '/storage/company-logos/')) {
+            $oldLogoPath = str_replace('/storage/', '', $company->logo_path);
+            if (Storage::disk('public')->exists($oldLogoPath)) {
+                Storage::disk('public')->delete($oldLogoPath);
+            }
+        }
+
+        // Upload new logo
+        if (Str::startsWith($validated['logo_path'], 'data:image/')) {
+            $imageData = $validated['logo_path'];
+            $imageName = 'company-logos/' . Str::uuid() . '.png';
+            Storage::disk('public')->put($imageName, base64_decode(preg_replace('#^data:image/\w+;base64,#i', '', $imageData)));
+            $validated['logo_path'] = '/storage/' . $imageName;
+        }
+
+        $company->update(['logo_path' => $validated['logo_path']]);
+        $company->load(['locations', 'users']);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Company logo updated successfully',
+            'data' => $company,
         ]);
     }
 }

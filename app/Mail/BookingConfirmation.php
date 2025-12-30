@@ -22,6 +22,8 @@ class BookingConfirmation extends Mailable
      */
     public function __construct(Booking $booking, ?string $qrCodePath = null)
     {
+        // Ensure location.company relationship is loaded for email template
+        $booking->loadMissing(['location.company', 'customer', 'package', 'room']);
         $this->booking = $booking;
         $this->qrCodePath = $qrCodePath;
     }

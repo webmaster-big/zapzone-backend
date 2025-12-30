@@ -108,6 +108,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Company routes
     Route::apiResource('companies', CompanyController::class);
     Route::get('companies/{company}/statistics', [CompanyController::class, 'statistics']);
+    Route::patch('companies/{company}/logo', [CompanyController::class, 'updateLogo']);
 
     // Location routes
     Route::apiResource('locations', LocationController::class)->only(['show', 'update', 'destroy']);

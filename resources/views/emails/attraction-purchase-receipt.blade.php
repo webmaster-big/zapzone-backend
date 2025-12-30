@@ -29,6 +29,11 @@
                                 <tr>
                                     <td align="center">
                             <![endif]-->
+                            @if($purchase->attraction && $purchase->attraction->location && $purchase->attraction->location->company && $purchase->attraction->location->company->logo_path)
+                                <img src="{{ $purchase->attraction->location->company->logo_path }}" alt="{{ $purchase->attraction->location->company->name }}" style="max-height: 50px; max-width: 180px; margin-bottom: 12px;" />
+                            @elseif($purchase->attraction && $purchase->attraction->location && $purchase->attraction->location->company)
+                                <p style="margin: 0 0 8px 0; padding: 0; font-size: 18px; font-weight: 700; color: #ffffff;">{{ $purchase->attraction->location->company->name }}</p>
+                            @endif
                             <h1 style="margin: 0 0 4px 0; padding: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.01em; color: #ffffff;">Purchase Receipt</h1>
                             <p style="margin: 0; padding: 0; font-size: 13px; opacity: 0.9; color: #ffffff;">Thank you for your purchase!</p>
                             <!--[if mso]>
@@ -504,8 +509,12 @@
                             <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top: 24px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
                                 <tr>
                                     <td style="text-align: center;">
-                                        <p style="margin: 4px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #9ca3af;">Thank you for choosing our attractions!</p>
-                                        <p style="margin: 4px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #9ca3af;">If you have any questions, please contact our support team.</p>
+                                        @php
+                                            $companyName = $purchase->attraction && $purchase->attraction->location && $purchase->attraction->location->company ? $purchase->attraction->location->company->name : null;
+                                            $locationPhone = $purchase->attraction && $purchase->attraction->location ? $purchase->attraction->location->phone : null;
+                                        @endphp
+                                        <p style="margin: 4px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #9ca3af;">Thank you for choosing {{ $companyName ?? 'our attractions' }}!</p>
+                                        <p style="margin: 4px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #9ca3af;">If you have any questions, please contact us@if($locationPhone) at <a href="tel:{{ $locationPhone }}" style="color: #1e40af; text-decoration: none;">{{ $locationPhone }}</a>@endif.</p>
                                         <p style="margin: 8px 0 4px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #9ca3af;">This is an automated email. Please do not reply to this message.</p>
                                     </td>
                                 </tr>
