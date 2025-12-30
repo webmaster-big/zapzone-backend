@@ -733,9 +733,9 @@ class PaymentController extends Controller
         // Load related data for payable
         if ($payable) {
             if ($payment->payable_type === Payment::TYPE_BOOKING) {
-                $payable->load(['package', 'customer']);
+                $payable->load(['package', 'customer', 'room', 'location', 'addOns', 'attractions']);
             } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE) {
-                $payable->load(['attraction', 'customer']);
+                $payable->load(['attraction', 'customer', 'location']);
             }
         }
 
@@ -949,9 +949,9 @@ class PaymentController extends Controller
 
             if ($payable) {
                 if ($payment->payable_type === Payment::TYPE_BOOKING) {
-                    $payable->load(['package', 'customer']);
+                    $payable->load(['package', 'customer', 'room', 'location', 'addOns', 'attractions']);
                 } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE) {
-                    $payable->load(['attraction', 'customer']);
+                    $payable->load(['attraction', 'customer', 'location']);
                 }
             }
 
@@ -996,5 +996,340 @@ class PaymentController extends Controller
         }
 
         return $pdf->stream($filename);
+    }
+
+    /**
+     * Export invoices for a specific day
+     *
+     * @param Request $request
+     * @param string $date
+     * @return \Illuminate\Http\Response
+     */
+    public function invoicesDay(Request $request, string $date)
+    {
+        $request->merge([
+            'start_date' => $date,
+            'end_date' => $date,
+        ]);
+
+        return $this->invoicesExport($request);
+    }
+
+    /**
+     * Export invoices for a week
+     *
+     * @param Request $request
+     * @param string $week - 'current', 'next', or a date string
+     * @return \Illuminate\Http\Response
+     */
+    public function invoicesWeek(Request $request, string $week = 'current')
+    {
+        if ($week === 'current') {
+            $startOfWeek = now()->startOfWeek();
+            $endOfWeek = now()->endOfWeek();
+        } elseif ($week === 'next') {
+            $startOfWeek = now()->addWeek()->startOfWeek();
+            $endOfWeek = now()->addWeek()->endOfWeek();
+        } else {
+            $date = Carbon::parse($week);
+            $startOfWeek = $date->startOfWeek();
+            $endOfWeek = $date->copy()->endOfWeek();
+        }
+
+        $request->merge([
+            'start_date' => $startOfWeek->format('Y-m-d'),
+            'end_date' => $endOfWeek->format('Y-m-d'),
+        ]);
+
+        return $this->invoicesExport($request);
+    }
+
+    /**
+     * Export invoices with comprehensive filtering options
+     * 
+     * Query params:
+     * - payment_ids: comma-separated or array of payment IDs
+     * - payable_type: 'booking' or 'attraction_purchase'
+     * - date: specific date (Y-m-d) for single day export
+     * - start_date: start date for date range
+     * - end_date: end date for date range
+     * - week: 'current', 'next', or date string for week containing that date
+     * - location_id: filter by location
+     * - customer_id: filter by customer
+     * - status: filter by payment status
+     * - method: filter by payment method (card, cash)
+     * - view_mode: 'report' for summary table, 'individual' for one invoice per page (default)
+     * - stream: true to view in browser, false to download
+     *
+     * @param Request $request
+     * @return \Illuminate\Http\Response
+     */
+    public function invoicesExport(Request $request)
+    {
+        $request->validate([
+            'payment_ids' => 'nullable|array',
+            'payment_ids.*' => 'exists:payments,id',
+            'payable_type' => ['nullable', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE])],
+            'date' => 'nullable|date',
+            'start_date' => 'nullable|date',
+            'end_date' => 'nullable|date|after_or_equal:start_date',
+            'week' => 'nullable|string',
+            'location_id' => 'nullable|exists:locations,id',
+            'customer_id' => 'nullable|exists:customers,id',
+            'status' => ['nullable', Rule::in(['pending', 'completed', 'failed', 'refunded'])],
+            'method' => ['nullable', Rule::in(['card', 'cash'])],
+            'view_mode' => ['nullable', Rule::in(['report', 'individual'])],
+        ]);
+
+        $query = Payment::with(['customer', 'location']);
+        $dateRange = null;
+
+        // Filter by specific payment IDs
+        if ($request->has('payment_ids')) {
+            $ids = is_array($request->payment_ids) 
+                ? $request->payment_ids 
+                : explode(',', $request->payment_ids);
+            $query->whereIn('id', $ids);
+        }
+
+        // Filter by payable_type (booking or attraction_purchase)
+        if ($request->has('payable_type')) {
+            $query->where('payable_type', $request->payable_type);
+        }
+
+        // Filter by single date
+        if ($request->has('date')) {
+            $date = $request->date;
+            $query->whereDate('created_at', $date);
+            $dateRange = ['start' => $date, 'end' => $date];
+        }
+
+        // Filter by date range
+        if ($request->has('start_date') && $request->has('end_date')) {
+            $startDate = Carbon::parse($request->start_date)->startOfDay();
+            $endDate = Carbon::parse($request->end_date)->endOfDay();
+            $query->whereBetween('created_at', [$startDate, $endDate]);
+            $dateRange = ['start' => $request->start_date, 'end' => $request->end_date];
+        } elseif ($request->has('start_date')) {
+            $startDate = Carbon::parse($request->start_date)->startOfDay();
+            $query->where('created_at', '>=', $startDate);
+            $dateRange = ['start' => $request->start_date, 'end' => now()->format('Y-m-d')];
+        } elseif ($request->has('end_date')) {
+            $endDate = Carbon::parse($request->end_date)->endOfDay();
+            $query->where('created_at', '<=', $endDate);
+            $dateRange = ['start' => 'Beginning', 'end' => $request->end_date];
+        }
+
+        // Filter by week
+        if ($request->has('week') && !$request->has('start_date') && !$request->has('date')) {
+            $weekParam = $request->week;
+            
+            if ($weekParam === 'current') {
+                $startOfWeek = now()->startOfWeek();
+                $endOfWeek = now()->endOfWeek();
+            } elseif ($weekParam === 'next') {
+                $startOfWeek = now()->addWeek()->startOfWeek();
+                $endOfWeek = now()->addWeek()->endOfWeek();
+            } else {
+                $date = Carbon::parse($weekParam);
+                $startOfWeek = $date->startOfWeek();
+                $endOfWeek = $date->copy()->endOfWeek();
+            }
+
+            $query->whereBetween('created_at', [$startOfWeek, $endOfWeek]);
+            $dateRange = ['start' => $startOfWeek->format('Y-m-d'), 'end' => $endOfWeek->format('Y-m-d')];
+        }
+
+        // Filter by location
+        if ($request->has('location_id')) {
+            $query->where('location_id', $request->location_id);
+        }
+
+        // Filter by customer
+        if ($request->has('customer_id')) {
+            $query->where('customer_id', $request->customer_id);
+        }
+
+        // Filter by status
+        if ($request->has('status')) {
+            $query->where('status', $request->status);
+        }
+
+        // Filter by method
+        if ($request->has('method')) {
+            $query->where('method', $request->method);
+        }
+
+        // Sort by date
+        $query->orderBy('created_at', 'desc');
+
+        $payments = $query->get();
+
+        if ($payments->isEmpty()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'No payments found for the specified criteria'
+            ], 404);
+        }
+
+        // Load payable relationships for each payment
+        foreach ($payments as $payment) {
+            if ($payment->payable_type === Payment::TYPE_BOOKING) {
+                $payment->payable = Booking::with(['package', 'customer', 'room', 'location', 'addOns', 'attractions'])->find($payment->payable_id);
+            } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE) {
+                $payment->payable = AttractionPurchase::with(['attraction', 'customer', 'location'])->find($payment->payable_id);
+            }
+        }
+
+        // Determine view mode
+        $viewMode = $request->get('view_mode', 'individual');
+
+        // Get location and company info
+        $location = null;
+        $locationName = 'All Locations';
+        $companyName = 'ZapZone';
+
+        if ($request->has('location_id')) {
+            $location = Location::find($request->location_id);
+            if ($location) {
+                $locationName = $location->name;
+                if ($location->company_id) {
+                    $company = Company::find($location->company_id);
+                    if ($company) {
+                        $companyName = $company->name;
+                    }
+                }
+            }
+        }
+
+        if ($viewMode === 'report') {
+            // Summary report view
+            $summary = [
+                'total_count' => $payments->count(),
+                'total_amount' => $payments->sum('amount'),
+                'completed_count' => $payments->where('status', 'completed')->count(),
+                'completed_amount' => $payments->where('status', 'completed')->sum('amount'),
+                'pending_count' => $payments->where('status', 'pending')->count(),
+                'pending_amount' => $payments->where('status', 'pending')->sum('amount'),
+                'refunded_count' => $payments->where('status', 'refunded')->count(),
+                'refunded_amount' => $payments->where('status', 'refunded')->sum('amount'),
+                'booking_count' => $payments->where('payable_type', Payment::TYPE_BOOKING)->count(),
+                'booking_amount' => $payments->where('payable_type', Payment::TYPE_BOOKING)->sum('amount'),
+                'attraction_count' => $payments->where('payable_type', Payment::TYPE_ATTRACTION_PURCHASE)->count(),
+                'attraction_amount' => $payments->where('payable_type', Payment::TYPE_ATTRACTION_PURCHASE)->sum('amount'),
+            ];
+
+            // Build filters display
+            $filters = [];
+            if ($dateRange) {
+                if ($dateRange['start'] === $dateRange['end']) {
+                    $filters['date_range'] = Carbon::parse($dateRange['start'])->format('l, F j, Y');
+                } else {
+                    $filters['date_range'] = Carbon::parse($dateRange['start'])->format('M d, Y') . 
+                                             ' - ' . Carbon::parse($dateRange['end'])->format('M d, Y');
+                }
+            }
+            if ($request->has('payable_type')) {
+                $filters['payable_type'] = $request->payable_type;
+            }
+            if ($request->has('status')) {
+                $filters['status'] = $request->status;
+            }
+            if ($request->has('method')) {
+                $filters['method'] = $request->method;
+            }
+
+            $pdf = Pdf::loadView('exports.payment-invoices-report', [
+                'payments' => $payments,
+                'summary' => $summary,
+                'companyName' => $companyName,
+                'locationName' => $locationName,
+                'filters' => count($filters) > 0 ? $filters : null,
+                'reportTitle' => $this->getReportTitle($request, $dateRange),
+            ]);
+        } else {
+            // Individual invoices (one per page)
+            $html = '';
+            $totalPayments = $payments->count();
+            $index = 0;
+
+            foreach ($payments as $payment) {
+                $index++;
+
+                $payable = $payment->payable;
+                $paymentLocation = $payment->location ?? $location;
+                $paymentCompanyName = $companyName;
+
+                if ($paymentLocation && $paymentLocation->company_id) {
+                    $company = Company::find($paymentLocation->company_id);
+                    if ($company) {
+                        $paymentCompanyName = $company->name;
+                    }
+                }
+
+                $invoiceHtml = view('exports.payment-invoice', [
+                    'payment' => $payment,
+                    'payable' => $payable,
+                    'customer' => $payment->customer,
+                    'location' => $paymentLocation,
+                    'companyName' => $paymentCompanyName,
+                ])->render();
+
+                $html .= $invoiceHtml;
+
+                if ($index < $totalPayments) {
+                    $html .= '<div style="page-break-after: always;"></div>';
+                }
+            }
+
+            $pdf = Pdf::loadHTML($html);
+        }
+
+        $pdf->setPaper('A4', 'portrait');
+
+        // Generate filename
+        $filename = 'invoices';
+        if ($request->has('payable_type')) {
+            $filename .= '-' . str_replace('_', '-', $request->payable_type);
+        }
+        if ($dateRange) {
+            if ($dateRange['start'] === $dateRange['end']) {
+                $filename .= '-' . $dateRange['start'];
+            } else {
+                $filename .= '-' . $dateRange['start'] . '-to-' . $dateRange['end'];
+            }
+        } else {
+            $filename .= '-' . now()->format('Y-m-d');
+        }
+        $filename .= '.pdf';
+
+        // Stream or download based on request
+        if ($request->get('stream', false)) {
+            return $pdf->stream($filename);
+        }
+
+        return $pdf->download($filename);
+    }
+
+    /**
+     * Generate report title based on filters
+     */
+    private function getReportTitle(Request $request, ?array $dateRange): string
+    {
+        $title = 'Payment Invoices';
+
+        if ($request->has('payable_type')) {
+            $title = $request->payable_type === Payment::TYPE_BOOKING 
+                ? 'Package Booking Invoices' 
+                : 'Attraction Purchase Invoices';
+        }
+
+        if ($dateRange) {
+            if ($dateRange['start'] === $dateRange['end']) {
+                $title .= ' - ' . Carbon::parse($dateRange['start'])->format('F j, Y');
+            }
+        }
+
+        return $title;
     }
 }
