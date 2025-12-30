@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\ActivityLog;
+use App\Models\DayOff;
 use App\Models\PackageTimeSlot;
 use App\Models\Package;
 use App\Models\Room;
@@ -588,10 +589,14 @@ class PackageTimeSlotController extends Controller
      * Generate available time slots considering all rooms for the package.
      * Uses the new availability schedules system.
      * Automatically excludes slots within the cleanup buffer period after existing bookings.
+     * Also checks for day off (partial or full day) conflicts.
      */
     private function generateAvailableSlotsWithRooms($package, $date)
     {
         $availableSlots = [];
+
+        // Get the package's location_id for day off checking
+        $locationId = $package->location_id;
 
         // Get time slots from availability schedules
         $timeSlots = $package->getTimeSlotsForDate($date);
@@ -614,6 +619,24 @@ class PackageTimeSlotController extends Controller
         foreach ($timeSlots as $timeSlot) {
             $currentTime = Carbon::parse($date . ' ' . $timeSlot);
             $slotEndTime = (clone $currentTime)->addMinutes($slotDurationInMinutes);
+
+            // Check if this time slot is blocked by a day off (full or partial)
+            $isDayOffBlocked = DayOff::isTimeSlotBlocked(
+                $locationId,
+                $date,
+                $currentTime->format('H:i'),
+                $slotEndTime->format('H:i')
+            );
+
+            if ($isDayOffBlocked) {
+                Log::debug('Time slot blocked by day off', [
+                    'package_id' => $package->id,
+                    'date' => $date,
+                    'time_slot' => $currentTime->format('H:i'),
+                    'location_id' => $locationId,
+                ]);
+                continue; // Skip this slot
+            }
 
             // Check if ANY room is available for this slot
             $availableRoom = $this->findAvailableRoom(

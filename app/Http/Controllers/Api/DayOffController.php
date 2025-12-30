@@ -86,14 +86,30 @@ class DayOffController extends Controller
         $validated = $request->validate([
             'location_id' => 'required|exists:locations,id',
             'date' => 'required|date',
+            'time_start' => 'nullable|date_format:H:i',
+            'time_end' => 'nullable|date_format:H:i',
             'reason' => 'nullable|string|max:255',
             'is_recurring' => 'boolean',
         ]);
 
-        // Check if day off already exists
-        $exists = DayOff::where('location_id', $validated['location_id'])
-            ->where('date', $validated['date'])
-            ->exists();
+        // Check if day off already exists with the same time range
+        $query = DayOff::where('location_id', $validated['location_id'])
+            ->where('date', $validated['date']);
+
+        // Check for exact time match
+        if (isset($validated['time_start'])) {
+            $query->where('time_start', $validated['time_start']);
+        } else {
+            $query->whereNull('time_start');
+        }
+
+        if (isset($validated['time_end'])) {
+            $query->where('time_end', $validated['time_end']);
+        } else {
+            $query->whereNull('time_end');
+        }
+
+        $exists = $query->exists();
 
         if ($exists) {
             return response()->json([
@@ -144,24 +160,42 @@ class DayOffController extends Controller
         $validated = $request->validate([
             'location_id' => 'sometimes|exists:locations,id',
             'date' => 'sometimes|date',
+            'time_start' => 'nullable|date_format:H:i',
+            'time_end' => 'nullable|date_format:H:i',
             'reason' => 'nullable|string|max:255',
             'is_recurring' => 'boolean',
         ]);
 
-        // Check for duplicate if date or location changed
-        if (isset($validated['date']) || isset($validated['location_id'])) {
+        // Check for duplicate if date, location, or time changed
+        if (isset($validated['date']) || isset($validated['location_id']) || 
+            array_key_exists('time_start', $validated) || array_key_exists('time_end', $validated)) {
             $locationId = $validated['location_id'] ?? $dayOff->location_id;
             $date = $validated['date'] ?? $dayOff->date;
+            $timeStart = array_key_exists('time_start', $validated) ? $validated['time_start'] : $dayOff->time_start;
+            $timeEnd = array_key_exists('time_end', $validated) ? $validated['time_end'] : $dayOff->time_end;
 
-            $exists = DayOff::where('location_id', $locationId)
+            $query = DayOff::where('location_id', $locationId)
                 ->where('date', $date)
-                ->where('id', '!=', $dayOff->id)
-                ->exists();
+                ->where('id', '!=', $dayOff->id);
+
+            if ($timeStart) {
+                $query->where('time_start', $timeStart);
+            } else {
+                $query->whereNull('time_start');
+            }
+
+            if ($timeEnd) {
+                $query->where('time_end', $timeEnd);
+            } else {
+                $query->whereNull('time_end');
+            }
+
+            $exists = $query->exists();
 
             if ($exists) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'Day off already exists for this date and location',
+                    'message' => 'Day off already exists for this date, location, and time range',
                 ], 422);
             }
         }
@@ -232,29 +266,57 @@ class DayOffController extends Controller
     }
 
     /**
-     * Check if a specific date is blocked.
+     * Check if a specific date/time is blocked.
      */
     public function checkDate(Request $request): JsonResponse
     {
         $validated = $request->validate([
             'location_id' => 'required|exists:locations,id',
             'date' => 'required|date',
+            'time_start' => 'nullable|date_format:H:i',
+            'time_end' => 'nullable|date_format:H:i',
         ]);
 
-        $isBlocked = DayOff::isDateBlocked($validated['location_id'], $validated['date']);
+        // If time is provided, check specific time slot
+        if (isset($validated['time_start'])) {
+            $isBlocked = DayOff::isTimeSlotBlocked(
+                $validated['location_id'], 
+                $validated['date'],
+                $validated['time_start'],
+                $validated['time_end'] ?? null
+            );
 
-        $dayOff = null;
-        if ($isBlocked) {
-            $dayOff = DayOff::where('location_id', $validated['location_id'])
-                ->where('date', $validated['date'])
-                ->first();
+            $dayOff = $isBlocked ? DayOff::getDayOffForTimeSlot(
+                $validated['location_id'], 
+                $validated['date'],
+                $validated['time_start'],
+                $validated['time_end'] ?? null
+            ) : null;
+        } else {
+            // Check for full day block only (legacy behavior)
+            $isBlocked = DayOff::isDateBlocked($validated['location_id'], $validated['date']);
+
+            $dayOff = null;
+            if ($isBlocked) {
+                $dayOff = DayOff::where('location_id', $validated['location_id'])
+                    ->where('date', $validated['date'])
+                    ->whereNull('time_start')
+                    ->whereNull('time_end')
+                    ->first();
+            }
         }
+
+        // Also get all day offs for this date (for full visibility)
+        $allDayOffs = DayOff::where('location_id', $validated['location_id'])
+            ->where('date', $validated['date'])
+            ->get();
 
         return response()->json([
             'success' => true,
             'data' => [
                 'is_blocked' => $isBlocked,
                 'day_off' => $dayOff,
+                'all_day_offs' => $allDayOffs,
             ],
         ]);
     }
