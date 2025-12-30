@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\MorphMany;
 
 class Booking extends Model
 {
@@ -117,9 +118,13 @@ class Booking extends Model
             ->withTimestamps();
     }
 
-    public function payments(): HasMany
+    /**
+     * Get all payments for this booking.
+     * Uses polymorphic relationship with payable_type = 'booking'
+     */
+    public function payments(): MorphMany
     {
-        return $this->hasMany(Payment::class);
+        return $this->morphMany(Payment::class, 'payable');
     }
 
     // Scopes

@@ -4,6 +4,10 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Payment;
+use App\Models\Booking;
+use App\Models\AttractionPurchase;
+use App\Models\Location;
+use App\Models\Company;
 use App\Models\AuthorizeNetAccount;
 use App\Models\ActivityLog;
 use App\Models\CustomerNotification;
@@ -13,6 +17,8 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Support\Facades\Log;
+use Barryvdh\DomPDF\Facade\Pdf;
+use Carbon\Carbon;
 use net\authorize\api\contract\v1 as AnetAPI;
 use net\authorize\api\controller as AnetController;
 use net\authorize\api\constants\ANetEnvironment;
@@ -21,10 +27,28 @@ class PaymentController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
-        $query = Payment::with(['booking', 'customer']);
+        $query = Payment::with(['customer', 'location']);
 
+        // Filter by payable_id (the ID of the booking or attraction purchase)
+        if ($request->has('payable_id')) {
+            $query->where('payable_id', $request->payable_id);
+        }
+
+        // Filter by payable_type ('booking' or 'attraction_purchase')
+        if ($request->has('payable_type')) {
+            $query->where('payable_type', $request->payable_type);
+        }
+
+        // Backward compatibility: support booking_id filter (maps to payable_id with type 'booking')
         if ($request->has('booking_id')) {
-            $query->where('booking_id', $request->booking_id);
+            $query->where('payable_id', $request->booking_id)
+                  ->where('payable_type', Payment::TYPE_BOOKING);
+        }
+
+        // Filter by attraction_purchase_id
+        if ($request->has('attraction_purchase_id')) {
+            $query->where('payable_id', $request->attraction_purchase_id)
+                  ->where('payable_type', Payment::TYPE_ATTRACTION_PURCHASE);
         }
 
         if ($request->has('customer_id')) {
@@ -59,7 +83,11 @@ class PaymentController extends Controller
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
+            'payable_id' => 'nullable|integer',
+            'payable_type' => ['nullable', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE])],
+            // Backward compatibility: support booking_id (will be converted to payable_id/payable_type)
             'booking_id' => 'nullable|exists:bookings,id',
+            'attraction_purchase_id' => 'nullable|exists:attraction_purchases,id',
             'customer_id' => 'nullable|exists:customers,id',
             'amount' => 'required|numeric|min:0.01',
             'currency' => 'string|size:3',
@@ -70,6 +98,20 @@ class PaymentController extends Controller
             'location_id' => 'nullable|exists:locations,id',
         ]);
 
+        // Handle backward compatibility: convert booking_id to payable_id/payable_type
+        if (isset($validated['booking_id']) && !isset($validated['payable_id'])) {
+            $validated['payable_id'] = $validated['booking_id'];
+            $validated['payable_type'] = Payment::TYPE_BOOKING;
+            unset($validated['booking_id']);
+        }
+
+        // Handle attraction_purchase_id
+        if (isset($validated['attraction_purchase_id']) && !isset($validated['payable_id'])) {
+            $validated['payable_id'] = $validated['attraction_purchase_id'];
+            $validated['payable_type'] = Payment::TYPE_ATTRACTION_PURCHASE;
+            unset($validated['attraction_purchase_id']);
+        }
+
         $validated['transaction_id'] = 'TXN' . now()->format('YmdHis') . strtoupper(Str::random(6));
 
         if ($validated['status'] === 'completed') {
@@ -77,7 +119,7 @@ class PaymentController extends Controller
         }
 
         $payment = Payment::create($validated);
-        $payment->load(['booking', 'customer']);
+        $payment->load(['customer', 'location']);
 
         // Create notification for customer if payment is completed
         if ($payment->customer_id && $payment->status === 'completed') {
@@ -118,7 +160,8 @@ class PaymentController extends Controller
                     'amount' => $payment->amount,
                     'method' => $payment->method,
                     'customer_id' => $payment->customer_id,
-                    'booking_id' => $payment->booking_id,
+                    'payable_id' => $payment->payable_id,
+                    'payable_type' => $payment->payable_type,
                 ],
             ]);
         }
@@ -149,8 +192,16 @@ class PaymentController extends Controller
 
     public function show(Payment $payment): JsonResponse
     {
-        $payment->load(['booking', 'customer']);
-        return response()->json(['success' => true, 'data' => $payment]);
+        $payment->load(['customer', 'location']);
+
+        // Load the related payable entity based on type
+        $payableDetails = $payment->getPayableDetails();
+
+        return response()->json([
+            'success' => true,
+            'data' => $payment,
+            'payable' => $payableDetails,
+        ]);
     }
 
     public function update(Request $request, Payment $payment): JsonResponse
@@ -329,7 +380,12 @@ class PaymentController extends Controller
             'amount' => 'required|numeric|min:0.01',
             'order_id' => 'nullable|string',
             'customer_id' => 'nullable|exists:customers,id',
+            // New polymorphic fields
+            'payable_id' => 'nullable|integer',
+            'payable_type' => ['nullable', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE])],
+            // Backward compatibility
             'booking_id' => 'nullable|exists:bookings,id',
+            'attraction_purchase_id' => 'nullable|exists:attraction_purchases,id',
             'description' => 'nullable|string',
             'customer' => 'nullable|array',
             'customer.first_name' => 'nullable|string|max:50',
@@ -342,6 +398,22 @@ class PaymentController extends Controller
             'customer.zip' => 'nullable|string|max:20',
             'customer.country' => 'nullable|string|max:60',
         ]);
+
+        // Determine payable_id and payable_type from request
+        $payableId = $request->payable_id;
+        $payableType = $request->payable_type;
+
+        // Backward compatibility: convert booking_id to payable_id/payable_type
+        if ($request->booking_id && !$payableId) {
+            $payableId = $request->booking_id;
+            $payableType = Payment::TYPE_BOOKING;
+        }
+
+        // Handle attraction_purchase_id
+        if ($request->attraction_purchase_id && !$payableId) {
+            $payableId = $request->attraction_purchase_id;
+            $payableType = Payment::TYPE_ATTRACTION_PURCHASE;
+        }
 
         try {
             // 1. Get Authorize.Net account for the location
@@ -468,7 +540,8 @@ class PaymentController extends Controller
                 if ($tresponse != null && $tresponse->getMessages() != null) {
                     // Success - create payment record
                     $payment = Payment::create([
-                        'booking_id' => $request->booking_id,
+                        'payable_id' => $payableId,
+                        'payable_type' => $payableType,
                         'customer_id' => $request->customer_id,
                         'location_id' => $request->location_id,
                         'amount' => $request->amount,
@@ -531,7 +604,8 @@ class PaymentController extends Controller
                             'amount' => $payment->amount,
                             'method' => 'card',
                             'customer_id' => $payment->customer_id,
-                            'booking_id' => $payment->booking_id,
+                            'payable_id' => $payment->payable_id,
+                            'payable_type' => $payment->payable_type,
                         ],
                     ]);
 
@@ -589,5 +663,338 @@ class PaymentController extends Controller
                 'message' => 'Payment processing failed: ' . $e->getMessage()
             ], 500);
         }
+    }
+
+    /**
+     * Generate PDF invoice for a single payment
+     *
+     * @param Payment $payment
+     * @return \Illuminate\Http\Response
+     */
+    public function invoice(Payment $payment)
+    {
+        $payment->load(['customer', 'location']);
+
+        // Get the payable entity (booking or attraction purchase)
+        $payable = $payment->getPayableDetails();
+
+        // Load related data for payable
+        if ($payable) {
+            if ($payment->payable_type === Payment::TYPE_BOOKING) {
+                $payable->load(['package', 'customer']);
+            } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE) {
+                $payable->load(['attraction', 'customer']);
+            }
+        }
+
+        // Get location info
+        $location = $payment->location;
+
+        // Get company name
+        $companyName = 'ZapZone';
+        if ($location && $location->company_id) {
+            $company = Company::find($location->company_id);
+            if ($company) {
+                $companyName = $company->name;
+            }
+        }
+
+        // Get customer info
+        $customer = $payment->customer;
+
+        $pdf = Pdf::loadView('exports.payment-invoice', [
+            'payment' => $payment,
+            'payable' => $payable,
+            'customer' => $customer,
+            'location' => $location,
+            'companyName' => $companyName,
+        ]);
+
+        $pdf->setPaper('A4', 'portrait');
+
+        $filename = 'invoice_' . str_pad($payment->id, 6, '0', STR_PAD_LEFT) . '_' . date('Ymd') . '.pdf';
+
+        return $pdf->download($filename);
+    }
+
+    /**
+     * Stream PDF invoice for viewing in browser
+     *
+     * @param Payment $payment
+     * @return \Illuminate\Http\Response
+     */
+    public function invoiceView(Payment $payment)
+    {
+        $payment->load(['customer', 'location']);
+
+        // Get the payable entity (booking or attraction purchase)
+        $payable = $payment->getPayableDetails();
+
+        // Load related data for payable
+        if ($payable) {
+            if ($payment->payable_type === Payment::TYPE_BOOKING) {
+                $payable->load(['package', 'customer']);
+            } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE) {
+                $payable->load(['attraction', 'customer']);
+            }
+        }
+
+        // Get location info
+        $location = $payment->location;
+
+        // Get company name
+        $companyName = 'ZapZone';
+        if ($location && $location->company_id) {
+            $company = Company::find($location->company_id);
+            if ($company) {
+                $companyName = $company->name;
+            }
+        }
+
+        // Get customer info
+        $customer = $payment->customer;
+
+        $pdf = Pdf::loadView('exports.payment-invoice', [
+            'payment' => $payment,
+            'payable' => $payable,
+            'customer' => $customer,
+            'location' => $location,
+            'companyName' => $companyName,
+        ]);
+
+        $pdf->setPaper('A4', 'portrait');
+
+        return $pdf->stream('invoice_' . str_pad($payment->id, 6, '0', STR_PAD_LEFT) . '.pdf');
+    }
+
+    /**
+     * Generate PDF report with multiple invoices (filtered)
+     *
+     * @param Request $request
+     * @return \Illuminate\Http\Response
+     */
+    public function invoicesReport(Request $request)
+    {
+        $request->validate([
+            'location_id' => 'nullable|exists:locations,id',
+            'status' => ['nullable', Rule::in(['pending', 'completed', 'failed', 'refunded'])],
+            'method' => ['nullable', Rule::in(['card', 'cash'])],
+            'payable_type' => ['nullable', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE])],
+            'customer_id' => 'nullable|exists:customers,id',
+            'start_date' => 'nullable|date',
+            'end_date' => 'nullable|date|after_or_equal:start_date',
+            'payment_ids' => 'nullable|array',
+            'payment_ids.*' => 'exists:payments,id',
+        ]);
+
+        // Build query
+        $query = Payment::with(['customer', 'location']);
+
+        // Apply filters
+        if ($request->has('location_id')) {
+            $query->where('location_id', $request->location_id);
+        }
+
+        if ($request->has('status')) {
+            $query->where('status', $request->status);
+        }
+
+        if ($request->has('method')) {
+            $query->where('method', $request->method);
+        }
+
+        if ($request->has('payable_type')) {
+            $query->where('payable_type', $request->payable_type);
+        }
+
+        if ($request->has('customer_id')) {
+            $query->where('customer_id', $request->customer_id);
+        }
+
+        if ($request->has('start_date') && $request->has('end_date')) {
+            $startDate = Carbon::parse($request->start_date)->startOfDay();
+            $endDate = Carbon::parse($request->end_date)->endOfDay();
+            $query->whereBetween('created_at', [$startDate, $endDate]);
+        } elseif ($request->has('start_date')) {
+            $startDate = Carbon::parse($request->start_date)->startOfDay();
+            $query->where('created_at', '>=', $startDate);
+        } elseif ($request->has('end_date')) {
+            $endDate = Carbon::parse($request->end_date)->endOfDay();
+            $query->where('created_at', '<=', $endDate);
+        }
+
+        // If specific payment IDs are provided
+        if ($request->has('payment_ids') && is_array($request->payment_ids)) {
+            $query->whereIn('id', $request->payment_ids);
+        }
+
+        // Get payments
+        $payments = $query->orderBy('created_at', 'desc')->get();
+
+        // Load payable relationships for each payment
+        foreach ($payments as $payment) {
+            if ($payment->payable_type === Payment::TYPE_BOOKING) {
+                $payment->payable = Booking::with('package')->find($payment->payable_id);
+            } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE) {
+                $payment->payable = AttractionPurchase::with('attraction')->find($payment->payable_id);
+            }
+        }
+
+        // Calculate summary
+        $summary = [
+            'total_count' => $payments->count(),
+            'total_amount' => $payments->sum('amount'),
+            'completed_count' => $payments->where('status', 'completed')->count(),
+            'completed_amount' => $payments->where('status', 'completed')->sum('amount'),
+            'pending_count' => $payments->where('status', 'pending')->count(),
+            'pending_amount' => $payments->where('status', 'pending')->sum('amount'),
+            'refunded_count' => $payments->where('status', 'refunded')->count(),
+            'refunded_amount' => $payments->where('status', 'refunded')->sum('amount'),
+        ];
+
+        // Get location and company info
+        $locationName = 'All Locations';
+        $companyName = 'ZapZone';
+
+        if ($request->has('location_id')) {
+            $location = Location::find($request->location_id);
+            if ($location) {
+                $locationName = $location->name;
+                if ($location->company_id) {
+                    $company = Company::find($location->company_id);
+                    if ($company) {
+                        $companyName = $company->name;
+                    }
+                }
+            }
+        }
+
+        // Build filters display
+        $filters = [];
+        if ($request->has('start_date') && $request->has('end_date')) {
+            $filters['date_range'] = Carbon::parse($request->start_date)->format('M d, Y') .
+                                     ' - ' . Carbon::parse($request->end_date)->format('M d, Y');
+        } elseif ($request->has('start_date')) {
+            $filters['date_range'] = 'From ' . Carbon::parse($request->start_date)->format('M d, Y');
+        } elseif ($request->has('end_date')) {
+            $filters['date_range'] = 'Until ' . Carbon::parse($request->end_date)->format('M d, Y');
+        }
+
+        if ($request->has('status')) {
+            $filters['status'] = $request->status;
+        }
+        if ($request->has('method')) {
+            $filters['method'] = $request->method;
+        }
+        if ($request->has('payable_type')) {
+            $filters['payable_type'] = $request->payable_type;
+        }
+
+        $pdf = Pdf::loadView('exports.payment-invoices-report', [
+            'payments' => $payments,
+            'summary' => $summary,
+            'companyName' => $companyName,
+            'locationName' => $locationName,
+            'filters' => count($filters) > 0 ? $filters : null,
+            'reportTitle' => 'Payment Invoices Report',
+        ]);
+
+        $pdf->setPaper('A4', 'portrait');
+
+        $filename = 'invoices_report_' . date('Ymd_His') . '.pdf';
+
+        // Check if user wants to download or stream
+        if ($request->get('download', false)) {
+            return $pdf->download($filename);
+        }
+
+        return $pdf->stream($filename);
+    }
+
+    /**
+     * Export multiple individual invoices as a single PDF (each invoice on separate page)
+     *
+     * @param Request $request
+     * @return \Illuminate\Http\Response
+     */
+    public function invoicesBulk(Request $request)
+    {
+        $request->validate([
+            'payment_ids' => 'required|array|min:1',
+            'payment_ids.*' => 'exists:payments,id',
+        ]);
+
+        $payments = Payment::with(['customer', 'location'])
+            ->whereIn('id', $request->payment_ids)
+            ->orderBy('created_at', 'desc')
+            ->get();
+
+        if ($payments->isEmpty()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'No payments found for the provided IDs'
+            ], 404);
+        }
+
+        // Build HTML for all invoices
+        $html = '';
+        $totalPayments = $payments->count();
+        $index = 0;
+
+        foreach ($payments as $payment) {
+            $index++;
+
+            // Get the payable entity
+            $payable = $payment->getPayableDetails();
+
+            if ($payable) {
+                if ($payment->payable_type === Payment::TYPE_BOOKING) {
+                    $payable->load(['package', 'customer']);
+                } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE) {
+                    $payable->load(['attraction', 'customer']);
+                }
+            }
+
+            // Get location info
+            $location = $payment->location;
+
+            // Get company name
+            $companyName = 'ZapZone';
+            if ($location && $location->company_id) {
+                $company = Company::find($location->company_id);
+                if ($company) {
+                    $companyName = $company->name;
+                }
+            }
+
+            $customer = $payment->customer;
+
+            // Render the invoice view
+            $invoiceHtml = view('exports.payment-invoice', [
+                'payment' => $payment,
+                'payable' => $payable,
+                'customer' => $customer,
+                'location' => $location,
+                'companyName' => $companyName,
+            ])->render();
+
+            $html .= $invoiceHtml;
+
+            // Add page break between invoices (except for the last one)
+            if ($index < $totalPayments) {
+                $html .= '<div style="page-break-after: always;"></div>';
+            }
+        }
+
+        $pdf = Pdf::loadHTML($html);
+        $pdf->setPaper('A4', 'portrait');
+
+        $filename = 'invoices_bulk_' . date('Ymd_His') . '.pdf';
+
+        if ($request->get('download', true)) {
+            return $pdf->download($filename);
+        }
+
+        return $pdf->stream($filename);
     }
 }

@@ -230,9 +230,22 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('bookings/{booking}/internal-notes', [BookingController::class, 'updateInternalNotes']);
     Route::post('bookings/bulk-delete', [BookingController::class, 'bulkDelete']);
 
+    // Booking Summary PDF routes
+    Route::get('bookings/summaries/export', [BookingController::class, 'summariesExport']);
+    Route::get('bookings/summaries/day/{date}', [BookingController::class, 'summariesDay']);
+    Route::get('bookings/summaries/week/{week?}', [BookingController::class, 'summariesWeek']);
+    Route::get('bookings/{booking}/summary', [BookingController::class, 'summary']);
+    Route::get('bookings/{booking}/summary/view', [BookingController::class, 'summaryView']);
+
     // Payment routes
     Route::apiResource('payments', PaymentController::class)->except(['update']);
     Route::patch('payments/{payment}/refund', [PaymentController::class, 'refund']);
+
+    // Payment Invoice routes
+    Route::get('payments/{payment}/invoice', [PaymentController::class, 'invoice']);
+    Route::get('payments/{payment}/invoice/view', [PaymentController::class, 'invoiceView']);
+    Route::get('payments/invoices/report', [PaymentController::class, 'invoicesReport']);
+    Route::post('payments/invoices/bulk', [PaymentController::class, 'invoicesBulk']);
 
     // Activity Log routes
     Route::apiResource('activity-logs', ActivityLogController::class)->only(['index', 'store', 'show']);

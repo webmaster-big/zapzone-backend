@@ -19,6 +19,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
+use Barryvdh\DomPDF\Facade\Pdf;
 
 class BookingController extends Controller
 {
@@ -1356,6 +1357,194 @@ class BookingController extends Controller
             'success' => true,
             'message' => 'Booking deleted successfully',
         ]);
+    }
+
+    /**
+     * Generate a single booking summary PDF (download)
+     */
+    public function summary(Booking $booking)
+    {
+        $booking->load(['customer', 'package', 'location', 'room', 'attractions', 'addOns', 'payments']);
+
+        $pdf = Pdf::loadView('exports.booking-summary', [
+            'booking' => $booking,
+            'customer' => $booking->customer,
+            'location' => $booking->location,
+            'companyName' => config('app.name', 'ZapZone'),
+        ]);
+
+        $filename = 'booking-summary-' . $booking->reference_number . '.pdf';
+
+        return $pdf->download($filename);
+    }
+
+    /**
+     * View a single booking summary PDF in browser
+     */
+    public function summaryView(Booking $booking)
+    {
+        $booking->load(['customer', 'package', 'location', 'room', 'attractions', 'addOns', 'payments']);
+
+        $pdf = Pdf::loadView('exports.booking-summary', [
+            'booking' => $booking,
+            'customer' => $booking->customer,
+            'location' => $booking->location,
+            'companyName' => config('app.name', 'ZapZone'),
+        ]);
+
+        return $pdf->stream('booking-summary-' . $booking->reference_number . '.pdf');
+    }
+
+    /**
+     * Export booking summaries (by date range, specific bookings, or filters)
+     *
+     * Query params:
+     * - booking_ids: comma-separated booking IDs (optional)
+     * - date: specific date (Y-m-d) for single day export
+     * - start_date: start date for date range
+     * - end_date: end date for date range
+     * - week: export entire week ('current', 'next', or date string for week containing that date)
+     * - location_id: filter by location
+     * - status: filter by status
+     * - view_mode: 'compact' for cards, 'full' for one page per booking (default: full)
+     */
+    public function summariesExport(Request $request)
+    {
+        $query = Booking::with(['customer', 'package', 'location', 'room', 'attractions', 'addOns', 'payments']);
+
+        $dateRange = null;
+        $location = null;
+
+        // Filter by specific booking IDs
+        if ($request->has('booking_ids')) {
+            $ids = is_array($request->booking_ids)
+                ? $request->booking_ids
+                : explode(',', $request->booking_ids);
+            $query->whereIn('id', $ids);
+        }
+
+        // Filter by single date
+        if ($request->has('date')) {
+            $date = $request->date;
+            $query->whereDate('booking_date', $date);
+            $dateRange = ['start' => $date, 'end' => $date];
+        }
+
+        // Filter by date range
+        if ($request->has('start_date') && $request->has('end_date')) {
+            $query->whereBetween('booking_date', [$request->start_date, $request->end_date]);
+            $dateRange = ['start' => $request->start_date, 'end' => $request->end_date];
+        }
+
+        // Filter by week
+        if ($request->has('week')) {
+            $weekParam = $request->week;
+
+            if ($weekParam === 'current') {
+                $startOfWeek = now()->startOfWeek();
+                $endOfWeek = now()->endOfWeek();
+            } elseif ($weekParam === 'next') {
+                $startOfWeek = now()->addWeek()->startOfWeek();
+                $endOfWeek = now()->addWeek()->endOfWeek();
+            } else {
+                // Treat as a date and get the week containing that date
+                $date = \Carbon\Carbon::parse($weekParam);
+                $startOfWeek = $date->startOfWeek();
+                $endOfWeek = $date->copy()->endOfWeek();
+            }
+
+            $query->whereBetween('booking_date', [$startOfWeek, $endOfWeek]);
+            $dateRange = ['start' => $startOfWeek->format('Y-m-d'), 'end' => $endOfWeek->format('Y-m-d')];
+        }
+
+        // Filter by location
+        if ($request->has('location_id')) {
+            $query->where('location_id', $request->location_id);
+            $location = \App\Models\Location::find($request->location_id);
+        }
+
+        // Role-based filtering
+        if ($request->has('user_id')) {
+            $authUser = User::find($request->user_id);
+            if ($authUser && $authUser->role === 'location_manager') {
+                $query->where('location_id', $authUser->location_id);
+                $location = $location ?? \App\Models\Location::find($authUser->location_id);
+            }
+        }
+
+        // Filter by status
+        if ($request->has('status')) {
+            $query->where('status', $request->status);
+        }
+
+        // Exclude cancelled by default unless explicitly requested
+        if (!$request->has('include_cancelled')) {
+            $query->where('status', '!=', 'cancelled');
+        }
+
+        // Sort by date and time
+        $query->orderBy('booking_date', 'asc')->orderBy('booking_time', 'asc');
+
+        $bookings = $query->get();
+
+        if ($bookings->isEmpty()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'No bookings found for the specified criteria'
+            ], 404);
+        }
+
+        // Determine view mode
+        $viewMode = $request->get('view_mode', 'full'); // 'compact' or 'full'
+
+        $pdf = Pdf::loadView('exports.booking-summaries-report', [
+            'bookings' => $bookings,
+            'dateRange' => $dateRange,
+            'location' => $location,
+            'viewMode' => $viewMode,
+            'companyName' => config('app.name', 'ZapZone'),
+        ]);
+
+        // Set paper size and orientation
+        $pdf->setPaper('A4', 'portrait');
+
+        // Generate filename
+        $filename = 'party-summaries';
+        if ($dateRange) {
+            if ($dateRange['start'] === $dateRange['end']) {
+                $filename .= '-' . $dateRange['start'];
+            } else {
+                $filename .= '-' . $dateRange['start'] . '-to-' . $dateRange['end'];
+            }
+        } else {
+            $filename .= '-' . now()->format('Y-m-d');
+        }
+        $filename .= '.pdf';
+
+        // Stream or download based on request
+        if ($request->get('stream', false)) {
+            return $pdf->stream($filename);
+        }
+
+        return $pdf->download($filename);
+    }
+
+    /**
+     * Export bookings for a specific day (shortcut method)
+     */
+    public function summariesDay(Request $request, string $date)
+    {
+        $request->merge(['date' => $date]);
+        return $this->summariesExport($request);
+    }
+
+    /**
+     * Export bookings for current week (shortcut method)
+     */
+    public function summariesWeek(Request $request, string $week = 'current')
+    {
+        $request->merge(['week' => $week]);
+        return $this->summariesExport($request);
     }
 
 }

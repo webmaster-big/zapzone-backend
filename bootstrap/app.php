@@ -23,7 +23,7 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
 
         // For API routes, redirect to null (return JSON 401 instead of redirecting to login)
-        $middleware->redirectGuestsTo(fn (Request $request) => 
+        $middleware->redirectGuestsTo(fn (Request $request) =>
             $request->expectsJson() || $request->is('api/*') ? null : route('login')
         );
     })

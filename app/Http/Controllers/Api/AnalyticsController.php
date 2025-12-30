@@ -425,7 +425,7 @@ class AnalyticsController extends Controller
         // Combine package data with booking stats
         return $packages->map(function ($package) use ($bookingStats) {
             $stats = $bookingStats->get($package->id);
-            
+
             // Skip packages with no bookings
             if (!$stats || $stats->bookings_count == 0) {
                 return null;
