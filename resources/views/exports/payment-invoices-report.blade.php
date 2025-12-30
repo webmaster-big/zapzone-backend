@@ -75,12 +75,43 @@
         <div class="header-right">
             @if(isset($company) && $company && $company->logo_path)
                 @php
-                    $logoUrl = $company->logo_path;
-                    if (!str_starts_with($logoUrl, 'http://') && !str_starts_with($logoUrl, 'https://') && !str_starts_with($logoUrl, 'data:')) {
-                        $logoUrl = 'https://zapzone-backend-yt1lm2w5.on-forge.com/storage/' . $logoUrl;
+                    $logoPath = $company->logo_path;
+                    $logoBase64 = null;
+                    
+                    // If it's already a data URL, use it directly
+                    if (str_starts_with($logoPath, 'data:')) {
+                        $logoBase64 = $logoPath;
+                    } 
+                    // If it's a remote URL, try to fetch and encode it
+                    elseif (str_starts_with($logoPath, 'http://') || str_starts_with($logoPath, 'https://')) {
+                        try {
+                            $imageContent = @file_get_contents($logoPath);
+                            if ($imageContent) {
+                                $mimeType = 'image/png';
+                                $finfo = new finfo(FILEINFO_MIME_TYPE);
+                                $detectedMime = $finfo->buffer($imageContent);
+                                if ($detectedMime) $mimeType = $detectedMime;
+                                $logoBase64 = 'data:' . $mimeType . ';base64,' . base64_encode($imageContent);
+                            }
+                        } catch (\Exception $e) {
+                            $logoBase64 = null;
+                        }
+                    }
+                    // Otherwise, try to load from local storage
+                    else {
+                        $localPath = storage_path('app/public/' . $logoPath);
+                        if (file_exists($localPath)) {
+                            $imageContent = file_get_contents($localPath);
+                            $mimeType = mime_content_type($localPath);
+                            $logoBase64 = 'data:' . $mimeType . ';base64,' . base64_encode($imageContent);
+                        }
                     }
                 @endphp
-                <img src="{{ $logoUrl }}" alt="{{ $company->name }}" class="company-logo" />
+                @if($logoBase64)
+                    <img src="{{ $logoBase64 }}" alt="{{ $company->name }}" class="company-logo" />
+                @else
+                    <div class="company-name">{{ $companyName ?? 'ZapZone' }}</div>
+                @endif
             @else
                 <div class="company-name">{{ $companyName ?? 'ZapZone' }}</div>
             @endif
