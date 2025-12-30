@@ -8,6 +8,7 @@ use App\Models\AttractionPurchase;
 use App\Models\Booking;
 use App\Models\Customer;
 use App\Models\User;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Hash;
@@ -483,14 +484,23 @@ class CustomerController extends Controller
 
         // Get date range filter
         $dateRange = $request->get('date_range', '30d');
-        $startDate = match($dateRange) {
-            '7d' => now()->subDays(7),
-            '30d' => now()->subDays(30),
-            '90d' => now()->subDays(90),
-            '1y' => now()->subYear(),
-            'all' => null,
-            default => now()->subDays(30),
-        };
+        
+        // Support custom date range
+        if ($dateRange === 'custom' || ($request->has('start_date') && $request->has('end_date'))) {
+            $startDate = Carbon::parse($request->get('start_date'))->startOfDay();
+            $endDate = Carbon::parse($request->get('end_date'))->endOfDay();
+            $dateRange = 'custom';
+        } else {
+            $startDate = match($dateRange) {
+                '7d' => now()->subDays(7),
+                '30d' => now()->subDays(30),
+                '90d' => now()->subDays(90),
+                '1y' => now()->subYear(),
+                'all' => null,
+                default => now()->subDays(30),
+            };
+            $endDate = now();
+        }
 
         // Determine if we should filter by location
         $isCompanyAdmin = $user && $user->role === 'company_admin';
@@ -549,23 +559,30 @@ class CustomerController extends Controller
             ->count();
 
         // Calculate previous period metrics for comparison
-        $previousPeriodStart = match($dateRange) {
-            '7d' => now()->subDays(14),
-            '30d' => now()->subDays(60),
-            '90d' => now()->subDays(180),
-            '1y' => now()->subYears(2),
-            'all' => null,
-            default => now()->subDays(60),
-        };
+        if ($dateRange === 'custom') {
+            // For custom range, calculate the same duration before the start date
+            $periodDays = $startDate->diffInDays($endDate);
+            $previousPeriodStart = $startDate->copy()->subDays($periodDays + 1);
+            $previousPeriodEnd = $startDate->copy()->subDay();
+        } else {
+            $previousPeriodStart = match($dateRange) {
+                '7d' => now()->subDays(14),
+                '30d' => now()->subDays(60),
+                '90d' => now()->subDays(180),
+                '1y' => now()->subYears(2),
+                'all' => null,
+                default => now()->subDays(60),
+            };
 
-        $previousPeriodEnd = match($dateRange) {
-            '7d' => now()->subDays(7),
-            '30d' => now()->subDays(30),
-            '90d' => now()->subDays(90),
-            '1y' => now()->subYear(),
-            'all' => null,
-            default => now()->subDays(30),
-        };
+            $previousPeriodEnd = match($dateRange) {
+                '7d' => now()->subDays(7),
+                '30d' => now()->subDays(30),
+                '90d' => now()->subDays(90),
+                '1y' => now()->subYear(),
+                'all' => null,
+                default => now()->subDays(30),
+            };
+        }
 
         // Previous period total customers
         $prevTotalCustomers = Booking::query()
@@ -974,7 +991,9 @@ class CustomerController extends Controller
         $validated = $request->validate([
             'user_id' => 'nullable|exists:users,id',
             'location_id' => 'nullable|exists:locations,id',
-            'date_range' => 'nullable|in:7d,30d,90d,1y,all',
+            'date_range' => 'nullable|in:7d,30d,90d,1y,all,custom',
+            'start_date' => 'nullable|date|required_if:date_range,custom',
+            'end_date' => 'nullable|date|required_if:date_range,custom|after_or_equal:start_date',
             'format' => 'required|in:csv,pdf,receipt',
             'include_sections' => 'nullable|array',
             'include_sections.*' => 'in:customers,revenue,bookings,activities,packages',
@@ -987,14 +1006,23 @@ class CustomerController extends Controller
 
         // Get date range filter
         $dateRange = $request->get('date_range', '30d');
-        $startDate = match($dateRange) {
-            '7d' => now()->subDays(7),
-            '30d' => now()->subDays(30),
-            '90d' => now()->subDays(90),
-            '1y' => now()->subYear(),
-            'all' => null,
-            default => now()->subDays(30),
-        };
+        
+        // Support custom date range
+        if ($dateRange === 'custom' || ($request->has('start_date') && $request->has('end_date'))) {
+            $startDate = Carbon::parse($request->get('start_date'))->startOfDay();
+            $endDate = Carbon::parse($request->get('end_date'))->endOfDay();
+            $dateRange = 'custom: ' . $startDate->format('M d, Y') . ' - ' . $endDate->format('M d, Y');
+        } else {
+            $startDate = match($dateRange) {
+                '7d' => now()->subDays(7),
+                '30d' => now()->subDays(30),
+                '90d' => now()->subDays(90),
+                '1y' => now()->subYear(),
+                'all' => null,
+                default => now()->subDays(30),
+            };
+            $endDate = now();
+        }
 
         // Location filtering
         $isCompanyAdmin = $user && $user->role === 'company_admin';

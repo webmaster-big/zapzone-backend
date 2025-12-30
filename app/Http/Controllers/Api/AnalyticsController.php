@@ -23,7 +23,9 @@ class AnalyticsController extends Controller
     {
         $request->validate([
             'company_id' => 'required|exists:companies,id',
-            'date_range' => 'in:7d,30d,90d,1y',
+            'date_range' => 'in:7d,30d,90d,1y,custom',
+            'start_date' => 'nullable|date|required_if:date_range,custom',
+            'end_date' => 'nullable|date|required_if:date_range,custom|after_or_equal:start_date',
             'location_ids' => 'nullable|array',
             'location_ids.*' => 'exists:locations,id',
         ]);
@@ -32,9 +34,15 @@ class AnalyticsController extends Controller
         $dateRange = $request->date_range ?? '30d';
         $locationIds = $request->location_ids ?? [];
 
-        // Calculate date range
-        $startDate = $this->getStartDate($dateRange);
-        $endDate = now();
+        // Calculate date range - use custom dates if provided, otherwise use preset
+        if ($dateRange === 'custom' || ($request->has('start_date') && $request->has('end_date'))) {
+            $startDate = Carbon::parse($request->start_date)->startOfDay();
+            $endDate = Carbon::parse($request->end_date)->endOfDay();
+            $dateRange = 'custom';
+        } else {
+            $startDate = $this->getStartDate($dateRange);
+            $endDate = now();
+        }
 
         // Get company details
         $company = Company::with('locations')->findOrFail($companyId);
@@ -93,15 +101,23 @@ class AnalyticsController extends Controller
     {
         $request->validate([
             'location_id' => 'required|exists:locations,id',
-            'date_range' => 'in:7d,30d,90d,1y',
+            'date_range' => 'in:7d,30d,90d,1y,custom',
+            'start_date' => 'nullable|date|required_if:date_range,custom',
+            'end_date' => 'nullable|date|required_if:date_range,custom|after_or_equal:start_date',
         ]);
 
         $locationId = $request->location_id;
         $dateRange = $request->date_range ?? '30d';
 
-        // Calculate date range
-        $startDate = $this->getStartDate($dateRange);
-        $endDate = now();
+        // Calculate date range - use custom dates if provided, otherwise use preset
+        if ($dateRange === 'custom' || ($request->has('start_date') && $request->has('end_date'))) {
+            $startDate = Carbon::parse($request->start_date)->startOfDay();
+            $endDate = Carbon::parse($request->end_date)->endOfDay();
+            $dateRange = 'custom';
+        } else {
+            $startDate = $this->getStartDate($dateRange);
+            $endDate = now();
+        }
 
         // Get location details
         $location = Location::with('company')->findOrFail($locationId);
@@ -935,7 +951,9 @@ class AnalyticsController extends Controller
     {
         $request->validate([
             'location_id' => 'required|exists:locations,id',
-            'date_range' => 'in:7d,30d,90d,1y',
+            'date_range' => 'in:7d,30d,90d,1y,custom',
+            'start_date' => 'nullable|date|required_if:date_range,custom',
+            'end_date' => 'nullable|date|required_if:date_range,custom|after_or_equal:start_date',
             'format' => 'in:json,csv',
             'sections' => 'array',
             'sections.*' => 'in:metrics,revenue,packages,attractions,timeslots',
@@ -945,6 +963,8 @@ class AnalyticsController extends Controller
         $analyticsRequest = new Request([
             'location_id' => $request->location_id,
             'date_range' => $request->date_range ?? '30d',
+            'start_date' => $request->start_date,
+            'end_date' => $request->end_date,
         ]);
 
         $analytics = json_decode($this->getLocationAnalytics($analyticsRequest)->getContent(), true);
