@@ -167,7 +167,7 @@ class DayOffController extends Controller
         ]);
 
         // Check for duplicate if date, location, or time changed
-        if (isset($validated['date']) || isset($validated['location_id']) || 
+        if (isset($validated['date']) || isset($validated['location_id']) ||
             array_key_exists('time_start', $validated) || array_key_exists('time_end', $validated)) {
             $locationId = $validated['location_id'] ?? $dayOff->location_id;
             $date = $validated['date'] ?? $dayOff->date;
@@ -280,14 +280,14 @@ class DayOffController extends Controller
         // If time is provided, check specific time slot
         if (isset($validated['time_start'])) {
             $isBlocked = DayOff::isTimeSlotBlocked(
-                $validated['location_id'], 
+                $validated['location_id'],
                 $validated['date'],
                 $validated['time_start'],
                 $validated['time_end'] ?? null
             );
 
             $dayOff = $isBlocked ? DayOff::getDayOffForTimeSlot(
-                $validated['location_id'], 
+                $validated['location_id'],
                 $validated['date'],
                 $validated['time_start'],
                 $validated['time_end'] ?? null

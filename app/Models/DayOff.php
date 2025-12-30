@@ -93,7 +93,7 @@ class DayOff extends Model
 
     /**
      * Check if a specific time slot is blocked by this day off.
-     * 
+     *
      * @param string $slotStart The start time of the slot (H:i format)
      * @param string|null $slotEnd The end time of the slot (H:i format), optional
      * @return bool
@@ -169,7 +169,7 @@ class DayOff extends Model
 
     /**
      * Check if a specific time slot is blocked on a given date.
-     * 
+     *
      * @param int $locationId
      * @param string $date
      * @param string $slotStart The start time of the slot (H:i format)

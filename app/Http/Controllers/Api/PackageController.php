@@ -686,27 +686,27 @@ class PackageController extends Controller
                 // Extract relationship IDs - support both formats
                 // 1. Direct ID arrays (attraction_ids, addon_ids, etc.)
                 // 2. Full object arrays from export (attractions, add_ons, etc.)
-                
+
                 $attractionIds = $packageData['attraction_ids'] ?? [];
                 if (empty($attractionIds) && isset($packageData['attractions']) && is_array($packageData['attractions'])) {
                     $attractionIds = array_filter(array_column($packageData['attractions'], 'id'));
                 }
-                
+
                 $addonIds = $packageData['addon_ids'] ?? [];
                 if (empty($addonIds) && isset($packageData['add_ons']) && is_array($packageData['add_ons'])) {
                     $addonIds = array_filter(array_column($packageData['add_ons'], 'id'));
                 }
-                
+
                 $roomIds = $packageData['room_ids'] ?? [];
                 if (empty($roomIds) && isset($packageData['rooms']) && is_array($packageData['rooms'])) {
                     $roomIds = array_filter(array_column($packageData['rooms'], 'id'));
                 }
-                
+
                 $giftCardIds = $packageData['gift_card_ids'] ?? [];
                 if (empty($giftCardIds) && isset($packageData['gift_cards']) && is_array($packageData['gift_cards'])) {
                     $giftCardIds = array_filter(array_column($packageData['gift_cards'], 'id'));
                 }
-                
+
                 $promoIds = $packageData['promo_ids'] ?? [];
                 if (empty($promoIds) && isset($packageData['promos']) && is_array($packageData['promos'])) {
                     $promoIds = array_filter(array_column($packageData['promos'], 'id'));
@@ -794,8 +794,8 @@ class PackageController extends Controller
                 if (!empty($availabilitySchedules)) {
                     foreach ($availabilitySchedules as $scheduleData) {
                         // Skip if missing required fields
-                        if (empty($scheduleData['availability_type']) || 
-                            empty($scheduleData['time_slot_start']) || 
+                        if (empty($scheduleData['availability_type']) ||
+                            empty($scheduleData['time_slot_start']) ||
                             empty($scheduleData['time_slot_end']) ||
                             empty($scheduleData['time_slot_interval'])) {
                             continue;
@@ -825,7 +825,7 @@ class PackageController extends Controller
                     'error' => $e->getMessage(),
                     'trace' => $e->getTraceAsString(),
                 ]);
-                
+
                 $errors[] = [
                     'index' => $index,
                     'name' => $packageData['name'] ?? 'Unknown',

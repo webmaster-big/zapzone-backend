@@ -484,7 +484,7 @@ class CustomerController extends Controller
 
         // Get date range filter
         $dateRange = $request->get('date_range', '30d');
-        
+
         // Support custom date range
         if ($dateRange === 'custom' && $request->has('start_date') && $request->has('end_date')) {
             $startDate = Carbon::parse($request->get('start_date'))->startOfDay();
@@ -1018,7 +1018,7 @@ class CustomerController extends Controller
         // Get date range filter
         $dateRange = $request->get('date_range', '30d');
         $dateRangeDisplay = $dateRange;
-        
+
         // Support custom date range
         if ($dateRange === 'custom' && $request->has('start_date') && $request->has('end_date')) {
             $startDate = Carbon::parse($request->get('start_date'))->startOfDay();

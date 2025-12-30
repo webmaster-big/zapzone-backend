@@ -28,11 +28,11 @@ class PackageTimeSlotController extends Controller
     private function getDurationInMinutes($duration, $durationUnit): int
     {
         $duration = (float) $duration;
-        
+
         if ($durationUnit === 'hours' || $durationUnit === 'hours and minutes') {
             return (int) round($duration * 60);
         }
-        
+
         return (int) round($duration);
     }
 
