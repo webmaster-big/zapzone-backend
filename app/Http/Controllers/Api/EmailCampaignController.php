@@ -74,7 +74,7 @@ class EmailCampaignController extends Controller
             'body' => 'required|string',
             'email_template_id' => 'nullable|exists:email_templates,id',
             'recipient_types' => 'required|array|min:1',
-            'recipient_types.*' => [Rule::in(['customers', 'attendants', 'company_admin', 'location_managers', 'booking_emails', 'attraction_purchase_emails', 'custom'])],
+            'recipient_types.*' => [Rule::in(['customers', 'attendants', 'company_admin', 'location_managers', 'custom'])],
             'custom_emails' => 'nullable|array',
             'custom_emails.*' => 'email',
             'recipient_filters' => 'nullable|array',
@@ -271,7 +271,7 @@ class EmailCampaignController extends Controller
     {
         $validated = $request->validate([
             'recipient_types' => 'required|array|min:1',
-            'recipient_types.*' => [Rule::in(['customers', 'attendants', 'company_admin', 'location_managers', 'booking_emails', 'attraction_purchase_emails', 'custom'])],
+            'recipient_types.*' => [Rule::in(['customers', 'attendants', 'company_admin', 'location_managers', 'custom'])],
             'custom_emails' => 'nullable|array',
             'custom_emails.*' => 'email',
             'recipient_filters' => 'nullable|array',
@@ -487,14 +487,6 @@ class EmailCampaignController extends Controller
                     $recipients = array_merge($recipients, $this->getUserRecipients($company, $location, 'location_manager', $filters));
                     break;
 
-                case 'booking_emails':
-                    $recipients = array_merge($recipients, $this->getBookingEmailRecipients($company, $location, $filters));
-                    break;
-
-                case 'attraction_purchase_emails':
-                    $recipients = array_merge($recipients, $this->getAttractionPurchaseEmailRecipients($company, $location, $filters));
-                    break;
-
                 case 'custom':
                     if (!empty($campaign->custom_emails)) {
                         foreach ($campaign->custom_emails as $email) {
@@ -530,32 +522,120 @@ class EmailCampaignController extends Controller
     }
 
     /**
-     * Get customer recipients.
+     * Get customer recipients from customers table, bookings, and attraction purchases.
+     * Returns distinct emails from all sources.
      */
     protected function getCustomerRecipients($company, $location, array $filters): array
     {
-        $query = Customer::query();
-
-        // Apply status filter
-        if (!empty($filters['status'])) {
-            $query->where('status', $filters['status']);
-        } else {
-            $query->where('status', 'active');
-        }
-
-        // Only get customers with valid emails
-        $query->whereNotNull('email')->where('email', '!=', '');
-
-        $customers = $query->get();
         $recipients = [];
+        $seenEmails = [];
+
+        // 1. Get emails from Customers table
+        $customerQuery = Customer::query();
+        if (!empty($filters['status'])) {
+            $customerQuery->where('status', $filters['status']);
+        } else {
+            $customerQuery->where('status', 'active');
+        }
+        $customerQuery->whereNotNull('email')->where('email', '!=', '');
+        $customers = $customerQuery->get();
 
         foreach ($customers as $customer) {
-            $recipients[] = [
-                'email' => $customer->email,
-                'type' => 'customer',
-                'id' => $customer->id,
-                'variables' => $this->buildVariablesForCustomer($customer, $company, $location),
-            ];
+            $email = strtolower($customer->email);
+            if (!in_array($email, $seenEmails)) {
+                $seenEmails[] = $email;
+                $recipients[] = [
+                    'email' => $customer->email,
+                    'type' => 'customer',
+                    'id' => $customer->id,
+                    'variables' => $this->buildVariablesForCustomer($customer, $company, $location),
+                ];
+            }
+        }
+
+        // 2. Get emails from Bookings (both customer and guest emails)
+        $bookingQuery = Booking::with('customer');
+        if (!empty($filters['location_id'])) {
+            $bookingQuery->where('location_id', $filters['location_id']);
+        } elseif ($location) {
+            $bookingQuery->where('location_id', $location->id);
+        }
+        $bookings = $bookingQuery->get();
+
+        foreach ($bookings as $booking) {
+            // Add customer email if exists
+            if ($booking->customer && $booking->customer->email) {
+                $email = strtolower($booking->customer->email);
+                if (!in_array($email, $seenEmails)) {
+                    $seenEmails[] = $email;
+                    $customerName = trim($booking->customer->first_name . ' ' . $booking->customer->last_name);
+                    $recipients[] = [
+                        'email' => $booking->customer->email,
+                        'type' => 'customer',
+                        'id' => $booking->customer->id,
+                        'variables' => $this->buildVariablesForCustomer($booking->customer, $company, $location),
+                    ];
+                }
+            }
+
+            // Add guest email if exists
+            if ($booking->guest_email) {
+                $email = strtolower($booking->guest_email);
+                if (!in_array($email, $seenEmails)) {
+                    $seenEmails[] = $email;
+                    $guestName = $booking->guest_name ?? 'Valued Guest';
+                    $recipients[] = [
+                        'email' => $booking->guest_email,
+                        'type' => 'customer',
+                        'id' => null,
+                        'variables' => $this->buildVariablesForGuest($guestName, $booking->guest_email, $booking->guest_phone, $company, $location),
+                    ];
+                }
+            }
+        }
+
+        // 3. Get emails from Attraction Purchases (both customer and guest emails)
+        $purchaseQuery = AttractionPurchase::with(['customer', 'attraction']);
+        if (!empty($filters['location_id'])) {
+            $purchaseQuery->whereHas('attraction', function ($q) use ($filters) {
+                $q->where('location_id', $filters['location_id']);
+            });
+        } elseif ($location) {
+            $purchaseQuery->whereHas('attraction', function ($q) use ($location) {
+                $q->where('location_id', $location->id);
+            });
+        }
+        $purchases = $purchaseQuery->get();
+
+        foreach ($purchases as $purchase) {
+            // Add customer email if exists
+            if ($purchase->customer && $purchase->customer->email) {
+                $email = strtolower($purchase->customer->email);
+                if (!in_array($email, $seenEmails)) {
+                    $seenEmails[] = $email;
+                    $recipients[] = [
+                        'email' => $purchase->customer->email,
+                        'type' => 'customer',
+                        'id' => $purchase->customer->id,
+                        'variables' => $this->buildVariablesForCustomer($purchase->customer, $company, $location),
+                    ];
+                }
+            }
+
+            // Add guest email if exists
+            if ($purchase->guest_email) {
+                $email = strtolower($purchase->guest_email);
+                if (!in_array($email, $seenEmails)) {
+                    $seenEmails[] = $email;
+                    $guestName = $purchase->guest_name ?? 'Valued Guest';
+                    $recipients[] = [
+                        'email' => $purchase->guest_email,
+                        'type' => 'customer',
+                        'id' => null,
+                        'variables' => $this->buildVariablesForGuest($guestName, $purchase->guest_email, $purchase->guest_phone, $company, $location),
+                    ];
+                }
+            }
         }
 
         return $recipients;
@@ -608,145 +688,22 @@ class EmailCampaignController extends Controller
     }
 
     /**
-     * Get booking email recipients (distinct emails from bookings - both customer and guest emails).
+     * Build variables for a guest (from bookings or attraction purchases).
      */
-    protected function getBookingEmailRecipients($company, $location, array $filters): array
-    {
-        $query = Booking::query();
-
-        // Filter by location
-        if (!empty($filters['location_id'])) {
-            $query->where('location_id', $filters['location_id']);
-        } elseif ($location) {
-            $query->where('location_id', $location->id);
-        }
-
-        // Get all bookings with customer relationship
-        $bookings = $query->with('customer')->get();
-
-        $recipients = [];
-        $seenEmails = [];
-
-        foreach ($bookings as $booking) {
-            // Add customer email if exists
-            if ($booking->customer && $booking->customer->email && !in_array(strtolower($booking->customer->email), $seenEmails)) {
-                $seenEmails[] = strtolower($booking->customer->email);
-                $customerName = trim($booking->customer->first_name . ' ' . $booking->customer->last_name);
-                $recipients[] = [
-                    'email' => $booking->customer->email,
-                    'type' => 'booking_email',
-                    'id' => $booking->id,
-                    'variables' => $this->buildVariablesForBookingGuest($booking, $customerName, $booking->customer->email, $company, $location),
-                ];
-            }
-
-            // Add guest email if exists and different from customer email
-            if ($booking->guest_email && !in_array(strtolower($booking->guest_email), $seenEmails)) {
-                $seenEmails[] = strtolower($booking->guest_email);
-                $guestName = $booking->guest_name ?? 'Valued Guest';
-                $recipients[] = [
-                    'email' => $booking->guest_email,
-                    'type' => 'booking_email',
-                    'id' => $booking->id,
-                    'variables' => $this->buildVariablesForBookingGuest($booking, $guestName, $booking->guest_email, $company, $location),
-                ];
-            }
-        }
-
-        return $recipients;
-    }
-
-    /**
-     * Get attraction purchase email recipients (distinct emails from attraction purchases - both customer and guest emails).
-     */
-    protected function getAttractionPurchaseEmailRecipients($company, $location, array $filters): array
-    {
-        $query = AttractionPurchase::with(['customer', 'attraction']);
-
-        // Filter by location through attraction
-        if (!empty($filters['location_id'])) {
-            $query->whereHas('attraction', function ($q) use ($filters) {
-                $q->where('location_id', $filters['location_id']);
-            });
-        } elseif ($location) {
-            $query->whereHas('attraction', function ($q) use ($location) {
-                $q->where('location_id', $location->id);
-            });
-        }
-
-        // Get all purchases
-        $purchases = $query->get();
-
-        $recipients = [];
-        $seenEmails = [];
-
-        foreach ($purchases as $purchase) {
-            // Add customer email if exists
-            if ($purchase->customer && $purchase->customer->email && !in_array(strtolower($purchase->customer->email), $seenEmails)) {
-                $seenEmails[] = strtolower($purchase->customer->email);
-                $customerName = trim($purchase->customer->first_name . ' ' . $purchase->customer->last_name);
-                $recipients[] = [
-                    'email' => $purchase->customer->email,
-                    'type' => 'attraction_purchase_email',
-                    'id' => $purchase->id,
-                    'variables' => $this->buildVariablesForAttractionPurchaseGuest($purchase, $customerName, $purchase->customer->email, $company, $location),
-                ];
-            }
-
-            // Add guest email if exists and different from customer email
-            if ($purchase->guest_email && !in_array(strtolower($purchase->guest_email), $seenEmails)) {
-                $seenEmails[] = strtolower($purchase->guest_email);
-                $guestName = $purchase->guest_name ?? 'Valued Guest';
-                $recipients[] = [
-                    'email' => $purchase->guest_email,
-                    'type' => 'attraction_purchase_email',
-                    'id' => $purchase->id,
-                    'variables' => $this->buildVariablesForAttractionPurchaseGuest($purchase, $guestName, $purchase->guest_email, $company, $location),
-                ];
-            }
-        }
-
-        return $recipients;
-    }
-
-    /**
-     * Build variables for a booking guest.
-     */
-    protected function buildVariablesForBookingGuest($booking, string $name, string $email, $company, $location): array
+    protected function buildVariablesForGuest(string $name, string $email, ?string $phone, $company, $location): array
     {
         $nameParts = explode(' ', $name, 2);
         $firstName = $nameParts[0] ?? '';
         $lastName = $nameParts[1] ?? '';
 
         return array_merge(
-            $this->buildVariables($name, $email, 'booking_email', $company, $location),
+            $this->buildVariables($name, $email, 'customer', $company, $location),
             [
                 'customer_email' => $email,
                 'customer_name' => $name,
                 'customer_first_name' => $firstName,
                 'customer_last_name' => $lastName,
-                'customer_phone' => $booking->customer?->phone ?? $booking->guest_phone ?? '',
-            ]
-        );
-    }
-
-    /**
-     * Build variables for an attraction purchase guest.
-     */
-    protected function buildVariablesForAttractionPurchaseGuest($purchase, string $name, string $email, $company, $location): array
-    {
-        $nameParts = explode(' ', $name, 2);
-        $firstName = $nameParts[0] ?? '';
-        $lastName = $nameParts[1] ?? '';
-
-        return array_merge(
-            $this->buildVariables($name, $email, 'attraction_purchase_email', $company, $location),
-            [
-                'customer_email' => $email,
-                'customer_name' => $name,
-                'customer_first_name' => $firstName,
-                'customer_last_name' => $lastName,
-                'customer_phone' => $purchase->customer?->phone ?? $purchase->guest_phone ?? '',
+                'customer_phone' => $phone ?? '',
             ]
         );
     }
