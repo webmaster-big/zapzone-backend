@@ -190,29 +190,43 @@ class GmailApiService
         $relatedBoundary = uniqid('related_');
         $altBoundary = uniqid('alt_');
 
+        $hasAttachments = !empty($attachments);
+        $hasInlineImages = !empty($inlineImages);
+
+        Log::info('Creating email message', [
+            'to' => $to,
+            'hasAttachments' => $hasAttachments,
+            'attachmentsCount' => count($attachments),
+            'hasInlineImages' => $hasInlineImages,
+        ]);
+
         $emailContent = "From: {$fromName} <{$from}>\r\n";
         $emailContent .= "To: {$to}\r\n";
         $emailContent .= "Reply-To: {$from}\r\n";
         $emailContent .= "Subject: {$subject}\r\n";
         $emailContent .= "MIME-Version: 1.0\r\n";
 
-        $hasAttachments = !empty($attachments);
-        $hasInlineImages = !empty($inlineImages);
-
-        if ($hasAttachments) {
-            // Structure: mixed -> related -> alternative
+        if ($hasAttachments && $hasInlineImages) {
+            // Structure: mixed -> related -> alternative + inline images, then attachments
             $emailContent .= "Content-Type: multipart/mixed; boundary=\"{$mixedBoundary}\"\r\n\r\n";
             $emailContent .= "--{$mixedBoundary}\r\n";
-        }
-
-        if ($hasInlineImages) {
+            $emailContent .= "Content-Type: multipart/related; boundary=\"{$relatedBoundary}\"\r\n\r\n";
+            $emailContent .= "--{$relatedBoundary}\r\n";
+            $emailContent .= "Content-Type: multipart/alternative; boundary=\"{$altBoundary}\"\r\n\r\n";
+        } elseif ($hasAttachments) {
+            // Structure: mixed -> alternative, then attachments
+            $emailContent .= "Content-Type: multipart/mixed; boundary=\"{$mixedBoundary}\"\r\n\r\n";
+            $emailContent .= "--{$mixedBoundary}\r\n";
+            $emailContent .= "Content-Type: multipart/alternative; boundary=\"{$altBoundary}\"\r\n\r\n";
+        } elseif ($hasInlineImages) {
             // Structure: related -> alternative + inline images
             $emailContent .= "Content-Type: multipart/related; boundary=\"{$relatedBoundary}\"\r\n\r\n";
             $emailContent .= "--{$relatedBoundary}\r\n";
+            $emailContent .= "Content-Type: multipart/alternative; boundary=\"{$altBoundary}\"\r\n\r\n";
+        } else {
+            // Simple: just alternative (text + html)
+            $emailContent .= "Content-Type: multipart/alternative; boundary=\"{$altBoundary}\"\r\n\r\n";
         }
-
-        // Alternative part (plain text + HTML)
-        $emailContent .= "Content-Type: multipart/alternative; boundary=\"{$altBoundary}\"\r\n\r\n";
 
         // Plain text version
         $plainText = strip_tags($htmlBody);

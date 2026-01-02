@@ -977,8 +977,12 @@ HTML;
     {
         $emailAttachments = [];
 
+        Log::info('Preparing attachments', ['count' => count($storedAttachments), 'attachments' => $storedAttachments]);
+
         foreach ($storedAttachments as $attachment) {
             $filePath = storage_path('app/public/' . $attachment['path']);
+
+            Log::info('Processing attachment', ['path' => $filePath, 'exists' => file_exists($filePath)]);
 
             if (file_exists($filePath)) {
                 $emailAttachments[] = [
@@ -986,8 +990,12 @@ HTML;
                     'mime_type' => $attachment['mime_type'],
                     'data' => base64_encode(file_get_contents($filePath)),
                 ];
+            } else {
+                Log::warning('Attachment file not found', ['path' => $filePath]);
             }
         }
+
+        Log::info('Prepared attachments for email', ['count' => count($emailAttachments)]);
 
         return $emailAttachments;
     }
