@@ -7,7 +7,7 @@
         @page { margin: 18mm; size: A4; }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 8pt; line-height: 1.5; color: #2d3748; padding: 10px; }
-        
+
         /* Header */
         .header { display: table; width: 100%; margin-bottom: 20px; padding-bottom: 15px; border-bottom: 2px solid #e2e8f0; }
         .header-left { display: table-cell; width: 60%; vertical-align: top; }
@@ -17,13 +17,13 @@
         .report-subtitle { font-size: 9pt; color: #718096; margin-top: 4px; }
         .company-name { font-size: 10pt; font-weight: 600; color: #4a5568; }
         .report-meta { font-size: 8pt; color: #a0aec0; margin-top: 4px; }
-        
+
         /* Filters */
         .filters { background: #f7fafc; padding: 14px 18px; border-radius: 4px; margin-bottom: 20px; font-size: 9pt; }
         .filter-item { display: inline-block; margin-right: 25px; }
         .filter-label { color: #718096; }
         .filter-value { font-weight: 600; color: #2d3748; }
-        
+
         /* Summary */
         .summary { display: table; width: 100%; margin-bottom: 20px; }
         .summary-item { display: table-cell; width: 25%; text-align: center; padding: 14px 10px; background: #f7fafc; }
@@ -31,7 +31,7 @@
         .summary-item:last-child { border-radius: 0 4px 4px 0; }
         .summary-value { font-size: 13pt; font-weight: 700; color: #1a202c; }
         .summary-label { font-size: 7pt; color: #718096; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 3px; }
-        
+
         /* Table */
         table { width: 100%; border-collapse: collapse; }
         thead th { font-size: 8pt; font-weight: 600; color: #718096; text-transform: uppercase; letter-spacing: 0.5px; padding: 14px 10px; border-bottom: 2px solid #e2e8f0; text-align: left; }
@@ -41,27 +41,27 @@
         tbody td.right { text-align: right; }
         tbody td.center { text-align: center; }
         tbody tr:nth-child(even) { background: #fafafa; }
-        
+
         /* Status */
         .status { display: inline-block; padding: 4px 10px; border-radius: 10px; font-size: 7pt; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; }
         .status-completed { background: #c6f6d5; color: #276749; }
         .status-pending { background: #fefcbf; color: #975a16; }
         .status-failed { background: #fed7d7; color: #c53030; }
         .status-refunded { background: #e9d8fd; color: #6b46c1; }
-        
+
         /* Type */
         .type { display: inline-block; padding: 4px 8px; border-radius: 3px; font-size: 7pt; font-weight: 600; }
         .type-booking { background: #e2e8f0; color: #4a5568; }
         .type-attraction { background: #fef3c7; color: #92400e; }
-        
+
         /* Total Row */
         .total-row { background: #edf2f7 !important; }
         .total-row td { font-weight: 600; padding: 16px 10px; border-top: 2px solid #cbd5e0; font-size: 10pt; }
-        
+
         /* Footer */
         .footer { text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e2e8f0; }
         .footer-text { font-size: 8pt; color: #a0aec0; }
-        
+
         /* Empty */
         .empty { text-align: center; padding: 40px; color: #a0aec0; }
     </style>
@@ -77,11 +77,11 @@
                 @php
                     $logoPath = $company->logo_path;
                     $logoBase64 = null;
-                    
+
                     // If it's already a data URL, use it directly
                     if (str_starts_with($logoPath, 'data:')) {
                         $logoBase64 = $logoPath;
-                    } 
+                    }
                     // If it's a remote URL, try to fetch and encode it
                     elseif (str_starts_with($logoPath, 'http://') || str_starts_with($logoPath, 'https://')) {
                         try {
@@ -209,7 +209,7 @@
                 <td colspan="8" class="empty">No payments found</td>
             </tr>
             @endforelse
-            
+
             @if(count($payments) > 0)
             <tr class="total-row">
                 <td colspan="7" class="right">Total ({{ count($payments) }} payments)</td>

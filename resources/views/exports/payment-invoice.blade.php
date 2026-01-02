@@ -7,9 +7,9 @@
         @page { margin: 20mm; size: A4; }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 9pt; line-height: 1.6; color: #2d3748; }
-        
+
         .invoice { max-width: 100%; padding: 10px; }
-        
+
         /* Header */
         .header { display: table; width: 100%; margin-bottom: 25px; padding-bottom: 15px; border-bottom: 1px solid #e2e8f0; }
         .header-left { display: table-cell; width: 60%; vertical-align: top; }
@@ -20,35 +20,35 @@
         .invoice-label { font-size: 9pt; color: #a0aec0; text-transform: uppercase; letter-spacing: 1.5px; }
         .invoice-number { font-size: 12pt; font-weight: 600; color: #1a202c; margin-top: 2px; }
         .invoice-date { font-size: 8pt; color: #718096; margin-top: 4px; }
-        
+
         /* Status */
         .status { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 7pt; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 8px; }
         .status-completed { background: #c6f6d5; color: #276749; }
         .status-pending { background: #fefcbf; color: #975a16; }
         .status-failed { background: #fed7d7; color: #c53030; }
         .status-refunded { background: #e9d8fd; color: #6b46c1; }
-        
+
         /* Divider */
         .divider { height: 1px; background: #e2e8f0; margin: 20px 0; }
-        
+
         /* Party/Event Info */
         .event-banner { background: #f7fafc; border-left: 3px solid #4a5568; padding: 12px 18px; margin-bottom: 20px; }
         .event-title { font-size: 11pt; font-weight: 600; color: #1a202c; }
         .event-details { font-size: 9pt; color: #4a5568; margin-top: 4px; }
         .event-meta { font-size: 8pt; color: #718096; margin-top: 6px; }
-        
+
         /* Guest of Honor */
         .guest-banner { text-align: center; padding: 12px 18px; margin-bottom: 18px; border: 1px solid #e2e8f0; border-radius: 4px; }
         .guest-label { font-size: 7pt; color: #a0aec0; text-transform: uppercase; letter-spacing: 1px; }
         .guest-name { font-size: 13pt; font-weight: 600; color: #2d3748; margin-top: 3px; }
         .guest-info { font-size: 8pt; color: #718096; margin-top: 3px; }
-        
+
         /* Two Column */
         .row { display: table; width: 100%; margin-bottom: 25px; }
         .col { display: table-cell; width: 50%; vertical-align: top; }
         .col:first-child { padding-right: 20px; }
         .col:last-child { padding-left: 20px; }
-        
+
         /* Info Block */
         .info-block { margin-bottom: 20px; }
         .info-title { font-size: 8pt; font-weight: 600; color: #a0aec0; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; padding-bottom: 5px; border-bottom: 1px solid #edf2f7; }
@@ -56,7 +56,7 @@
         .info-content strong { font-weight: 600; }
         .info-line { margin-bottom: 5px; }
         .info-muted { color: #718096; font-size: 8pt; }
-        
+
         /* Table */
         table { width: 100%; border-collapse: collapse; margin-bottom: 25px; }
         thead th { font-size: 8pt; font-weight: 600; color: #718096; text-transform: uppercase; letter-spacing: 0.5px; padding: 12px 8px; border-bottom: 2px solid #e2e8f0; text-align: left; }
@@ -65,7 +65,7 @@
         tbody td.right { text-align: right; }
         tbody td.center { text-align: center; }
         .item-desc { font-size: 8pt; color: #a0aec0; margin-top: 4px; }
-        
+
         /* Totals */
         .totals { display: table; width: 100%; margin-bottom: 30px; }
         .totals-spacer { display: table-cell; width: 55%; }
@@ -78,22 +78,22 @@
         .total-main .total-value { font-weight: 700; color: #1a202c; font-size: 11pt; }
         .total-paid { color: #38a169; }
         .total-balance { color: #e53e3e; font-weight: 600; }
-        
+
         /* Notes */
         .notes { background: #f7fafc; padding: 15px 18px; border-radius: 4px; margin-bottom: 20px; }
         .notes-title { font-size: 8pt; font-weight: 600; color: #a0aec0; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
         .notes-content { font-size: 9pt; color: #4a5568; white-space: pre-wrap; line-height: 1.6; }
-        
+
         .internal-notes { background: #fff5f5; border-left: 3px solid #fc8181; }
         .internal-notes .notes-title { color: #c53030; }
         .internal-notes .notes-content { color: #742a2a; }
-        
+
         /* Footer */
         .footer { text-align: center; padding-top: 25px; margin-top: 30px; border-top: 1px solid #e2e8f0; }
         .footer-thanks { font-size: 11pt; color: #4a5568; margin-bottom: 6px; }
         .footer-meta { font-size: 8pt; color: #a0aec0; }
         .footer-refund { font-size: 9pt; color: #c53030; font-weight: 600; margin-top: 8px; }
-        
+
         /* Payment Box */
         .payment-summary { background: #f0fff4; border: 1px solid #9ae6b4; border-radius: 4px; padding: 20px 18px; text-align: center; margin: 20px 0; }
         .payment-amount { font-size: 18pt; font-weight: 700; color: #276749; }
@@ -109,11 +109,11 @@
                     @php
                         $logoPath = $company->logo_path;
                         $logoBase64 = null;
-                        
+
                         // If it's already a data URL, use it directly
                         if (str_starts_with($logoPath, 'data:')) {
                             $logoBase64 = $logoPath;
-                        } 
+                        }
                         // If it's a remote URL, try to fetch and encode it
                         elseif (str_starts_with($logoPath, 'http://') || str_starts_with($logoPath, 'https://')) {
                             try {
@@ -166,7 +166,7 @@
 
         @if($payable && $payment->payable_type === 'booking')
             {{-- BOOKING INVOICE --}}
-            
+
             @if($payable->guest_of_honor_name)
             <div class="guest-banner">
                 <div class="guest-label">Guest of Honor</div>
@@ -302,7 +302,7 @@
 
         @elseif($payable && $payment->payable_type === 'attraction_purchase')
             {{-- ATTRACTION PURCHASE INVOICE --}}
-            
+
             <div class="event-banner">
                 <div class="event-title">{{ $payable->attraction->name ?? 'Attraction Ticket' }}</div>
                 <div class="event-details">
@@ -342,7 +342,7 @@
 
         @else
             {{-- GENERIC PAYMENT --}}
-            
+
             <div class="row">
                 <div class="col">
                     <div class="info-block">

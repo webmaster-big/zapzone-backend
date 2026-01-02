@@ -13,6 +13,8 @@ use App\Http\Controllers\Api\CompanyController;
 use App\Http\Controllers\Api\CustomerController;
 use App\Http\Controllers\Api\CustomerNotificationController;
 use App\Http\Controllers\Api\DayOffController;
+use App\Http\Controllers\Api\EmailCampaignController;
+use App\Http\Controllers\Api\EmailTemplateController;
 use App\Http\Controllers\Api\GiftCardController;
 use App\Http\Controllers\Api\LocationController;
 use App\Http\Controllers\Api\MetricsController;
@@ -270,6 +272,33 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('account', [AuthorizeNetAccountController::class, 'store']);
         Route::put('account', [AuthorizeNetAccountController::class, 'update']);
         Route::delete('account', [AuthorizeNetAccountController::class, 'destroy']);
+    });
+
+    // Email Template routes
+    Route::prefix('email-templates')->group(function () {
+        Route::get('/', [EmailTemplateController::class, 'index']);
+        Route::post('/', [EmailTemplateController::class, 'store']);
+        Route::get('/variables', [EmailTemplateController::class, 'getAvailableVariables']);
+        Route::post('/preview', [EmailTemplateController::class, 'previewCustom']);
+        Route::get('/{emailTemplate}', [EmailTemplateController::class, 'show']);
+        Route::put('/{emailTemplate}', [EmailTemplateController::class, 'update']);
+        Route::delete('/{emailTemplate}', [EmailTemplateController::class, 'destroy']);
+        Route::post('/{emailTemplate}/duplicate', [EmailTemplateController::class, 'duplicate']);
+        Route::get('/{emailTemplate}/preview', [EmailTemplateController::class, 'preview']);
+        Route::patch('/{emailTemplate}/status', [EmailTemplateController::class, 'updateStatus']);
+    });
+
+    // Email Campaign routes
+    Route::prefix('email-campaigns')->group(function () {
+        Route::get('/', [EmailCampaignController::class, 'index']);
+        Route::post('/', [EmailCampaignController::class, 'store']);
+        Route::get('/statistics', [EmailCampaignController::class, 'statistics']);
+        Route::post('/preview-recipients', [EmailCampaignController::class, 'previewRecipients']);
+        Route::post('/send-test', [EmailCampaignController::class, 'sendTest']);
+        Route::get('/{emailCampaign}', [EmailCampaignController::class, 'show']);
+        Route::delete('/{emailCampaign}', [EmailCampaignController::class, 'destroy']);
+        Route::post('/{emailCampaign}/cancel', [EmailCampaignController::class, 'cancel']);
+        Route::post('/{emailCampaign}/resend', [EmailCampaignController::class, 'resend']);
     });
 });
 
