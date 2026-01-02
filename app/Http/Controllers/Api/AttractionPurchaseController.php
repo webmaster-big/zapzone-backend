@@ -943,6 +943,7 @@ public function checkIn(int $id): JsonResponse
             'data' => ['deleted_count' => $deletedCount],
         ]);
     }
+
 }
 
 

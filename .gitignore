@@ -26,3 +26,6 @@ Thumbs.db
 # Documentation files (keeping README.md)
 *.md
 !README.md
+
+.env.example
+.env.production.example

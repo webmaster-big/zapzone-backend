@@ -107,11 +107,11 @@ class GmailApiService
     {
         // Find all img tags with src attributes
         $pattern = '/<img\s+[^>]*src=["\']([^"\']+)["\'][^>]*>/i';
-        
+
         return preg_replace_callback($pattern, function ($matches) use (&$inlineImages) {
             $fullTag = $matches[0];
             $imageUrl = $matches[1];
-            
+
             // Skip if already a cid: reference or data: URI
             if (str_starts_with($imageUrl, 'cid:') || str_starts_with($imageUrl, 'data:')) {
                 return $fullTag;
@@ -120,7 +120,7 @@ class GmailApiService
             try {
                 // Generate a unique Content-ID for this image
                 $contentId = 'img_' . uniqid() . '@zapzone';
-                
+
                 // Try to get the image content
                 $imageData = null;
                 $mimeType = 'image/jpeg';
@@ -139,7 +139,7 @@ class GmailApiService
                         }
                     }
                 }
-                
+
                 // If not found locally, try to fetch from URL
                 if ($imageData === null && filter_var($imageUrl, FILTER_VALIDATE_URL)) {
                     $context = stream_context_create([
@@ -153,7 +153,7 @@ class GmailApiService
                         ]
                     ]);
                     $imageData = @file_get_contents($imageUrl, false, $context);
-                    
+
                     if ($imageData !== false) {
                         // Detect mime type from content
                         $finfo = new \finfo(FILEINFO_MIME_TYPE);
