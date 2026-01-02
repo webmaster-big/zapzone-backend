@@ -49,6 +49,8 @@ class EmailCampaign extends Model
     public const RECIPIENT_TYPE_ATTENDANTS = 'attendants';
     public const RECIPIENT_TYPE_COMPANY_ADMIN = 'company_admin';
     public const RECIPIENT_TYPE_LOCATION_MANAGERS = 'location_managers';
+    public const RECIPIENT_TYPE_BOOKING_EMAILS = 'booking_emails';
+    public const RECIPIENT_TYPE_ATTRACTION_PURCHASE_EMAILS = 'attraction_purchase_emails';
     public const RECIPIENT_TYPE_CUSTOM = 'custom';
 
     /**
