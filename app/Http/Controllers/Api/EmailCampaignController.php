@@ -608,7 +608,7 @@ class EmailCampaignController extends Controller
     }
 
     /**
-     * Get booking email recipients (distinct guest emails from bookings).
+     * Get booking email recipients (distinct emails from bookings - both customer and guest emails).
      */
     protected function getBookingEmailRecipients($company, $location, array $filters): array
     {
@@ -621,32 +621,34 @@ class EmailCampaignController extends Controller
             $query->where('location_id', $location->id);
         }
 
-        // Get distinct emails - prioritize customer email, fallback to guest_email
-        $bookings = $query->with('customer')
-            ->whereNotNull('guest_email')
-            ->where('guest_email', '!=', '')
-            ->orWhereHas('customer', function ($q) {
-                $q->whereNotNull('email')->where('email', '!=', '');
-            })
-            ->get();
+        // Get all bookings with customer relationship
+        $bookings = $query->with('customer')->get();
 
         $recipients = [];
         $seenEmails = [];
 
         foreach ($bookings as $booking) {
-            // Get email from customer or guest
-            $email = $booking->customer?->email ?? $booking->guest_email;
-            $name = $booking->customer
-                ? trim($booking->customer->first_name . ' ' . $booking->customer->last_name)
-                : ($booking->guest_name ?? 'Valued Guest');
-
-            if ($email && !in_array(strtolower($email), $seenEmails)) {
-                $seenEmails[] = strtolower($email);
+            // Add customer email if exists
+            if ($booking->customer && $booking->customer->email && !in_array(strtolower($booking->customer->email), $seenEmails)) {
+                $seenEmails[] = strtolower($booking->customer->email);
+                $customerName = trim($booking->customer->first_name . ' ' . $booking->customer->last_name);
                 $recipients[] = [
-                    'email' => $email,
+                    'email' => $booking->customer->email,
                     'type' => 'booking_email',
                     'id' => $booking->id,
-                    'variables' => $this->buildVariablesForBookingGuest($booking, $name, $email, $company, $location),
+                    'variables' => $this->buildVariablesForBookingGuest($booking, $customerName, $booking->customer->email, $company, $location),
+                ];
+            }
+
+            // Add guest email if exists and different from customer email
+            if ($booking->guest_email && !in_array(strtolower($booking->guest_email), $seenEmails)) {
+                $seenEmails[] = strtolower($booking->guest_email);
+                $guestName = $booking->guest_name ?? 'Valued Guest';
+                $recipients[] = [
+                    'email' => $booking->guest_email,
+                    'type' => 'booking_email',
+                    'id' => $booking->id,
+                    'variables' => $this->buildVariablesForBookingGuest($booking, $guestName, $booking->guest_email, $company, $location),
                 ];
             }
         }
@@ -655,7 +657,7 @@ class EmailCampaignController extends Controller
     }
 
     /**
-     * Get attraction purchase email recipients (distinct guest emails from attraction purchases).
+     * Get attraction purchase email recipients (distinct emails from attraction purchases - both customer and guest emails).
      */
     protected function getAttractionPurchaseEmailRecipients($company, $location, array $filters): array
     {
@@ -672,32 +674,34 @@ class EmailCampaignController extends Controller
             });
         }
 
-        // Get purchases with emails
-        $purchases = $query->where(function ($q) {
-            $q->where(function ($subQ) {
-                $subQ->whereNotNull('guest_email')->where('guest_email', '!=', '');
-            })->orWhereHas('customer', function ($subQ) {
-                $subQ->whereNotNull('email')->where('email', '!=', '');
-            });
-        })->get();
+        // Get all purchases
+        $purchases = $query->get();
 
         $recipients = [];
         $seenEmails = [];
 
         foreach ($purchases as $purchase) {
-            // Get email from customer or guest
-            $email = $purchase->customer?->email ?? $purchase->guest_email;
-            $name = $purchase->customer
-                ? trim($purchase->customer->first_name . ' ' . $purchase->customer->last_name)
-                : ($purchase->guest_name ?? 'Valued Guest');
-
-            if ($email && !in_array(strtolower($email), $seenEmails)) {
-                $seenEmails[] = strtolower($email);
+            // Add customer email if exists
+            if ($purchase->customer && $purchase->customer->email && !in_array(strtolower($purchase->customer->email), $seenEmails)) {
+                $seenEmails[] = strtolower($purchase->customer->email);
+                $customerName = trim($purchase->customer->first_name . ' ' . $purchase->customer->last_name);
                 $recipients[] = [
-                    'email' => $email,
+                    'email' => $purchase->customer->email,
                     'type' => 'attraction_purchase_email',
                     'id' => $purchase->id,
-                    'variables' => $this->buildVariablesForAttractionPurchaseGuest($purchase, $name, $email, $company, $location),
+                    'variables' => $this->buildVariablesForAttractionPurchaseGuest($purchase, $customerName, $purchase->customer->email, $company, $location),
+                ];
+            }
+
+            // Add guest email if exists and different from customer email
+            if ($purchase->guest_email && !in_array(strtolower($purchase->guest_email), $seenEmails)) {
+                $seenEmails[] = strtolower($purchase->guest_email);
+                $guestName = $purchase->guest_name ?? 'Valued Guest';
+                $recipients[] = [
+                    'email' => $purchase->guest_email,
+                    'type' => 'attraction_purchase_email',
+                    'id' => $purchase->id,
+                    'variables' => $this->buildVariablesForAttractionPurchaseGuest($purchase, $guestName, $purchase->guest_email, $company, $location),
                 ];
             }
         }
