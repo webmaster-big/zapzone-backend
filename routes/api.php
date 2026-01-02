@@ -295,6 +295,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/statistics', [EmailCampaignController::class, 'statistics']);
         Route::post('/preview-recipients', [EmailCampaignController::class, 'previewRecipients']);
         Route::post('/send-test', [EmailCampaignController::class, 'sendTest']);
+        Route::post('/upload-image', [EmailCampaignController::class, 'uploadImage']);
         Route::get('/{emailCampaign}', [EmailCampaignController::class, 'show']);
         Route::delete('/{emailCampaign}', [EmailCampaignController::class, 'destroy']);
         Route::post('/{emailCampaign}/cancel', [EmailCampaignController::class, 'cancel']);

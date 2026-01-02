@@ -80,10 +80,26 @@ class EmailCampaignController extends Controller
             'recipient_filters' => 'nullable|array',
             'recipient_filters.status' => 'nullable|string',
             'recipient_filters.location_id' => 'nullable|exists:locations,id',
+            'attachments' => 'nullable|array',
+            'attachments.*' => 'file|max:10240|mimes:pdf,doc,docx,xls,xlsx,csv,txt,zip,png,jpg,jpeg,gif',
             'scheduled_at' => 'nullable|date|after:now',
             'send_now' => 'boolean',
             'location_id' => 'nullable|exists:locations,id',
         ]);
+
+        // Handle file attachments
+        $attachments = [];
+        if ($request->hasFile('attachments')) {
+            foreach ($request->file('attachments') as $file) {
+                $path = $file->store('email-attachments', 'public');
+                $attachments[] = [
+                    'original_name' => $file->getClientOriginalName(),
+                    'path' => $path,
+                    'mime_type' => $file->getMimeType(),
+                    'size' => $file->getSize(),
+                ];
+            }
+        }
 
         $user = Auth::user();
 
@@ -102,6 +118,7 @@ class EmailCampaignController extends Controller
                 'recipient_types' => $validated['recipient_types'],
                 'custom_emails' => $validated['custom_emails'] ?? [],
                 'recipient_filters' => $validated['recipient_filters'] ?? [],
+                'attachments' => $attachments,
                 'scheduled_at' => $validated['scheduled_at'] ?? null,
                 'status' => EmailCampaign::STATUS_PENDING,
             ]);
@@ -826,12 +843,16 @@ class EmailCampaignController extends Controller
                 (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
 
             if ($useGmailApi) {
+                // Prepare attachments for Gmail API
+                $emailAttachments = $this->prepareAttachments($campaign->attachments ?? []);
+
                 $gmailService = new GmailApiService();
                 $gmailService->sendEmail(
                     $log->recipient_email,
                     $processedSubject,
                     $htmlBody,
-                    $variables['company_name'] ?? 'Zap Zone'
+                    $variables['company_name'] ?? 'Zap Zone',
+                    $emailAttachments
                 );
             } else {
                 // Fallback to Laravel Mail
@@ -886,5 +907,66 @@ class EmailCampaignController extends Controller
 </body>
 </html>
 HTML;
+    }
+
+    /**
+     * Upload an image for use in email body.
+     * Returns a public URL that can be embedded in the email content.
+     */
+    public function uploadImage(Request $request): JsonResponse
+    {
+        $request->validate([
+            'image' => 'required|image|mimes:png,jpg,jpeg,gif,webp|max:5120', // 5MB max
+        ]);
+
+        try {
+            $file = $request->file('image');
+            $filename = uniqid('email_img_') . '.' . $file->getClientOriginalExtension();
+            $path = $file->storeAs('email-images', $filename, 'public');
+
+            // Generate full URL for the image
+            $url = asset('storage/' . $path);
+
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'url' => $url,
+                    'path' => $path,
+                    'filename' => $filename,
+                    'original_name' => $file->getClientOriginalName(),
+                    'mime_type' => $file->getMimeType(),
+                    'size' => $file->getSize(),
+                ],
+                'message' => 'Image uploaded successfully. Use the URL in your email body with an <img> tag.',
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to upload image',
+                'error' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Prepare attachments for email sending.
+     */
+    protected function prepareAttachments(array $storedAttachments): array
+    {
+        $emailAttachments = [];
+
+        foreach ($storedAttachments as $attachment) {
+            $filePath = storage_path('app/public/' . $attachment['path']);
+
+            if (file_exists($filePath)) {
+                $emailAttachments[] = [
+                    'filename' => $attachment['original_name'],
+                    'mime_type' => $attachment['mime_type'],
+                    'data' => base64_encode(file_get_contents($filePath)),
+                ];
+            }
+        }
+
+        return $emailAttachments;
     }
 }
