@@ -650,7 +650,7 @@ class EmailCampaignController extends Controller
 
         // Filter by role
         if ($role === 'admin') {
-            $query->whereIn('role', ['admin', 'owner']);
+            $query->whereIn('role', ['company_admin', 'owner']);
         } elseif ($role === 'location_manager') {
             $query->where('role', 'location_manager');
         } else {
