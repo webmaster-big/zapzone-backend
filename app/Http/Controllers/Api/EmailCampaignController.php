@@ -412,7 +412,23 @@ class EmailCampaignController extends Controller
             'subject' => 'required|string|max:255',
             'body' => 'required|string',
             'test_email' => 'required|email',
+            'attachments' => 'nullable|array',
+            'attachments.*' => 'file|max:10240|mimes:pdf,doc,docx,xls,xlsx,csv,txt,zip,png,jpg,jpeg,gif',
         ]);
+
+        // Handle file attachments
+        $attachments = [];
+        if ($request->hasFile('attachments')) {
+            foreach ($request->file('attachments') as $file) {
+                $path = $file->store('email-attachments/test', 'public');
+                $attachments[] = [
+                    'original_name' => $file->getClientOriginalName(),
+                    'path' => $path,
+                    'mime_type' => $file->getMimeType(),
+                    'size' => $file->getSize(),
+                ];
+            }
+        }
 
         $user = Auth::user();
 
@@ -437,9 +453,13 @@ class EmailCampaignController extends Controller
                 (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
 
             if ($useGmailApi) {
+                // Prepare attachments for Gmail API
+                $emailAttachments = $this->prepareAttachments($attachments);
+
                 Log::info('Using Gmail API for test campaign email', [
                     'to' => $validated['test_email'],
                     'subject' => $processedSubject,
+                    'attachments_count' => count($emailAttachments),
                 ]);
 
                 $gmailService = new GmailApiService();
@@ -447,7 +467,8 @@ class EmailCampaignController extends Controller
                     $validated['test_email'],
                     $processedSubject,
                     $htmlBody,
-                    $user->company?->company_name ?? 'Zap Zone'
+                    $user->company?->company_name ?? 'Zap Zone',
+                    $emailAttachments
                 );
             } else {
                 // Fallback to Laravel Mail
@@ -463,6 +484,7 @@ class EmailCampaignController extends Controller
                 'success' => true,
                 'message' => 'Test email sent successfully to ' . $validated['test_email'],
                 'method' => $useGmailApi ? 'Gmail API' : 'SMTP',
+                'attachments_count' => count($attachments),
             ]);
 
         } catch (\Exception $e) {
