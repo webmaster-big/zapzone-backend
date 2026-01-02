@@ -9,6 +9,7 @@ use App\Models\EmailCampaign;
 use App\Models\EmailCampaignLog;
 use App\Models\EmailTemplate;
 use App\Models\User;
+use App\Services\GmailApiService;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Auth;
@@ -405,16 +406,44 @@ class EmailCampaignController extends Controller
                 $user->location
             );
 
-            Mail::to($validated['test_email'])
-                ->send(new DynamicCampaignMail(
-                    $validated['subject'],
-                    $validated['body'],
-                    $variables
-                ));
+            // Replace variables in subject and body
+            $processedSubject = $this->replaceVariables($validated['subject'], $variables);
+            $processedBody = $this->replaceVariables($validated['body'], $variables);
+
+            // Generate HTML email body
+            $htmlBody = $this->generateHtmlEmail($processedBody, $variables);
+
+            // Check if Gmail API should be used
+            $useGmailApi = config('gmail.enabled', false) &&
+                (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
+
+            if ($useGmailApi) {
+                Log::info('Using Gmail API for test campaign email', [
+                    'to' => $validated['test_email'],
+                    'subject' => $processedSubject,
+                ]);
+
+                $gmailService = new GmailApiService();
+                $gmailService->sendEmail(
+                    $validated['test_email'],
+                    $processedSubject,
+                    $htmlBody,
+                    $user->company?->company_name ?? 'Zap Zone'
+                );
+            } else {
+                // Fallback to Laravel Mail
+                Mail::to($validated['test_email'])
+                    ->send(new DynamicCampaignMail(
+                        $validated['subject'],
+                        $validated['body'],
+                        $variables
+                    ));
+            }
 
             return response()->json([
                 'success' => true,
                 'message' => 'Test email sent successfully to ' . $validated['test_email'],
+                'method' => $useGmailApi ? 'Gmail API' : 'SMTP',
             ]);
 
         } catch (\Exception $e) {
@@ -672,12 +701,36 @@ class EmailCampaignController extends Controller
     protected function sendSingleEmail(EmailCampaign $campaign, EmailCampaignLog $log): void
     {
         try {
-            Mail::to($log->recipient_email)
-                ->send(new DynamicCampaignMail(
-                    $campaign->subject,
-                    $campaign->body,
-                    $log->variables_used ?? []
-                ));
+            $variables = $log->variables_used ?? [];
+
+            // Replace variables in subject and body
+            $processedSubject = $this->replaceVariables($campaign->subject, $variables);
+            $processedBody = $this->replaceVariables($campaign->body, $variables);
+
+            // Generate HTML email body
+            $htmlBody = $this->generateHtmlEmail($processedBody, $variables);
+
+            // Check if Gmail API should be used
+            $useGmailApi = config('gmail.enabled', false) &&
+                (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
+
+            if ($useGmailApi) {
+                $gmailService = new GmailApiService();
+                $gmailService->sendEmail(
+                    $log->recipient_email,
+                    $processedSubject,
+                    $htmlBody,
+                    $variables['company_name'] ?? 'Zap Zone'
+                );
+            } else {
+                // Fallback to Laravel Mail
+                Mail::to($log->recipient_email)
+                    ->send(new DynamicCampaignMail(
+                        $campaign->subject,
+                        $campaign->body,
+                        $variables
+                    ));
+            }
 
             $log->markAsSent();
             $campaign->incrementSent();
@@ -687,5 +740,123 @@ class EmailCampaignController extends Controller
             $log->markAsFailed($e->getMessage());
             $campaign->incrementFailed();
         }
+    }
+
+    /**
+     * Replace template variables with actual values.
+     */
+    protected function replaceVariables(string $content, array $variables): string
+    {
+        foreach ($variables as $key => $value) {
+            $content = preg_replace(
+                '/\{\{\s*' . preg_quote($key, '/') . '\s*\}\}/',
+                $value ?? '',
+                $content
+            );
+        }
+
+        return $content;
+    }
+
+    /**
+     * Generate HTML email from body content.
+     */
+    protected function generateHtmlEmail(string $body, array $variables): string
+    {
+        $companyName = $variables['company_name'] ?? 'our system';
+        $currentYear = $variables['current_year'] ?? date('Y');
+
+        return <<<HTML
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Email</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            line-height: 1.6;
+            color: #333333;
+            margin: 0;
+            padding: 0;
+            background-color: #f5f5f5;
+        }
+        .email-wrapper {
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .email-container {
+            background-color: #ffffff;
+            border-radius: 8px;
+            padding: 40px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        .email-content {
+            font-size: 16px;
+            color: #333333;
+        }
+        .email-content h1, .email-content h2, .email-content h3 {
+            color: #1a1a1a;
+            margin-top: 0;
+        }
+        .email-content p {
+            margin: 0 0 16px 0;
+        }
+        .email-content a {
+            color: #0066cc;
+            text-decoration: none;
+        }
+        .email-content a:hover {
+            text-decoration: underline;
+        }
+        .email-footer {
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #eeeeee;
+            font-size: 12px;
+            color: #888888;
+            text-align: center;
+        }
+        .button {
+            display: inline-block;
+            padding: 12px 24px;
+            background-color: #0066cc;
+            color: #ffffff !important;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: 600;
+            margin: 10px 0;
+        }
+        .button:hover {
+            background-color: #0055aa;
+            text-decoration: none;
+        }
+        @media only screen and (max-width: 600px) {
+            .email-wrapper {
+                padding: 10px;
+            }
+            .email-container {
+                padding: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="email-wrapper">
+        <div class="email-container">
+            <div class="email-content">
+                {$body}
+            </div>
+            <div class="email-footer">
+                <p>This email was sent from {$companyName}.</p>
+                <p>&copy; {$currentYear} All rights reserved.</p>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+HTML;
     }
 }
