@@ -447,6 +447,10 @@ class PackageController extends Controller
     {
         $package = Package::withTrashed()->findOrFail($id);
 
+        // UPDATE DELETE_AT TO NULL
+        $package->deleted_at = null;
+        $package->save();
+
         if (!$package->trashed()) {
             return response()->json([
                 'success' => false,
