@@ -146,6 +146,8 @@ Route::middleware('auth:sanctum')->group(function () {
     // Package routes
     Route::post('packages/room/create', [PackageController::class, 'storePackageRoom']);
     Route::apiResource('packages', PackageController::class);
+    Route::post('packages/{id}/restore', [PackageController::class, 'restore']);
+    Route::delete('packages/{id}/force', [PackageController::class, 'forceDelete']);
     Route::post('packages/bulk-import', [PackageController::class, 'bulkImport']);
     Route::get('packages/category/{category}', [PackageController::class, 'getByCategory']);
     Route::patch('packages/{package}/toggle-status', [PackageController::class, 'toggleIsActiveStatus']);

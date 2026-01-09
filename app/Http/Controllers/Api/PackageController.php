@@ -405,10 +405,87 @@ class PackageController extends Controller
     }
 
     /**
-     * Remove the specified package.
+     * Soft delete the specified package.
+     * Images and relationships are preserved for historical bookings.
      */
     public function destroy(Request $request, Package $package): JsonResponse
     {
+        $packageName = $package->name;
+        $packageId = $package->id;
+        $locationId = $package->location_id;
+
+        // Soft delete the package (sets deleted_at timestamp)
+        $package->delete();
+
+        // Log package deletion
+        ActivityLog::log(
+            action: 'Package Deleted',
+            category: 'delete',
+            description: "Package '{$packageName}' was soft deleted",
+            userId: auth()->id(),
+            locationId: $locationId,
+            entityType: 'package',
+            entityId: $packageId
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Package deleted successfully',
+        ]);
+    }
+
+    /**
+     * Restore a soft-deleted package.
+     */
+    public function restore(Request $request, int $id): JsonResponse
+    {
+        $package = Package::withTrashed()->findOrFail($id);
+
+        if (!$package->trashed()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Package is not deleted',
+            ], 400);
+        }
+
+        $package->restore();
+
+        // Log package restoration
+        ActivityLog::log(
+            action: 'Package Restored',
+            category: 'update',
+            description: "Package '{$package->name}' was restored",
+            userId: auth()->id(),
+            locationId: $package->location_id,
+            entityType: 'package',
+            entityId: $package->id
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Package restored successfully',
+            'data' => new PackageResource($package),
+        ]);
+    }
+
+    /**
+     * Permanently delete a soft-deleted package.
+     * This action cannot be undone.
+     */
+    public function forceDelete(Request $request, int $id): JsonResponse
+    {
+        $package = Package::withTrashed()->findOrFail($id);
+
+        if (!$package->trashed()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Package must be soft deleted first',
+            ], 400);
+        }
+
+        $packageName = $package->name;
+        $packageId = $package->id;
+        $locationId = $package->location_id;
 
         // Delete associated images if they exist
         if ($package->image && is_array($package->image)) {
@@ -419,17 +496,14 @@ class PackageController extends Controller
             }
         }
 
-        $packageName = $package->name;
-        $packageId = $package->id;
-        $locationId = $package->location_id;
+        // Permanently delete the package
+        $package->forceDelete();
 
-        $package->delete();
-
-        // Log package deletion
+        // Log package permanent deletion
         ActivityLog::log(
-            action: 'Package Deleted',
+            action: 'Package Permanently Deleted',
             category: 'delete',
-            description: "Package '{$packageName}' was deleted",
+            description: "Package '{$packageName}' was permanently deleted",
             userId: auth()->id(),
             locationId: $locationId,
             entityType: 'package',
@@ -438,7 +512,7 @@ class PackageController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => 'Package deleted successfully',
+            'message' => 'Package permanently deleted',
         ]);
     }
 
