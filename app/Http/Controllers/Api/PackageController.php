@@ -23,9 +23,11 @@ class PackageController extends Controller
 {
     /**
      * Display a listing of packages.
+     * Note: Soft-deleted packages are automatically excluded by Laravel's SoftDeletes trait.
      */
     public function index(Request $request): JsonResponse
     {
+        // SoftDeletes trait automatically excludes deleted packages
         $query = Package::with(['location', 'rooms', 'giftCards', 'promos', 'availabilitySchedules']);
 
            // Role-based filtering
@@ -97,6 +99,7 @@ class PackageController extends Controller
     /**
      * Get public packages with location-based booking links
      * Groups packages by name and shows all locations where they're available
+     * Note: Only active, non-deleted packages are shown to public.
      */
     public function packagesGroupedByName(Request $request): JsonResponse
     {
@@ -106,6 +109,7 @@ class PackageController extends Controller
         // Use chunk to reduce memory usage and avoid MySQL sort buffer errors
         $groupedPackages = [];
 
+        // SoftDeletes trait automatically excludes deleted packages
         $query = Package::with(['location', 'availabilitySchedules'])
             ->select(['id', 'name', 'description', 'price', 'category', 'min_participants', 'max_participants', 'duration', 'image', 'location_id', 'is_active', 'package_type', 'duration_unit', 'price_per_additional'])
             ->where('is_active', true);
@@ -274,9 +278,11 @@ class PackageController extends Controller
 
     /**
      * Display the specified package.
+     * Note: Soft-deleted packages will return 404 (excluded by SoftDeletes trait).
      */
     public function show($package): JsonResponse
     {
+        // findOrFail automatically excludes soft-deleted packages
         $package = Package::with(['location', 'attractions', 'addOns', 'rooms', 'giftCards', 'promos', 'availabilitySchedules'])->findOrFail($package);
 
         return response()->json([
@@ -518,6 +524,7 @@ class PackageController extends Controller
 
     /**
      * Get packages by location.
+     * Note: Only active, non-deleted packages are returned.
      */
     public function getByLocation(Request $request, int $locationId): JsonResponse
     {
@@ -548,6 +555,7 @@ class PackageController extends Controller
             }
         }
 
+        // SoftDeletes trait automatically excludes deleted packages
         $packages = Package::with(['attractions', 'addOns', 'rooms'])
             ->byLocation($locationId)
             ->active()
@@ -562,10 +570,12 @@ class PackageController extends Controller
 
     /**
      * Get packages by category.
+     * Note: Only active, non-deleted packages are returned.
      */
     public function getByCategory(Request $request, string $category): JsonResponse
     {
         $user = $request->user();
+        // SoftDeletes trait automatically excludes deleted packages
         $query = Package::with(['location', 'attractions', 'addOns', 'rooms'])
             ->byCategory($category)
             ->active();
