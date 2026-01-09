@@ -271,7 +271,7 @@
                                             <tr>
                                                 <td style="font-weight: 500; color: #6b7280; width: 140px;">Address:</td>
                                                 <td style="color: #111827;">
-                                                    {{ $booking->location->address }}@if($booking->location->city), {{ $booking->location->city }}@endif @if($booking->location->state){{ $booking->location->state }}@endif @if($booking->location->zip_code){{ $booking->location->zip_code }}@endif
+                                                    {{ $booking->location->address }}{{ $booking->location->city ? ', ' . $booking->location->city : '' }} {{ $booking->location->state ?? '' }} {{ $booking->location->zip_code ?? '' }}
                                                 </td>
                                             </tr>
                                         </table>
