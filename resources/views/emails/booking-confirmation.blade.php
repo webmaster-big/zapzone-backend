@@ -333,7 +333,12 @@
                             <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top: 24px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
                                 <tr>
                                     <td style="text-align: center;">
-                                        <p style="margin: 4px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #9ca3af;">If you have any questions, please contact us@if($booking->location && $booking->location->phone) at <a href="tel:{{ $booking->location->phone }}" style="color: #1e40af; text-decoration: none;">{{ $booking->location->phone }}</a>@endif.</p>
+                                        <p style="margin: 4px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #9ca3af;">
+                                            If you have any questions, please contact us
+                                            @if($booking->location && $booking->location->phone)
+                                                at <a href="tel:{{ $booking->location->phone }}" style="color: #1e40af; text-decoration: none;">{{ $booking->location->phone }}</a>
+                                            @endif.
+                                        </p>
                                         <p style="margin: 4px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #9ca3af;">Thank you for choosing {{ $booking->location && $booking->location->company ? $booking->location->company->name : 'us' }}!</p>
                                     </td>
                                 </tr>
