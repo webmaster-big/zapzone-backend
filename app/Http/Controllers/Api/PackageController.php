@@ -107,7 +107,7 @@ class PackageController extends Controller
         $groupedPackages = [];
 
         $query = Package::with(['location', 'availabilitySchedules'])
-            ->select(['id', 'name', 'description', 'price', 'category', 'min_participants', 'max_participants', 'duration', 'image', 'location_id', 'is_active', 'package_type', 'duration_unit'])
+            ->select(['id', 'name', 'description', 'price', 'category', 'min_participants', 'max_participants', 'duration', 'image', 'location_id', 'is_active', 'package_type', 'duration_unit', 'price_per_additional'])
             ->where('is_active', true);
 
         if ($search) {
@@ -136,6 +136,8 @@ class PackageController extends Controller
                         'locations' => [],
                         'booking_links' => [],
                         'package_type' => $package->package_type,
+                        'min_participants' => $package->min_participants,
+                        "price_per_additional" => $package->price_per_additional,
                     ];
                 }
 
