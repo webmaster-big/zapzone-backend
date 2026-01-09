@@ -209,7 +209,7 @@ class BookingController extends Controller
             'promo_code' => 'nullable|string',
             'gift_card_code' => 'nullable|string',
             'type' => ['required', Rule::in(['package'])],
-            'booking_date' => 'required|date|after_or_equal:today',
+            'booking_date' => 'required|date',
             'booking_time' => 'required|date_format:H:i',
             'participants' => 'required|integer|min:1',
             'duration' => 'required|numeric|min:0.01',
