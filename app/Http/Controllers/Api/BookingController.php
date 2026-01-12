@@ -1382,6 +1382,11 @@ class BookingController extends Controller
         try {
             $tomorrow = Carbon::tomorrow()->format('Y-m-d');
 
+            // log tomorrow's date
+            Log::info('Preparing to send booking reminders for date', [
+                'date' => $tomorrow,
+            ]);
+
             // Find bookings for tomorrow that haven't been reminded yet
             // Only for confirmed bookings (not cancelled, completed, etc.)
             $bookingsToRemind = Booking::with(['customer', 'package', 'location.company', 'room'])
