@@ -10,7 +10,6 @@ use App\Http\Controllers\Api\AuthorizeNetAccountController;
 use App\Http\Controllers\Api\BookingController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\CompanyController;
-use App\Http\Controllers\Api\ContactController;
 use App\Http\Controllers\Api\CustomerController;
 use App\Http\Controllers\Api\CustomerNotificationController;
 use App\Http\Controllers\Api\DayOffController;
@@ -144,14 +143,6 @@ Route::middleware('auth:sanctum')->group(function () {
     // Category routes
     Route::apiResource('categories', CategoryController::class);
 
-    // Contact routes
-    Route::get('contacts/statistics', [ContactController::class, 'statistics']);
-    Route::get('contacts/export', [ContactController::class, 'export']);
-    Route::post('contacts/find-by-email', [ContactController::class, 'findByEmail']);
-    Route::post('contacts/bulk-delete', [ContactController::class, 'bulkDelete']);
-    Route::patch('contacts/{contact}/toggle-status', [ContactController::class, 'toggleStatus']);
-    Route::apiResource('contacts', ContactController::class);
-
     // Package routes
     Route::post('packages/room/create', [PackageController::class, 'storePackageRoom']);
     Route::apiResource('packages', PackageController::class);
@@ -215,6 +206,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('addons/{addOn}/toggle-status', [AddOnController::class, 'toggleStatus']);
     Route::get('addons/popular', [AddOnController::class, 'getPopular']);
     Route::post('addons/bulk-delete', [AddOnController::class, 'bulkDelete']);
+    Route::post('addons/bulk-import', [AddOnController::class, 'bulkImport']);
 
     // Gift Card routes
     Route::apiResource('gift-cards', GiftCardController::class);
@@ -256,9 +248,6 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('payments/invoices/day/{date}', [PaymentController::class, 'invoicesDay']);
     Route::get('payments/invoices/week/{week?}', [PaymentController::class, 'invoicesWeek']);
     Route::post('payments/invoices/bulk', [PaymentController::class, 'invoicesBulk']);
-    
-    // Package-specific invoice routes
-    Route::get('payments/package-invoices/export', [PaymentController::class, 'packageInvoicesExport']);
 
     // Payment routes
     Route::apiResource('payments', PaymentController::class)->except(['update']);

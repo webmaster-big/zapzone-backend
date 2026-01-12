@@ -369,4 +369,126 @@ class AddOnController extends Controller
             'data' => ['deleted_count' => $deletedCount],
         ]);
     }
+
+    /**
+     * Bulk import add-ons
+     */
+    public function bulkImport(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'add_ons' => 'required|array|min:1',
+            'add_ons.*.location_id' => 'nullable|exists:locations,id',
+            'add_ons.*.locationId' => 'nullable|exists:locations,id',
+            'add_ons.*.name' => 'required|string|max:255',
+            'add_ons.*.price' => 'required|numeric|min:0',
+            'add_ons.*.description' => 'nullable|string',
+            'add_ons.*.image' => 'nullable|string|max:27262976',
+            'add_ons.*.is_active' => 'nullable|boolean',
+            'add_ons.*.isActive' => 'nullable|boolean',
+            'add_ons.*.min_quantity' => 'nullable|integer|min:1',
+            'add_ons.*.minQuantity' => 'nullable|integer|min:1',
+            'add_ons.*.max_quantity' => 'nullable|integer|min:1',
+            'add_ons.*.maxQuantity' => 'nullable|integer|min:1',
+        ]);
+
+        $importedAddOns = [];
+        $errors = [];
+
+        foreach ($validated['add_ons'] as $index => $addOnData) {
+            try {
+                // Map camelCase to snake_case fields
+                $mappedData = [
+                    'name' => $addOnData['name'],
+                    'price' => $addOnData['price'],
+                    'description' => $addOnData['description'] ?? null,
+                    'location_id' => $addOnData['location_id'] ?? $addOnData['locationId'] ?? null,
+                    'min_quantity' => $addOnData['min_quantity'] ?? $addOnData['minQuantity'] ?? 1,
+                    'max_quantity' => $addOnData['max_quantity'] ?? $addOnData['maxQuantity'] ?? null,
+                ];
+
+                // Handle is_active field
+                if (isset($addOnData['isActive'])) {
+                    $mappedData['is_active'] = $addOnData['isActive'];
+                } elseif (isset($addOnData['is_active'])) {
+                    $mappedData['is_active'] = $addOnData['is_active'];
+                } else {
+                    $mappedData['is_active'] = true;
+                }
+
+                // Handle image upload if provided
+                if (isset($addOnData['image']) && !empty($addOnData['image'])) {
+                    // Check if it's a base64 string
+                    if (is_string($addOnData['image']) && strpos($addOnData['image'], 'data:image') === 0) {
+                        $mappedData['image'] = $this->handleImageUpload($addOnData['image']);
+                    } else {
+                        // Keep existing path as-is
+                        $mappedData['image'] = $addOnData['image'];
+                    }
+                } else {
+                    $mappedData['image'] = null;
+                }
+
+                // Validate max_quantity >= min_quantity
+                if ($mappedData['max_quantity'] !== null && $mappedData['max_quantity'] < $mappedData['min_quantity']) {
+                    throw new \Exception('Max quantity must be greater than or equal to min quantity');
+                }
+
+                // Create the add-on
+                $addOn = AddOn::create($mappedData);
+
+                // Load relationships
+                $addOn->load(['location', 'packages']);
+                $importedAddOns[] = $addOn;
+
+                Log::info('Add-on imported successfully', [
+                    'index' => $index,
+                    'name' => $addOn->name,
+                    'id' => $addOn->id,
+                ]);
+
+            } catch (\Exception $e) {
+                Log::error('Failed to import add-on', [
+                    'index' => $index,
+                    'name' => $addOnData['name'] ?? 'Unknown',
+                    'error' => $e->getMessage(),
+                    'trace' => $e->getTraceAsString(),
+                ]);
+
+                $errors[] = [
+                    'index' => $index,
+                    'name' => $addOnData['name'] ?? 'Unknown',
+                    'error' => $e->getMessage(),
+                ];
+            }
+        }
+
+        // Log bulk import
+        if (count($importedAddOns) > 0) {
+            ActivityLog::log(
+                action: 'Bulk Add-Ons Imported',
+                category: 'create',
+                description: count($importedAddOns) . ' add-ons imported in bulk operation',
+                userId: auth()->id(),
+                locationId: $importedAddOns[0]->location_id ?? null,
+                entityType: 'addon',
+                metadata: ['imported_count' => count($importedAddOns), 'failed_count' => count($errors)]
+            );
+        }
+
+        $response = [
+            'success' => true,
+            'message' => count($importedAddOns) . ' add-ons imported successfully',
+            'data' => [
+                'imported' => $importedAddOns,
+                'imported_count' => count($importedAddOns),
+                'failed_count' => count($errors),
+            ],
+        ];
+
+        if (!empty($errors)) {
+            $response['errors'] = $errors;
+        }
+
+        return response()->json($response);
+    }
 }
