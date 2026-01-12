@@ -1545,7 +1545,7 @@ class BookingController extends Controller
         $pdf->setPaper('A4', 'portrait');
 
         // Generate filename
-        $filename = 'party-summaries';
+        $filename = 'booking-summaries';
         if ($dateRange) {
             if ($dateRange['start'] === $dateRange['end']) {
                 $filename .= '-' . $dateRange['start'];
