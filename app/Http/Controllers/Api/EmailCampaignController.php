@@ -568,27 +568,27 @@ class EmailCampaignController extends Controller
     protected function getCustomerRecipients($company, $location, array $filters): array
     {
         $recipients = [];
-        
+
         // Query contacts table
         $contactQuery = Contact::query();
-        
+
         // Apply location filter if specified
         if (!empty($filters['location_id'])) {
             $contactQuery->where('location_id', $filters['location_id']);
         } elseif ($location) {
             $contactQuery->where('location_id', $location->id);
         }
-        
+
         // Apply status filter (default to active)
         if (!empty($filters['status'])) {
             $contactQuery->where('status', $filters['status']);
         } else {
             $contactQuery->where('status', 'active');
         }
-        
+
         // Ensure we only get contacts with valid emails
         $contactQuery->whereNotNull('email')->where('email', '!=', '');
-        
+
         // Get all matching contacts
         $contacts = $contactQuery->get();
 

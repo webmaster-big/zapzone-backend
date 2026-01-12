@@ -195,7 +195,7 @@ class AttractionPurchaseController extends Controller
         if ($contactEmail) {
             // Check if contact already exists in contacts table
             $existingContact = Contact::where('email', $contactEmail)->first();
-            
+
             if (!$existingContact) {
                 // Contact not registered, create new contact
                 $contact = Contact::create([

@@ -256,6 +256,14 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('payments/invoices/day/{date}', [PaymentController::class, 'invoicesDay']);
     Route::get('payments/invoices/week/{week?}', [PaymentController::class, 'invoicesWeek']);
     Route::post('payments/invoices/bulk', [PaymentController::class, 'invoicesBulk']);
+    
+    // Party Summary routes (for staff organization)
+    Route::get('payments/party-summaries/export', [PaymentController::class, 'partySummariesExport']);
+    Route::get('payments/party-summaries/day/{date}', [PaymentController::class, 'partySummariesDay']);
+    Route::get('payments/party-summaries/week/{week?}', [PaymentController::class, 'partySummariesWeek']);
+    
+    // Package-specific invoice routes
+    Route::get('payments/package-invoices/export', [PaymentController::class, 'packageInvoicesExport']);
 
     // Payment routes
     Route::apiResource('payments', PaymentController::class)->except(['update']);

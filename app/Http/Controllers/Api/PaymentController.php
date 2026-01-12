@@ -8,6 +8,7 @@ use App\Models\Booking;
 use App\Models\AttractionPurchase;
 use App\Models\Location;
 use App\Models\Company;
+use App\Models\Package;
 use App\Models\AuthorizeNetAccount;
 use App\Models\ActivityLog;
 use App\Models\CustomerNotification;
@@ -1343,5 +1344,399 @@ class PaymentController extends Controller
         }
 
         return $title;
+    }
+
+    /**
+     * Export party summaries for staff organization (full booking details + notes)
+     * This provides detailed printable summaries for staff to organize and prepare for parties
+     *
+     * Query params:
+     * - date: specific date (Y-m-d) for single day
+     * - start_date, end_date: date range
+     * - week: 'current', 'next', or date string
+     * - location_id: filter by location
+     * - package_id: filter by specific package
+     * - status: filter by booking status (default: excludes cancelled)
+     * - room_id: filter by specific room
+     * - view_mode: 'detailed' (default) or 'compact'
+     *
+     * @param Request $request
+     * @return \Illuminate\Http\Response
+     */
+    public function partySummariesExport(Request $request)
+    {
+        $request->validate([
+            'date' => 'nullable|date',
+            'start_date' => 'nullable|date',
+            'end_date' => 'nullable|date|after_or_equal:start_date',
+            'week' => 'nullable|string',
+            'location_id' => 'nullable|exists:locations,id',
+            'package_id' => 'nullable|exists:packages,id',
+            'status' => 'nullable|string',
+            'room_id' => 'nullable|exists:rooms,id',
+            'view_mode' => ['nullable', Rule::in(['detailed', 'compact'])],
+        ]);
+
+        $query = Booking::with([
+            'customer',
+            'package',
+            'location',
+            'room',
+            'creator',
+            'attractions',
+            'addOns',
+            'payments'
+        ]);
+
+        $dateRange = null;
+
+        // Filter by single date
+        if ($request->has('date')) {
+            $date = $request->date;
+            $query->whereDate('booking_date', $date);
+            $dateRange = ['start' => $date, 'end' => $date];
+        }
+
+        // Filter by date range
+        if ($request->has('start_date') && $request->has('end_date')) {
+            $startDate = Carbon::parse($request->start_date)->startOfDay();
+            $endDate = Carbon::parse($request->end_date)->endOfDay();
+            $query->whereBetween('booking_date', [$startDate->format('Y-m-d'), $endDate->format('Y-m-d')]);
+            $dateRange = ['start' => $request->start_date, 'end' => $request->end_date];
+        } elseif ($request->has('start_date')) {
+            $startDate = Carbon::parse($request->start_date);
+            $query->where('booking_date', '>=', $startDate->format('Y-m-d'));
+            $dateRange = ['start' => $request->start_date, 'end' => now()->format('Y-m-d')];
+        } elseif ($request->has('end_date')) {
+            $endDate = Carbon::parse($request->end_date);
+            $query->where('booking_date', '<=', $endDate->format('Y-m-d'));
+            $dateRange = ['start' => 'Beginning', 'end' => $request->end_date];
+        }
+
+        // Filter by week
+        if ($request->has('week') && !$request->has('start_date') && !$request->has('date')) {
+            $weekParam = $request->week;
+
+            if ($weekParam === 'current') {
+                $startOfWeek = now()->startOfWeek();
+                $endOfWeek = now()->endOfWeek();
+            } elseif ($weekParam === 'next') {
+                $startOfWeek = now()->addWeek()->startOfWeek();
+                $endOfWeek = now()->addWeek()->endOfWeek();
+            } else {
+                $date = Carbon::parse($weekParam);
+                $startOfWeek = $date->startOfWeek();
+                $endOfWeek = $date->copy()->endOfWeek();
+            }
+
+            $query->whereBetween('booking_date', [
+                $startOfWeek->format('Y-m-d'),
+                $endOfWeek->format('Y-m-d')
+            ]);
+            $dateRange = ['start' => $startOfWeek->format('Y-m-d'), 'end' => $endOfWeek->format('Y-m-d')];
+        }
+
+        // Filter by location
+        if ($request->has('location_id')) {
+            $query->where('location_id', $request->location_id);
+        }
+
+        // Filter by package
+        if ($request->has('package_id')) {
+            $query->where('package_id', $request->package_id);
+        }
+
+        // Filter by room
+        if ($request->has('room_id')) {
+            $query->where('room_id', $request->room_id);
+        }
+
+        // Filter by status
+        if ($request->has('status')) {
+            $query->where('status', $request->status);
+        } else {
+            // Default: exclude cancelled
+            $query->where('status', '!=', 'cancelled');
+        }
+
+        // Sort by date and time
+        $query->orderBy('booking_date', 'asc')->orderBy('booking_time', 'asc');
+
+        $bookings = $query->get();
+
+        if ($bookings->isEmpty()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'No bookings found for the specified criteria'
+            ], 404);
+        }
+
+        // Get location and company info
+        $location = null;
+        $locationName = 'All Locations';
+        $company = null;
+        $companyName = 'ZapZone';
+
+        if ($request->has('location_id')) {
+            $location = Location::find($request->location_id);
+            if ($location) {
+                $locationName = $location->name;
+                if ($location->company_id) {
+                    $company = Company::find($location->company_id);
+                    if ($company) {
+                        $companyName = $company->name;
+                    }
+                }
+            }
+        }
+
+        // Get package info if filtering by specific package
+        $package = null;
+        if ($request->has('package_id')) {
+            $package = Package::find($request->package_id);
+        }
+
+        // Calculate summary statistics
+        $summary = [
+            'total_bookings' => $bookings->count(),
+            'total_participants' => $bookings->sum('participants'),
+            'total_revenue' => $bookings->sum('total_amount'),
+            'total_paid' => $bookings->sum('amount_paid'),
+            'by_status' => [
+                'pending' => $bookings->where('status', 'pending')->count(),
+                'confirmed' => $bookings->where('status', 'confirmed')->count(),
+                'checked_in' => $bookings->where('status', 'checked-in')->count(),
+                'completed' => $bookings->where('status', 'completed')->count(),
+            ],
+            'by_payment_status' => [
+                'paid' => $bookings->where('payment_status', 'paid')->count(),
+                'partial' => $bookings->where('payment_status', 'partial')->count(),
+                'pending' => $bookings->where('payment_status', 'pending')->count(),
+            ],
+        ];
+
+        // Determine view mode
+        $viewMode = $request->get('view_mode', 'detailed');
+
+        $pdf = Pdf::loadView('exports.party-summaries-staff', [
+            'bookings' => $bookings,
+            'summary' => $summary,
+            'company' => $company,
+            'companyName' => $companyName,
+            'locationName' => $locationName,
+            'package' => $package,
+            'dateRange' => $dateRange,
+            'viewMode' => $viewMode,
+        ]);
+
+        $pdf->setPaper('A4', 'portrait');
+
+        // Generate filename
+        $filename = 'party-summaries';
+        if ($package) {
+            $filename .= '-' . \Illuminate\Support\Str::slug($package->name);
+        }
+        if ($dateRange) {
+            if ($dateRange['start'] === $dateRange['end']) {
+                $filename .= '-' . $dateRange['start'];
+            } else {
+                $filename .= '-' . $dateRange['start'] . '-to-' . $dateRange['end'];
+            }
+        } else {
+            $filename .= '-' . now()->format('Y-m-d');
+        }
+        $filename .= '.pdf';
+
+        // Stream or download
+        if ($request->get('stream', false)) {
+            return $pdf->stream($filename);
+        }
+
+        return $pdf->download($filename);
+    }
+
+    /**
+     * Export party summaries for a specific day (shortcut)
+     *
+     * @param Request $request
+     * @param string $date
+     * @return \Illuminate\Http\Response
+     */
+    public function partySummariesDay(Request $request, string $date)
+    {
+        $request->merge(['date' => $date]);
+        return $this->partySummariesExport($request);
+    }
+
+    /**
+     * Export party summaries for a week (shortcut)
+     *
+     * @param Request $request
+     * @param string $week
+     * @return \Illuminate\Http\Response
+     */
+    public function partySummariesWeek(Request $request, string $week = 'current')
+    {
+        $request->merge(['week' => $week]);
+        return $this->partySummariesExport($request);
+    }
+
+    /**
+     * Export package-specific invoices (all invoices for bookings of a specific package)
+     * Lists all payment invoices grouped by package in a consistent invoice format
+     *
+     * Query params:
+     * - package_id: required - the package to generate invoices for
+     * - date: specific date (Y-m-d) for single day
+     * - start_date, end_date: date range
+     * - location_id: filter by location
+     * - status: filter by payment status
+     *
+     * @param Request $request
+     * @return \Illuminate\Http\Response
+     */
+    public function packageInvoicesExport(Request $request)
+    {
+        $request->validate([
+            'package_id' => 'required|exists:packages,id',
+            'date' => 'nullable|date',
+            'start_date' => 'nullable|date',
+            'end_date' => 'nullable|date|after_or_equal:start_date',
+            'location_id' => 'nullable|exists:locations,id',
+            'status' => ['nullable', Rule::in(['pending', 'completed', 'failed', 'refunded'])],
+        ]);
+
+        // Get the package
+        $package = Package::findOrFail($request->package_id);
+
+        // Query payments for bookings of this package
+        $query = Payment::with(['customer', 'location'])
+            ->where('payable_type', Payment::TYPE_BOOKING)
+            ->whereHas('booking', function ($q) use ($request) {
+                $q->where('package_id', $request->package_id);
+            });
+
+        $dateRange = null;
+
+        // Filter by single date
+        if ($request->has('date')) {
+            $date = $request->date;
+            $query->whereDate('created_at', $date);
+            $dateRange = ['start' => $date, 'end' => $date];
+        }
+
+        // Filter by date range
+        if ($request->has('start_date') && $request->has('end_date')) {
+            $startDate = Carbon::parse($request->start_date)->startOfDay();
+            $endDate = Carbon::parse($request->end_date)->endOfDay();
+            $query->whereBetween('created_at', [$startDate, $endDate]);
+            $dateRange = ['start' => $request->start_date, 'end' => $request->end_date];
+        } elseif ($request->has('start_date')) {
+            $startDate = Carbon::parse($request->start_date)->startOfDay();
+            $query->where('created_at', '>=', $startDate);
+            $dateRange = ['start' => $request->start_date, 'end' => now()->format('Y-m-d')];
+        } elseif ($request->has('end_date')) {
+            $endDate = Carbon::parse($request->end_date)->endOfDay();
+            $query->where('created_at', '<=', $endDate);
+            $dateRange = ['start' => 'Beginning', 'end' => $request->end_date];
+        }
+
+        // Filter by location
+        if ($request->has('location_id')) {
+            $query->where('location_id', $request->location_id);
+        }
+
+        // Filter by payment status
+        if ($request->has('status')) {
+            $query->where('status', $request->status);
+        }
+
+        // Sort by date
+        $query->orderBy('created_at', 'desc');
+
+        $payments = $query->get();
+
+        if ($payments->isEmpty()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'No payments found for this package with the specified criteria'
+            ], 404);
+        }
+
+        // Load booking details for each payment
+        foreach ($payments as $payment) {
+            $payment->payable = Booking::with([
+                'package',
+                'customer',
+                'room',
+                'location',
+                'addOns',
+                'attractions'
+            ])->find($payment->payable_id);
+        }
+
+        // Get location and company info
+        $location = null;
+        $locationName = 'All Locations';
+        $company = null;
+        $companyName = 'ZapZone';
+
+        if ($request->has('location_id')) {
+            $location = Location::find($request->location_id);
+            if ($location) {
+                $locationName = $location->name;
+                if ($location->company_id) {
+                    $company = Company::find($location->company_id);
+                    if ($company) {
+                        $companyName = $company->name;
+                    }
+                }
+            }
+        }
+
+        // Calculate summary
+        $summary = [
+            'total_invoices' => $payments->count(),
+            'total_amount' => $payments->sum('amount'),
+            'completed_count' => $payments->where('status', 'completed')->count(),
+            'completed_amount' => $payments->where('status', 'completed')->sum('amount'),
+            'pending_count' => $payments->where('status', 'pending')->count(),
+            'pending_amount' => $payments->where('status', 'pending')->sum('amount'),
+            'refunded_count' => $payments->where('status', 'refunded')->count(),
+            'refunded_amount' => $payments->where('status', 'refunded')->sum('amount'),
+            'total_bookings' => $payments->unique('payable_id')->count(),
+        ];
+
+        $pdf = Pdf::loadView('exports.package-invoices-report', [
+            'payments' => $payments,
+            'package' => $package,
+            'summary' => $summary,
+            'company' => $company,
+            'companyName' => $companyName,
+            'locationName' => $locationName,
+            'dateRange' => $dateRange,
+        ]);
+
+        $pdf->setPaper('A4', 'portrait');
+
+        // Generate filename
+        $filename = 'invoices-' . \Illuminate\Support\Str::slug($package->name);
+        if ($dateRange) {
+            if ($dateRange['start'] === $dateRange['end']) {
+                $filename .= '-' . $dateRange['start'];
+            } else {
+                $filename .= '-' . $dateRange['start'] . '-to-' . $dateRange['end'];
+            }
+        } else {
+            $filename .= '-' . now()->format('Y-m-d');
+        }
+        $filename .= '.pdf';
+
+        // Stream or download
+        if ($request->get('stream', false)) {
+            return $pdf->stream($filename);
+        }
+
+        return $pdf->download($filename);
     }
 }
