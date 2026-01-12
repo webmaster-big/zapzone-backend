@@ -1441,10 +1441,7 @@ class PaymentController extends Controller
             $dateRange = ['start' => 'Beginning', 'end' => $request->end_date];
         }
 
-        // Filter by location
-        if ($request->has('location_id')) {
-            $query->where('location_id', $request->location_id);
-        }
+        // Note: location_id filtering is already handled in the access control section above
 
         // Filter by payment status
         if ($request->has('status')) {
