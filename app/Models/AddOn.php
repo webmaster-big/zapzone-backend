@@ -18,11 +18,15 @@ class AddOn extends Model
         'description',
         'image',
         'is_active',
+        'min_quantity',
+        'max_quantity',
     ];
 
     protected $casts = [
         'price' => 'decimal:2',
         'is_active' => 'boolean',
+        'min_quantity' => 'integer',
+        'max_quantity' => 'integer',
     ];
 
     // Relationships

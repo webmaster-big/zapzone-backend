@@ -248,21 +248,6 @@
                             </table>
                             @endif
 
-                            <!-- Tips Section -->
-                            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #ecfdf5; border-radius: 6px; border: 1px solid #10b981; margin: 24px 0;">
-                                <tr>
-                                    <td style="padding: 16px 20px;">
-                                        <p style="margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #059669;">Tips for Your Visit:</p>
-                                        <ul style="margin: 0; padding: 0 0 0 20px; color: #047857; font-size: 13px;">
-                                            <li style="margin-bottom: 4px;">Please arrive 15 minutes before your scheduled time</li>
-                                            <li style="margin-bottom: 4px;">Bring your booking confirmation or reference number</li>
-                                            <li style="margin-bottom: 4px;">Wear comfortable clothing and closed-toe shoes</li>
-                                            <li>All participants must sign a waiver upon arrival</li>
-                                        </ul>
-                                    </td>
-                                </tr>
-                            </table>
-
                             <!-- Footer Message -->
                             <p style="margin: 24px 0 0 0; padding: 0; font-size: 14px; line-height: 1.6; color: #4b5563;">We can't wait to see you tomorrow! If you have any questions or need to make changes to your booking, please contact us.</p>
 

@@ -249,6 +249,22 @@ class BookingController extends Controller
             'additional_addons.*.price_at_booking' => 'nullable|numeric|min:0',
         ]);
 
+        // Validate add-on quantities against min/max limits
+        if (isset($validated['additional_addons']) && is_array($validated['additional_addons'])) {
+            foreach ($validated['additional_addons'] as $index => $addon) {
+                $addOnModel = \App\Models\AddOn::find($addon['addon_id']);
+                if ($addOnModel && !$addOnModel->isQuantityValid($addon['quantity'])) {
+                    $errorMessage = $addOnModel->getQuantityErrorMessage($addon['quantity']);
+                    return response()->json([
+                        'message' => 'Validation failed',
+                        'errors' => [
+                            "additional_addons.{$index}.quantity" => [$errorMessage]
+                        ]
+                    ], 422);
+                }
+            }
+        }
+
         // Generate unique reference number
         do {
             $validated['reference_number'] = 'BK' . now()->format('Ymd') . strtoupper(Str::random(6));
@@ -1569,22 +1585,6 @@ class BookingController extends Controller
      */
     public function summaryView(Booking $booking)
     {
-        $booking->load(['customer', 'package', 'location', 'room', 'attractions', 'addOns', 'payments']);
-
-        $pdf = Pdf::loadView('exports.booking-summary', [
-            'booking' => $booking,
-            'customer' => $booking->customer,
-            'location' => $booking->location,
-            'companyName' => config('app.name', 'ZapZone'),
-        ]);
-
-        return $pdf->stream('booking-summary-' . $booking->reference_number . '.pdf');
-    }
-
-    /**
-     * Export booking summaries (by date range, specific bookings, or filters)
-     *
-     * Query params:
      * - booking_ids: comma-separated booking IDs (optional)
      * - date: specific date (Y-m-d) for single day export
      * - start_date: start date for date range

@@ -96,6 +96,8 @@ class AddOnController extends Controller
             'description' => 'nullable|string',
             'image' => 'nullable|string|max:27262976',
             'is_active' => 'boolean',
+            'min_quantity' => 'sometimes|integer|min:1',
+            'max_quantity' => 'sometimes|nullable|integer|min:1|gte:min_quantity',
         ]);
 
         // Handle image upload
@@ -146,6 +148,8 @@ class AddOnController extends Controller
             'description' => 'sometimes|nullable|string',
             'image' => 'nullable|string|max:27262976',
             'is_active' => 'sometimes|boolean',
+            'min_quantity' => 'sometimes|integer|min:1',
+            'max_quantity' => 'sometimes|nullable|integer|min:1|gte:min_quantity',
         ]);
 
         // Log what we're receiving
