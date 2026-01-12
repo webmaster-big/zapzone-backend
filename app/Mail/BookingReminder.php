@@ -40,7 +40,7 @@ class BookingReminder extends Mailable
         $companyName = $this->booking->location?->company?->name ?? 'ZapZone';
         
         return new Envelope(
-            subject: "🎉 Reminder: Your Booking is Tomorrow! - {$companyName}",
+            subject: "Reminder: Your Booking is Tomorrow - {$companyName}",
         );
     }
 

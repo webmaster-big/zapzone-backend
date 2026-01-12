@@ -1453,7 +1453,7 @@ class BookingController extends Controller
 
             $mailable = new BookingReminder($booking);
             $companyName = $booking->location?->company?->name ?? 'ZapZone';
-            $subject = "🎉 Reminder: Your Booking is Tomorrow! - {$companyName}";
+            $subject = "Reminder: Your Booking is Tomorrow - {$companyName}";
 
             if ($useGmailApi) {
                 // Send using Gmail API

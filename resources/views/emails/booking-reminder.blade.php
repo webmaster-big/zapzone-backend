@@ -18,7 +18,7 @@
                 <table width="520" cellpadding="0" cellspacing="0" border="0" style="max-width: 520px; width: 100%;">
                     <!-- Header -->
                     <tr>
-                        <td style="text-align: center; background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); color: #ffffff; padding: 24px 32px; border-radius: 8px 8px 0 0;">
+                        <td style="text-align: center; background-color: #1e40af; color: #ffffff; padding: 24px 32px; border-radius: 8px 8px 0 0;">
                             <!--[if mso]>
                             <table width="100%" cellpadding="0" cellspacing="0" border="0">
                                 <tr>
@@ -35,7 +35,7 @@
                             @elseif($booking->location && $booking->location->company)
                                 <p style="margin: 0 0 8px 0; padding: 0; font-size: 18px; font-weight: 700; color: #ffffff;">{{ $booking->location->company->name }}</p>
                             @endif
-                            <h1 style="margin: 0 0 8px 0; padding: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.01em; color: #ffffff;">🎉 Your Booking is Tomorrow!</h1>
+                            <h1 style="margin: 0 0 8px 0; padding: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.01em; color: #ffffff;">Booking Reminder</h1>
                             <p style="margin: 0; padding: 0; font-size: 14px; opacity: 0.9; color: #ffffff;">Reference: {{ $booking->reference_number }}</p>
                             <!--[if mso]>
                                     </td>
@@ -50,29 +50,22 @@
                         <td style="background-color: #ffffff; padding: 32px; border-radius: 0 0 8px 8px; border: 1px solid #e5e7eb; border-top: none;">
                             <p style="margin: 0 0 16px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #4b5563;">Dear {{ $customerName }},</p>
 
-                            <p style="margin: 0 0 16px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #4b5563;">This is a friendly reminder that your booking is scheduled for <strong>tomorrow</strong>! We're excited to see you!</p>
+                            <p style="margin: 0 0 16px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #4b5563;">This is a friendly reminder that your booking is scheduled for <strong>tomorrow</strong>. We look forward to seeing you!</p>
 
                             <!-- Reminder Alert Box -->
-                            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #fef3c7; border-radius: 8px; border: 1px solid #f59e0b; margin: 20px 0;">
+                            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #fef3c7; border-radius: 6px; border: 1px solid #f59e0b; margin: 20px 0;">
                                 <tr>
                                     <td style="padding: 16px 20px;">
-                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
-                                            <tr>
-                                                <td style="font-size: 24px; width: 40px; vertical-align: top;">⏰</td>
-                                                <td>
-                                                    <p style="margin: 0 0 4px 0; font-size: 16px; font-weight: 600; color: #92400e;">Don't Forget!</p>
-                                                    <p style="margin: 0; font-size: 14px; color: #92400e;">
-                                                        {{ \Carbon\Carbon::parse($booking->booking_date)->format('l, F j, Y') }} at {{ \Carbon\Carbon::parse($booking->booking_time)->format('g:i A') }}
-                                                    </p>
-                                                </td>
-                                            </tr>
-                                        </table>
+                                        <p style="margin: 0 0 4px 0; font-size: 15px; font-weight: 600; color: #92400e;">Your appointment is tomorrow</p>
+                                        <p style="margin: 0; font-size: 14px; color: #92400e;">
+                                            {{ \Carbon\Carbon::parse($booking->booking_date)->format('l, F j, Y') }} at {{ \Carbon\Carbon::parse($booking->booking_time)->format('g:i A') }}
+                                        </p>
                                     </td>
                                 </tr>
                             </table>
 
                             <!-- Booking Details -->
-                            <h3 style="margin: 24px 0 12px 0; padding: 0; font-size: 16px; font-weight: 600; color: #111827;">📋 Booking Details</h3>
+                            <h3 style="margin: 24px 0 12px 0; padding: 0; font-size: 16px; font-weight: 600; color: #111827;">Booking Details</h3>
                             <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f9fafb; border-radius: 6px; border: 1px solid #e5e7eb; margin: 16px 0;">
                                 <tr>
                                     <td style="padding: 12px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
@@ -140,7 +133,7 @@
 
                             <!-- Guest of Honor (if applicable) -->
                             @if($booking->guest_of_honor_name)
-                            <h3 style="margin: 24px 0 12px 0; padding: 0; font-size: 16px; font-weight: 600; color: #111827;">🎂 Guest of Honor</h3>
+                            <h3 style="margin: 24px 0 12px 0; padding: 0; font-size: 16px; font-weight: 600; color: #111827;">Guest of Honor</h3>
                             <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #fdf2f8; border-radius: 6px; border: 1px solid #f9a8d4; margin: 16px 0;">
                                 <tr>
                                     <td style="padding: 12px 16px; font-size: 14px; line-height: 1.6;">
@@ -157,7 +150,7 @@
 
                             <!-- Location Details -->
                             @if($booking->location)
-                            <h3 style="margin: 24px 0 12px 0; padding: 0; font-size: 16px; font-weight: 600; color: #111827;">📍 Location</h3>
+                            <h3 style="margin: 24px 0 12px 0; padding: 0; font-size: 16px; font-weight: 600; color: #111827;">Location</h3>
                             <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f0f9ff; border-radius: 6px; border: 1px solid #0ea5e9; margin: 16px 0;">
                                 <tr>
                                     <td style="padding: 16px;">
@@ -172,7 +165,7 @@
                                         @endif
                                         @if($booking->location->phone)
                                         <p style="margin: 8px 0 0 0; font-size: 14px; color: #0369a1;">
-                                            📞 {{ $booking->location->phone }}
+                                            Phone: {{ $booking->location->phone }}
                                         </p>
                                         @endif
                                     </td>
@@ -180,14 +173,14 @@
                             </table>
                             @endif
 
-                            <!-- Room Assignment -->
+                            <!-- Space Assignment -->
                             @if($booking->room)
                             <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f9fafb; border-radius: 6px; border: 1px solid #e5e7eb; margin: 16px 0;">
                                 <tr>
                                     <td style="padding: 12px 16px; font-size: 14px; line-height: 1.6;">
                                         <table width="100%" cellpadding="0" cellspacing="0" border="0">
                                             <tr>
-                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">🚪 Room:</td>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">Space:</td>
                                                 <td style="color: #111827; font-weight: 600;">{{ $booking->room->name }}</td>
                                             </tr>
                                         </table>
@@ -197,7 +190,7 @@
                             @endif
 
                             <!-- Payment Summary -->
-                            <h3 style="margin: 24px 0 12px 0; padding: 0; font-size: 16px; font-weight: 600; color: #111827;">💰 Payment Summary</h3>
+                            <h3 style="margin: 24px 0 12px 0; padding: 0; font-size: 16px; font-weight: 600; color: #111827;">Payment Summary</h3>
                             <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f9fafb; border-radius: 6px; border: 1px solid #e5e7eb; margin: 16px 0;">
                                 <tr>
                                     <td style="padding: 12px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
@@ -235,7 +228,7 @@
                                     <td style="padding: 12px 16px; font-size: 14px; line-height: 1.6;">
                                         <table width="100%" cellpadding="0" cellspacing="0" border="0">
                                             <tr>
-                                                <td colspan="2" style="color: #10b981; text-align: center; font-weight: 600;">✓ Fully Paid</td>
+                                                <td colspan="2" style="color: #10b981; text-align: center; font-weight: 600;">Fully Paid</td>
                                             </tr>
                                         </table>
                                     </td>
@@ -245,7 +238,7 @@
 
                             <!-- Special Requests -->
                             @if($booking->special_requests)
-                            <h3 style="margin: 24px 0 12px 0; padding: 0; font-size: 16px; font-weight: 600; color: #111827;">📝 Special Requests</h3>
+                            <h3 style="margin: 24px 0 12px 0; padding: 0; font-size: 16px; font-weight: 600; color: #111827;">Special Requests</h3>
                             <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f9fafb; border-radius: 6px; border: 1px solid #e5e7eb; margin: 16px 0;">
                                 <tr>
                                     <td style="padding: 12px 16px; font-size: 14px; line-height: 1.6; color: #4b5563;">
@@ -256,10 +249,10 @@
                             @endif
 
                             <!-- Tips Section -->
-                            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #ecfdf5; border-radius: 8px; border: 1px solid #10b981; margin: 24px 0;">
+                            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #ecfdf5; border-radius: 6px; border: 1px solid #10b981; margin: 24px 0;">
                                 <tr>
                                     <td style="padding: 16px 20px;">
-                                        <p style="margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #059669;">💡 Tips for Your Visit:</p>
+                                        <p style="margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #059669;">Tips for Your Visit:</p>
                                         <ul style="margin: 0; padding: 0 0 0 20px; color: #047857; font-size: 13px;">
                                             <li style="margin-bottom: 4px;">Please arrive 15 minutes before your scheduled time</li>
                                             <li style="margin-bottom: 4px;">Bring your booking confirmation or reference number</li>
