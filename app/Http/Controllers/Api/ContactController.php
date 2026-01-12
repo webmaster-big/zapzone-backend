@@ -161,6 +161,10 @@ class ContactController extends Controller
             'source' => ['nullable', Rule::in(['booking', 'attraction_purchase', 'manual'])],
             'status' => ['nullable', Rule::in(['active', 'inactive'])],
             'notes' => 'nullable|string',
+            'last_activity_at' => 'nullable|date',
+            'total_bookings' => 'nullable|integer|min:0',
+            'total_purchases' => 'nullable|integer|min:0',
+            'total_spent' => 'nullable|numeric|min:0',
         ]);
 
         $contact->update($validated);
