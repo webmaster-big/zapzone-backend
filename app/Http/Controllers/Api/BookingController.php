@@ -9,6 +9,7 @@ use App\Models\ActivityLog;
 use App\Models\Booking;
 use App\Models\BookingAttraction;
 use App\Models\BookingAddOn;
+use App\Models\Contact;
 use App\Models\CustomerNotification;
 use App\Models\Notification;
 use App\Models\PackageTimeSlot;
@@ -253,6 +254,41 @@ class BookingController extends Controller
         }
 
         $booking = Booking::create($validated);
+
+        // Store contact information if not already registered
+        $contactEmail = $validated['guest_email'] ?? null;
+        if (!$contactEmail && isset($validated['customer_id'])) {
+            // Get email from customer if registered customer
+            $customer = \App\Models\Customer::find($validated['customer_id']);
+            $contactEmail = $customer?->email;
+        }
+
+        if ($contactEmail) {
+            // Check if contact already exists in contacts table
+            $existingContact = Contact::where('email', $contactEmail)->first();
+            
+            if (!$existingContact) {
+                // Contact not registered, create new contact
+                $contact = Contact::create([
+                    'location_id' => $validated['location_id'] ?? null,
+                    'name' => $validated['guest_name'] ?? (isset($customer) ? ($customer->first_name . ' ' . $customer->last_name) : ''),
+                    'email' => $contactEmail,
+                    'phone' => $validated['guest_phone'] ?? (isset($customer) ? $customer->phone : null),
+                    'address' => $validated['guest_address'] ?? (isset($customer) ? $customer->address : null),
+                    'city' => $validated['guest_city'] ?? (isset($customer) ? $customer->city : null),
+                    'state' => $validated['guest_state'] ?? (isset($customer) ? $customer->state : null),
+                    'zip' => $validated['guest_zip'] ?? (isset($customer) ? $customer->zip : null),
+                    'country' => $validated['guest_country'] ?? (isset($customer) ? $customer->country : null),
+                    'source' => 'booking',
+                    'total_bookings' => 1,
+                    'total_spent' => $validated['total_amount'] ?? 0,
+                    'last_activity_at' => now(),
+                ]);
+            } else {
+                // Contact exists, just update stats
+                $existingContact->incrementBooking($validated['total_amount'] ?? 0);
+            }
+        }
 
         // Attach attractions with individual quantity and price (new format)
         if (isset($validated['additional_attractions']) && is_array($validated['additional_attractions'])) {

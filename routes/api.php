@@ -10,6 +10,7 @@ use App\Http\Controllers\Api\AuthorizeNetAccountController;
 use App\Http\Controllers\Api\BookingController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\CompanyController;
+use App\Http\Controllers\Api\ContactController;
 use App\Http\Controllers\Api\CustomerController;
 use App\Http\Controllers\Api\CustomerNotificationController;
 use App\Http\Controllers\Api\DayOffController;
@@ -142,6 +143,14 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Category routes
     Route::apiResource('categories', CategoryController::class);
+
+    // Contact routes
+    Route::get('contacts/statistics', [ContactController::class, 'statistics']);
+    Route::get('contacts/export', [ContactController::class, 'export']);
+    Route::post('contacts/find-by-email', [ContactController::class, 'findByEmail']);
+    Route::post('contacts/bulk-delete', [ContactController::class, 'bulkDelete']);
+    Route::patch('contacts/{contact}/toggle-status', [ContactController::class, 'toggleStatus']);
+    Route::apiResource('contacts', ContactController::class);
 
     // Package routes
     Route::post('packages/room/create', [PackageController::class, 'storePackageRoom']);
