@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Mail\BookingConfirmation;
+use App\Mail\BookingReminder;
 use App\Services\GmailApiService;
 use App\Models\ActivityLog;
 use App\Models\Booking;
@@ -17,10 +18,12 @@ use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Barryvdh\DomPDF\Facade\Pdf;
+use Carbon\Carbon;
 
 class BookingController extends Controller
 {
@@ -92,6 +95,9 @@ class BookingController extends Controller
 
         $perPage = min($request->get('per_page', 15), 100); // Max 100 items per page
         $bookings = $query->paginate($perPage);
+
+        // Send reminders for bookings happening tomorrow (runs in background, non-blocking)
+        $this->sendTomorrowBookingReminders();
 
         return response()->json([
             'success' => true,
@@ -1364,6 +1370,145 @@ class BookingController extends Controller
                 'action' => $action,
                 'error' => $e->getMessage(),
             ]);
+        }
+    }
+
+    /**
+     * Send reminder emails to customers with bookings scheduled for tomorrow
+     * Only sends reminders to bookings that haven't been reminded yet
+     */
+    private function sendTomorrowBookingReminders(): void
+    {
+        try {
+            $tomorrow = Carbon::tomorrow()->format('Y-m-d');
+
+            // Find bookings for tomorrow that haven't been reminded yet
+            // Only for confirmed bookings (not cancelled, completed, etc.)
+            $bookingsToRemind = Booking::with(['customer', 'package', 'location.company', 'room'])
+                ->whereDate('booking_date', $tomorrow)
+                ->where('reminder_sent', false)
+                ->whereIn('status', ['pending', 'confirmed'])
+                ->get();
+
+            if ($bookingsToRemind->isEmpty()) {
+                return;
+            }
+
+            Log::info('Processing booking reminders for tomorrow', [
+                'date' => $tomorrow,
+                'count' => $bookingsToRemind->count(),
+            ]);
+
+            foreach ($bookingsToRemind as $booking) {
+                $this->sendBookingReminderEmail($booking);
+            }
+
+        } catch (\Exception $e) {
+            Log::error('Failed to process booking reminders', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+        }
+    }
+
+    /**
+     * Send a reminder email for a single booking
+     */
+    private function sendBookingReminderEmail(Booking $booking): void
+    {
+        // Get recipient email
+        $recipientEmail = $booking->customer
+            ? $booking->customer->email
+            : $booking->guest_email;
+
+        if (!$recipientEmail) {
+            Log::warning('No recipient email for booking reminder', [
+                'booking_id' => $booking->id,
+                'reference_number' => $booking->reference_number,
+            ]);
+            // Mark as sent to avoid repeated attempts
+            $booking->update([
+                'reminder_sent' => true,
+                'reminder_sent_at' => now(),
+            ]);
+            return;
+        }
+
+        try {
+            Log::info('Sending booking reminder email', [
+                'booking_id' => $booking->id,
+                'reference_number' => $booking->reference_number,
+                'recipient_email' => $recipientEmail,
+                'booking_date' => $booking->booking_date->format('Y-m-d'),
+            ]);
+
+            // Check if Gmail API should be used
+            $useGmailApi = config('gmail.enabled', false) &&
+                (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
+
+            $mailable = new BookingReminder($booking);
+            $companyName = $booking->location?->company?->name ?? 'ZapZone';
+            $subject = "🎉 Reminder: Your Booking is Tomorrow! - {$companyName}";
+
+            if ($useGmailApi) {
+                // Send using Gmail API
+                $gmailService = new GmailApiService();
+                $emailBody = $mailable->render();
+
+                $gmailService->sendEmail(
+                    $recipientEmail,
+                    $subject,
+                    $emailBody,
+                    $companyName
+                );
+            } else {
+                // Send using Laravel Mail (SMTP)
+                Mail::to($recipientEmail)->send($mailable);
+            }
+
+            // Mark reminder as sent
+            $booking->update([
+                'reminder_sent' => true,
+                'reminder_sent_at' => now(),
+            ]);
+
+            // Create customer notification
+            if ($booking->customer_id) {
+                CustomerNotification::create([
+                    'customer_id' => $booking->customer_id,
+                    'location_id' => $booking->location_id,
+                    'type' => 'reminder',
+                    'priority' => 'medium',
+                    'title' => 'Booking Reminder',
+                    'message' => "Reminder: Your booking {$booking->reference_number} is scheduled for tomorrow at {$booking->booking_time->format('g:i A')}.",
+                    'status' => 'unread',
+                    'action_url' => "/bookings/{$booking->id}",
+                    'action_text' => 'View Booking',
+                    'metadata' => [
+                        'booking_id' => $booking->id,
+                        'reference_number' => $booking->reference_number,
+                        'booking_date' => $booking->booking_date->format('Y-m-d'),
+                        'booking_time' => $booking->booking_time->format('H:i'),
+                    ],
+                ]);
+            }
+
+            Log::info('✅ Booking reminder email sent successfully', [
+                'booking_id' => $booking->id,
+                'reference_number' => $booking->reference_number,
+                'recipient_email' => $recipientEmail,
+                'method' => $useGmailApi ? 'Gmail API' : 'SMTP',
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('❌ Failed to send booking reminder email', [
+                'booking_id' => $booking->id,
+                'reference_number' => $booking->reference_number,
+                'recipient_email' => $recipientEmail,
+                'error' => $e->getMessage(),
+            ]);
+
+            // Don't mark as sent so it can be retried
         }
     }
 
