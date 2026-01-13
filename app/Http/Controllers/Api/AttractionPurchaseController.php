@@ -5,10 +5,10 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\AttractionPurchase;
 use App\Models\Attraction;
-use App\Models\Contact;
 use App\Mail\AttractionPurchaseReceipt;
 use App\Services\GmailApiService;
 use App\Models\ActivityLog;
+use App\Models\Contact;
 use App\Models\CustomerNotification;
 use App\Models\Notification;
 use App\Models\User;
@@ -184,41 +184,6 @@ class AttractionPurchaseController extends Controller
         $purchase = AttractionPurchase::create($validated);
         $purchase->load(['attraction', 'customer', 'createdBy']);
 
-        // Store contact information if not already registered
-        $contactEmail = $validated['guest_email'] ?? null;
-        if (!$contactEmail && isset($validated['customer_id'])) {
-            // Get email from customer if registered customer
-            $customer = \App\Models\Customer::find($validated['customer_id']);
-            $contactEmail = $customer?->email;
-        }
-
-        if ($contactEmail) {
-            // Check if contact already exists in contacts table
-            $existingContact = Contact::where('email', $contactEmail)->first();
-
-            if (!$existingContact) {
-                // Contact not registered, create new contact
-                $contact = Contact::create([
-                    'location_id' => $purchase->attraction->location_id ?? null,
-                    'name' => $validated['guest_name'] ?? (isset($customer) ? ($customer->first_name . ' ' . $customer->last_name) : ''),
-                    'email' => $contactEmail,
-                    'phone' => $validated['guest_phone'] ?? (isset($customer) ? $customer->phone : null),
-                    'address' => $validated['guest_address'] ?? (isset($customer) ? $customer->address : null),
-                    'city' => $validated['guest_city'] ?? (isset($customer) ? $customer->city : null),
-                    'state' => $validated['guest_state'] ?? (isset($customer) ? $customer->state : null),
-                    'zip' => $validated['guest_zip'] ?? (isset($customer) ? $customer->zip : null),
-                    'country' => $validated['guest_country'] ?? (isset($customer) ? $customer->country : null),
-                    'source' => 'attraction_purchase',
-                    'total_purchases' => 1,
-                    'total_spent' => $validated['total_amount'] ?? 0,
-                    'last_activity_at' => now(),
-                ]);
-            } else {
-                // Contact exists, just update stats
-                $existingContact->incrementPurchase($validated['total_amount'] ?? 0);
-            }
-        }
-
         // Create notification for customer
         if ($purchase->customer_id) {
             CustomerNotification::create([
@@ -282,6 +247,39 @@ class AttractionPurchaseController extends Controller
                 'total_amount' => $purchase->total_amount,
             ]
           );
+        }
+
+        // Create or update contact from attraction purchase
+        try {
+            $contactEmail = $purchase->customer?->email ?? $purchase->guest_email;
+            $contactName = $purchase->customer
+                ? trim($purchase->customer->first_name . ' ' . $purchase->customer->last_name)
+                : $purchase->guest_name;
+            $contactPhone = $purchase->customer?->phone ?? $purchase->guest_phone;
+
+            if ($contactEmail && $purchase->attraction->location_id) {
+                $location = $purchase->attraction->location;
+                if ($location && $location->company_id) {
+                    Contact::createOrUpdateFromSource(
+                        companyId: $location->company_id,
+                        data: [
+                            'email' => $contactEmail,
+                            'name' => $contactName,
+                            'phone' => $contactPhone,
+                        ],
+                        source: 'attraction_purchase',
+                        tags: ['attraction_purchase', 'customer'],
+                        locationId: $purchase->attraction->location_id,
+                        createdBy: auth()->id()
+                    );
+                }
+            }
+        } catch (\Exception $e) {
+            // Log but don't fail the purchase if contact creation fails
+            Log::warning('Failed to create contact from attraction purchase', [
+                'purchase_id' => $purchase->id,
+                'error' => $e->getMessage(),
+            ]);
         }
 
         return response()->json([

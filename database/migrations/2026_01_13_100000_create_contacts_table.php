@@ -8,33 +8,46 @@ return new class extends Migration
 {
     /**
      * Run the migrations.
+     *
+     * Contacts are separate from Customers - they represent external contacts
+     * for email campaigns, newsletters, and marketing purposes.
      */
     public function up(): void
     {
         Schema::create('contacts', function (Blueprint $table) {
             $table->id();
+            $table->foreignId('company_id')->constrained()->onDelete('cascade');
             $table->foreignId('location_id')->nullable()->constrained()->onDelete('set null');
-            $table->string('name');
-            $table->string('email')->unique();
-            $table->string('phone', 20)->nullable();
+
+            // Contact information
+            $table->string('email')->index();
+            $table->string('first_name')->nullable();
+            $table->string('last_name')->nullable();
+            $table->string('phone')->nullable();
+            $table->string('company_name')->nullable(); // Their company, not ours
+            $table->string('job_title')->nullable();
+
+            // Address fields
             $table->string('address')->nullable();
-            $table->string('city', 100)->nullable();
-            $table->string('state', 50)->nullable();
-            $table->string('zip', 20)->nullable();
-            $table->string('country', 100)->nullable();
-            $table->enum('source', ['booking', 'attraction_purchase', 'manual'])->default('manual');
-            $table->integer('total_bookings')->default(0);
-            $table->integer('total_purchases')->default(0);
-            $table->decimal('total_spent', 10, 2)->default(0);
-            $table->timestamp('last_activity_at')->nullable();
-            $table->enum('status', ['active', 'inactive'])->default('active');
+            $table->string('city')->nullable();
+            $table->string('state')->nullable();
+            $table->string('zip')->nullable();
+            $table->string('country')->nullable();
+
+            // Organization and categorization
+            $table->json('tags')->nullable(); // ["vip", "newsletter", "partner"]
+            $table->string('source')->nullable(); // "booking", "manual", "attraction_purchase", etc.
             $table->text('notes')->nullable();
+
+            // Status and preferences
+            $table->enum('status', ['active', 'inactive'])->default('active');
+
+            // Tracking
+            $table->foreignId('created_by')->nullable()->constrained('users')->onDelete('set null');
             $table->timestamps();
 
-            $table->index('email');
-            $table->index('phone');
-            $table->index('status');
-            $table->index('source');
+            // Unique email per company
+            $table->unique(['company_id', 'email']);
         });
     }
 

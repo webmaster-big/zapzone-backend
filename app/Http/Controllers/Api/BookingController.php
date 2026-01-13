@@ -9,6 +9,7 @@ use App\Models\ActivityLog;
 use App\Models\Booking;
 use App\Models\BookingAttraction;
 use App\Models\BookingAddOn;
+use App\Models\Contact;
 use App\Models\CustomerNotification;
 use App\Models\Notification;
 use App\Models\PackageTimeSlot;
@@ -359,6 +360,57 @@ class BookingController extends Controller
                 'booking_date' => $booking->booking_date,
             ]
           );
+        }
+
+        // Create or update contact from booking
+        try {
+            $contactEmail = null;
+            $contactData = [];
+
+            // Get email from customer or guest
+            if ($booking->customer_id && $booking->customer) {
+                $contactEmail = $booking->customer->email;
+                $contactData = [
+                    'email' => $booking->customer->email,
+                    'first_name' => $booking->customer->first_name,
+                    'last_name' => $booking->customer->last_name,
+                    'phone' => $booking->customer->phone,
+                    'address' => $booking->customer->address,
+                    'city' => $booking->customer->city,
+                    'state' => $booking->customer->state,
+                    'zip' => $booking->customer->zip,
+                    'country' => $booking->customer->country,
+                ];
+            } elseif ($booking->guest_email) {
+                $contactEmail = $booking->guest_email;
+                $contactData = [
+                    'email' => $booking->guest_email,
+                    'name' => $booking->guest_name,
+                    'phone' => $booking->guest_phone,
+                    'address' => $booking->guest_address,
+                    'city' => $booking->guest_city,
+                    'state' => $booking->guest_state,
+                    'zip' => $booking->guest_zip,
+                    'country' => $booking->guest_country,
+                ];
+            }
+
+            if ($contactEmail && $booking->location && $booking->location->company_id) {
+                Contact::createOrUpdateFromSource(
+                    companyId: $booking->location->company_id,
+                    data: $contactData,
+                    source: 'booking',
+                    tags: ['booking', 'customer'],
+                    locationId: $booking->location_id,
+                    createdBy: $booking->created_by ?? auth()->id()
+                );
+            }
+        } catch (\Exception $e) {
+            // Log error but don't fail the booking creation
+            Log::warning('Failed to create/update contact from booking', [
+                'booking_id' => $booking->id,
+                'error' => $e->getMessage(),
+            ]);
         }
 
 

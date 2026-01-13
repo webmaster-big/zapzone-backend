@@ -10,6 +10,7 @@ use App\Http\Controllers\Api\AuthorizeNetAccountController;
 use App\Http\Controllers\Api\BookingController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\CompanyController;
+use App\Http\Controllers\Api\ContactController;
 use App\Http\Controllers\Api\CustomerController;
 use App\Http\Controllers\Api\CustomerNotificationController;
 use App\Http\Controllers\Api\DayOffController;
@@ -84,6 +85,9 @@ Route::get('stream/notifications', [StreamController::class, 'combinedNotificati
 // Shareable Token public routes
 Route::post('shareable-tokens/check', [ShareableTokenController::class, 'check']);
 Route::post('shareable-tokens', [ShareableTokenController::class, 'store']);
+
+// Public contact deactivate (for email unsubscribe links)
+Route::post('contacts/deactivate', [ContactController::class, 'deactivate']);
 
 // Protected routes (require authentication)
 Route::middleware('auth:sanctum')->group(function () {
@@ -303,6 +307,23 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('/{emailCampaign}', [EmailCampaignController::class, 'destroy']);
         Route::post('/{emailCampaign}/cancel', [EmailCampaignController::class, 'cancel']);
         Route::post('/{emailCampaign}/resend', [EmailCampaignController::class, 'resend']);
+    });
+
+    // Contact routes (for email campaigns)
+    Route::prefix('contacts')->group(function () {
+        Route::get('/', [ContactController::class, 'index']);
+        Route::post('/', [ContactController::class, 'store']);
+        Route::get('/tags', [ContactController::class, 'getTags']);
+        Route::get('/statistics', [ContactController::class, 'statistics']);
+        Route::post('/bulk-import', [ContactController::class, 'bulkImport']);
+        Route::post('/bulk-delete', [ContactController::class, 'bulkDelete']);
+        Route::post('/bulk-update', [ContactController::class, 'bulkUpdate']);
+        Route::post('/export-for-campaign', [ContactController::class, 'exportForCampaign']);
+        Route::get('/{contact}', [ContactController::class, 'show']);
+        Route::put('/{contact}', [ContactController::class, 'update']);
+        Route::delete('/{contact}', [ContactController::class, 'destroy']);
+        Route::post('/{contact}/add-tag', [ContactController::class, 'addTag']);
+        Route::post('/{contact}/remove-tag', [ContactController::class, 'removeTag']);
     });
 });
 
