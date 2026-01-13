@@ -85,7 +85,7 @@ class DayOff extends Model
 
     /**
      * Scope to filter day offs that apply to a specific package.
-     * Includes day offs with no package_ids (applies to all packages) 
+     * Includes day offs with no package_ids (applies to all packages)
      * and those that specifically include the package.
      */
     public function scopeForPackage($query, $packageId)

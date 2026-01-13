@@ -8,10 +8,10 @@ return new class extends Migration
 {
     /**
      * Run the migrations.
-     * 
+     *
      * This migration adds package_ids and room_ids columns to allow
      * blocking specific packages and/or rooms instead of the entire location.
-     * 
+     *
      * Blocking Logic:
      * - If both package_ids and room_ids are NULL/empty: blocks entire location (existing behavior)
      * - If only package_ids is set: blocks only those specific packages
@@ -23,7 +23,7 @@ return new class extends Migration
         Schema::table('day_offs', function (Blueprint $table) {
             // JSON array of package IDs to block (null means all packages if room_ids is also null)
             $table->json('package_ids')->nullable()->after('time_end');
-            
+
             // JSON array of room IDs to block (null means all rooms if package_ids is also null)
             $table->json('room_ids')->nullable()->after('package_ids');
         });

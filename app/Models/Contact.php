@@ -212,7 +212,7 @@ class Contact extends Model
         if ($contact) {
             // Update existing contact with new data (don't overwrite existing values with null)
             $updateData = [];
-            
+
             if (!empty($data['first_name']) && empty($contact->first_name)) {
                 $updateData['first_name'] = $data['first_name'];
             }
@@ -258,7 +258,7 @@ class Contact extends Model
         // Parse name if first_name/last_name not provided but full name is
         $firstName = $data['first_name'] ?? null;
         $lastName = $data['last_name'] ?? null;
-        
+
         if (empty($firstName) && !empty($data['name'])) {
             $nameParts = explode(' ', trim($data['name']), 2);
             $firstName = $nameParts[0] ?? null;

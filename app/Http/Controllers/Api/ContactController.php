@@ -464,7 +464,7 @@ class ContactController extends Controller
         }
 
         $contacts = $query->whereNotNull('tags')->pluck('tags');
-        
+
         $allTags = [];
         foreach ($contacts as $tags) {
             if (is_array($tags)) {
