@@ -34,6 +34,7 @@ return new class extends Migration
             $table->string('zip')->nullable();
             $table->string('country')->nullable();
 
+
             // Organization and categorization
             $table->json('tags')->nullable(); // ["vip", "newsletter", "partner"]
             $table->string('source')->nullable(); // "booking", "manual", "attraction_purchase", etc.
