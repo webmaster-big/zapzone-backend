@@ -23,7 +23,7 @@ class BookingReminder extends Mailable
     public function __construct(Booking $booking)
     {
         $this->booking = $booking;
-        
+
         // Determine customer name
         if ($booking->customer) {
             $this->customerName = trim($booking->customer->first_name . ' ' . $booking->customer->last_name);
@@ -38,7 +38,7 @@ class BookingReminder extends Mailable
     public function envelope(): Envelope
     {
         $companyName = $this->booking->location?->company?->name ?? 'ZapZone';
-        
+
         return new Envelope(
             subject: "Reminder: Your Booking is Tomorrow - {$companyName}",
         );

@@ -249,6 +249,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Payment Invoice routes (must be before apiResource to avoid route conflicts)
     Route::get('payments/invoices/report', [PaymentController::class, 'invoicesReport']);
     Route::get('payments/invoices/export', [PaymentController::class, 'invoicesExport']);
+    Route::get('payments/package-invoices/export', [PaymentController::class, 'packageInvoicesExport']);
     Route::get('payments/invoices/day/{date}', [PaymentController::class, 'invoicesDay']);
     Route::get('payments/invoices/week/{week?}', [PaymentController::class, 'invoicesWeek']);
     Route::post('payments/invoices/bulk', [PaymentController::class, 'invoicesBulk']);
@@ -258,6 +259,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('payments/{payment}/refund', [PaymentController::class, 'refund']);
     Route::get('payments/{payment}/invoice', [PaymentController::class, 'invoice']);
     Route::get('payments/{payment}/invoice/view', [PaymentController::class, 'invoiceView']);
+    
 
     // Activity Log routes
     Route::apiResource('activity-logs', ActivityLogController::class)->only(['index', 'store', 'show']);
