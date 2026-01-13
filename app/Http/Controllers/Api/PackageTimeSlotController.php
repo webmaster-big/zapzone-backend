@@ -550,8 +550,26 @@ class PackageTimeSlotController extends Controller
             return null;
         }
 
+        // Calculate slot end time for day off check
+        $durationInMinutes = $this->getDurationInMinutes($duration, $durationUnit);
+        $slotStart = Carbon::parse($date . ' ' . $startTime);
+        $slotEnd = (clone $slotStart)->addMinutes($durationInMinutes);
+
         // Check each room for availability
         foreach ($package->rooms as $room) {
+            // Check for room-specific day off blocks
+            $isRoomBlocked = DayOff::isTimeSlotBlockedForRoom(
+                $package->location_id,
+                $room->id,
+                $date,
+                $startTime,
+                $slotEnd->format('H:i')
+            );
+
+            if ($isRoomBlocked) {
+                continue; // Skip this room
+            }
+
             // Check for booking conflicts
             $hasBookingConflict = $this->checkTimeSlotConflict(
                 $room->id,
@@ -620,16 +638,17 @@ class PackageTimeSlotController extends Controller
             $currentTime = Carbon::parse($date . ' ' . $timeSlot);
             $slotEndTime = (clone $currentTime)->addMinutes($slotDurationInMinutes);
 
-            // Check if this time slot is blocked by a day off (full or partial)
-            $isDayOffBlocked = DayOff::isTimeSlotBlocked(
+            // Check if this time slot is blocked by a day off for this specific package
+            $isPackageBlocked = DayOff::isTimeSlotBlockedForPackage(
                 $locationId,
+                $package->id,
                 $date,
                 $currentTime->format('H:i'),
                 $slotEndTime->format('H:i')
             );
 
-            if ($isDayOffBlocked) {
-                Log::debug('Time slot blocked by day off', [
+            if ($isPackageBlocked) {
+                Log::debug('Time slot blocked by day off for package', [
                     'package_id' => $package->id,
                     'date' => $date,
                     'time_slot' => $currentTime->format('H:i'),
@@ -680,8 +699,26 @@ class PackageTimeSlotController extends Controller
             return 0;
         }
 
+        // Calculate slot end time for day off check
+        $durationInMinutes = $this->getDurationInMinutes($duration, $durationUnit);
+        $slotStart = Carbon::parse($date . ' ' . $startTime);
+        $slotEnd = (clone $slotStart)->addMinutes($durationInMinutes);
+
         $count = 0;
         foreach ($package->rooms as $room) {
+            // Check for room-specific day off blocks
+            $isRoomBlocked = DayOff::isTimeSlotBlockedForRoom(
+                $package->location_id,
+                $room->id,
+                $date,
+                $startTime,
+                $slotEnd->format('H:i')
+            );
+
+            if ($isRoomBlocked) {
+                continue; // Skip this room
+            }
+
             // Check for booking conflicts
             $hasBookingConflict = $this->checkTimeSlotConflict(
                 $room->id,
