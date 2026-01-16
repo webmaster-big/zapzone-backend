@@ -259,7 +259,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('payments/{payment}/refund', [PaymentController::class, 'refund']);
     Route::get('payments/{payment}/invoice', [PaymentController::class, 'invoice']);
     Route::get('payments/{payment}/invoice/view', [PaymentController::class, 'invoiceView']);
-    
+
 
     // Activity Log routes
     Route::apiResource('activity-logs', ActivityLogController::class)->only(['index', 'store', 'show']);
