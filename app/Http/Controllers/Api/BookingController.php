@@ -1606,6 +1606,200 @@ class BookingController extends Controller
     }
 
     /**
+     * Export detailed booking report by package with flexible date filtering
+     *
+     * Query params:
+     * - package_ids: array of package IDs or 'all' (required)
+     * - period_type: 'today', 'weekly', 'monthly', 'custom' (required)
+     * - week_of_month: 1-5 for weekly reports (required if period_type=weekly)
+     * - month: 1-12 (required if period_type=monthly or weekly)
+     * - year: YYYY (required if period_type=monthly or weekly)
+     * - start_date: Y-m-d (required if period_type=custom)
+     * - end_date: Y-m-d (required if period_type=custom)
+     * - view_mode: 'list' or 'individual' (default: individual)
+     * - location_id: filter by location (optional)
+     * - status: filter by status (optional)
+     * - include_cancelled: include cancelled bookings (optional, default: false)
+     */
+    public function bookingDetailsReport(Request $request)
+    {
+        $validated = $request->validate([
+            'package_ids' => 'required',
+            'period_type' => ['required', Rule::in(['today', 'weekly', 'monthly', 'custom'])],
+            'week_of_month' => 'required_if:period_type,weekly|integer|min:1|max:5',
+            'month' => 'required_if:period_type,monthly,weekly|integer|min:1|max:12',
+            'year' => 'required_if:period_type,monthly,weekly|integer|min:2020|max:2050',
+            'start_date' => 'required_if:period_type,custom|date',
+            'end_date' => 'required_if:period_type,custom|date|after_or_equal:start_date',
+            'view_mode' => ['sometimes', Rule::in(['list', 'individual'])],
+            'location_id' => 'sometimes|exists:locations,id',
+            'status' => 'sometimes|string',
+            'include_cancelled' => 'sometimes|boolean',
+        ]);
+
+        $query = Booking::with(['customer', 'package', 'location', 'location.company', 'room', 'attractions', 'addOns', 'payments']);
+
+        // Filter by package
+        if ($validated['package_ids'] !== 'all') {
+            $packageIds = is_array($validated['package_ids'])
+                ? $validated['package_ids']
+                : explode(',', $validated['package_ids']);
+            $query->whereIn('package_id', $packageIds);
+        }
+
+        // Date filtering based on period type
+        $dateRange = null;
+        switch ($validated['period_type']) {
+            case 'today':
+                $today = Carbon::today()->toDateString();
+                $query->whereDate('booking_date', $today);
+                $dateRange = ['start' => $today, 'end' => $today];
+                break;
+
+            case 'weekly':
+                $year = $validated['year'];
+                $month = $validated['month'];
+                $weekOfMonth = $validated['week_of_month'];
+
+                // Calculate start and end of the specified week
+                $firstDayOfMonth = Carbon::create($year, $month, 1);
+                $startOfWeek = $firstDayOfMonth->copy()->addWeeks($weekOfMonth - 1)->startOfWeek();
+                $endOfWeek = $startOfWeek->copy()->endOfWeek();
+
+                // Make sure we don't go outside the month
+                $lastDayOfMonth = $firstDayOfMonth->copy()->endOfMonth();
+                if ($endOfWeek->gt($lastDayOfMonth)) {
+                    $endOfWeek = $lastDayOfMonth;
+                }
+
+                $query->whereBetween('booking_date', [
+                    $startOfWeek->toDateString(),
+                    $endOfWeek->toDateString()
+                ]);
+                $dateRange = [
+                    'start' => $startOfWeek->toDateString(),
+                    'end' => $endOfWeek->toDateString()
+                ];
+                break;
+
+            case 'monthly':
+                $year = $validated['year'];
+                $month = $validated['month'];
+                $startOfMonth = Carbon::create($year, $month, 1);
+                $endOfMonth = $startOfMonth->copy()->endOfMonth();
+
+                $query->whereBetween('booking_date', [
+                    $startOfMonth->toDateString(),
+                    $endOfMonth->toDateString()
+                ]);
+                $dateRange = [
+                    'start' => $startOfMonth->toDateString(),
+                    'end' => $endOfMonth->toDateString()
+                ];
+                break;
+
+            case 'custom':
+                $query->whereBetween('booking_date', [
+                    $validated['start_date'],
+                    $validated['end_date']
+                ]);
+                $dateRange = [
+                    'start' => $validated['start_date'],
+                    'end' => $validated['end_date']
+                ];
+                break;
+        }
+
+        // Filter by location
+        if (isset($validated['location_id'])) {
+            $query->where('location_id', $validated['location_id']);
+        }
+
+        // Role-based filtering
+        if ($request->has('user_id')) {
+            $authUser = User::find($request->user_id);
+            if ($authUser && $authUser->role === 'location_manager') {
+                $query->where('location_id', $authUser->location_id);
+            }
+        }
+
+        // Filter by status
+        if (isset($validated['status'])) {
+            $statuses = is_array($validated['status'])
+                ? $validated['status']
+                : explode(',', $validated['status']);
+            $query->whereIn('status', $statuses);
+        }
+
+        // Exclude cancelled by default
+        if (!($validated['include_cancelled'] ?? false)) {
+            $query->where('status', '!=', 'cancelled');
+        }
+
+        // Sort by date and time
+        $query->orderBy('booking_date', 'asc')->orderBy('booking_time', 'asc');
+
+        $bookings = $query->get();
+
+        if ($bookings->isEmpty()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'No bookings found for the specified criteria'
+            ], 404);
+        }
+
+        // Get package names for report title
+        $packageNames = 'All Packages';
+        if ($validated['package_ids'] !== 'all') {
+            $packageIds = is_array($validated['package_ids'])
+                ? $validated['package_ids']
+                : explode(',', $validated['package_ids']);
+            $packages = \App\Models\Package::whereIn('id', $packageIds)->pluck('name');
+            $packageNames = $packages->join(', ');
+        }
+
+        // Determine view mode
+        $viewMode = $validated['view_mode'] ?? 'individual';
+
+        // Select appropriate view
+        $view = $viewMode === 'list'
+            ? 'exports.booking-details-list'
+            : 'exports.booking-details-individual';
+
+        $pdf = Pdf::loadView($view, [
+            'bookings' => $bookings,
+            'dateRange' => $dateRange,
+            'periodType' => $validated['period_type'],
+            'packageNames' => $packageNames,
+            'viewMode' => $viewMode,
+            'companyName' => config('app.name', 'ZapZone'),
+        ]);
+
+        // Set paper size and orientation
+        $pdf->setPaper('A4', 'portrait');
+
+        // Generate filename
+        $filename = 'booking-details';
+        if ($validated['period_type'] === 'today') {
+            $filename .= '-today-' . Carbon::today()->format('Y-m-d');
+        } elseif ($validated['period_type'] === 'weekly') {
+            $filename .= '-week' . $validated['week_of_month'] . '-' . $validated['year'] . '-' . str_pad($validated['month'], 2, '0', STR_PAD_LEFT);
+        } elseif ($validated['period_type'] === 'monthly') {
+            $filename .= '-' . $validated['year'] . '-' . str_pad($validated['month'], 2, '0', STR_PAD_LEFT);
+        } else {
+            $filename .= '-' . $validated['start_date'] . '-to-' . $validated['end_date'];
+        }
+        $filename .= '-' . $viewMode . '.pdf';
+
+        // Stream or download based on request
+        if ($request->get('stream', false)) {
+            return $pdf->stream($filename);
+        }
+
+        return $pdf->download($filename);
+    }
+
+    /**
      * Send booking reminders for bookings scheduled for tomorrow.
      * Only sends reminders to bookings that haven't been reminded yet
      * and have a valid customer email.

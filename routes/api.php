@@ -246,6 +246,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('bookings/{booking}/summary', [BookingController::class, 'summary']);
     Route::get('bookings/{booking}/summary/view', [BookingController::class, 'summaryView']);
 
+    // Booking Details Report (by package with flexible filtering)
+    Route::get('bookings/details-report', [BookingController::class, 'bookingDetailsReport']);
+
     // Payment Invoice routes (must be before apiResource to avoid route conflicts)
     Route::get('payments/invoices/report', [PaymentController::class, 'invoicesReport']);
     Route::get('payments/invoices/export', [PaymentController::class, 'invoicesExport']);
