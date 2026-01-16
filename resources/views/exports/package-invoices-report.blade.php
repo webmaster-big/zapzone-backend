@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -30,84 +31,84 @@
             padding: 18px;
             margin-bottom: 25px;
         }
-        
+
         .summary-grid {
             display: table;
             width: 100%;
         }
-        
+
         .summary-item {
             display: table-cell;
             width: 25%;
             text-align: center;
             padding: 8px;
         }
-        
+
         .summary-value {
             font-size: 14pt;
             font-weight: 700;
             color: #1a202c;
             margin-bottom: 4px;
         }
-        
+
         .summary-label {
             font-size: 7pt;
             color: #a0aec0;
             text-transform: uppercase;
             letter-spacing: 0.5px;
         }
-        
+
         /* Table */
         table { width: 100%; border-collapse: collapse; margin-bottom: 25px; }
-        thead th { 
-            font-size: 8pt; 
-            font-weight: 600; 
-            color: #718096; 
-            text-transform: uppercase; 
-            letter-spacing: 0.5px; 
-            padding: 12px 8px; 
-            border-bottom: 2px solid #e2e8f0; 
-            text-align: left; 
+        thead th {
+            font-size: 8pt;
+            font-weight: 600;
+            color: #718096;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            padding: 12px 8px;
+            border-bottom: 2px solid #e2e8f0;
+            text-align: left;
         }
         thead th.right { text-align: right; }
-        tbody td { 
-            font-size: 9pt; 
-            padding: 12px 8px; 
-            border-bottom: 1px solid #edf2f7; 
-            color: #2d3748; 
-            vertical-align: top; 
+        tbody td {
+            font-size: 9pt;
+            padding: 12px 8px;
+            border-bottom: 1px solid #edf2f7;
+            color: #2d3748;
+            vertical-align: top;
         }
         tbody td.right { text-align: right; }
         tbody tr:nth-child(even) { background: #f7fafc; }
-        
+
         .invoice-number {
             font-weight: 600;
             color: #1a202c;
             font-size: 9pt;
         }
-        
+
         .booking-ref {
             font-size: 7pt;
             color: #a0aec0;
             margin-top: 2px;
         }
-        
+
         .customer-name {
             font-weight: 500;
             color: #1a202c;
         }
-        
+
         .customer-email {
             font-size: 7pt;
             color: #a0aec0;
             margin-top: 2px;
         }
-        
+
         .amount {
             font-weight: 600;
             font-size: 9pt;
         }
-        
+
         /* Status Badges */
         .status-badge {
             display: inline-block;
@@ -118,12 +119,12 @@
             text-transform: uppercase;
             letter-spacing: 0.5px;
         }
-        
+
         .status-badge.completed { background: #c6f6d5; color: #276749; }
         .status-badge.pending { background: #fefcbf; color: #975a16; }
         .status-badge.failed { background: #fed7d7; color: #c53030; }
         .status-badge.refunded { background: #e9d8fd; color: #6b46c1; }
-        
+
         .method-badge {
             display: inline-block;
             padding: 3px 8px;
@@ -132,10 +133,10 @@
             font-weight: 500;
             letter-spacing: 0.5px;
         }
-        
+
         .method-badge.card { background: #bee3f8; color: #2c5282; }
         .method-badge.cash { background: #c6f6d5; color: #276749; }
-        
+
         /* Breakdown Section */
         .breakdown-section {
             background: #f7fafc;
@@ -144,7 +145,7 @@
             border: 1px solid #e2e8f0;
             margin-bottom: 25px;
         }
-        
+
         .breakdown-title {
             font-size: 9pt;
             font-weight: 600;
@@ -153,19 +154,19 @@
             padding-bottom: 8px;
             border-bottom: 1px solid #e2e8f0;
         }
-        
+
         .breakdown-row {
             display: table;
             width: 100%;
             margin-bottom: 8px;
         }
-        
+
         .breakdown-label {
             display: table-cell;
             font-size: 9pt;
             color: #718096;
         }
-        
+
         .breakdown-value {
             display: table-cell;
             text-align: right;
@@ -173,7 +174,7 @@
             color: #1a202c;
             font-size: 9pt;
         }
-        
+
         /* Totals Section */
         .totals-section {
             display: table;
@@ -181,12 +182,12 @@
             margin-top: 30px;
             margin-bottom: 30px;
         }
-        
+
         .totals-spacer {
             display: table-cell;
             width: 55%;
         }
-        
+
         .totals-box {
             display: table-cell;
             width: 45%;
@@ -195,20 +196,20 @@
             border-radius: 4px;
             border: 1px solid #e2e8f0;
         }
-        
+
         .total-line {
             display: table;
             width: 100%;
             margin-bottom: 10px;
         }
-        
+
         .total-label {
             display: table-cell;
             font-size: 9pt;
             color: #718096;
             padding: 4px 0;
         }
-        
+
         .total-value {
             display: table-cell;
             text-align: right;
@@ -219,20 +220,20 @@
         }
 
         /* Footer */
-        .footer { 
-            text-align: center; 
-            padding-top: 25px; 
-            margin-top: 30px; 
-            border-top: 1px solid #e2e8f0; 
+        .footer {
+            text-align: center;
+            padding-top: 25px;
+            margin-top: 30px;
+            border-top: 1px solid #e2e8f0;
         }
-        .footer-thanks { 
-            font-size: 10pt; 
-            color: #4a5568; 
-            margin-bottom: 6px; 
+        .footer-thanks {
+            font-size: 10pt;
+            color: #4a5568;
+            margin-bottom: 6px;
         }
-        .footer-meta { 
-            font-size: 8pt; 
-            color: #a0aec0; 
+        .footer-meta {
+            font-size: 8pt;
+            color: #a0aec0;
         }
     </style>
 </head>
@@ -308,7 +309,7 @@
                 @endif
             </div>
         </div>
-    
+
         <!-- Summary Box -->
         <div class="summary-box">
             <div class="summary-grid">
@@ -330,7 +331,7 @@
                 </div>
             </div>
         </div>
-    
+
         <!-- Invoice Table -->
         <table>
             <thead>
@@ -391,7 +392,7 @@
                 @endforeach
             </tbody>
         </table>
-    
+
         <!-- Breakdown Section -->
         <div class="breakdown-section">
             <div class="breakdown-title">Payment Status Breakdown</div>
@@ -410,7 +411,7 @@
                 </div>
             @endif
         </div>
-    
+
         <!-- Totals Section -->
         <div class="totals-section">
             <div class="totals-spacer"></div>
@@ -425,7 +426,7 @@
                 </div>
             </div>
         </div>
-    
+
         <!-- Footer -->
         <div class="footer">
             <div class="footer-thanks">{{ $package->name }} - Invoice Report</div>
