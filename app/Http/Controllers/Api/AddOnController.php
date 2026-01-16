@@ -92,10 +92,15 @@ class AddOnController extends Controller
         $validated = $request->validate([
             'location_id' => 'nullable|exists:locations,id',
             'name' => 'required|string|max:255',
-            'price' => 'required|numeric|min:0',
+            'price' => 'nullable|numeric|min:0',
             'description' => 'nullable|string',
             'image' => 'nullable|string|max:27262976',
             'is_active' => 'boolean',
+            'is_force_add_on' => 'boolean',
+            'price_each_packages' => 'nullable|array',
+            'price_each_packages.*.package_id' => 'required_with:price_each_packages|integer|exists:packages,id',
+            'price_each_packages.*.price' => 'required_with:price_each_packages|numeric|min:0',
+            'price_each_packages.*.minimum_quantity' => 'nullable|integer|min:1',
             'min_quantity' => 'sometimes|integer|min:1',
             'max_quantity' => 'sometimes|nullable|integer|min:1|gte:min_quantity',
         ]);
@@ -144,10 +149,15 @@ class AddOnController extends Controller
         $validated = $request->validate([
             'location_id' => 'sometimes|nullable|exists:locations,id',
             'name' => 'sometimes|string|max:255',
-            'price' => 'sometimes|numeric|min:0',
+            'price' => 'sometimes|nullable|numeric|min:0',
             'description' => 'sometimes|nullable|string',
             'image' => 'nullable|string|max:27262976',
             'is_active' => 'sometimes|boolean',
+            'is_force_add_on' => 'sometimes|boolean',
+            'price_each_packages' => 'sometimes|nullable|array',
+            'price_each_packages.*.package_id' => 'required_with:price_each_packages|integer|exists:packages,id',
+            'price_each_packages.*.price' => 'required_with:price_each_packages|numeric|min:0',
+            'price_each_packages.*.minimum_quantity' => 'nullable|integer|min:1',
             'min_quantity' => 'sometimes|integer|min:1',
             'max_quantity' => 'sometimes|nullable|integer|min:1|gte:min_quantity',
         ]);
@@ -380,11 +390,15 @@ class AddOnController extends Controller
             'add_ons.*.location_id' => 'nullable|exists:locations,id',
             'add_ons.*.locationId' => 'nullable|exists:locations,id',
             'add_ons.*.name' => 'required|string|max:255',
-            'add_ons.*.price' => 'required|numeric|min:0',
+            'add_ons.*.price' => 'nullable|numeric|min:0',
             'add_ons.*.description' => 'nullable|string',
             'add_ons.*.image' => 'nullable|string|max:27262976',
             'add_ons.*.is_active' => 'nullable|boolean',
             'add_ons.*.isActive' => 'nullable|boolean',
+            'add_ons.*.is_force_add_on' => 'nullable|boolean',
+            'add_ons.*.isForceAddOn' => 'nullable|boolean',
+            'add_ons.*.price_each_packages' => 'nullable|array',
+            'add_ons.*.priceEachPackages' => 'nullable|array',
             'add_ons.*.min_quantity' => 'nullable|integer|min:1',
             'add_ons.*.minQuantity' => 'nullable|integer|min:1',
             'add_ons.*.max_quantity' => 'nullable|integer|min:1',
@@ -399,7 +413,7 @@ class AddOnController extends Controller
                 // Map camelCase to snake_case fields
                 $mappedData = [
                     'name' => $addOnData['name'],
-                    'price' => $addOnData['price'],
+                    'price' => $addOnData['price'] ?? null,
                     'description' => $addOnData['description'] ?? null,
                     'location_id' => $addOnData['location_id'] ?? $addOnData['locationId'] ?? null,
                     'min_quantity' => $addOnData['min_quantity'] ?? $addOnData['minQuantity'] ?? 1,
@@ -413,6 +427,24 @@ class AddOnController extends Controller
                     $mappedData['is_active'] = $addOnData['is_active'];
                 } else {
                     $mappedData['is_active'] = true;
+                }
+
+                // Handle is_force_add_on field
+                if (isset($addOnData['isForceAddOn'])) {
+                    $mappedData['is_force_add_on'] = $addOnData['isForceAddOn'];
+                } elseif (isset($addOnData['is_force_add_on'])) {
+                    $mappedData['is_force_add_on'] = $addOnData['is_force_add_on'];
+                } else {
+                    $mappedData['is_force_add_on'] = false;
+                }
+
+                // Handle price_each_packages field
+                if (isset($addOnData['priceEachPackages'])) {
+                    $mappedData['price_each_packages'] = $addOnData['priceEachPackages'];
+                } elseif (isset($addOnData['price_each_packages'])) {
+                    $mappedData['price_each_packages'] = $addOnData['price_each_packages'];
+                } else {
+                    $mappedData['price_each_packages'] = null;
                 }
 
                 // Handle image upload if provided

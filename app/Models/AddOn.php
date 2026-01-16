@@ -18,6 +18,8 @@ class AddOn extends Model
         'description',
         'image',
         'is_active',
+        'is_force_add_on',
+        'price_each_packages',
         'min_quantity',
         'max_quantity',
     ];
@@ -25,6 +27,8 @@ class AddOn extends Model
     protected $casts = [
         'price' => 'decimal:2',
         'is_active' => 'boolean',
+        'is_force_add_on' => 'boolean',
+        'price_each_packages' => 'array',
         'min_quantity' => 'integer',
         'max_quantity' => 'integer',
     ];
