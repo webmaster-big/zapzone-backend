@@ -204,8 +204,6 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Day Off additional routes
     Route::apiResource('day-offs', DayOffController::class);
-
-    Route::get('day-offs/location/{locationId}', [DayOffController::class, 'getByLocation']);
     Route::post('day-offs/check-date', [DayOffController::class, 'checkDate']);
     Route::post('day-offs/bulk-delete', [DayOffController::class, 'bulkDelete']);
 
