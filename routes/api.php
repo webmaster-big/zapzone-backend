@@ -89,8 +89,9 @@ Route::post('shareable-tokens', [ShareableTokenController::class, 'store']);
 // Public contact deactivate (for email unsubscribe links)
 Route::post('contacts/deactivate', [ContactController::class, 'deactivate']);
 
-// Public Day Off resource
-Route::apiResource('day-offs', DayOffController::class);
+// Public Day Off
+Route::get('day-offs/location/{locationId}', [DayOffController::class, 'getByLocation']);
+
 
 // Protected routes (require authentication)
 Route::middleware('auth:sanctum')->group(function () {
@@ -202,6 +203,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('rooms/bulk-delete', [RoomController::class, 'bulkDelete']);
 
     // Day Off additional routes
+    Route::apiResource('day-offs', DayOffController::class);
+
     Route::get('day-offs/location/{locationId}', [DayOffController::class, 'getByLocation']);
     Route::post('day-offs/check-date', [DayOffController::class, 'checkDate']);
     Route::post('day-offs/bulk-delete', [DayOffController::class, 'bulkDelete']);
