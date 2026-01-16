@@ -1623,6 +1623,11 @@ class BookingController extends Controller
      */
     public function bookingDetailsReport(Request $request)
     {
+        Log::info('Booking details report generation initiated', [
+            'user_id' => $request->user_id ?? auth()->id(),
+            'request_params' => $request->all(),
+        ]);
+
         $validated = $request->validate([
             'package_ids' => 'required',
             'period_type' => ['required', Rule::in(['today', 'weekly', 'monthly', 'custom'])],
@@ -1635,6 +1640,12 @@ class BookingController extends Controller
             'location_id' => 'sometimes|exists:locations,id',
             'status' => 'sometimes|string',
             'include_cancelled' => 'sometimes|boolean',
+        ]);
+
+        Log::info('Report parameters validated', [
+            'package_ids' => $validated['package_ids'],
+            'period_type' => $validated['period_type'],
+            'view_mode' => $validated['view_mode'] ?? 'individual',
         ]);
 
         $query = Booking::with(['customer', 'package', 'location', 'location.company', 'room', 'attractions', 'addOns', 'payments']);
@@ -1741,7 +1752,19 @@ class BookingController extends Controller
 
         $bookings = $query->get();
 
+        Log::info('Bookings queried for report', [
+            'total_bookings_found' => $bookings->count(),
+            'date_range' => $dateRange,
+            'period_type' => $validated['period_type'],
+        ]);
+
         if ($bookings->isEmpty()) {
+            Log::warning('No bookings found for report criteria', [
+                'period_type' => $validated['period_type'],
+                'date_range' => $dateRange,
+                'package_ids' => $validated['package_ids'],
+            ]);
+
             return response()->json([
                 'success' => false,
                 'message' => 'No bookings found for the specified criteria'
@@ -1790,6 +1813,15 @@ class BookingController extends Controller
             $filename .= '-' . $validated['start_date'] . '-to-' . $validated['end_date'];
         }
         $filename .= '-' . $viewMode . '.pdf';
+
+        Log::info('Booking details report generated successfully', [
+            'filename' => $filename,
+            'total_bookings' => $bookings->count(),
+            'view_mode' => $viewMode,
+            'package_names' => $packageNames,
+            'date_range' => $dateRange,
+            'stream' => $request->get('stream', false),
+        ]);
 
         // Stream or download based on request
         if ($request->get('stream', false)) {
