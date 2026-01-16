@@ -1750,12 +1750,20 @@ class BookingController extends Controller
         // Sort by date and time
         $query->orderBy('booking_date', 'asc')->orderBy('booking_time', 'asc');
 
+        // Log the SQL query for debugging
+        Log::info('SQL Query for booking details report', [
+            'sql' => $query->toSql(),
+            'bindings' => $query->getBindings(),
+        ]);
+
         $bookings = $query->get();
 
         Log::info('Bookings queried for report', [
             'total_bookings_found' => $bookings->count(),
             'date_range' => $dateRange,
             'period_type' => $validated['period_type'],
+            'package_ids' => $validated['package_ids'],
+            'user_id' => $request->user_id ?? null,
         ]);
 
         if ($bookings->isEmpty()) {

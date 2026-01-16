@@ -228,6 +228,15 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Booking routes
     Route::get('bookings/export', [BookingController::class, 'exportIndex']);
+    
+    // Booking Details Report (by package with flexible filtering) - MUST be before apiResource
+    Route::get('bookings/details-report', [BookingController::class, 'bookingDetailsReport']);
+    
+    // Booking Summary PDF routes - MUST be before apiResource
+    Route::get('bookings/summaries/export', [BookingController::class, 'summariesExport']);
+    Route::get('bookings/summaries/day/{date}', [BookingController::class, 'summariesDay']);
+    Route::get('bookings/summaries/week/{week?}', [BookingController::class, 'summariesWeek']);
+    
     Route::apiResource('bookings', BookingController::class)->except(['store']);
     Route::patch('bookings/{booking}/cancel', [BookingController::class, 'cancel']);
     Route::post('bookings/check-in', [BookingController::class, 'checkIn']);
@@ -238,16 +247,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('bookings/{booking}/payment-status', [BookingController::class, 'updatePaymentStatus']);
     Route::patch('bookings/{booking}/internal-notes', [BookingController::class, 'updateInternalNotes']);
     Route::post('bookings/bulk-delete', [BookingController::class, 'bulkDelete']);
-
-    // Booking Summary PDF routes
-    Route::get('bookings/summaries/export', [BookingController::class, 'summariesExport']);
-    Route::get('bookings/summaries/day/{date}', [BookingController::class, 'summariesDay']);
-    Route::get('bookings/summaries/week/{week?}', [BookingController::class, 'summariesWeek']);
     Route::get('bookings/{booking}/summary', [BookingController::class, 'summary']);
     Route::get('bookings/{booking}/summary/view', [BookingController::class, 'summaryView']);
-
-    // Booking Details Report (by package with flexible filtering)
-    Route::get('bookings/details-report', [BookingController::class, 'bookingDetailsReport']);
 
     // Payment Invoice routes (must be before apiResource to avoid route conflicts)
     Route::get('payments/invoices/report', [PaymentController::class, 'invoicesReport']);
