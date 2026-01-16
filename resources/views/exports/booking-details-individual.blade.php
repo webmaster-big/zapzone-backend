@@ -337,7 +337,7 @@
                             <span class="detail-value">{{ $booking->location?->name ?? 'N/A' }}</span>
                         </div>
                         <div class="detail-item">
-                            <span class="detail-label">Room</span>
+                            <span class="detail-label">Space</span>
                             <span class="detail-value">{{ $booking->room?->name ?? 'Not assigned' }}</span>
                         </div>
                     </div>

@@ -12,39 +12,55 @@
 
         body {
             font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-            font-size: 10pt;
+            font-size: 8pt;
             line-height: 1.3;
-            color: #333;
-            padding: 20px;
+            color: #1f2937;
+            padding: 20px 25px;
         }
 
         /* Header */
         .header {
-            text-align: center;
-            margin-bottom: 20px;
-            padding-bottom: 15px;
-            border-bottom: 3px solid #2563eb;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #e5e7eb;
         }
 
-        .header h1 {
-            font-size: 22pt;
-            color: #1e40af;
+        .header-left {
+            flex: 1;
+        }
+
+        .header-right {
+            text-align: right;
+        }
+
+        .logo {
+            max-height: 35px;
+            max-width: 140px;
             margin-bottom: 5px;
         }
 
+        .header h1 {
+            font-size: 14pt;
+            color: #374151;
+            font-weight: 600;
+            margin-bottom: 3px;
+        }
+
         .header .subtitle {
-            font-size: 10pt;
-            color: #64748b;
-            margin-top: 5px;
+            font-size: 7pt;
+            color: #6b7280;
+            line-height: 1.4;
         }
 
         .summary-stats {
             display: flex;
             justify-content: space-around;
-            margin: 15px 0;
-            padding: 12px;
-            background: #f8fafc;
-            border-radius: 6px;
+            margin: 12px 0;
+            padding: 10px;
+            background: #f9fafb;
         }
 
         .stat-item {
@@ -52,25 +68,25 @@
         }
 
         .stat-label {
-            font-size: 9pt;
-            color: #64748b;
+            font-size: 7pt;
+            color: #6b7280;
             text-transform: uppercase;
             font-weight: 600;
+            letter-spacing: 0.5px;
         }
 
         .stat-value {
-            font-size: 16pt;
-            color: #1e40af;
+            font-size: 12pt;
+            color: #374151;
             font-weight: 700;
             margin-top: 3px;
         }
 
         /* Booking Card */
         .booking-card {
-            border: 1px solid #e2e8f0;
-            border-radius: 8px;
-            padding: 15px;
-            margin-bottom: 15px;
+            border: 1px solid #e5e7eb;
+            padding: 10px;
+            margin-bottom: 10px;
             background: #ffffff;
             page-break-inside: avoid;
         }
@@ -79,32 +95,34 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding-bottom: 10px;
-            border-bottom: 2px solid #f1f5f9;
-            margin-bottom: 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #f3f4f6;
+            margin-bottom: 8px;
         }
 
         .booking-ref {
-            font-size: 12pt;
+            font-size: 10pt;
             font-weight: 700;
-            color: #1e40af;
+            color: #111827;
         }
 
         .booking-date {
-            font-size: 10pt;
-            color: #475569;
+            font-size: 7pt;
+            color: #6b7280;
+            margin-top: 2px;
         }
 
         .status-badge {
             display: inline-block;
-            padding: 3px 10px;
-            border-radius: 10px;
-            font-size: 8pt;
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 6pt;
             font-weight: 600;
             text-transform: uppercase;
+            letter-spacing: 0.5px;
         }
 
-        .status-confirmed { background: #dcfce7; color: #166534; }
+        .status-confirmed { background: #d1fae5; color: #065f46; }
         .status-pending { background: #fef3c7; color: #92400e; }
         .status-completed { background: #dbeafe; color: #1e40af; }
         .status-cancelled { background: #fee2e2; color: #991b1b; }
@@ -113,8 +131,8 @@
         .booking-body {
             display: grid;
             grid-template-columns: 1fr 1fr 1fr;
-            gap: 12px;
-            font-size: 9pt;
+            gap: 10px;
+            font-size: 7pt;
         }
 
         .info-group {
@@ -123,26 +141,26 @@
         }
 
         .info-label {
-            color: #64748b;
+            color: #6b7280;
             font-weight: 600;
-            font-size: 8pt;
+            font-size: 6pt;
             text-transform: uppercase;
             letter-spacing: 0.5px;
-            margin-bottom: 3px;
+            margin-bottom: 2px;
         }
 
         .info-value {
-            color: #0f172a;
-            font-size: 9pt;
+            color: #111827;
+            font-size: 7pt;
         }
 
         .booking-footer {
             display: flex;
             justify-content: space-between;
-            margin-top: 12px;
-            padding-top: 10px;
-            border-top: 1px solid #f1f5f9;
-            font-size: 9pt;
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px solid #f3f4f6;
+            font-size: 7pt;
         }
 
         .payment-info {
@@ -163,12 +181,19 @@
 
         .extras-badge {
             display: inline-block;
-            background: #f1f5f9;
-            padding: 2px 8px;
-            border-radius: 8px;
-            font-size: 8pt;
-            color: #475569;
-            margin-right: 5px;
+            background: #f3f4f6;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 6pt;
+            color: #6b7280;
+            margin-right: 4px;
+        }
+
+        .guest-honor-box {
+            margin-top: 8px;
+            padding: 6px;
+            background: #fef3c7;
+            font-size: 7pt;
         }
 
         /* Page Break */
@@ -178,52 +203,62 @@
 
         /* Footer */
         .report-footer {
-            margin-top: 20px;
-            padding-top: 15px;
-            border-top: 2px solid #e2e8f0;
+            margin-top: 15px;
+            padding-top: 10px;
+            border-top: 1px solid #e5e7eb;
             text-align: center;
-            font-size: 9pt;
-            color: #64748b;
+            font-size: 7pt;
+            color: #9ca3af;
         }
     </style>
 </head>
 <body>
     <!-- Report Header -->
     <div class="header">
-        <h1>{{ $companyName ?? 'Booking Details Report' }}</h1>
-        <div class="subtitle">
-            <strong>Period:</strong>
-            @if($periodType === 'today')
-                Today ({{ \Carbon\Carbon::parse($dateRange['start'])->format('F j, Y') }})
-            @elseif($periodType === 'weekly')
-                Week {{ \Carbon\Carbon::parse($dateRange['start'])->format('W, Y') }}
-                ({{ \Carbon\Carbon::parse($dateRange['start'])->format('M j') }} - {{ \Carbon\Carbon::parse($dateRange['end'])->format('M j, Y') }})
-            @elseif($periodType === 'monthly')
-                {{ \Carbon\Carbon::parse($dateRange['start'])->format('F Y') }}
-            @else
-                {{ \Carbon\Carbon::parse($dateRange['start'])->format('M j, Y') }} - {{ \Carbon\Carbon::parse($dateRange['end'])->format('M j, Y') }}
+        <div class="header-left">
+            @if(isset($companyLogo))
+                <img src="{{ $companyLogo }}" alt="Company Logo" class="logo">
             @endif
-            <br>
-            <strong>Package(s):</strong> {{ $packageNames }}
+            <h1>Booking Details Report</h1>
+            <div class="subtitle">
+                <strong>Period:</strong>
+                @if($periodType === 'today')
+                    Today ({{ \Carbon\Carbon::parse($dateRange['start'])->format('M j, Y') }})
+                @elseif($periodType === 'weekly')
+                    Week {{ \Carbon\Carbon::parse($dateRange['start'])->format('W, Y') }}
+                    ({{ \Carbon\Carbon::parse($dateRange['start'])->format('M j') }} - {{ \Carbon\Carbon::parse($dateRange['end'])->format('M j, Y') }})
+                @elseif($periodType === 'monthly')
+                    {{ \Carbon\Carbon::parse($dateRange['start'])->format('F Y') }}
+                @else
+                    {{ \Carbon\Carbon::parse($dateRange['start'])->format('M j, Y') }} - {{ \Carbon\Carbon::parse($dateRange['end'])->format('M j, Y') }}
+                @endif
+                <br>
+                <strong>Package(s):</strong> {{ $packageNames }}
+            </div>
+        </div>
+        <div class="header-right">
+            <div style="font-size: 7pt; color: #9ca3af;">
+                Generated on<br>{{ \Carbon\Carbon::now()->format('M j, Y g:i A') }}
+            </div>
         </div>
     </div>
 
     <!-- Summary Statistics -->
     <div class="summary-stats">
         <div class="stat-item">
-            <div class="stat-label">Total Bookings</div>
+            <div class="stat-label">Bookings</div>
             <div class="stat-value">{{ $bookings->count() }}</div>
         </div>
         <div class="stat-item">
-            <div class="stat-label">Total Revenue</div>
+            <div class="stat-label">Revenue</div>
             <div class="stat-value">${{ number_format($bookings->sum('total_amount'), 2) }}</div>
         </div>
         <div class="stat-item">
-            <div class="stat-label">Total Paid</div>
+            <div class="stat-label">Paid</div>
             <div class="stat-value">${{ number_format($bookings->sum('amount_paid'), 2) }}</div>
         </div>
         <div class="stat-item">
-            <div class="stat-label">Total Participants</div>
+            <div class="stat-label">Participants</div>
             <div class="stat-value">{{ $bookings->sum('participants') }}</div>
         </div>
     </div>
@@ -284,23 +319,20 @@
                 </div>
 
                 <div class="info-group">
-                    <span class="info-label">Room/Space</span>
+                    <span class="info-label">Space</span>
                     <span class="info-value">{{ $booking->room?->name ?? 'Not assigned' }}</span>
                 </div>
 
                 <div class="info-group">
                     <span class="info-label">Participants</span>
-                    <span class="info-value">{{ $booking->participants }} people</span>
+                    <span class="info-value">{{ $booking->participants }}</span>
                 </div>
             </div>
 
             <!-- Guest of Honor -->
             @if($booking->guest_of_honor_name)
-            <div style="margin-top: 10px; padding: 8px; background: #fef3c7; border-radius: 4px; font-size: 9pt;">
-                <strong>Guest of Honor:</strong> {{ $booking->guest_of_honor_name }}
-                @if($booking->guest_of_honor_age)
-                    (Age: {{ $booking->guest_of_honor_age }})
-                @endif
+            <div class="guest-honor-box">
+                <strong>Guest of Honor:</strong> {{ $booking->guest_of_honor_name }}@if($booking->guest_of_honor_age), Age: {{ $booking->guest_of_honor_age }}@endif
             </div>
             @endif
 
@@ -319,7 +351,7 @@
                     ${{ number_format($booking->amount_paid ?? 0, 2) }} / ${{ number_format($booking->total_amount, 2) }}
                     @if(($booking->total_amount - ($booking->amount_paid ?? 0)) > 0)
                         <span style="color: #dc2626;">
-                            (Balance: ${{ number_format($booking->total_amount - ($booking->amount_paid ?? 0), 2) }})
+                            (Bal: ${{ number_format($booking->total_amount - ($booking->amount_paid ?? 0), 2) }})
                         </span>
                     @else
                         <span style="color: #16a34a;">✓ Paid</span>
@@ -336,8 +368,6 @@
 
     <!-- Report Footer -->
     <div class="report-footer">
-        Generated on {{ \Carbon\Carbon::now()->format('F j, Y \a\t g:i A') }}
-        <br>
         Total: {{ $bookings->count() }} bookings
     </div>
 </body>
