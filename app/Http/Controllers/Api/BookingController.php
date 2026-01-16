@@ -1612,7 +1612,14 @@ class BookingController extends Controller
      */
     private function sendBookingReminders(): void
     {
+        $today = Carbon::now()->toDateString();
         $tomorrow = Carbon::tomorrow()->toDateString();
+
+        Log::info('Checking for booking reminders', [
+            'current_date' => $today,
+            'tomorrow_date' => $tomorrow,
+            'checking_for_bookings_on' => $tomorrow,
+        ]);
 
         // Get all bookings for tomorrow that haven't been reminded yet
         $bookingsToRemind = Booking::with(['customer', 'package', 'location', 'location.company', 'room'])
@@ -1621,7 +1628,27 @@ class BookingController extends Controller
             ->whereIn('status', ['confirmed', 'pending']) // Only remind for active bookings
             ->get();
 
+        Log::info('Bookings found for reminder check', [
+            'count' => $bookingsToRemind->count(),
+            'tomorrow_date' => $tomorrow,
+        ]);
+
+        if ($bookingsToRemind->isEmpty()) {
+            Log::info('No bookings require reminders at this time', [
+                'tomorrow_date' => $tomorrow,
+            ]);
+            return;
+        }
+
         foreach ($bookingsToRemind as $booking) {
+            Log::info('Processing booking for reminder', [
+                'booking_id' => $booking->id,
+                'reference_number' => $booking->reference_number,
+                'booking_date' => $booking->booking_date,
+                'is_tomorrow' => $booking->booking_date === $tomorrow,
+                'reminder_sent' => $booking->reminder_sent,
+                'status' => $booking->status,
+            ]);
             // Determine recipient email
             $recipientEmail = $booking->customer?->email ?? $booking->guest_email;
 
