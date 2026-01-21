@@ -61,15 +61,18 @@ class GmailApiService
         $this->service = new Gmail($this->client);
     }
 
-    public function sendEmail($to, $subject, $htmlBody, $fromName = 'Zap Zone', $attachments = [])
+    public function sendEmail($to, $subject, $htmlBody, $fromName = null, $attachments = [])
     {
         try {
+            // Use config for sender name if not provided
+            $fromName = $fromName ?? config('gmail.sender_name', 'Zap Zone');
+            
             // Process inline images - embed them in the email
             $inlineImages = [];
             $htmlBody = $this->processInlineImages($htmlBody, $inlineImages);
 
             $message = $this->createMessage(
-                'webmaster@bestingames.com',
+                config('gmail.sender_email', 'bookings@zap-zone.com'),
                 $to,
                 $subject,
                 $htmlBody,

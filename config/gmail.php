@@ -14,7 +14,9 @@ return [
 
     'enabled' => env('USE_GMAIL_API', false),
 
-    'sender_email' => env('GMAIL_SENDER_EMAIL', 'webmaster@bestingames.com'),
+    'sender_email' => env('GMAIL_SENDER_EMAIL', 'bookings@zap-zone.com'),
+    
+    'sender_name' => env('GMAIL_SENDER_NAME', 'Zap Zone'),
 
     // Service Account Credentials
     'credentials' => [
