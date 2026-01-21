@@ -43,6 +43,31 @@ Route::get('authorize-net/accounts/all', [AuthorizeNetAccountController::class, 
 Route::post('authorize-net/test-connection', [AuthorizeNetAccountController::class, 'testConnection'])->middleware('auth:sanctum');
 Route::post('authorize-net/test-connection/{locationId}', [AuthorizeNetAccountController::class, 'testConnectionForLocation'])->middleware('auth:sanctum');
 
+// DEBUG: Check credentials for a location (REMOVE IN PRODUCTION)
+Route::get('authorize-net/debug/{locationId}', function ($locationId) {
+    $account = \App\Models\AuthorizeNetAccount::where('location_id', $locationId)->first();
+    if (!$account) {
+        return response()->json(['error' => 'No account found']);
+    }
+    try {
+        $apiLoginId = $account->api_login_id;
+        $transactionKey = $account->transaction_key;
+        $publicKey = $account->public_client_key;
+        return response()->json([
+            'environment' => $account->environment,
+            'api_login_id' => $apiLoginId,
+            'api_login_id_length' => strlen($apiLoginId),
+            'transaction_key_length' => strlen($transactionKey),
+            'public_client_key_preview' => $publicKey ? substr($publicKey, 0, 20) . '...' : 'NOT SET',
+            'public_client_key_length' => strlen($publicKey ?? ''),
+            'is_active' => $account->is_active,
+            'connected_at' => $account->connected_at,
+        ]);
+    } catch (\Exception $e) {
+        return response()->json(['error' => $e->getMessage()]);
+    }
+});
+
 // Public package and attraction browsing
 Route::get('/packages/grouped-by-name', [PackageController::class, 'packagesGroupedByName']);
 Route::get('/packages/{id}', [PackageController::class, 'show']);
