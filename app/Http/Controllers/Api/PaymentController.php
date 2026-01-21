@@ -531,13 +531,23 @@ class PaymentController extends Controller
             }
 
             // Add order information if provided
+            // Authorize.Net invoiceNumber max length is 20 characters
             if ($request->order_id) {
                 $order = new AnetAPI\OrderType();
-                $order->setInvoiceNumber($request->order_id);
+                $invoiceNumber = substr($request->order_id, 0, 20);
+                $order->setInvoiceNumber($invoiceNumber);
                 if ($request->description) {
-                    $order->setDescription($request->description);
+                    $order->setDescription(substr($request->description, 0, 255)); // Max 255 chars
                 }
                 $transactionRequestType->setOrder($order);
+                
+                if (strlen($request->order_id) > 20) {
+                    Log::warning('Order ID truncated for Authorize.Net', [
+                        'original' => $request->order_id,
+                        'truncated' => $invoiceNumber,
+                        'original_length' => strlen($request->order_id)
+                    ]);
+                }
             }
 
             // 6. Create and execute the request
