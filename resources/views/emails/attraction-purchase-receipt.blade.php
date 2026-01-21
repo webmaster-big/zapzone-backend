@@ -521,7 +521,10 @@
                                         @endphp
                                         <p style="margin: 4px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #9ca3af;">Thank you for choosing {{ $companyName ?? 'our attractions' }}!</p>
                                         <p style="margin: 4px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #9ca3af;">
-                                            If you have any questions, please contact us@if($locationPhone) at <a href="tel:{{ $locationPhone }}" style="color: #1e40af; text-decoration: none;">{{ $locationPhone }}</a>@endif.
+                                            If you have any questions, please contact us
+                                            @if($locationPhone)
+                                                at <a href="tel:{{ $locationPhone }}" style="color: #1e40af; text-decoration: none;">{{ $locationPhone }}</a>
+                                            @endif.
                                         </p>
                                         <p style="margin: 8px 0 4px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #9ca3af;">This is an automated email. Please do not reply to this message.</p>
                                     </td>
