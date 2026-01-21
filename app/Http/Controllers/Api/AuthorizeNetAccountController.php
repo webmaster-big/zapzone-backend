@@ -463,6 +463,10 @@ class AuthorizeNetAccountController extends Controller
                 'api_login_id' => $apiLoginId,
                 'client_key' => $publicClientKey,
                 'environment' => $account->environment,
+                // Include Accept.js script URL to help frontend load correct script
+                'accept_js_url' => $account->environment === 'production'
+                    ? 'https://js.authorize.net/v1/Accept.js'
+                    : 'https://jstest.authorize.net/v1/Accept.js',
             ]);
 
         } catch (\Exception $e) {
@@ -594,6 +598,122 @@ class AuthorizeNetAccountController extends Controller
 
         } catch (\Exception $e) {
             Log::error('Failed to test Authorize.Net connection', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to test connection',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Test Authorize.Net credentials for a specific location (admin use)
+     */
+    public function testConnectionForLocation(Request $request, $locationId)
+    {
+        $account = AuthorizeNetAccount::where('location_id', $locationId)->first();
+
+        if (!$account) {
+            return response()->json([
+                'message' => 'No Authorize.Net account found for this location'
+            ], 404);
+        }
+
+        try {
+            // Try to decrypt credentials
+            $apiLoginId = $account->api_login_id;
+            $transactionKey = $account->transaction_key;
+
+            Log::info('Testing Authorize.Net connection for location', [
+                'location_id' => $locationId,
+                'account_id' => $account->id,
+                'environment' => $account->environment,
+                'api_login_id_preview' => substr($apiLoginId, 0, 4) . '...' . substr($apiLoginId, -2),
+                'api_login_id_length' => strlen($apiLoginId),
+                'transaction_key_length' => strlen($transactionKey)
+            ]);
+
+            // Use the official Authorize.Net SDK for authentication testing
+            $merchantAuthentication = new \net\authorize\api\contract\v1\MerchantAuthenticationType();
+            $merchantAuthentication->setName($apiLoginId);
+            $merchantAuthentication->setTransactionKey($transactionKey);
+
+            // Use getMerchantDetailsRequest to validate credentials
+            $apiRequest = new \net\authorize\api\contract\v1\GetMerchantDetailsRequest();
+            $apiRequest->setMerchantAuthentication($merchantAuthentication);
+
+            // Set the environment
+            $environment = $account->environment === 'production'
+                ? \net\authorize\api\constants\ANetEnvironment::PRODUCTION
+                : \net\authorize\api\constants\ANetEnvironment::SANDBOX;
+
+            $controller = new \net\authorize\api\controller\GetMerchantDetailsController($apiRequest);
+            $response = $controller->executeWithApiResponse($environment);
+
+            Log::info('Authorize.Net test response for location', [
+                'location_id' => $locationId,
+                'response_received' => $response !== null,
+                'result_code' => $response ? $response->getMessages()->getResultCode() : 'null'
+            ]);
+
+            // Update last tested timestamp
+            $account->update(['last_tested_at' => now()]);
+
+            if ($response !== null && $response->getMessages()->getResultCode() === "Ok") {
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Credentials are valid',
+                    'environment' => $account->environment,
+                    'tested_at' => now(),
+                    'merchant_name' => $response->getMerchantName(),
+                    'gateway_id' => $response->getGatewayId(),
+                ]);
+            } else {
+                $errorMessages = [];
+                if ($response !== null && $response->getMessages()->getMessage()) {
+                    foreach ($response->getMessages()->getMessage() as $message) {
+                        $errorMessages[] = [
+                            'code' => $message->getCode(),
+                            'text' => $message->getText()
+                        ];
+                    }
+                }
+
+                Log::warning('Authorize.Net authentication test failed for location', [
+                    'location_id' => $locationId,
+                    'account_id' => $account->id,
+                    'environment' => $account->environment,
+                    'errors' => $errorMessages
+                ]);
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Authentication failed - credentials may be incorrect',
+                    'environment' => $account->environment,
+                    'tested_at' => now(),
+                    'errors' => $errorMessages
+                ]);
+            }
+
+        } catch (\Illuminate\Contracts\Encryption\DecryptException $e) {
+            Log::error('Cannot test - decryption failed for location', [
+                'location_id' => $locationId,
+                'error' => $e->getMessage()
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Credentials are encrypted with a different key. Please reconnect the account.',
+                'credentials_valid' => false
+            ], 500);
+
+        } catch (\Exception $e) {
+            Log::error('Failed to test Authorize.Net connection for location', [
+                'location_id' => $locationId,
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString()
             ]);

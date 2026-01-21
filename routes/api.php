@@ -40,6 +40,7 @@ Route::post('customer-login', [ApiAuthController::class, 'customerLogin']);
 Route::get('authorize-net/public-key/{locationId}', [AuthorizeNetAccountController::class, 'getPublicKey']);
 Route::get('authorize-net/accounts/all', [AuthorizeNetAccountController::class, 'allAccounts']);
 Route::post('authorize-net/test-connection', [AuthorizeNetAccountController::class, 'testConnection'])->middleware('auth:sanctum');
+Route::post('authorize-net/test-connection/{locationId}', [AuthorizeNetAccountController::class, 'testConnectionForLocation'])->middleware('auth:sanctum');
 
 // Public package and attraction browsing
 Route::get('/packages/grouped-by-name', [PackageController::class, 'packagesGroupedByName']);

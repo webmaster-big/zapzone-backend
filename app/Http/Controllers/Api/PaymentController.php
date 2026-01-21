@@ -434,6 +434,16 @@ class PaymentController extends Controller
             $transactionKey = $account->transaction_key;
             $environment = $account->isProduction() ? ANetEnvironment::PRODUCTION : ANetEnvironment::SANDBOX;
 
+            Log::info('🔐 Authorize.Net credentials loaded', [
+                'location_id' => $request->location_id,
+                'account_id' => $account->id,
+                'environment' => $account->environment,
+                'environment_constant' => $account->isProduction() ? 'PRODUCTION' : 'SANDBOX',
+                'api_login_id_preview' => substr($apiLoginId, 0, 4) . '...' . substr($apiLoginId, -2),
+                'api_login_id_length' => strlen($apiLoginId),
+                'transaction_key_length' => strlen($transactionKey),
+            ]);
+
             // 3. Build merchant authentication
             $merchantAuthentication = new AnetAPI\MerchantAuthenticationType();
             $merchantAuthentication->setName($apiLoginId);
@@ -620,43 +630,68 @@ class PaymentController extends Controller
                 } else {
                     // Transaction failed
                     $errorMessage = 'Transaction failed';
+                    $errorCode = null;
                     if ($tresponse->getErrors() != null) {
+                        $errorCode = $tresponse->getErrors()[0]->getErrorCode();
                         $errorMessage = $tresponse->getErrors()[0]->getErrorText();
                     }
 
                     Log::warning('Authorize.Net transaction failed', [
                         'error' => $errorMessage,
+                        'error_code' => $errorCode,
                         'location_id' => $request->location_id,
+                        'environment' => $account->environment,
+                        'response_code' => $tresponse->getResponseCode(),
                     ]);
 
                     return response()->json([
                         'success' => false,
-                        'message' => $errorMessage
+                        'message' => $errorMessage,
+                        'error_code' => $errorCode,
                     ], 400);
                 }
             } else {
                 // API error
                 $errorMessage = 'Unknown error';
+                $errorCode = null;
                 if ($response != null) {
                     $errorMessages = $response->getMessages()->getMessage();
+                    $errorCode = $errorMessages[0]->getCode();
                     $errorMessage = $errorMessages[0]->getText();
                 }
 
                 Log::error('Authorize.Net API error', [
                     'error' => $errorMessage,
+                    'error_code' => $errorCode,
                     'location_id' => $request->location_id,
+                    'environment' => $account->environment,
+                    'response_null' => $response === null,
                 ]);
 
                 return response()->json([
                     'success' => false,
-                    'message' => $errorMessage
+                    'message' => $errorMessage,
+                    'error_code' => $errorCode,
+                    'environment' => $account->environment,
                 ], 400);
             }
 
+        } catch (\Illuminate\Contracts\Encryption\DecryptException $e) {
+            Log::error('Payment processing - credential decryption failed', [
+                'error' => $e->getMessage(),
+                'location_id' => $request->location_id,
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Payment configuration error. Please contact support.',
+                'error_code' => 'DECRYPTION_FAILED'
+            ], 500);
         } catch (\Exception $e) {
             Log::error('Payment processing exception', [
                 'error' => $e->getMessage(),
                 'location_id' => $request->location_id,
+                'trace' => $e->getTraceAsString(),
             ]);
 
             return response()->json([
