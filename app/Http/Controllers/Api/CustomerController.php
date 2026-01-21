@@ -267,29 +267,26 @@ class CustomerController extends Controller
             'phone' => 'required|string|max:20',
             'address' => 'nullable|string|max:255',
             'city' => 'nullable|string|max:100',
-            'state' => 'nullable|string|max:2',
+            'state' => 'nullable|string|max:100',
             'zip' => 'nullable|string|max:10',
-            'country' => 'nullable|string|max:2',
-            'password' => 'required|string|min:8|confirmed',
-            'date_of_birth' => 'nullable|date|before:today',
+            'country' => 'nullable|string|max:100',
+            'password' => 'nullable|string|min:8|confirmed',
             'status' => ['sometimes', Rule::in(['active', 'inactive'])],
         ]);
 
-        $validated['password'] = Hash::make($validated['password']);
+        // Only hash password if provided
+        if (!empty($validated['password'])) {
+            $validated['password'] = Hash::make($validated['password']);
+        } else {
+            unset($validated['password']);
+        }
+
+        // Set default status if not provided
+        if (!isset($validated['status'])) {
+            $validated['status'] = 'active';
+        }
 
         $customer = Customer::create($validated);
-
-        // Log customer creation
-        ActivityLog::log(
-            action: 'Customer Created',
-            category: 'create',
-            description: "New customer {$customer->first_name} {$customer->last_name} registered",
-            userId: auth()->id(),
-            locationId: null,
-            entityType: 'customer',
-            entityId: $customer->id,
-            metadata: ['email' => $customer->email, 'phone' => $customer->phone]
-        );
 
         return response()->json([
             'success' => true,
@@ -327,7 +324,6 @@ class CustomerController extends Controller
             'zip' => 'nullable|string|max:10',
             'country' => 'nullable|string|max:2',
             'password' => 'sometimes|string|min:8|confirmed',
-            'date_of_birth' => 'sometimes|nullable|date|before:today',
             'status' => ['sometimes', Rule::in(['active', 'inactive'])],
         ]);
 

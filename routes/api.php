@@ -55,6 +55,9 @@ Route::get('packages/location/{locationId}', [PackageController::class, 'getByLo
 // Public customer search
 Route::get('customers/search', [CustomerController::class, 'search']);
 
+// Public customer registration (for booking frontend)
+Route::post('customers', [CustomerController::class, 'store']);
+
 // Public payment processing
 Route::post('payments/charge', [PaymentController::class, 'charge']);
 Route::put('payments/{payment}', [PaymentController::class, 'update']);
@@ -145,7 +148,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('customers/list/{user}', [CustomerController::class, 'fetchCustomerList']);
     Route::get('customers/analytics', [CustomerController::class, 'analytics']);
     Route::post('customers/analytics/export', [CustomerController::class, 'exportAnalytics']);
-    Route::apiResource('customers', CustomerController::class);
+    Route::apiResource('customers', CustomerController::class)->except(['store']);
     Route::patch('customers/{customer}/toggle-status', [CustomerController::class, 'toggleStatus']);
     Route::get('customers/{customer}/statistics', [CustomerController::class, 'statistics']);
     Route::patch('customers/{customer}/update-last-visit', [CustomerController::class, 'updateLastVisit']);
