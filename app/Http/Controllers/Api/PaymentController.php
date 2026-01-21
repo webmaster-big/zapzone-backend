@@ -549,6 +549,27 @@ class PaymentController extends Controller
                 $tresponse = $response->getTransactionResponse();
 
                 if ($tresponse != null && $tresponse->getMessages() != null) {
+                    // Get the transaction ID
+                    $transactionId = $tresponse->getTransId();
+
+                    // Validate we have a real transaction ID (not 0 or empty)
+                    if (empty($transactionId) || $transactionId == '0') {
+                        Log::error('Authorize.Net returned success but no valid transaction ID', [
+                            'transaction_id' => $transactionId,
+                            'response_code' => $tresponse->getResponseCode(),
+                            'auth_code' => $tresponse->getAuthCode(),
+                            'location_id' => $request->location_id,
+                            'amount' => $request->amount,
+                            'environment' => $account->environment,
+                        ]);
+
+                        return response()->json([
+                            'success' => false,
+                            'message' => 'Payment processing error: Invalid transaction ID received',
+                            'error_code' => 'INVALID_TRANSACTION_ID',
+                        ], 400);
+                    }
+
                     // Success - create payment record
                     $payment = Payment::create([
                         'payable_id' => $payableId,
@@ -559,14 +580,14 @@ class PaymentController extends Controller
                         'currency' => 'USD',
                         'method' => 'card',
                         'status' => 'completed',
-                        'transaction_id' => $tresponse->getTransId(),
-                        'payment_id' => $tresponse->getTransId(),
+                        'transaction_id' => $transactionId,
+                        'payment_id' => $transactionId,
                         'notes' => $request->description ?? 'Authorize.Net payment via Accept.js',
                         'paid_at' => now(),
                     ]);
 
                     Log::info('Authorize.Net payment successful with customer data', [
-                        'transaction_id' => $tresponse->getTransId(),
+                        'transaction_id' => $transactionId,
                         'amount' => $request->amount,
                         'location_id' => $request->location_id,
                         'customer_name' => $request->has('customer') ?
@@ -589,7 +610,7 @@ class PaymentController extends Controller
                             'action_text' => 'View Receipt',
                             'metadata' => [
                                 'payment_id' => $payment->id,
-                                'transaction_id' => $tresponse->getTransId(),
+                                'transaction_id' => $transactionId,
                                 'auth_code' => $tresponse->getAuthCode(),
                                 'amount' => $payment->amount,
                                 'method' => 'card',
@@ -610,7 +631,7 @@ class PaymentController extends Controller
                         'action_text' => 'View Payment',
                         'metadata' => [
                             'payment_id' => $payment->id,
-                            'transaction_id' => $tresponse->getTransId(),
+                            'transaction_id' => $transactionId,
                             'auth_code' => $tresponse->getAuthCode(),
                             'amount' => $payment->amount,
                             'method' => 'card',
@@ -623,7 +644,7 @@ class PaymentController extends Controller
                     return response()->json([
                         'success' => true,
                         'message' => 'Payment processed successfully',
-                        'transaction_id' => $tresponse->getTransId(),
+                        'transaction_id' => $transactionId,
                         'auth_code' => $tresponse->getAuthCode(),
                         'payment' => $payment,
                     ]);
