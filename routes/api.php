@@ -35,6 +35,7 @@ use Illuminate\Support\Facades\Route;
 // Public routes (no authentication required)
 Route::post('login', [ApiAuthController::class, 'login']);
 Route::post('customer-login', [ApiAuthController::class, 'customerLogin']);
+Route::post('customer-register', [ApiAuthController::class, 'customerRegister']);
 
 // Public endpoint for Accept.js integration (get API Login ID only)
 Route::get('authorize-net/public-key/{locationId}', [AuthorizeNetAccountController::class, 'getPublicKey']);

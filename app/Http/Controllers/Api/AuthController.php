@@ -79,6 +79,68 @@ class AuthController extends RoutingController
         return $this->createTokenResponse($user, $type);
     }
 
+    // register for customer
+    public function customerRegister(Request $request)
+    {
+        $request->validate([
+            'first_name' => 'required|string|max:255',
+            'last_name' => 'required|string|max:255',
+            'email' => 'required|string|email|max:255|unique:customers,email',
+            'phone' => 'required|string|max:20',
+            'password' => 'required|string|min:8|confirmed',
+            'address' => 'nullable|string|max:255',
+            'city' => 'nullable|string|max:100',
+            'state' => 'nullable|string|max:100',
+            'zip' => 'nullable|string|max:10',
+            'country' => 'nullable|string|max:100',
+            'date_of_birth' => 'nullable|date',
+        ]);
+
+        Log::info('Customer registration attempt', ['email' => $request->email]);
+
+        try {
+            $customer = Customer::create([
+                'first_name' => $request->first_name,
+                'last_name' => $request->last_name,
+                'email' => $request->email,
+                'phone' => $request->phone,
+                'password' => Hash::make($request->password),
+                'address' => $request->address,
+                'city' => $request->city,
+                'state' => $request->state,
+                'zip' => $request->zip,
+                'country' => $request->country,
+                'date_of_birth' => $request->date_of_birth,
+                'status' => 'active',
+            ]);
+
+            Log::info('Customer registered successfully', [
+                'customer_id' => $customer->id,
+                'email' => $customer->email,
+            ]);
+
+            // Return the customer with auth token
+            return response()->json([
+                'success' => true,
+                'message' => 'Registration successful',
+                'user' => $customer,
+                'token' => $customer->createToken($customer->email)->plainTextToken,
+            ], 201);
+
+        } catch (\Exception $e) {
+            Log::error('Customer registration failed', [
+                'email' => $request->email,
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Registration failed. Please try again.',
+                'error' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
     protected function createTokenResponse($user, $type)
     {
         return response()->json([
