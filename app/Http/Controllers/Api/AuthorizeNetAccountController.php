@@ -520,48 +520,65 @@ class AuthorizeNetAccountController extends Controller
                 'transaction_key_length' => strlen($transactionKey)
             ]);
 
-            // Make a simple authentication test
-            $endpoint = $account->environment === 'production'
-                ? 'https://api.authorize.net/xml/v1/request.api'
-                : 'https://apitest.authorize.net/xml/v1/request.api';
+            // Use the official Authorize.Net SDK for authentication testing
+            $merchantAuthentication = new \net\authorize\api\contract\v1\MerchantAuthenticationType();
+            $merchantAuthentication->setName($apiLoginId);
+            $merchantAuthentication->setTransactionKey($transactionKey);
 
-            $merchantAuth = [
-                'name' => $apiLoginId,
-                'transactionKey' => $transactionKey
-            ];
+            // Use getMerchantDetailsRequest to validate credentials
+            $apiRequest = new \net\authorize\api\contract\v1\GetMerchantDetailsRequest();
+            $apiRequest->setMerchantAuthentication($merchantAuthentication);
 
-            $requestData = [
-                'getCustomerProfileRequest' => [
-                    'merchantAuthentication' => $merchantAuth,
-                    'customerProfileId' => '0' // Test with invalid ID to check auth
-                ]
-            ];
+            // Set the environment
+            $environment = $account->environment === 'production'
+                ? \net\authorize\api\constants\ANetEnvironment::PRODUCTION
+                : \net\authorize\api\constants\ANetEnvironment::SANDBOX;
 
-            $response = \Http::post($endpoint, $requestData);
-            $result = $response->json();
+            $controller = new \net\authorize\api\controller\GetMerchantDetailsController($apiRequest);
+            $response = $controller->executeWithApiResponse($environment);
 
             Log::info('Authorize.Net test response', [
-                'status' => $response->status(),
-                'result' => $result
+                'response_received' => $response !== null,
+                'result_code' => $response ? $response->getMessages()->getResultCode() : 'null'
             ]);
 
             // Update last tested timestamp
             $account->update(['last_tested_at' => now()]);
 
-            // Even if the profile doesn't exist, if auth worked we'll get a specific error
-            $authWorked = $response->successful() ||
-                         (isset($result['messages']['resultCode']) &&
-                          $result['messages']['message'][0]['code'] !== 'E00007'); // E00007 = auth failed
+            if ($response !== null && $response->getMessages()->getResultCode() === "Ok") {
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Credentials are valid',
+                    'environment' => $account->environment,
+                    'tested_at' => now(),
+                    'debug' => config('app.debug') ? [
+                        'merchant_name' => $response->getMerchantName(),
+                        'gateway_id' => $response->getGatewayId(),
+                    ] : null
+                ]);
+            } else {
+                $errorMessages = [];
+                if ($response !== null && $response->getMessages()->getMessage()) {
+                    foreach ($response->getMessages()->getMessage() as $message) {
+                        $errorMessages[] = $message->getCode() . ': ' . $message->getText();
+                    }
+                }
 
-            return response()->json([
-                'success' => $authWorked,
-                'message' => $authWorked
-                    ? 'Credentials are valid'
-                    : 'Authentication failed - credentials may be incorrect',
-                'environment' => $account->environment,
-                'tested_at' => now(),
-                'debug' => config('app.debug') ? $result : null
-            ]);
+                Log::warning('Authorize.Net authentication test failed', [
+                    'location_id' => $user->location_id,
+                    'account_id' => $account->id,
+                    'environment' => $account->environment,
+                    'errors' => $errorMessages
+                ]);
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Authentication failed - credentials may be incorrect',
+                    'environment' => $account->environment,
+                    'tested_at' => now(),
+                    'debug' => config('app.debug') ? ['errors' => $errorMessages] : null
+                ]);
+            }
 
         } catch (\Illuminate\Contracts\Encryption\DecryptException $e) {
             Log::error('Cannot test - decryption failed', [
