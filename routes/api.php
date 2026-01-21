@@ -58,6 +58,9 @@ Route::get('customers/search', [CustomerController::class, 'search']);
 // Public customer registration (for booking frontend)
 Route::post('customers', [CustomerController::class, 'store']);
 
+// Public customer bookings lookup
+Route::get('customers/bookings', [BookingController::class, 'customerBookings']);
+
 // Public payment processing
 Route::post('payments/charge', [PaymentController::class, 'charge']);
 Route::put('payments/{payment}', [PaymentController::class, 'update']);
@@ -144,7 +147,6 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('users/bulk-delete', [UserController::class, 'bulkDelete']);
 
     // Customer routes
-    Route::get('customers/bookings', [BookingController::class, 'customerBookings']);
     Route::get('customers/list/{user}', [CustomerController::class, 'fetchCustomerList']);
     Route::get('customers/analytics', [CustomerController::class, 'analytics']);
     Route::post('customers/analytics/export', [CustomerController::class, 'exportAnalytics']);
