@@ -429,9 +429,9 @@ class PaymentController extends Controller
                 ], 503);
             }
 
-            // 2. Get decrypted credentials
-            $apiLoginId = $account->api_login_id;
-            $transactionKey = $account->transaction_key;
+            // 2. Get decrypted credentials and trim whitespace
+            $apiLoginId = trim($account->api_login_id);
+            $transactionKey = trim($account->transaction_key);
             $environment = $account->isProduction() ? ANetEnvironment::PRODUCTION : ANetEnvironment::SANDBOX;
 
             Log::info('🔐 Authorize.Net credentials loaded', [
@@ -442,6 +442,10 @@ class PaymentController extends Controller
                 'api_login_id_preview' => substr($apiLoginId, 0, 4) . '...' . substr($apiLoginId, -2),
                 'api_login_id_length' => strlen($apiLoginId),
                 'transaction_key_length' => strlen($transactionKey),
+                'has_whitespace' => [
+                    'api_login_id' => $apiLoginId !== $account->api_login_id,
+                    'transaction_key' => $transactionKey !== $account->transaction_key,
+                ],
             ]);
 
             // 3. Build merchant authentication
@@ -675,18 +679,31 @@ class PaymentController extends Controller
                 // API error
                 $errorMessage = 'Unknown error';
                 $errorCode = null;
+                $allErrors = [];
                 if ($response != null) {
                     $errorMessages = $response->getMessages()->getMessage();
                     $errorCode = $errorMessages[0]->getCode();
                     $errorMessage = $errorMessages[0]->getText();
+                    
+                    // Collect all error messages
+                    foreach ($errorMessages as $msg) {
+                        $allErrors[] = [
+                            'code' => $msg->getCode(),
+                            'text' => $msg->getText(),
+                        ];
+                    }
                 }
 
                 Log::error('Authorize.Net API error', [
                     'error' => $errorMessage,
                     'error_code' => $errorCode,
+                    'all_errors' => $allErrors,
                     'location_id' => $request->location_id,
                     'environment' => $account->environment,
+                    'account_id' => $account->id,
                     'response_null' => $response === null,
+                    'is_auth_error' => $errorCode === 'E00007',
+                    'suggestion' => $errorCode === 'E00007' ? 'Check if credentials match environment. Run test-connection endpoint.' : null,
                 ]);
 
                 return response()->json([
@@ -694,6 +711,7 @@ class PaymentController extends Controller
                     'message' => $errorMessage,
                     'error_code' => $errorCode,
                     'environment' => $account->environment,
+                    'help' => $errorCode === 'E00007' ? 'Authentication failed. Please verify your Authorize.Net credentials match the selected environment (sandbox/production).' : null,
                 ], 400);
             }
 

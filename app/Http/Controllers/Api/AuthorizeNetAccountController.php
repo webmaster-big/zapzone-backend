@@ -154,12 +154,12 @@ class AuthorizeNetAccountController extends Controller
         }
 
         try {
-            // Create the account
+            // Create the account - trim credentials to prevent whitespace issues
             $account = AuthorizeNetAccount::create([
                 'location_id' => $user->location_id,
-                'api_login_id' => $request->api_login_id,
-                'transaction_key' => $request->transaction_key,
-                'public_client_key' => $request->public_client_key,
+                'api_login_id' => trim($request->api_login_id),
+                'transaction_key' => trim($request->transaction_key),
+                'public_client_key' => trim($request->public_client_key),
                 'environment' => $request->environment,
                 'is_active' => true,
                 'connected_at' => now(),
@@ -257,6 +257,17 @@ class AuthorizeNetAccountController extends Controller
                 'environment',
                 'is_active'
             ]);
+            
+            // Trim credential fields to prevent whitespace issues
+            if (isset($updateData['api_login_id'])) {
+                $updateData['api_login_id'] = trim($updateData['api_login_id']);
+            }
+            if (isset($updateData['transaction_key'])) {
+                $updateData['transaction_key'] = trim($updateData['transaction_key']);
+            }
+            if (isset($updateData['public_client_key'])) {
+                $updateData['public_client_key'] = trim($updateData['public_client_key']);
+            }
 
             Log::info('Updating Authorize.Net account', [
                 'location_id' => $user->location_id,
