@@ -305,6 +305,19 @@
                             </table>
                             @endif
 
+                            <!-- Invitation Download Link -->
+                            @if($booking->package && $booking->package->invitation_download_link)
+                            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #eff6ff; border-radius: 6px; border: 1px solid #3b82f6; margin: 16px 0;">
+                                <tr>
+                                    <td style="padding: 16px; text-align: center;">
+                                        <p style="margin: 0 0 12px 0; padding: 0; font-size: 14px; font-weight: 600; color: #1e40af;">🎉 Download Your Party Invitation</p>
+                                        <a href="{{ $booking->package->invitation_download_link }}" style="display: inline-block; padding: 12px 24px; background-color: #3b82f6; color: #ffffff; text-decoration: none; border-radius: 6px; font-size: 14px; font-weight: 600;">Download Invitation</a>
+                                        <p style="margin: 12px 0 0 0; padding: 0; font-size: 12px; color: #6b7280;">Click the button above to download your personalized invitation</p>
+                                    </td>
+                                </tr>
+                            </table>
+                            @endif
+
                             <!-- Important Notes Section -->
                             @if($customerNotes || (isset($globalNotes) && $globalNotes->isNotEmpty()))
                             <h3 style="margin: 24px 0 12px 0; padding: 0; font-size: 16px; font-weight: 600; color: #111827;">📋 Important Information</h3>
