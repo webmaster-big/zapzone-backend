@@ -164,7 +164,7 @@ class AttractionPurchaseController extends Controller
 
             'quantity' => 'required|integer|min:1',
             'amount_paid' => 'nullable|numeric|min:0',
-            'payment_method' => ['nullable', Rule::in(['card', 'cash', 'paylater'])],
+            'payment_method' => ['nullable', Rule::in(['card', 'in-store', 'paylater'])],
             'purchase_date' => 'required|date',
             'transaction_id' => 'nullable|string|max:255',
             'notes' => 'nullable|string',
@@ -488,7 +488,7 @@ class AttractionPurchaseController extends Controller
             'guest_phone' => 'sometimes|nullable|string|max:20',
             'quantity' => 'sometimes|integer|min:1',
             'amount_paid' => 'sometimes|nullable|numeric|min:0',
-            'payment_method' => ['sometimes', 'nullable', Rule::in(['card', 'cash', 'paylater'])],
+            'payment_method' => ['sometimes', 'nullable', Rule::in(['card', 'in-store', 'paylater'])],
             'status' => ['sometimes', Rule::in(['pending', 'completed', 'cancelled'])],
             'purchase_date' => 'sometimes|date',
             'notes' => 'nullable|string',
@@ -567,7 +567,7 @@ class AttractionPurchaseController extends Controller
         $validated = $request->validate([
             'status' => ['required', Rule::in(['pending', 'completed', 'cancelled'])],
             'amount_paid' => 'nullable|numeric|min:0',
-            'payment_method' => ['nullable', Rule::in(['card', 'cash', 'paylater'])],
+            'payment_method' => ['nullable', Rule::in(['card', 'in-store', 'paylater'])],
         ]);
 
         $attractionPurchase->update($validated);
