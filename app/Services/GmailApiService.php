@@ -66,7 +66,7 @@ class GmailApiService
         try {
             // Use config for sender name if not provided
             $fromName = $fromName ?? config('gmail.sender_name', 'Zap Zone');
-            
+
             // Process inline images - embed them in the email
             $inlineImages = [];
             $htmlBody = $this->processInlineImages($htmlBody, $inlineImages);

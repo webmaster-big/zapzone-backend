@@ -257,7 +257,7 @@ class AuthorizeNetAccountController extends Controller
                 'environment',
                 'is_active'
             ]);
-            
+
             // Trim credential fields to prevent whitespace issues
             if (isset($updateData['api_login_id'])) {
                 $updateData['api_login_id'] = trim($updateData['api_login_id']);

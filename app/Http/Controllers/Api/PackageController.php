@@ -440,6 +440,18 @@ class PackageController extends Controller
         ]);
     }
 
+    // delete package add ons
+    public function deletePackageAddOns( Package $package): JsonResponse
+    {
+        // Delete all add-ons associated with the package
+        PackageAddOn::where('package_id', $package->id)->delete();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'All add-ons for the package have been deleted successfully',
+        ]);
+    }
+
     /**
      * Restore a soft-deleted package.
      */

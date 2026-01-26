@@ -458,6 +458,15 @@ class PaymentController extends Controller
             $opaqueData->setDataDescriptor($request->opaqueData['dataDescriptor']);
             $opaqueData->setDataValue($request->opaqueData['dataValue']);
 
+            Log::info('🎫 Opaque data received from Accept.js', [
+                'dataDescriptor' => $request->opaqueData['dataDescriptor'],
+                'dataValue_length' => strlen($request->opaqueData['dataValue']),
+                'dataValue_preview' => substr($request->opaqueData['dataValue'], 0, 50) . '...',
+                'backend_environment' => $account->environment,
+                'backend_api_login_id' => substr($apiLoginId, 0, 4) . '...' . substr($apiLoginId, -2),
+                'note' => 'Token MUST be created with same API Login ID and matching Public Client Key',
+            ]);
+
             $paymentOne = new AnetAPI\PaymentType();
             $paymentOne->setOpaqueData($opaqueData);
 
@@ -540,7 +549,7 @@ class PaymentController extends Controller
                     $order->setDescription(substr($request->description, 0, 255)); // Max 255 chars
                 }
                 $transactionRequestType->setOrder($order);
-                
+
                 if (strlen($request->order_id) > 20) {
                     Log::warning('Order ID truncated for Authorize.Net', [
                         'original' => $request->order_id,
@@ -694,7 +703,7 @@ class PaymentController extends Controller
                     $errorMessages = $response->getMessages()->getMessage();
                     $errorCode = $errorMessages[0]->getCode();
                     $errorMessage = $errorMessages[0]->getText();
-                    
+
                     // Collect all error messages
                     foreach ($errorMessages as $msg) {
                         $allErrors[] = [

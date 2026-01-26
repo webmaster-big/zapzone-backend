@@ -77,21 +77,21 @@ Route::get('authorize-net/debug-test/{locationId}', function ($locationId) {
     try {
         $apiLoginId = trim($account->api_login_id);
         $transactionKey = trim($account->transaction_key);
-        
+
         $merchantAuthentication = new \net\authorize\api\contract\v1\MerchantAuthenticationType();
         $merchantAuthentication->setName($apiLoginId);
         $merchantAuthentication->setTransactionKey($transactionKey);
-        
+
         $apiRequest = new \net\authorize\api\contract\v1\GetMerchantDetailsRequest();
         $apiRequest->setMerchantAuthentication($merchantAuthentication);
-        
+
         $environment = $account->environment === 'production'
             ? \net\authorize\api\constants\ANetEnvironment::PRODUCTION
             : \net\authorize\api\constants\ANetEnvironment::SANDBOX;
-        
+
         $controller = new \net\authorize\api\controller\GetMerchantDetailsController($apiRequest);
         $response = $controller->executeWithApiResponse($environment);
-        
+
         if ($response !== null && $response->getMessages()->getResultCode() === "Ok") {
             return response()->json([
                 'success' => true,
@@ -239,6 +239,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::apiResource('packages', PackageController::class);
     Route::post('packages/{id}/restore', [PackageController::class, 'restore']);
     Route::delete('packages/{id}/force', [PackageController::class, 'forceDelete']);
+    Route::delete('packages/addons/{packageId}', [PackageController::class, 'deletePackageAddOns']);
     Route::post('packages/bulk-import', [PackageController::class, 'bulkImport']);
     Route::get('packages/category/{category}', [PackageController::class, 'getByCategory']);
     Route::patch('packages/{package}/toggle-status', [PackageController::class, 'toggleIsActiveStatus']);
