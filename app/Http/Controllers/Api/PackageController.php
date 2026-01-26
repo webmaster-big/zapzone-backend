@@ -199,6 +199,18 @@ class PackageController extends Controller
             $validated['image'] = null;
         }
 
+        // Handle invitation_file upload
+        if (isset($validated['invitation_file']) && !empty($validated['invitation_file'])) {
+            try {
+                $validated['invitation_file'] = $this->handleFileUpload($validated['invitation_file'], 'invitations');
+            } catch (\Exception $e) {
+                Log::error('Failed to upload invitation file during package creation', [
+                    'error' => $e->getMessage()
+                ]);
+                $validated['invitation_file'] = null;
+            }
+        }
+
         $user = $request->user();
 
         // Set location_id based on user role
@@ -328,6 +340,32 @@ class PackageController extends Controller
                 }
             }
             $validated['image'] = !empty($uploadedImages) ? $uploadedImages : null;
+        }
+
+        // Handle invitation_file upload
+        if (isset($validated['invitation_file']) && !empty($validated['invitation_file'])) {
+            // Delete old invitation file if it exists and is a local file
+            if ($package->invitation_file && 
+                !filter_var($package->invitation_file, FILTER_VALIDATE_URL) &&
+                strpos($package->invitation_file, 'data:') !== 0) {
+                
+                $oldFilePath = storage_path('app/public/' . $package->invitation_file);
+                if (file_exists($oldFilePath)) {
+                    unlink($oldFilePath);
+                    Log::info('Deleted old invitation file', ['path' => $oldFilePath]);
+                }
+            }
+
+            try {
+                $validated['invitation_file'] = $this->handleFileUpload($validated['invitation_file'], 'invitations');
+            } catch (\Exception $e) {
+                Log::error('Failed to upload invitation file during package update', [
+                    'package_id' => $package->id,
+                    'error' => $e->getMessage()
+                ]);
+                // Keep the old file if new upload fails
+                unset($validated['invitation_file']);
+            }
         }
 
         // Update the package basic information
@@ -1036,6 +1074,111 @@ class PackageController extends Controller
         // If it's already a file path or URL, return as is
         Log::info('Image path returned as-is', ['image' => substr($image, 0, 100)]);
         return $image;
+    }
+
+    /**
+     * Handle file upload (PDFs, documents, etc.) - supports base64, URL, or file upload
+     */
+    private function handleFileUpload($file, string $subDirectory = 'files'): string
+    {
+        // If it's a URL (http/https), return as is
+        if (filter_var($file, FILTER_VALIDATE_URL)) {
+            Log::info('File is URL, returned as-is', ['url' => substr($file, 0, 100)]);
+            return $file;
+        }
+
+        // Check if it's a base64 string (data URI)
+        if (is_string($file) && strpos($file, 'data:') === 0) {
+            try {
+                // Extract MIME type and base64 data
+                preg_match('/data:([^;]+);base64,/', $file, $matches);
+
+                if (empty($matches)) {
+                    Log::error('Invalid base64 file format', ['file_start' => substr($file, 0, 100)]);
+                    throw new \Exception('Invalid file format');
+                }
+
+                $mimeType = $matches[1] ?? 'application/octet-stream';
+                $base64Data = substr($file, strpos($file, ',') + 1);
+
+                // Validate base64 data
+                if (empty($base64Data)) {
+                    Log::error('Empty base64 data');
+                    throw new \Exception('Empty file data');
+                }
+
+                $fileData = base64_decode($base64Data, true);
+
+                if ($fileData === false) {
+                    Log::error('Failed to decode base64 data');
+                    throw new \Exception('Failed to decode file data');
+                }
+
+                // Determine file extension from MIME type
+                $extension = 'pdf'; // default
+                $mimeToExt = [
+                    'application/pdf' => 'pdf',
+                    'application/msword' => 'doc',
+                    'application/vnd.openxmlformats-officedocument.wordprocessingml.document' => 'docx',
+                    'application/vnd.ms-excel' => 'xls',
+                    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' => 'xlsx',
+                    'text/plain' => 'txt',
+                    'image/png' => 'png',
+                    'image/jpeg' => 'jpg',
+                    'image/gif' => 'gif',
+                ];
+                
+                if (isset($mimeToExt[$mimeType])) {
+                    $extension = $mimeToExt[$mimeType];
+                }
+
+                // Generate filename
+                $filename = uniqid() . '.' . $extension;
+                $path = $subDirectory;
+                $fullPath = storage_path('app/public/' . $path);
+
+                Log::info('File upload attempt', [
+                    'filename' => $filename,
+                    'path' => $path,
+                    'fullPath' => $fullPath,
+                    'mimeType' => $mimeType,
+                    'fileSize' => strlen($fileData)
+                ]);
+
+                // Create directory if it doesn't exist
+                if (!file_exists($fullPath)) {
+                    mkdir($fullPath, 0755, true);
+                    Log::info('Created directory', ['path' => $fullPath]);
+                }
+
+                // Save the file
+                $bytesWritten = file_put_contents($fullPath . '/' . $filename, $fileData);
+
+                if ($bytesWritten === false) {
+                    Log::error('Failed to write file', ['file' => $fullPath . '/' . $filename]);
+                    throw new \Exception('Failed to save file');
+                }
+
+                Log::info('File saved successfully', [
+                    'file' => $fullPath . '/' . $filename,
+                    'bytes' => $bytesWritten
+                ]);
+
+                // Return the relative path (for storage URL)
+                return $path . '/' . $filename;
+
+            } catch (\Exception $e) {
+                Log::error('Error handling file upload', [
+                    'error' => $e->getMessage(),
+                    'trace' => $e->getTraceAsString()
+                ]);
+                throw $e;
+            }
+        }
+
+        // If it's already a file path, return as is
+        Log::info('File path returned as-is', ['file' => substr($file, 0, 100)]);
+        return $file;
     }
 
     // store package room
