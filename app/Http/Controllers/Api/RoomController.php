@@ -16,73 +16,88 @@ class RoomController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
-        $query = Room::with(['location', 'packages']);
+        try {
+            // Limit per_page to prevent memory exhaustion
+            $perPage = min($request->get('per_page', 15), 500);
+            
+            $query = Room::with(['location:id,name', 'packages:id,name']);
 
             // Role-based filtering
-        if ($request->has('user_id')) {
-            $authUser = User::where('id', $request->user_id)->first();
-            // log the auth user info
-            if ($authUser && $authUser->role === 'location_manager') {
-                $query->byLocation($authUser->location_id);
+            if ($request->has('user_id')) {
+                $authUser = User::where('id', $request->user_id)->first();
+                // log the auth user info
+                if ($authUser && $authUser->role === 'location_manager') {
+                    $query->byLocation($authUser->location_id);
+                }
             }
-        }
 
-        // Filter by location
-        if ($request->has('location_id')) {
-            $query->byLocation($request->location_id);
-        }
+            // Filter by location
+            if ($request->has('location_id')) {
+                $query->byLocation($request->location_id);
+            }
 
-        // Filter by availability
-        if ($request->has('is_available')) {
-            $query->where('is_available', $request->boolean('is_available'));
-        } else {
-            $query->available();
-        }
+            // Filter by availability
+            if ($request->has('is_available')) {
+                $query->where('is_available', $request->boolean('is_available'));
+            } else {
+                $query->available();
+            }
 
-        // Filter by capacity
-        if ($request->has('min_capacity')) {
-            $query->byCapacity($request->min_capacity);
-        }
+            // Filter by capacity
+            if ($request->has('min_capacity')) {
+                $query->byCapacity($request->min_capacity);
+            }
 
-        // Price range filter
-        if ($request->has('min_price')) {
-            $query->where('price', '>=', $request->min_price);
-        }
-        if ($request->has('max_price')) {
-            $query->where('price', '<=', $request->max_price);
-        }
+            // Price range filter
+            if ($request->has('min_price')) {
+                $query->where('price', '>=', $request->min_price);
+            }
+            if ($request->has('max_price')) {
+                $query->where('price', '<=', $request->max_price);
+            }
 
-        // Search by name
-        if ($request->has('search')) {
-            $search = $request->search;
-            $query->where('name', 'like', "%{$search}%");
-        }
+            // Search by name
+            if ($request->has('search')) {
+                $search = $request->search;
+                $query->where('name', 'like', "%{$search}%");
+            }
 
-        // Sort
-        $sortBy = $request->get('sort_by', 'name');
-        $sortOrder = $request->get('sort_order', 'asc');
+            // Sort
+            $sortBy = $request->get('sort_by', 'name');
+            $sortOrder = $request->get('sort_order', 'asc');
 
-        if (in_array($sortBy, ['name', 'capacity', 'price', 'created_at'])) {
-            $query->orderBy($sortBy, $sortOrder);
-        }
+            if (in_array($sortBy, ['name', 'capacity', 'price', 'created_at'])) {
+                $query->orderBy($sortBy, $sortOrder);
+            }
 
-        $perPage = $request->get('per_page', 15);
-        $rooms = $query->paginate($perPage);
+            $rooms = $query->paginate($perPage);
 
-        return response()->json([
-            'success' => true,
-            'data' => [
-                'rooms' => $rooms->items(),
-                'pagination' => [
-                    'current_page' => $rooms->currentPage(),
-                    'last_page' => $rooms->lastPage(),
-                    'per_page' => $rooms->perPage(),
-                    'total' => $rooms->total(),
-                    'from' => $rooms->firstItem(),
-                    'to' => $rooms->lastItem(),
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'rooms' => $rooms->items(),
+                    'pagination' => [
+                        'current_page' => $rooms->currentPage(),
+                        'last_page' => $rooms->lastPage(),
+                        'per_page' => $rooms->perPage(),
+                        'total' => $rooms->total(),
+                        'from' => $rooms->firstItem(),
+                        'to' => $rooms->lastItem(),
+                    ],
                 ],
-            ],
-        ]);
+            ]);
+        } catch (\Exception $e) {
+            \Illuminate\Support\Facades\Log::error('Error fetching rooms', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch rooms',
+                'error' => config('app.debug') ? $e->getMessage() : 'Server error'
+            ], 500);
+        }
     }
 
     /**

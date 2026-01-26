@@ -17,71 +17,86 @@ class AddOnController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
-        $query = AddOn::with(['location', 'packages']);
+        try {
+            // Limit per_page to prevent memory exhaustion
+            $perPage = min($request->get('per_page', 15), 500);
+            
+            $query = AddOn::with(['location:id,name', 'packages:id,name']);
 
-        // Role-based filtering
-        if ($request->has('user_id')) {
-            $authUser = User::where('id', $request->user_id)->first();
-            // log the auth user info
-            if ($authUser && $authUser->role === 'location_manager') {
-                $query->byLocation($authUser->location_id);
+            // Role-based filtering
+            if ($request->has('user_id')) {
+                $authUser = User::where('id', $request->user_id)->first();
+                // log the auth user info
+                if ($authUser && $authUser->role === 'location_manager') {
+                    $query->byLocation($authUser->location_id);
+                }
             }
-        }
 
-        // Filter by location
-        if ($request->has('location_id')) {
-            $query->byLocation($request->location_id);
-        }
+            // Filter by location
+            if ($request->has('location_id')) {
+                $query->byLocation($request->location_id);
+            }
 
-        // Filter by active status
-        if ($request->has('is_active')) {
-            $query->where('is_active', $request->boolean('is_active'));
-        } else {
-            $query->active();
-        }
+            // Filter by active status
+            if ($request->has('is_active')) {
+                $query->where('is_active', $request->boolean('is_active'));
+            } else {
+                $query->active();
+            }
 
-        // Price range filter
-        if ($request->has('min_price')) {
-            $query->where('price', '>=', $request->min_price);
-        }
-        if ($request->has('max_price')) {
-            $query->where('price', '<=', $request->max_price);
-        }
+            // Price range filter
+            if ($request->has('min_price')) {
+                $query->where('price', '>=', $request->min_price);
+            }
+            if ($request->has('max_price')) {
+                $query->where('price', '<=', $request->max_price);
+            }
 
-        // Search by name or description
-        if ($request->has('search')) {
-            $search = $request->search;
-            $query->where(function ($q) use ($search) {
-                $q->where('name', 'like', "%{$search}%")
-                  ->orWhere('description', 'like', "%{$search}%");
-            });
-        }
+            // Search by name or description
+            if ($request->has('search')) {
+                $search = $request->search;
+                $query->where(function ($q) use ($search) {
+                    $q->where('name', 'like', "%{$search}%")
+                      ->orWhere('description', 'like', "%{$search}%");
+                });
+            }
 
-        // Sort
-        $sortBy = $request->get('sort_by', 'name');
-        $sortOrder = $request->get('sort_order', 'asc');
+            // Sort
+            $sortBy = $request->get('sort_by', 'name');
+            $sortOrder = $request->get('sort_order', 'asc');
 
-        if (in_array($sortBy, ['name', 'price', 'created_at'])) {
-            $query->orderBy($sortBy, $sortOrder);
-        }
+            if (in_array($sortBy, ['name', 'price', 'created_at'])) {
+                $query->orderBy($sortBy, $sortOrder);
+            }
 
-        $perPage = $request->get('per_page', 15);
-        $addOns = $query->paginate($perPage);
+            $addOns = $query->paginate($perPage);
 
-        return response()->json([
-            'success' => true,
-            'data' => [
-                'add_ons' => $addOns->items(),
-                'pagination' => [
-                    'current_page' => $addOns->currentPage(),
-                    'last_page' => $addOns->lastPage(),
-                    'per_page' => $addOns->perPage(),
-                    'total' => $addOns->total(),
-                    'from' => $addOns->firstItem(),
-                    'to' => $addOns->lastItem(),
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'add_ons' => $addOns->items(),
+                    'pagination' => [
+                        'current_page' => $addOns->currentPage(),
+                        'last_page' => $addOns->lastPage(),
+                        'per_page' => $addOns->perPage(),
+                        'total' => $addOns->total(),
+                        'from' => $addOns->firstItem(),
+                        'to' => $addOns->lastItem(),
+                    ],
                 ],
-            ],
-        ]);
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Error fetching add-ons', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch add-ons',
+                'error' => config('app.debug') ? $e->getMessage() : 'Server error'
+            ], 500);
+        }
     }
 
     /**
