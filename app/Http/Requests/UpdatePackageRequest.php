@@ -40,6 +40,7 @@ class UpdatePackageRequest extends FormRequest
             'image' => 'nullable|max:30000000',
             'is_active' => 'boolean',
             'has_guest_of_honor' => 'sometimes|boolean',
+            'add_ons_order' => 'nullable|array',
             'attraction_ids' => 'sometimes|array',
             'attraction_ids.*' => 'exists:attractions,id',
             'addon_ids' => 'sometimes|array',

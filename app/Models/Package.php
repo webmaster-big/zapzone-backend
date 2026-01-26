@@ -31,6 +31,7 @@ class Package extends Model
         'image',
         'is_active',
         'has_guest_of_honor',
+        'add_ons_order',
         'partial_payment_percentage',
         'partial_payment_fixed',
     ];
@@ -44,6 +45,7 @@ class Package extends Model
         'duration' => 'decimal:2',
         'features' => 'array',
         'image' => 'array',
+        'add_ons_order' => 'array',
         'is_active' => 'boolean',
         'has_guest_of_honor' => 'boolean',
     ];

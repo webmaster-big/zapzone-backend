@@ -41,6 +41,7 @@ class StorePackageRequest extends FormRequest
             'image' => 'nullable|max:30000000',
             'is_active' => 'boolean',
             'has_guest_of_honor' => 'nullable|boolean',
+            'add_ons_order' => 'nullable|array',
             'attraction_ids' => 'nullable|array',
             'attraction_ids.*' => 'exists:attractions,id',
             'addon_ids' => 'nullable|array',
