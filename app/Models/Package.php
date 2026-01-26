@@ -33,6 +33,7 @@ class Package extends Model
         'has_guest_of_honor',
         'add_ons_order',
         'customer_notes',
+        'invitation_download_link',
         'partial_payment_percentage',
         'partial_payment_fixed',
     ];

@@ -42,6 +42,7 @@ class UpdatePackageRequest extends FormRequest
             'has_guest_of_honor' => 'sometimes|boolean',
             'add_ons_order' => 'nullable|array',
             'customer_notes' => 'nullable|string',
+            'invitation_download_link' => 'nullable|string|max:2048',
             'attraction_ids' => 'sometimes|array',
             'attraction_ids.*' => 'exists:attractions,id',
             'addon_ids' => 'sometimes|array',

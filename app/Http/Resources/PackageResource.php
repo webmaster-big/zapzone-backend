@@ -34,6 +34,7 @@ class PackageResource extends JsonResource
             'has_guest_of_honor' => $this->has_guest_of_honor,
             'add_ons_order' => $this->add_ons_order,
             'customer_notes' => $this->customer_notes,
+            'invitation_download_link' => $this->invitation_download_link,
             'created_at' => $this->created_at,
             'updated_at' => $this->updated_at,
             'package_type' => $this->package_type,
