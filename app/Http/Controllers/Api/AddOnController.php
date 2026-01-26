@@ -23,7 +23,7 @@ class AddOnController extends Controller
         if ($request->has('user_id')) {
             $authUser = User::where('id', $request->user_id)->first();
             // log the auth user info
-            if ($authUser->role === 'location_manager') {
+            if ($authUser && $authUser->role === 'location_manager') {
                 $query->byLocation($authUser->location_id);
             }
         }

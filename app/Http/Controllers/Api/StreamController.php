@@ -6,10 +6,36 @@ use App\Http\Controllers\Controller;
 use App\Models\Booking;
 use App\Models\AttractionPurchase;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class StreamController extends Controller
     {
+        /**
+         * Maximum runtime for SSE streams in seconds (5 minutes)
+         * Client should reconnect after stream ends
+         */
+        private const MAX_STREAM_RUNTIME = 300;
+
+        /**
+         * Interval between iterations in seconds
+         */
+        private const POLL_INTERVAL = 3;
+
+        /**
+         * Clean up memory to prevent exhaustion in long-running SSE streams
+         */
+        private function cleanupMemory(): void
+        {
+            // Force garbage collection
+            gc_collect_cycles();
+
+            // Clear Eloquent's query log if enabled
+            if (DB::connection()->logging()) {
+                DB::connection()->flushQueryLog();
+            }
+        }
+
         /**
          * Stream booking notifications using Server-Sent Events (SSE)
          *
@@ -28,6 +54,9 @@ class StreamController extends Controller
             ]);
 
 return response()->stream(function () use ($locationId, $userId) {
+            // Disable query logging to prevent memory buildup
+            DB::connection()->disableQueryLog();
+
             // Set headers for SSE
             header('Content-Type: text/event-stream');
             header('Cache-Control: no-cache');
@@ -38,11 +67,32 @@ return response()->stream(function () use ($locationId, $userId) {
             header('Access-Control-Allow-Headers: Content-Type, Authorization');
 
             $lastId = 0;
+            $startTime = time();
+            $iterations = 0;
 
-            // Keep sending updates every 3 seconds
+            // Keep sending updates every 3 seconds, with timeout
             while (true) {
-                // Query for new bookings
-                $query = Booking::with(['customer', 'package', 'location', 'room'])
+                // Check timeout to prevent memory exhaustion
+                if ((time() - $startTime) >= self::MAX_STREAM_RUNTIME) {
+                    echo "event: timeout\n";
+                    echo "data: {\"message\": \"Stream timeout, please reconnect\"}\n\n";
+                    ob_flush();
+                    flush();
+                    break;
+                }
+
+                // Query for new bookings - select only needed fields
+                $query = Booking::select([
+                        'id', 'reference_number', 'customer_id', 'package_id', 'location_id',
+                        'room_id', 'guest_name', 'booking_date', 'booking_time', 'status',
+                        'total_amount', 'created_at', 'created_by'
+                    ])
+                    ->with([
+                        'customer:id,first_name,last_name',
+                        'package:id,name',
+                        'location:id,name',
+                        'room:id,name'
+                    ])
                     ->where('id', '>', $lastId);
 
                 // Filter by location if provided
@@ -90,6 +140,9 @@ return response()->stream(function () use ($locationId, $userId) {
 
                         $lastId = $booking->id;
                     }
+
+                    // Clear the collection to free memory
+                    unset($bookings);
                 } else {
                     // Send heartbeat to keep connection alive
                     echo ": heartbeat\n\n";
@@ -102,8 +155,14 @@ return response()->stream(function () use ($locationId, $userId) {
                     break;
                 }
 
-                // Wait 3 seconds before next update
-                sleep(3);
+                // Periodic memory cleanup (every 10 iterations)
+                $iterations++;
+                if ($iterations % 10 === 0) {
+                    $this->cleanupMemory();
+                }
+
+                // Wait before next update
+                sleep(self::POLL_INTERVAL);
             }
             }, 200, [
                 'Content-Type' => 'text/event-stream',
@@ -133,6 +192,9 @@ return response()->stream(function () use ($locationId, $userId) {
             ]);
 
 return response()->stream(function () use ($locationId, $userId) {
+            // Disable query logging to prevent memory buildup
+            DB::connection()->disableQueryLog();
+
             // Set headers for SSE
             header('Content-Type: text/event-stream');
             header('Cache-Control: no-cache');
@@ -143,12 +205,31 @@ return response()->stream(function () use ($locationId, $userId) {
             header('Access-Control-Allow-Headers: Content-Type, Authorization');
 
             $lastId = 0;
-            $lastHash = '';
+            $startTime = time();
+            $iterations = 0;
 
-            // Keep sending updates every 3 seconds
+            // Keep sending updates with timeout
             while (true) {
-                // Query for new attraction purchases
-                $query = AttractionPurchase::with(['customer', 'attraction', 'createdBy'])
+                // Check timeout to prevent memory exhaustion
+                if ((time() - $startTime) >= self::MAX_STREAM_RUNTIME) {
+                    echo "event: timeout\n";
+                    echo "data: {\"message\": \"Stream timeout, please reconnect\"}\n\n";
+                    ob_flush();
+                    flush();
+                    break;
+                }
+
+                // Query for new attraction purchases - select only needed fields
+                $query = AttractionPurchase::select([
+                        'id', 'attraction_id', 'customer_id', 'guest_name', 'quantity',
+                        'total_amount', 'status', 'payment_method', 'purchase_date',
+                        'created_at', 'created_by'
+                    ])
+                    ->with([
+                        'customer:id,first_name,last_name',
+                        'attraction:id,name,location_id',
+                        'attraction.location:id,name'
+                    ])
                     ->where('id', '>', $lastId);
 
                 // Filter by location if provided
@@ -198,6 +279,9 @@ return response()->stream(function () use ($locationId, $userId) {
 
                         $lastId = $purchase->id;
                     }
+
+                    // Clear the collection to free memory
+                    unset($purchases);
                 } else {
                     // Send heartbeat to keep connection alive
                     echo ": heartbeat\n\n";
@@ -210,8 +294,14 @@ return response()->stream(function () use ($locationId, $userId) {
                     break;
                 }
 
-                // Wait 3 seconds before next update
-                sleep(3);
+                // Periodic memory cleanup (every 10 iterations)
+                $iterations++;
+                if ($iterations % 10 === 0) {
+                    $this->cleanupMemory();
+                }
+
+                // Wait before next update
+                sleep(self::POLL_INTERVAL);
             }
             }, 200, [
                 'Content-Type' => 'text/event-stream',
@@ -241,6 +331,9 @@ return response()->stream(function () use ($locationId, $userId) {
             ]);
 
 return response()->stream(function () use ($locationId, $userId) {
+            // Disable query logging to prevent memory buildup
+            DB::connection()->disableQueryLog();
+
             // Set headers for SSE
             header('Content-Type: text/event-stream');
             header('Cache-Control: no-cache');
@@ -252,13 +345,34 @@ return response()->stream(function () use ($locationId, $userId) {
 
             $lastBookingId = 0;
             $lastPurchaseId = 0;
+            $startTime = time();
+            $iterations = 0;
 
-            // Keep sending updates every 3 seconds
+            // Keep sending updates with timeout
             while (true) {
+                // Check timeout to prevent memory exhaustion
+                if ((time() - $startTime) >= self::MAX_STREAM_RUNTIME) {
+                    echo "event: timeout\n";
+                    echo "data: {\"message\": \"Stream timeout, please reconnect\"}\n\n";
+                    ob_flush();
+                    flush();
+                    break;
+                }
+
                 $hasNewData = false;
 
-                // Query for new bookings
-                $bookingQuery = Booking::with(['customer', 'package', 'location', 'room'])
+                // Query for new bookings - select only needed fields
+                $bookingQuery = Booking::select([
+                        'id', 'reference_number', 'customer_id', 'package_id', 'location_id',
+                        'room_id', 'guest_name', 'booking_date', 'booking_time', 'status',
+                        'total_amount', 'created_at', 'created_by'
+                    ])
+                    ->with([
+                        'customer:id,first_name,last_name',
+                        'package:id,name',
+                        'location:id,name',
+                        'room:id,name'
+                    ])
                     ->where('id', '>', $lastBookingId);
 
                 if ($locationId) {
@@ -304,10 +418,22 @@ return response()->stream(function () use ($locationId, $userId) {
                         $lastBookingId = $booking->id;
                         $hasNewData = true;
                     }
+
+                    // Clear the collection to free memory
+                    unset($bookings);
                 }
 
-                // Query for new attraction purchases
-                $purchaseQuery = AttractionPurchase::with(['customer', 'attraction', 'createdBy'])
+                // Query for new attraction purchases - select only needed fields
+                $purchaseQuery = AttractionPurchase::select([
+                        'id', 'attraction_id', 'customer_id', 'guest_name', 'quantity',
+                        'total_amount', 'status', 'payment_method', 'purchase_date',
+                        'created_at', 'created_by'
+                    ])
+                    ->with([
+                        'customer:id,first_name,last_name',
+                        'attraction:id,name,location_id',
+                        'attraction.location:id,name'
+                    ])
                     ->where('id', '>', $lastPurchaseId);
 
                 if ($locationId) {
@@ -355,6 +481,9 @@ return response()->stream(function () use ($locationId, $userId) {
                         $lastPurchaseId = $purchase->id;
                         $hasNewData = true;
                     }
+
+                    // Clear the collection to free memory
+                    unset($purchases);
                 }
 
                 // Send heartbeat if no new data
@@ -369,8 +498,14 @@ return response()->stream(function () use ($locationId, $userId) {
                     break;
                 }
 
-                // Wait 3 seconds before next update
-                sleep(3);
+                // Periodic memory cleanup (every 10 iterations)
+                $iterations++;
+                if ($iterations % 10 === 0) {
+                    $this->cleanupMemory();
+                }
+
+                // Wait before next update
+                sleep(self::POLL_INTERVAL);
             }
             }, 200, [
                 'Content-Type' => 'text/event-stream',
