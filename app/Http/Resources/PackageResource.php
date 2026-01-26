@@ -36,6 +36,7 @@ class PackageResource extends JsonResource
             'customer_notes' => $this->customer_notes,
             'invitation_download_link' => $this->invitation_download_link,
             'invitation_file' => $this->invitation_file,
+            'booking_window_days' => $this->booking_window_days,
             'created_at' => $this->created_at,
             'updated_at' => $this->updated_at,
             'package_type' => $this->package_type,

@@ -67,7 +67,7 @@ class BookingConfirmation extends Mailable
         // Attach invitation file if available
         if ($this->booking->package && $this->booking->package->invitation_file) {
             $invitationFile = $this->booking->package->invitation_file;
-            
+
             // Check if it's a base64 encoded file or a file path
             if (str_starts_with($invitationFile, 'data:')) {
                 // Base64 encoded file

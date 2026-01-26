@@ -345,10 +345,10 @@ class PackageController extends Controller
         // Handle invitation_file upload
         if (isset($validated['invitation_file']) && !empty($validated['invitation_file'])) {
             // Delete old invitation file if it exists and is a local file
-            if ($package->invitation_file && 
+            if ($package->invitation_file &&
                 !filter_var($package->invitation_file, FILTER_VALIDATE_URL) &&
                 strpos($package->invitation_file, 'data:') !== 0) {
-                
+
                 $oldFilePath = storage_path('app/public/' . $package->invitation_file);
                 if (file_exists($oldFilePath)) {
                     unlink($oldFilePath);
@@ -1127,7 +1127,7 @@ class PackageController extends Controller
                     'image/jpeg' => 'jpg',
                     'image/gif' => 'gif',
                 ];
-                
+
                 if (isset($mimeToExt[$mimeType])) {
                     $extension = $mimeToExt[$mimeType];
                 }

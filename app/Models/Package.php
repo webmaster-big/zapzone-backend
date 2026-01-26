@@ -35,6 +35,7 @@ class Package extends Model
         'customer_notes',
         'invitation_download_link',
         'invitation_file',
+        'booking_window_days',
         'partial_payment_percentage',
         'partial_payment_fixed',
     ];
@@ -51,6 +52,7 @@ class Package extends Model
         'add_ons_order' => 'array',
         'is_active' => 'boolean',
         'has_guest_of_honor' => 'boolean',
+        'booking_window_days' => 'integer',
     ];
 
     // Relationships
