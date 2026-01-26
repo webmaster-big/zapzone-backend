@@ -329,7 +329,7 @@
                                             <p style="margin: 0 0 8px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #92400e; white-space: pre-line;">{{ $customerNotes }}</p>
                                         </div>
                                         @endif
-                                        
+
                                         @if(isset($globalNotes) && $globalNotes->isNotEmpty())
                                             @foreach($globalNotes as $note)
                                             <div style="margin-bottom: {{ !$loop->last ? '12px' : '0' }};">

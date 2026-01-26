@@ -34,6 +34,7 @@ class Package extends Model
         'add_ons_order',
         'customer_notes',
         'invitation_download_link',
+        'invitation_file',
         'partial_payment_percentage',
         'partial_payment_fixed',
     ];
