@@ -11,11 +11,6 @@
         <tr>
             <td align="center" style="padding: 40px 20px;">
     <![endif]-->
-    <!--[if mso]>
-    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f9fafb;">
-        <tr>
-            <td align="center" style="padding: 40px 20px;">
-    <![endif]-->
 
     <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f9fafb; padding: 40px 20px;">
         <tr>
@@ -255,7 +250,7 @@
                                         <table width="100%" cellpadding="0" cellspacing="0" border="0">
                                             <tr>
                                                 <td style="font-weight: 500; color: #6b7280; width: 140px;">Payment Method:</td>
-                                                <td style="color: #111827;">{{ ucfirst(str_replace('_', ' ', $purchase->payment_method)) }}</td>
+                                                <td style="color: #111827;">{{ $purchase->payment_method === 'in-store' ? 'In-Store' : ucfirst(str_replace('_', ' ', $purchase->payment_method)) }}</td>
                                             </tr>
                                         </table>
                                     </td>
