@@ -20,7 +20,7 @@ class AddOnController extends Controller
         try {
             // Limit per_page to prevent memory exhaustion
             $perPage = min($request->get('per_page', 15), 500);
-            
+
             $query = AddOn::with(['location:id,name', 'packages:id,name']);
 
             // Role-based filtering

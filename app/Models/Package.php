@@ -32,6 +32,7 @@ class Package extends Model
         'is_active',
         'has_guest_of_honor',
         'add_ons_order',
+        'customer_notes',
         'partial_payment_percentage',
         'partial_payment_fixed',
     ];

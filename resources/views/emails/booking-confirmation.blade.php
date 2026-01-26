@@ -305,6 +305,33 @@
                             </table>
                             @endif
 
+                            <!-- Important Notes Section -->
+                            @if($customerNotes || (isset($globalNotes) && $globalNotes->isNotEmpty()))
+                            <h3 style="margin: 24px 0 12px 0; padding: 0; font-size: 16px; font-weight: 600; color: #111827;">📋 Important Information</h3>
+                            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #fef3c7; border-radius: 6px; border: 1px solid #fbbf24; margin: 16px 0;">
+                                <tr>
+                                    <td style="padding: 16px;">
+                                        @if($customerNotes)
+                                        <div style="margin-bottom: {{ (isset($globalNotes) && $globalNotes->isNotEmpty()) ? '16px' : '0' }};">
+                                            <p style="margin: 0 0 8px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #92400e; white-space: pre-line;">{{ $customerNotes }}</p>
+                                        </div>
+                                        @endif
+                                        
+                                        @if(isset($globalNotes) && $globalNotes->isNotEmpty())
+                                            @foreach($globalNotes as $note)
+                                            <div style="margin-bottom: {{ !$loop->last ? '12px' : '0' }};">
+                                                @if($note->title)
+                                                <p style="margin: 0 0 4px 0; padding: 0; font-size: 14px; font-weight: 600; color: #92400e;">{{ $note->title }}</p>
+                                                @endif
+                                                <p style="margin: 0; padding: 0; font-size: 14px; line-height: 1.6; color: #92400e; white-space: pre-line;">{{ $note->content }}</p>
+                                            </div>
+                                            @endforeach
+                                        @endif
+                                    </td>
+                                </tr>
+                            </table>
+                            @endif
+
                             <!-- QR Section -->
                             <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f9fafb; border-radius: 6px; border: 1px solid #e5e7eb; margin: 24px 0;">
                                 <tr>

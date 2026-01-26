@@ -42,6 +42,7 @@ class StorePackageRequest extends FormRequest
             'is_active' => 'boolean',
             'has_guest_of_honor' => 'nullable|boolean',
             'add_ons_order' => 'nullable|array',
+            'customer_notes' => 'nullable|string',
             'attraction_ids' => 'nullable|array',
             'attraction_ids.*' => 'exists:attractions,id',
             'addon_ids' => 'nullable|array',

@@ -19,7 +19,7 @@ class RoomController extends Controller
         try {
             // Limit per_page to prevent memory exhaustion
             $perPage = min($request->get('per_page', 15), 500);
-            
+
             $query = Room::with(['location:id,name', 'packages:id,name']);
 
             // Role-based filtering

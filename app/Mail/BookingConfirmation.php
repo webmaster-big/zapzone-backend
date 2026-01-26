@@ -3,6 +3,7 @@
 namespace App\Mail;
 
 use App\Models\Booking;
+use App\Models\GlobalNote;
 use Illuminate\Bus\Queueable;
 use Illuminate\Mail\Mailable;
 use Illuminate\Mail\Mailables\Attachment;
@@ -33,6 +34,15 @@ class BookingConfirmation extends Mailable
      */
     public function build()
     {
+        // Get global notes for this package
+        $globalNotes = [];
+        if ($this->booking->package_id) {
+            $globalNotes = GlobalNote::active()
+                ->forPackage($this->booking->package_id)
+                ->ordered()
+                ->get();
+        }
+
         $this->subject('Booking Confirmation - Order #' . $this->booking->id)
             ->view('emails.booking-confirmation')
             ->with([
@@ -43,6 +53,8 @@ class BookingConfirmation extends Mailable
                 'packageName' => $this->booking->package?->name ?? 'N/A',
                 'locationName' => $this->booking->location?->name ?? 'N/A',
                 'roomName' => $this->booking->room?->name ?? 'N/A',
+                'customerNotes' => $this->booking->package?->customer_notes,
+                'globalNotes' => $globalNotes,
             ]);
 
         // Attach QR code if path is provided

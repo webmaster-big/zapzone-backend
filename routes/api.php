@@ -17,6 +17,7 @@ use App\Http\Controllers\Api\DayOffController;
 use App\Http\Controllers\Api\EmailCampaignController;
 use App\Http\Controllers\Api\EmailTemplateController;
 use App\Http\Controllers\Api\GiftCardController;
+use App\Http\Controllers\Api\GlobalNoteController;
 use App\Http\Controllers\Api\LocationController;
 use App\Http\Controllers\Api\MetricsController;
 use App\Http\Controllers\Api\NotificationController;
@@ -298,6 +299,11 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('addons/popular', [AddOnController::class, 'getPopular']);
     Route::post('addons/bulk-delete', [AddOnController::class, 'bulkDelete']);
     Route::post('addons/bulk-import', [AddOnController::class, 'bulkImport']);
+
+    // Global Notes routes
+    Route::apiResource('global-notes', GlobalNoteController::class);
+    Route::get('global-notes/package/{packageId}', [GlobalNoteController::class, 'getForPackage']);
+    Route::patch('global-notes/{globalNote}/toggle-status', [GlobalNoteController::class, 'toggleStatus']);
 
     // Gift Card routes
     Route::apiResource('gift-cards', GiftCardController::class);
