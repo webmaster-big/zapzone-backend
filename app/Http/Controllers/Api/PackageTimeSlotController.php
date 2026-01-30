@@ -109,7 +109,7 @@ class PackageTimeSlotController extends Controller
             'notes' => 'nullable|string',
         ]);
 
-        // Check minimum booking notice requirement
+        // Check minimum advance booking time requirement (prevents last-minute bookings)
         $minNoticeCheck = $this->checkMinBookingNotice(
             $validated['package_id'],
             $validated['booked_date'],
@@ -571,7 +571,8 @@ class PackageTimeSlotController extends Controller
     }
 
     /**
-     * Check if the booking meets the minimum notice requirement for the package.
+     * Check if the booking meets the minimum advance notice requirement.
+     * Prevents last-minute bookings to ensure adequate preparation and cleanup time.
      * Returns an array with 'allowed' boolean and details.
      */
     private function checkMinBookingNotice($packageId, $date, $startTime): array
@@ -587,11 +588,11 @@ class PackageTimeSlotController extends Controller
             ];
         }
 
-        // If no minimum notice is set, allow the booking
+        // If no minimum advance notice is set, allow the booking
         if ($package->min_booking_notice_hours === null || $package->min_booking_notice_hours === 0) {
             return [
                 'allowed' => true,
-                'message' => 'No minimum booking notice required',
+                'message' => 'No minimum advance notice required',
                 'min_hours' => 0,
                 'hours_until_slot' => null,
             ];
@@ -612,7 +613,7 @@ class PackageTimeSlotController extends Controller
             ];
         }
 
-        // Check if there's enough notice
+        // Check if there's enough advance notice
         if ($hoursUntilSlot < $package->min_booking_notice_hours) {
             $minHours = $package->min_booking_notice_hours;
             $formattedNotice = $minHours >= 24 
@@ -621,7 +622,7 @@ class PackageTimeSlotController extends Controller
 
             return [
                 'allowed' => false,
-                'message' => "This package requires at least {$formattedNotice} advance notice for bookings. The selected time slot is only {$hoursUntilSlot} hour(s) away.",
+                'message' => "This package requires at least {$formattedNotice} advance booking time. Please select a time slot further in the future to ensure adequate preparation time.",
                 'min_hours' => $minHours,
                 'hours_until_slot' => $hoursUntilSlot,
             ];
@@ -629,7 +630,7 @@ class PackageTimeSlotController extends Controller
 
         return [
             'allowed' => true,
-            'message' => 'Booking notice requirement met',
+            'message' => 'Advance booking time requirement met',
             'min_hours' => $package->min_booking_notice_hours,
             'hours_until_slot' => $hoursUntilSlot,
         ];
@@ -734,18 +735,19 @@ class PackageTimeSlotController extends Controller
             $currentTime = Carbon::parse($date . ' ' . $timeSlot);
             $slotEndTime = (clone $currentTime)->addMinutes($slotDurationInMinutes);
 
-            // Check minimum booking notice requirement
+            // Filter out slots that don't meet minimum advance booking time
+            // This prevents last-minute bookings and ensures adequate preparation/cleanup time
             if ($package->min_booking_notice_hours !== null && $package->min_booking_notice_hours > 0) {
                 $hoursUntilSlot = Carbon::now()->diffInHours($currentTime, false);
                 if ($hoursUntilSlot < $package->min_booking_notice_hours) {
-                    Log::debug('Time slot filtered by minimum booking notice', [
+                    Log::debug('Time slot excluded - insufficient advance booking time', [
                         'package_id' => $package->id,
                         'date' => $date,
                         'time_slot' => $currentTime->format('H:i'),
                         'min_booking_notice_hours' => $package->min_booking_notice_hours,
                         'hours_until_slot' => $hoursUntilSlot,
                     ]);
-                    continue; // Skip this slot - doesn't meet minimum notice requirement
+                    continue; // Skip this slot entirely - it won't appear to customers
                 }
             }
 
