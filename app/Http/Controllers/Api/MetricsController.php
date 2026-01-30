@@ -34,11 +34,42 @@ class MetricsController extends Controller
                 'user_location_id' => $user->location_id,
                 'date_from' => $request->query('date_from'),
                 'date_to' => $request->query('date_to'),
+                'timeframe' => $request->query('timeframe'),
                 'timestamp' => now()->toDateTimeString(),
             ]);
 
+        // Timeframe selector: supports 'last_24h', 'last_7d', 'last_30d', 'all_time', or 'custom'
+        // Custom range uses date_from and date_to parameters
+        $timeframe = $request->query('timeframe', 'all_time');
         $dateFrom = $request->query('date_from');
         $dateTo = $request->query('date_to');
+
+        // Apply timeframe preset if not using custom dates
+        if (!$dateFrom && !$dateTo) {
+            switch ($timeframe) {
+                case 'last_24h':
+                    $dateFrom = now()->subHours(24)->toDateString();
+                    $dateTo = now()->toDateString();
+                    break;
+                case 'last_7d':
+                    $dateFrom = now()->subDays(7)->toDateString();
+                    $dateTo = now()->toDateString();
+                    break;
+                case 'last_30d':
+                    $dateFrom = now()->subDays(30)->toDateString();
+                    $dateTo = now()->toDateString();
+                    break;
+                case 'all_time':
+                default:
+                    // No date filter - all time metrics
+                    $dateFrom = null;
+                    $dateTo = null;
+                    break;
+            }
+        } else {
+            // If custom dates are provided, set timeframe to 'custom'
+            $timeframe = 'custom';
+        }
 
         // Determine location filter based on user role
         $locationId = null;
@@ -186,15 +217,29 @@ class MetricsController extends Controller
             });
 
         $response = [
+            'timeframe' => [
+                'type' => $timeframe,
+                'date_from' => $dateFrom,
+                'date_to' => $dateTo,
+                'description' => match($timeframe) {
+                    'last_24h' => 'Last 24 Hours',
+                    'last_7d' => 'Last 7 Days',
+                    'last_30d' => 'Last 30 Days',
+                    'custom' => 'Custom Range',
+                    default => 'All Time',
+                },
+            ],
             'metrics' => [
+                // All counts below are filtered by the selected timeframe
+                // If timeframe is 'all_time', counts represent all historical data
                 'totalBookings' => $totalBookings,
                 'totalRevenue' => round($totalRevenue, 2),
                 'totalCustomers' => $totalCustomers,
-                'confirmedBookings' => $confirmedBookings,
-                'pendingBookings' => $pendingBookings,
-                'completedBookings' => $completedBookings,
-                'cancelledBookings' => $cancelledBookings,
-                'checkedInBookings' => $checkedInBookings,
+                'confirmedBookings' => $confirmedBookings,  // Filtered by timeframe
+                'pendingBookings' => $pendingBookings,      // Filtered by timeframe
+                'completedBookings' => $completedBookings,  // Filtered by timeframe
+                'cancelledBookings' => $cancelledBookings,  // Filtered by timeframe
+                'checkedInBookings' => $checkedInBookings,  // Filtered by timeframe
                 'totalParticipants' => (int) $totalParticipants,
                 'bookingRevenue' => round($bookingRevenue, 2),
                 'purchaseRevenue' => round($allPurchaseRevenue, 2),
@@ -280,12 +325,41 @@ class MetricsController extends Controller
     {
         try {
             $locationId = $request->query('location_id');
+
+            // Timeframe selector: supports 'last_24h', 'last_7d', 'last_30d', 'all_time', or 'custom'
+            $timeframe = $request->query('timeframe', 'all_time');
             $dateFrom = $request->query('date_from');
             $dateTo = $request->query('date_to');
+
+            // Apply timeframe preset if not using custom dates
+            if (!$dateFrom && !$dateTo) {
+                switch ($timeframe) {
+                    case 'last_24h':
+                        $dateFrom = now()->subHours(24)->toDateString();
+                        $dateTo = now()->toDateString();
+                        break;
+                    case 'last_7d':
+                        $dateFrom = now()->subDays(7)->toDateString();
+                        $dateTo = now()->toDateString();
+                        break;
+                    case 'last_30d':
+                        $dateFrom = now()->subDays(30)->toDateString();
+                        $dateTo = now()->toDateString();
+                        break;
+                    case 'all_time':
+                    default:
+                        $dateFrom = null;
+                        $dateTo = null;
+                        break;
+                }
+            } else {
+                $timeframe = 'custom';
+            }
 
             // Log incoming request for debugging
             Log::info('=== Attendant Metrics API Called ===', [
                 'location_id' => $locationId,
+                'timeframe' => $timeframe,
                 'date_from' => $dateFrom,
                 'date_to' => $dateTo,
                 'timestamp' => now()->toDateTimeString(),
@@ -469,14 +543,27 @@ class MetricsController extends Controller
         ]);
 
         $response = [
+            'timeframe' => [
+                'type' => $timeframe,
+                'date_from' => $dateFrom,
+                'date_to' => $dateTo,
+                'description' => match($timeframe) {
+                    'last_24h' => 'Last 24 Hours',
+                    'last_7d' => 'Last 7 Days',
+                    'last_30d' => 'Last 30 Days',
+                    'custom' => 'Custom Range',
+                    default => 'All Time',
+                },
+            ],
             'metrics' => [
+                // All counts below are filtered by the selected timeframe
                 'totalBookings' => $totalBookings,
                 'totalRevenue' => round($totalRevenue, 2),
                 'totalCustomers' => $totalCustomers,
-                'confirmedBookings' => $confirmedBookings,
-                'pendingBookings' => $pendingBookings,
-                'completedBookings' => $completedBookings,
-                'cancelledBookings' => $cancelledBookings,
+                'confirmedBookings' => $confirmedBookings,  // Filtered by timeframe
+                'pendingBookings' => $pendingBookings,      // Filtered by timeframe
+                'completedBookings' => $completedBookings,  // Filtered by timeframe
+                'cancelledBookings' => $cancelledBookings,  // Filtered by timeframe
                 'totalParticipants' => (int) $totalParticipants,
                 'bookingRevenue' => round($bookingRevenue, 2),
                 'purchaseRevenue' => round($allPurchaseRevenue, 2),

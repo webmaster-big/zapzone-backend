@@ -361,9 +361,40 @@ class BookingController extends Controller
             entityId: $booking->id,
             metadata: [
                 'reference_number' => $booking->reference_number,
+                'customer_name' => $customerName,
                 'customer_id' => $booking->customer_id,
-                'total_amount' => $booking->total_amount,
-                'booking_date' => $booking->booking_date,
+                'guest_email' => $booking->guest_email,
+                'created_by' => $booking->creator ? $booking->creator->name ?? $booking->creator->email : 'System',
+                'created_at' => $booking->created_at->toIso8601String(),
+                'booking_details' => [
+                    'booking_date' => $booking->booking_date,
+                    'booking_time' => $booking->booking_time,
+                    'duration' => $booking->duration,
+                    'duration_unit' => $booking->duration_unit,
+                    'participants' => $booking->participants,
+                ],
+                'package' => $booking->package ? [
+                    'id' => $booking->package->id,
+                    'name' => $booking->package->name,
+                ] : null,
+                'room' => $booking->room ? [
+                    'id' => $booking->room->id,
+                    'name' => $booking->room->name,
+                ] : null,
+                'location' => $booking->location ? [
+                    'id' => $booking->location->id,
+                    'name' => $booking->location->name,
+                ] : null,
+                'financial' => [
+                    'total_amount' => $booking->total_amount,
+                    'amount_paid' => $booking->amount_paid,
+                    'discount_amount' => $booking->discount_amount,
+                    'payment_method' => $booking->payment_method,
+                    'payment_status' => $booking->payment_status,
+                ],
+                'status' => $booking->status,
+                'addons_count' => $booking->addOns->count(),
+                'attractions_count' => $booking->attractions->count(),
             ]
           );
         }
@@ -802,6 +833,26 @@ class BookingController extends Controller
             'additional_addons.*.price_at_booking' => 'nullable|numeric|min:0',
         ]);
 
+        // Capture original values before update for activity logging
+        $originalValues = $booking->only([
+            'status', 'payment_status', 'total_amount', 'amount_paid', 'discount_amount',
+            'booking_date', 'booking_time', 'participants', 'duration', 'duration_unit',
+            'room_id', 'package_id', 'notes', 'internal_notes', 'special_requests',
+            'guest_of_honor_name', 'guest_of_honor_age', 'guest_of_honor_gender'
+        ]);
+        $originalAddons = $booking->addOns()->with('addOn')->get()->map(fn($a) => [
+            'addon_id' => $a->add_on_id,
+            'name' => $a->addOn->name ?? 'N/A',
+            'quantity' => $a->quantity,
+            'price' => $a->price_at_booking,
+        ])->toArray();
+        $originalAttractions = $booking->attractions()->with('attraction')->get()->map(fn($a) => [
+            'attraction_id' => $a->attraction_id,
+            'name' => $a->attraction->name ?? 'N/A',
+            'quantity' => $a->quantity,
+            'price' => $a->price_at_booking,
+        ])->toArray();
+
         // Update timestamps based on status
         if (isset($validated['status'])) {
             switch ($validated['status']) {
@@ -898,19 +949,82 @@ class BookingController extends Controller
             $this->sendNotificationEmail($booking, 'updated');
         }
 
-        // Log booking update activity
+        // Build detailed changes for activity log
+        $changes = [];
+        foreach ($validated as $field => $newValue) {
+            if (in_array($field, ['additional_attractions', 'additional_addons', 'send_notification'])) {
+                continue; // Handle separately
+            }
+            $oldValue = $originalValues[$field] ?? null;
+            if ($oldValue !== $newValue) {
+                $changes[$field] = [
+                    'from' => $oldValue,
+                    'to' => $newValue,
+                ];
+            }
+        }
+
+        // Track add-on changes
+        $newAddons = [];
+        if (isset($validated['additional_addons'])) {
+            $newAddons = $booking->addOns()->with('addOn')->get()->map(fn($a) => [
+                'addon_id' => $a->add_on_id,
+                'name' => $a->addOn->name ?? 'N/A',
+                'quantity' => $a->quantity,
+                'price' => $a->price_at_booking,
+            ])->toArray();
+            if ($originalAddons !== $newAddons) {
+                $changes['addons'] = [
+                    'from' => $originalAddons,
+                    'to' => $newAddons,
+                ];
+            }
+        }
+
+        // Track attraction changes
+        $newAttractions = [];
+        if (isset($validated['additional_attractions'])) {
+            $newAttractions = $booking->attractions()->with('attraction')->get()->map(fn($a) => [
+                'attraction_id' => $a->attraction_id,
+                'name' => $a->attraction->name ?? 'N/A',
+                'quantity' => $a->quantity,
+                'price' => $a->price_at_booking,
+            ])->toArray();
+            if ($originalAttractions !== $newAttractions) {
+                $changes['attractions'] = [
+                    'from' => $originalAttractions,
+                    'to' => $newAttractions,
+                ];
+            }
+        }
+
+        // Log booking update activity with detailed metadata
         $customerName = $booking->customer ? "{$booking->customer->first_name} {$booking->customer->last_name}" : $booking->guest_name;
+        $changedFieldsList = array_keys($changes);
+        $changesSummary = count($changedFieldsList) > 0 ? implode(', ', $changedFieldsList) : 'no fields';
+
         ActivityLog::log(
-            action: 'Booking Updated',
+            action: 'Booking Edited',
             category: 'update',
-            description: "Booking {$booking->reference_number} updated for {$customerName}",
+            description: "Booking {$booking->reference_number} edited for {$customerName}. Changed: {$changesSummary}",
             userId: auth()->id(),
             locationId: $booking->location_id,
             entityType: 'booking',
             entityId: $booking->id,
             metadata: [
                 'reference_number' => $booking->reference_number,
-                'updated_fields' => array_keys($validated),
+                'customer_name' => $customerName,
+                'customer_id' => $booking->customer_id,
+                'updated_by' => auth()->user() ? auth()->user()->name ?? auth()->user()->email : 'System',
+                'updated_at' => now()->toIso8601String(),
+                'changes' => $changes,
+                'updated_fields' => $changedFieldsList,
+                'booking_date' => $booking->booking_date,
+                'booking_time' => $booking->booking_time,
+                'total_amount' => $booking->total_amount,
+                'amount_paid' => $booking->amount_paid,
+                'status' => $booking->status,
+                'payment_status' => $booking->payment_status,
             ]
         );
 
@@ -1036,6 +1150,7 @@ class BookingController extends Controller
             'status' => ['required', Rule::in(['pending', 'confirmed', 'checked-in', 'completed', 'cancelled'])],
         ]);
 
+        $previousStatus = $booking->status;
         $notificationData = null;
 
         // Update timestamps based on status
@@ -1140,6 +1255,33 @@ class BookingController extends Controller
             ]);
         }
 
+        // Log booking status change activity
+        $customerName = $booking->customer ? "{$booking->customer->first_name} {$booking->customer->last_name}" : $booking->guest_name;
+        ActivityLog::log(
+            action: 'Booking Status Changed',
+            category: 'update',
+            description: "Booking {$booking->reference_number} status changed from '{$previousStatus}' to '{$validated['status']}'",
+            userId: auth()->id(),
+            locationId: $booking->location_id,
+            entityType: 'booking',
+            entityId: $booking->id,
+            metadata: [
+                'reference_number' => $booking->reference_number,
+                'customer_name' => $customerName,
+                'customer_id' => $booking->customer_id,
+                'changed_by' => auth()->user() ? auth()->user()->name ?? auth()->user()->email : 'System',
+                'changed_at' => now()->toIso8601String(),
+                'status_change' => [
+                    'from' => $previousStatus,
+                    'to' => $validated['status'],
+                ],
+                'booking_date' => $booking->booking_date,
+                'booking_time' => $booking->booking_time,
+                'total_amount' => $booking->total_amount,
+                'amount_paid' => $booking->amount_paid,
+            ]
+        );
+
         return response()->json([
             'success' => true,
             'message' => 'Booking status updated successfully',
@@ -1179,6 +1321,32 @@ class BookingController extends Controller
                 ],
             ]);
         }
+
+        // Log payment status change activity
+        $customerName = $booking->customer ? "{$booking->customer->first_name} {$booking->customer->last_name}" : $booking->guest_name;
+        ActivityLog::log(
+            action: 'Payment Status Changed',
+            category: 'update',
+            description: "Booking {$booking->reference_number} payment status changed from '{$previousStatus}' to '{$validated['payment_status']}'",
+            userId: auth()->id(),
+            locationId: $booking->location_id,
+            entityType: 'booking',
+            entityId: $booking->id,
+            metadata: [
+                'reference_number' => $booking->reference_number,
+                'customer_name' => $customerName,
+                'customer_id' => $booking->customer_id,
+                'changed_by' => auth()->user() ? auth()->user()->name ?? auth()->user()->email : 'System',
+                'changed_at' => now()->toIso8601String(),
+                'payment_status_change' => [
+                    'from' => $previousStatus,
+                    'to' => $validated['payment_status'],
+                ],
+                'total_amount' => $booking->total_amount,
+                'amount_paid' => $booking->amount_paid,
+                'booking_date' => $booking->booking_date,
+            ]
+        );
 
         return response()->json([
             'success' => true,

@@ -167,20 +167,39 @@ class PaymentController extends Controller
             ]);
         }
 
-        // Log payment creation activity
+        // Log payment creation activity with detailed metadata
+        $customerName = $payment->customer
+            ? "{$payment->customer->first_name} {$payment->customer->last_name}"
+            : 'Guest';
+
         ActivityLog::log(
-            action: 'Payment Created',
+            action: 'Payment Recorded',
             category: 'create',
-            description: "Payment of $" . number_format($payment->amount, 2) . " created via {$payment->method}",
+            description: "Payment of $" . number_format($payment->amount, 2) . " recorded via {$payment->method} for {$customerName}",
             userId: auth()->id(),
             locationId: $payment->location_id,
             entityType: 'payment',
             entityId: $payment->id,
             metadata: [
                 'transaction_id' => $payment->transaction_id,
-                'amount' => $payment->amount,
-                'method' => $payment->method,
-                'status' => $payment->status,
+                'recorded_by' => auth()->user() ? auth()->user()->name ?? auth()->user()->email : 'System',
+                'recorded_at' => now()->toIso8601String(),
+                'payment_details' => [
+                    'amount' => $payment->amount,
+                    'currency' => $payment->currency ?? 'USD',
+                    'method' => $payment->method,
+                    'status' => $payment->status,
+                ],
+                'customer' => [
+                    'id' => $payment->customer_id,
+                    'name' => $customerName,
+                ],
+                'payable' => [
+                    'type' => $payment->payable_type,
+                    'id' => $payment->payable_id,
+                ],
+                'location_id' => $payment->location_id,
+                'notes' => $payment->notes,
             ]
         );
 
@@ -270,18 +289,39 @@ class PaymentController extends Controller
 
         // Log payment update activity if status changed
         if (isset($validated['status'])) {
+            $customerName = $payment->customer
+                ? "{$payment->customer->first_name} {$payment->customer->last_name}"
+                : 'Guest';
+
             ActivityLog::log(
-                action: 'Payment Updated',
+                action: 'Payment Status Changed',
                 category: 'update',
-                description: "Payment status updated to {$validated['status']}",
+                description: "Payment {$payment->transaction_id} status changed from '{$previousStatus}' to '{$validated['status']}'",
                 userId: auth()->id(),
                 locationId: $payment->location_id,
                 entityType: 'payment',
                 entityId: $payment->id,
                 metadata: [
                     'transaction_id' => $payment->transaction_id,
-                    'new_status' => $validated['status'],
-                    'amount' => $payment->amount,
+                    'changed_by' => auth()->user() ? auth()->user()->name ?? auth()->user()->email : 'System',
+                    'changed_at' => now()->toIso8601String(),
+                    'status_change' => [
+                        'from' => $previousStatus,
+                        'to' => $validated['status'],
+                    ],
+                    'payment_details' => [
+                        'amount' => $payment->amount,
+                        'method' => $payment->method,
+                    ],
+                    'customer' => [
+                        'id' => $payment->customer_id,
+                        'name' => $customerName,
+                    ],
+                    'payable' => [
+                        'type' => $payment->payable_type,
+                        'id' => $payment->payable_id,
+                    ],
+                    'notes' => $validated['notes'] ?? $payment->notes,
                 ]
             );
         }
@@ -340,18 +380,37 @@ class PaymentController extends Controller
             ]);
         }
 
-        // Log payment refund activity
+        // Log payment refund activity with detailed metadata
+        $customerName = $payment->customer
+            ? "{$payment->customer->first_name} {$payment->customer->last_name}"
+            : 'Guest';
+
         ActivityLog::log(
             action: 'Payment Refunded',
             category: 'update',
-            description: "Payment of $" . number_format($payment->amount, 2) . " refunded",
+            description: "Payment of $" . number_format($payment->amount, 2) . " refunded for {$customerName}",
             userId: auth()->id(),
             locationId: $payment->location_id,
             entityType: 'payment',
             entityId: $payment->id,
             metadata: [
                 'transaction_id' => $payment->transaction_id,
-                'amount' => $payment->amount,
+                'refunded_by' => auth()->user() ? auth()->user()->name ?? auth()->user()->email : 'System',
+                'refunded_at' => now()->toIso8601String(),
+                'payment_details' => [
+                    'amount' => $payment->amount,
+                    'method' => $payment->method,
+                    'original_status' => 'completed',
+                    'new_status' => 'refunded',
+                ],
+                'customer' => [
+                    'id' => $payment->customer_id,
+                    'name' => $customerName,
+                ],
+                'payable' => [
+                    'type' => $payment->payable_type,
+                    'id' => $payment->payable_id,
+                ],
             ]
         );
 
