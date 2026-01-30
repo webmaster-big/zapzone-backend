@@ -12,15 +12,70 @@ use Illuminate\Support\Facades\Log;
 class StreamController extends Controller
     {
         /**
-         * Maximum runtime for SSE streams in seconds (5 minutes)
+         * Maximum runtime for SSE streams in seconds (1 minute)
          * Client should reconnect after stream ends
+         * Reduced from 5 minutes to prevent memory exhaustion
          */
-        private const MAX_STREAM_RUNTIME = 300;
+        private const MAX_STREAM_RUNTIME = 60;
 
         /**
          * Interval between iterations in seconds
          */
         private const POLL_INTERVAL = 3;
+
+        /**
+         * Initialize SSE stream by clearing output buffers
+         * This prevents memory accumulation in long-running streams
+         */
+        private function initializeStream(): void
+        {
+            // Disable time limit for long-running streams
+            set_time_limit(0);
+            
+            // Turn off output buffering completely
+            // Clear ALL output buffers to prevent memory buildup
+            while (ob_get_level() > 0) {
+                ob_end_flush();
+            }
+            
+            // Start a clean output buffer that flushes immediately
+            ob_implicit_flush(true);
+            
+            // Disable query logging to prevent memory buildup
+            DB::connection()->disableQueryLog();
+        }
+
+        /**
+         * Send SSE data and flush immediately
+         */
+        private function sendSSE(string $data, ?string $event = null, ?string $id = null): void
+        {
+            if ($id) {
+                echo "id: {$id}\n";
+            }
+            if ($event) {
+                echo "event: {$event}\n";
+            }
+            echo "data: {$data}\n\n";
+            
+            // Force immediate output - no buffering
+            if (ob_get_level() > 0) {
+                ob_flush();
+            }
+            flush();
+        }
+
+        /**
+         * Send heartbeat to keep connection alive
+         */
+        private function sendHeartbeat(): void
+        {
+            echo ": heartbeat\n\n";
+            if (ob_get_level() > 0) {
+                ob_flush();
+            }
+            flush();
+        }
 
         /**
          * Clean up memory to prevent exhaustion in long-running SSE streams
@@ -53,67 +108,55 @@ class StreamController extends Controller
                 'timestamp' => now()->toDateTimeString(),
             ]);
 
-return response()->stream(function () use ($locationId, $userId) {
-            // Disable query logging to prevent memory buildup
-            DB::connection()->disableQueryLog();
+            return response()->stream(function () use ($locationId, $userId) {
+                // Initialize stream - clear all buffers to prevent memory buildup
+                $this->initializeStream();
 
-            // Set headers for SSE
-            header('Content-Type: text/event-stream');
-            header('Cache-Control: no-cache');
-            header('Connection: keep-alive');
-            header('X-Accel-Buffering: no'); // Disable nginx buffering
-            header('Access-Control-Allow-Origin: *');
-            header('Access-Control-Allow-Methods: GET, OPTIONS');
-            header('Access-Control-Allow-Headers: Content-Type, Authorization');
+                $lastId = 0;
+                $startTime = time();
+                $iterations = 0;
 
-            $lastId = 0;
-            $startTime = time();
-            $iterations = 0;
+                // Keep sending updates with timeout
+                while (true) {
+                    // Check timeout to prevent memory exhaustion
+                    if ((time() - $startTime) >= self::MAX_STREAM_RUNTIME) {
+                        $this->sendSSE(json_encode(['message' => 'Stream timeout, please reconnect']), 'timeout');
+                        break;
+                    }
 
-            // Keep sending updates every 3 seconds, with timeout
-            while (true) {
-                // Check timeout to prevent memory exhaustion
-                if ((time() - $startTime) >= self::MAX_STREAM_RUNTIME) {
-                    echo "event: timeout\n";
-                    echo "data: {\"message\": \"Stream timeout, please reconnect\"}\n\n";
-                    ob_flush();
-                    flush();
-                    break;
-                }
+                    // Query for new bookings - select only needed fields
+                    $query = Booking::select([
+                            'id', 'reference_number', 'customer_id', 'package_id', 'location_id',
+                            'room_id', 'guest_name', 'booking_date', 'booking_time', 'status',
+                            'total_amount', 'created_at', 'created_by'
+                        ])
+                        ->with([
+                            'customer:id,first_name,last_name',
+                            'package:id,name',
+                            'location:id,name',
+                            'room:id,name'
+                        ])
+                        ->where('id', '>', $lastId);
 
-                // Query for new bookings - select only needed fields
-                $query = Booking::select([
-                        'id', 'reference_number', 'customer_id', 'package_id', 'location_id',
-                        'room_id', 'guest_name', 'booking_date', 'booking_time', 'status',
-                        'total_amount', 'created_at', 'created_by'
-                    ])
-                    ->with([
-                        'customer:id,first_name,last_name',
-                        'package:id,name',
-                        'location:id,name',
-                        'room:id,name'
-                    ])
-                    ->where('id', '>', $lastId);
+                    // Filter by location if provided
+                    if ($locationId) {
+                        $query->where('location_id', $locationId);
+                    }
 
-                // Filter by location if provided
-                if ($locationId) {
-                    $query->where('location_id', $locationId);
-                }
+                    // Filter out user's own bookings (only if created_by is not null)
+                    if ($userId) {
+                        $query->where(function($q) use ($userId) {
+                            $q->whereNull('created_by')
+                              ->orWhere('created_by', '!=', $userId);
+                        });
+                    }
 
-                // Filter out user's own bookings (only if created_by is not null)
-                if ($userId) {
-                    $query->where(function($q) use ($userId) {
-                        $q->whereNull('created_by')
-                          ->orWhere('created_by', '!=', $userId);
-                    });
-                }
+                    $bookings = $query->orderBy('id', 'asc')
+                        ->limit(10)
+                        ->get();
 
-                $bookings = $query->orderBy('id', 'asc')
-                    ->limit(10)
-                    ->get();
-
-                if ($bookings->isNotEmpty()) {
-                    foreach ($bookings as $booking) {
+                    if ($bookings->isNotEmpty()) {
+                        foreach ($bookings as $booking) {
                             $data = [
                                 'id' => $booking->id,
                                 'type' => 'booking',
@@ -132,45 +175,36 @@ return response()->stream(function () use ($locationId, $userId) {
                                 'user_id' => $booking->created_by,
                             ];
 
-                            echo "id: {$booking->id}\n";
-                            echo "event: booking\n";
-                            echo "data: " . json_encode($data) . "\n\n";
-                            ob_flush();
-                            flush();
+                            $this->sendSSE(json_encode($data), 'booking', (string)$booking->id);
+                            $lastId = $booking->id;
+                        }
 
-                        $lastId = $booking->id;
+                        // Clear the collection to free memory
+                        unset($bookings);
+                    } else {
+                        // Send heartbeat to keep connection alive
+                        $this->sendHeartbeat();
                     }
 
-                    // Clear the collection to free memory
-                    unset($bookings);
-                } else {
-                    // Send heartbeat to keep connection alive
-                    echo ": heartbeat\n\n";
-                    ob_flush();
-                    flush();
-                }
+                    // Check if connection is still alive
+                    if (connection_aborted()) {
+                        break;
+                    }
 
-                // Check if connection is still alive
-                if (connection_aborted()) {
-                    break;
-                }
+                    // Periodic memory cleanup (every 5 iterations)
+                    $iterations++;
+                    if ($iterations % 5 === 0) {
+                        $this->cleanupMemory();
+                    }
 
-                // Periodic memory cleanup (every 10 iterations)
-                $iterations++;
-                if ($iterations % 10 === 0) {
-                    $this->cleanupMemory();
+                    // Wait before next update
+                    sleep(self::POLL_INTERVAL);
                 }
-
-                // Wait before next update
-                sleep(self::POLL_INTERVAL);
-            }
             }, 200, [
                 'Content-Type' => 'text/event-stream',
-                'Cache-Control' => 'no-cache',
+                'Cache-Control' => 'no-cache, no-store, must-revalidate',
                 'X-Accel-Buffering' => 'no',
-                'Access-Control-Allow-Origin' => '*',
-                'Access-Control-Allow-Methods' => 'GET, OPTIONS',
-                'Access-Control-Allow-Headers' => 'Content-Type, Authorization',
+                'Connection' => 'keep-alive',
             ]);
         }
 
@@ -191,68 +225,56 @@ return response()->stream(function () use ($locationId, $userId) {
                 'timestamp' => now()->toDateTimeString(),
             ]);
 
-return response()->stream(function () use ($locationId, $userId) {
-            // Disable query logging to prevent memory buildup
-            DB::connection()->disableQueryLog();
+            return response()->stream(function () use ($locationId, $userId) {
+                // Initialize stream - clear all buffers to prevent memory buildup
+                $this->initializeStream();
 
-            // Set headers for SSE
-            header('Content-Type: text/event-stream');
-            header('Cache-Control: no-cache');
-            header('Connection: keep-alive');
-            header('X-Accel-Buffering: no'); // Disable nginx buffering
-            header('Access-Control-Allow-Origin: *');
-            header('Access-Control-Allow-Methods: GET, OPTIONS');
-            header('Access-Control-Allow-Headers: Content-Type, Authorization');
+                $lastId = 0;
+                $startTime = time();
+                $iterations = 0;
 
-            $lastId = 0;
-            $startTime = time();
-            $iterations = 0;
+                // Keep sending updates with timeout
+                while (true) {
+                    // Check timeout to prevent memory exhaustion
+                    if ((time() - $startTime) >= self::MAX_STREAM_RUNTIME) {
+                        $this->sendSSE(json_encode(['message' => 'Stream timeout, please reconnect']), 'timeout');
+                        break;
+                    }
 
-            // Keep sending updates with timeout
-            while (true) {
-                // Check timeout to prevent memory exhaustion
-                if ((time() - $startTime) >= self::MAX_STREAM_RUNTIME) {
-                    echo "event: timeout\n";
-                    echo "data: {\"message\": \"Stream timeout, please reconnect\"}\n\n";
-                    ob_flush();
-                    flush();
-                    break;
-                }
+                    // Query for new attraction purchases - select only needed fields
+                    $query = AttractionPurchase::select([
+                            'id', 'attraction_id', 'customer_id', 'guest_name', 'quantity',
+                            'total_amount', 'status', 'payment_method', 'purchase_date',
+                            'created_at', 'created_by'
+                        ])
+                        ->with([
+                            'customer:id,first_name,last_name',
+                            'attraction:id,name,location_id',
+                            'attraction.location:id,name'
+                        ])
+                        ->where('id', '>', $lastId);
 
-                // Query for new attraction purchases - select only needed fields
-                $query = AttractionPurchase::select([
-                        'id', 'attraction_id', 'customer_id', 'guest_name', 'quantity',
-                        'total_amount', 'status', 'payment_method', 'purchase_date',
-                        'created_at', 'created_by'
-                    ])
-                    ->with([
-                        'customer:id,first_name,last_name',
-                        'attraction:id,name,location_id',
-                        'attraction.location:id,name'
-                    ])
-                    ->where('id', '>', $lastId);
+                    // Filter by location if provided
+                    if ($locationId) {
+                        $query->whereHas('attraction', function ($q) use ($locationId) {
+                            $q->where('location_id', $locationId);
+                        });
+                    }
 
-                // Filter by location if provided
-                if ($locationId) {
-                    $query->whereHas('attraction', function ($q) use ($locationId) {
-                        $q->where('location_id', $locationId);
-                    });
-                }
+                    // Filter out user's own purchases (only if created_by is not null)
+                    if ($userId) {
+                        $query->where(function($q) use ($userId) {
+                            $q->whereNull('created_by')
+                              ->orWhere('created_by', '!=', $userId);
+                        });
+                    }
 
-                // Filter out user's own purchases (only if created_by is not null)
-                if ($userId) {
-                    $query->where(function($q) use ($userId) {
-                        $q->whereNull('created_by')
-                          ->orWhere('created_by', '!=', $userId);
-                    });
-                }
+                    $purchases = $query->orderBy('id', 'asc')
+                        ->limit(10)
+                        ->get();
 
-                $purchases = $query->orderBy('id', 'asc')
-                    ->limit(10)
-                    ->get();
-
-                if ($purchases->isNotEmpty()) {
-                    foreach ($purchases as $purchase) {
+                    if ($purchases->isNotEmpty()) {
+                        foreach ($purchases as $purchase) {
                             $data = [
                                 'id' => $purchase->id,
                                 'type' => 'attraction_purchase',
@@ -271,45 +293,36 @@ return response()->stream(function () use ($locationId, $userId) {
                                 'user_id' => $purchase->created_by,
                             ];
 
-                            echo "id: {$purchase->id}\n";
-                            echo "event: attraction_purchase\n";
-                            echo "data: " . json_encode($data) . "\n\n";
-                            ob_flush();
-                            flush();
+                            $this->sendSSE(json_encode($data), 'attraction_purchase', (string)$purchase->id);
+                            $lastId = $purchase->id;
+                        }
 
-                        $lastId = $purchase->id;
+                        // Clear the collection to free memory
+                        unset($purchases);
+                    } else {
+                        // Send heartbeat to keep connection alive
+                        $this->sendHeartbeat();
                     }
 
-                    // Clear the collection to free memory
-                    unset($purchases);
-                } else {
-                    // Send heartbeat to keep connection alive
-                    echo ": heartbeat\n\n";
-                    ob_flush();
-                    flush();
-                }
+                    // Check if connection is still alive
+                    if (connection_aborted()) {
+                        break;
+                    }
 
-                // Check if connection is still alive
-                if (connection_aborted()) {
-                    break;
-                }
+                    // Periodic memory cleanup (every 5 iterations)
+                    $iterations++;
+                    if ($iterations % 5 === 0) {
+                        $this->cleanupMemory();
+                    }
 
-                // Periodic memory cleanup (every 10 iterations)
-                $iterations++;
-                if ($iterations % 10 === 0) {
-                    $this->cleanupMemory();
+                    // Wait before next update
+                    sleep(self::POLL_INTERVAL);
                 }
-
-                // Wait before next update
-                sleep(self::POLL_INTERVAL);
-            }
             }, 200, [
                 'Content-Type' => 'text/event-stream',
-                'Cache-Control' => 'no-cache',
+                'Cache-Control' => 'no-cache, no-store, must-revalidate',
                 'X-Accel-Buffering' => 'no',
-                'Access-Control-Allow-Origin' => '*',
-                'Access-Control-Allow-Methods' => 'GET, OPTIONS',
-                'Access-Control-Allow-Headers' => 'Content-Type, Authorization',
+                'Connection' => 'keep-alive',
             ]);
         }
 
@@ -330,67 +343,55 @@ return response()->stream(function () use ($locationId, $userId) {
                 'timestamp' => now()->toDateTimeString(),
             ]);
 
-return response()->stream(function () use ($locationId, $userId) {
-            // Disable query logging to prevent memory buildup
-            DB::connection()->disableQueryLog();
+            return response()->stream(function () use ($locationId, $userId) {
+                // Initialize stream - clear all buffers to prevent memory buildup
+                $this->initializeStream();
 
-            // Set headers for SSE
-            header('Content-Type: text/event-stream');
-            header('Cache-Control: no-cache');
-            header('Connection: keep-alive');
-            header('X-Accel-Buffering: no'); // Disable nginx buffering
-            header('Access-Control-Allow-Origin: *');
-            header('Access-Control-Allow-Methods: GET, OPTIONS');
-            header('Access-Control-Allow-Headers: Content-Type, Authorization');
+                $lastBookingId = 0;
+                $lastPurchaseId = 0;
+                $startTime = time();
+                $iterations = 0;
 
-            $lastBookingId = 0;
-            $lastPurchaseId = 0;
-            $startTime = time();
-            $iterations = 0;
+                // Keep sending updates with timeout
+                while (true) {
+                    // Check timeout to prevent memory exhaustion
+                    if ((time() - $startTime) >= self::MAX_STREAM_RUNTIME) {
+                        $this->sendSSE(json_encode(['message' => 'Stream timeout, please reconnect']), 'timeout');
+                        break;
+                    }
 
-            // Keep sending updates with timeout
-            while (true) {
-                // Check timeout to prevent memory exhaustion
-                if ((time() - $startTime) >= self::MAX_STREAM_RUNTIME) {
-                    echo "event: timeout\n";
-                    echo "data: {\"message\": \"Stream timeout, please reconnect\"}\n\n";
-                    ob_flush();
-                    flush();
-                    break;
-                }
+                    $hasNewData = false;
 
-                $hasNewData = false;
+                    // Query for new bookings - select only needed fields
+                    $bookingQuery = Booking::select([
+                            'id', 'reference_number', 'customer_id', 'package_id', 'location_id',
+                            'room_id', 'guest_name', 'booking_date', 'booking_time', 'status',
+                            'total_amount', 'created_at', 'created_by'
+                        ])
+                        ->with([
+                            'customer:id,first_name,last_name',
+                            'package:id,name',
+                            'location:id,name',
+                            'room:id,name'
+                        ])
+                        ->where('id', '>', $lastBookingId);
 
-                // Query for new bookings - select only needed fields
-                $bookingQuery = Booking::select([
-                        'id', 'reference_number', 'customer_id', 'package_id', 'location_id',
-                        'room_id', 'guest_name', 'booking_date', 'booking_time', 'status',
-                        'total_amount', 'created_at', 'created_by'
-                    ])
-                    ->with([
-                        'customer:id,first_name,last_name',
-                        'package:id,name',
-                        'location:id,name',
-                        'room:id,name'
-                    ])
-                    ->where('id', '>', $lastBookingId);
+                    if ($locationId) {
+                        $bookingQuery->where('location_id', $locationId);
+                    }
 
-                if ($locationId) {
-                    $bookingQuery->where('location_id', $locationId);
-                }
+                    // Filter out user's own bookings (only if created_by is not null)
+                    if ($userId) {
+                        $bookingQuery->where(function($q) use ($userId) {
+                            $q->whereNull('created_by')
+                              ->orWhere('created_by', '!=', $userId);
+                        });
+                    }
 
-                // Filter out user's own bookings (only if created_by is not null)
-                if ($userId) {
-                    $bookingQuery->where(function($q) use ($userId) {
-                        $q->whereNull('created_by')
-                          ->orWhere('created_by', '!=', $userId);
-                    });
-                }
+                    $bookings = $bookingQuery->orderBy('id', 'asc')->limit(5)->get();
 
-                $bookings = $bookingQuery->orderBy('id', 'asc')->limit(5)->get();
-
-                if ($bookings->isNotEmpty()) {
-                    foreach ($bookings as $booking) {
+                    if ($bookings->isNotEmpty()) {
+                        foreach ($bookings as $booking) {
                             $data = [
                                 'id' => $booking->id,
                                 'type' => 'booking',
@@ -409,111 +410,97 @@ return response()->stream(function () use ($locationId, $userId) {
                                 'user_id' => $booking->created_by,
                             ];
 
-                            echo "id: booking_{$booking->id}\n";
-                            echo "event: notification\n";
-                            echo "data: " . json_encode($data) . "\n\n";
-                            ob_flush();
-                            flush();
+                            $this->sendSSE(json_encode($data), 'notification', "booking_{$booking->id}");
+                            $lastBookingId = $booking->id;
+                            $hasNewData = true;
+                        }
 
-                        $lastBookingId = $booking->id;
-                        $hasNewData = true;
+                        // Clear the collection to free memory
+                        unset($bookings);
                     }
 
-                    // Clear the collection to free memory
-                    unset($bookings);
-                }
+                    // Query for new attraction purchases - select only needed fields
+                    $purchaseQuery = AttractionPurchase::select([
+                            'id', 'attraction_id', 'customer_id', 'guest_name', 'quantity',
+                            'total_amount', 'status', 'payment_method', 'purchase_date',
+                            'created_at', 'created_by'
+                        ])
+                        ->with([
+                            'customer:id,first_name,last_name',
+                            'attraction:id,name,location_id',
+                            'attraction.location:id,name'
+                        ])
+                        ->where('id', '>', $lastPurchaseId);
 
-                // Query for new attraction purchases - select only needed fields
-                $purchaseQuery = AttractionPurchase::select([
-                        'id', 'attraction_id', 'customer_id', 'guest_name', 'quantity',
-                        'total_amount', 'status', 'payment_method', 'purchase_date',
-                        'created_at', 'created_by'
-                    ])
-                    ->with([
-                        'customer:id,first_name,last_name',
-                        'attraction:id,name,location_id',
-                        'attraction.location:id,name'
-                    ])
-                    ->where('id', '>', $lastPurchaseId);
-
-                if ($locationId) {
+                    if ($locationId) {
                         $purchaseQuery->whereHas('attraction', function ($q) use ($locationId) {
                             $q->where('location_id', $locationId);
                         });
                     }
 
-                // Filter out user's own purchases (only if created_by is not null)
-                if ($userId) {
-                    $purchaseQuery->where(function($q) use ($userId) {
-                        $q->whereNull('created_by')
-                          ->orWhere('created_by', '!=', $userId);
-                    });
-                }
-
-                $purchases = $purchaseQuery->orderBy('id', 'asc')->limit(5)->get();
-
-                if ($purchases->isNotEmpty()) {
-                    foreach ($purchases as $purchase) {
-                        $data = [
-                            'id' => $purchase->id,
-                            'type' => 'attraction_purchase',
-                            'customer_name' => $purchase->customer
-                                ? $purchase->customer->first_name . ' ' . $purchase->customer->last_name
-                                : $purchase->guest_name,
-                            'attraction_name' => $purchase->attraction->name ?? null,
-                            'location_name' => $purchase->attraction->location->name ?? null,
-                            'quantity' => $purchase->quantity,
-                            'total_amount' => $purchase->total_amount,
-                            'status' => $purchase->status,
-                            'payment_method' => $purchase->payment_method,
-                            'purchase_date' => $purchase->purchase_date,
-                            'created_at' => $purchase->created_at->toIso8601String(),
-                            'timestamp' => now()->toIso8601String(),
-                            'user_id' => $purchase->created_by,
-                        ];
-
-                            echo "id: purchase_{$purchase->id}\n";
-                            echo "event: notification\n";
-                            echo "data: " . json_encode($data) . "\n\n";
-                            ob_flush();
-                            flush();
-
-                        $lastPurchaseId = $purchase->id;
-                        $hasNewData = true;
+                    // Filter out user's own purchases (only if created_by is not null)
+                    if ($userId) {
+                        $purchaseQuery->where(function($q) use ($userId) {
+                            $q->whereNull('created_by')
+                              ->orWhere('created_by', '!=', $userId);
+                        });
                     }
 
-                    // Clear the collection to free memory
-                    unset($purchases);
-                }
+                    $purchases = $purchaseQuery->orderBy('id', 'asc')->limit(5)->get();
 
-                // Send heartbeat if no new data
-                if (!$hasNewData) {
-                    echo ": heartbeat\n\n";
-                    ob_flush();
-                    flush();
-                }
+                    if ($purchases->isNotEmpty()) {
+                        foreach ($purchases as $purchase) {
+                            $data = [
+                                'id' => $purchase->id,
+                                'type' => 'attraction_purchase',
+                                'customer_name' => $purchase->customer
+                                    ? $purchase->customer->first_name . ' ' . $purchase->customer->last_name
+                                    : $purchase->guest_name,
+                                'attraction_name' => $purchase->attraction->name ?? null,
+                                'location_name' => $purchase->attraction->location->name ?? null,
+                                'quantity' => $purchase->quantity,
+                                'total_amount' => $purchase->total_amount,
+                                'status' => $purchase->status,
+                                'payment_method' => $purchase->payment_method,
+                                'purchase_date' => $purchase->purchase_date,
+                                'created_at' => $purchase->created_at->toIso8601String(),
+                                'timestamp' => now()->toIso8601String(),
+                                'user_id' => $purchase->created_by,
+                            ];
 
-                // Check if connection is still alive
-                if (connection_aborted()) {
-                    break;
-                }
+                            $this->sendSSE(json_encode($data), 'notification', "purchase_{$purchase->id}");
+                            $lastPurchaseId = $purchase->id;
+                            $hasNewData = true;
+                        }
 
-                // Periodic memory cleanup (every 10 iterations)
-                $iterations++;
-                if ($iterations % 10 === 0) {
-                    $this->cleanupMemory();
-                }
+                        // Clear the collection to free memory
+                        unset($purchases);
+                    }
 
-                // Wait before next update
-                sleep(self::POLL_INTERVAL);
-            }
+                    // Send heartbeat if no new data
+                    if (!$hasNewData) {
+                        $this->sendHeartbeat();
+                    }
+
+                    // Check if connection is still alive
+                    if (connection_aborted()) {
+                        break;
+                    }
+
+                    // Periodic memory cleanup (every 5 iterations)
+                    $iterations++;
+                    if ($iterations % 5 === 0) {
+                        $this->cleanupMemory();
+                    }
+
+                    // Wait before next update
+                    sleep(self::POLL_INTERVAL);
+                }
             }, 200, [
                 'Content-Type' => 'text/event-stream',
-                'Cache-Control' => 'no-cache',
+                'Cache-Control' => 'no-cache, no-store, must-revalidate',
                 'X-Accel-Buffering' => 'no',
-                'Access-Control-Allow-Origin' => '*',
-                'Access-Control-Allow-Methods' => 'GET, OPTIONS',
-                'Access-Control-Allow-Headers' => 'Content-Type, Authorization',
+                'Connection' => 'keep-alive',
             ]);
         }
     }
