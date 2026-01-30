@@ -182,7 +182,7 @@ class AnalyticsController extends Controller
             ->whereNotIn('status', ['cancelled'])
             ->get();
 
-        $totalBookingRevenue = $bookings->sum('total_amount');
+        $totalBookingRevenue = $bookings->sum('amount_paid');
         $totalBookings = $bookings->count();
         $totalParticipants = $bookings->sum('participants');
 
@@ -192,7 +192,7 @@ class AnalyticsController extends Controller
             ->whereNotIn('status', ['cancelled'])
             ->get();
 
-        $totalAttractionRevenue = $attractionPurchases->sum('total_amount');
+        $totalAttractionRevenue = $attractionPurchases->sum('amount_paid');
         $totalTicketsSold = $attractionPurchases->sum('quantity');
 
         // Combined totals
@@ -226,7 +226,7 @@ class AnalyticsController extends Controller
             ->whereNotIn('status', ['cancelled'])
             ->get();
 
-        $prevTotalRevenue = $prevBookings->sum('total_amount') + $prevAttractionPurchases->sum('total_amount');
+        $prevTotalRevenue = $prevBookings->sum('amount_paid') + $prevAttractionPurchases->sum('amount_paid');
         $prevTotalBookings = $prevBookings->count();
         $prevTotalTickets = $prevAttractionPurchases->sum('quantity');
         $prevTotalParticipants = $prevBookings->sum('participants');
@@ -288,7 +288,7 @@ class AnalyticsController extends Controller
             ->whereNotIn('status', ['cancelled'])
             ->select(
                 DB::raw('HOUR(booking_time) as hour'),
-                DB::raw('SUM(total_amount) as revenue'),
+                DB::raw('SUM(amount_paid) as revenue'),
                 DB::raw('COUNT(*) as bookings')
             )
             ->groupBy('hour')
@@ -326,7 +326,7 @@ class AnalyticsController extends Controller
             $bookingsRevenue = Booking::where('location_id', $locationId)
                 ->whereDate('booking_date', $date)
                 ->whereNotIn('status', ['cancelled'])
-                ->sum('total_amount');
+                ->sum('amount_paid');
 
             $bookingsParticipants = Booking::where('location_id', $locationId)
                 ->whereDate('booking_date', $date)
@@ -337,7 +337,7 @@ class AnalyticsController extends Controller
             $attractionsRevenue = AttractionPurchase::byLocation($locationId)
                 ->whereDate('purchase_date', $date)
                 ->whereNotIn('status', ['cancelled'])
-                ->sum('total_amount');
+                ->sum('amount_paid');
 
             $attractionsTickets = AttractionPurchase::byLocation($locationId)
                 ->whereDate('purchase_date', $date)
@@ -382,7 +382,7 @@ class AnalyticsController extends Controller
                 'week' => 'Week ' . (5 - $week),
                 'week_start' => $weekStart->toDateString(),
                 'week_end' => $weekEnd->toDateString(),
-                'revenue' => round($weekBookings->sum('total_amount') + $weekAttractions->sum('total_amount'), 2),
+                'revenue' => round($weekBookings->sum('amount_paid') + $weekAttractions->sum('amount_paid'), 2),
                 'bookings' => $weekBookings->count(),
                 'tickets' => $weekAttractions->sum('quantity'),
             ];
@@ -414,7 +414,7 @@ class AnalyticsController extends Controller
             ->select(
                 'package_id',
                 DB::raw('COUNT(*) as bookings_count'),
-                DB::raw('COALESCE(SUM(total_amount), 0) as total_revenue'),
+                DB::raw('COALESCE(SUM(amount_paid), 0) as total_revenue'),
                 DB::raw('COALESCE(SUM(participants), 0) as total_participants'),
                 DB::raw('COALESCE(AVG(participants), 0) as avg_party_size')
             )
@@ -461,7 +461,7 @@ class AnalyticsController extends Controller
 
             $sessions = $purchases->count();
             $ticketsSold = $purchases->sum('quantity');
-            $revenue = $purchases->sum('total_amount');
+            $revenue = $purchases->sum('amount_paid');
 
             // Calculate utilization as percentage (assuming max_capacity is daily capacity)
             // This is a simplified calculation - adjust based on actual business logic
@@ -508,7 +508,7 @@ class AnalyticsController extends Controller
                 ->get();
 
             $bookingsCount = $bookings->count();
-            $bookingsRevenue = $bookings->sum('total_amount');
+            $bookingsRevenue = $bookings->sum('amount_paid');
 
             $slotData[] = [
                 'slot' => $slot['name'],
@@ -547,7 +547,7 @@ class AnalyticsController extends Controller
             ->whereNotIn('status', ['cancelled'])
             ->get();
 
-        $totalBookingRevenue = $bookings->sum('total_amount');
+        $totalBookingRevenue = $bookings->sum('amount_paid');
         $totalBookings = $bookings->count();
         $totalParticipants = $bookings->sum('participants');
 
@@ -559,7 +559,7 @@ class AnalyticsController extends Controller
             ->whereNotIn('status', ['cancelled'])
             ->get();
 
-        $totalAttractionRevenue = $attractionPurchases->sum('total_amount');
+        $totalAttractionRevenue = $attractionPurchases->sum('amount_paid');
         $totalTicketsSold = $attractionPurchases->sum('quantity');
 
         // Combined totals
@@ -588,7 +588,7 @@ class AnalyticsController extends Controller
             ->whereNotIn('status', ['cancelled'])
             ->get();
 
-        $prevTotalRevenue = $prevBookings->sum('total_amount') + $prevAttractionPurchases->sum('total_amount');
+        $prevTotalRevenue = $prevBookings->sum('amount_paid') + $prevAttractionPurchases->sum('amount_paid');
         $prevTotalBookings = $prevBookings->count();
         $prevTotalTickets = $prevAttractionPurchases->sum('quantity');
         $prevTotalParticipants = $prevBookings->sum('participants');
@@ -671,7 +671,7 @@ class AnalyticsController extends Controller
                 $bookingsRevenue = Booking::whereIn('location_id', $locationIds)
                     ->whereBetween('booking_date', [$monthStart, $monthEnd])
                     ->whereNotIn('status', ['cancelled'])
-                    ->sum('total_amount') ?? 0;
+                    ->sum('amount_paid') ?? 0;
 
                 $bookingsCount = Booking::whereIn('location_id', $locationIds)
                     ->whereBetween('booking_date', [$monthStart, $monthEnd])
@@ -683,7 +683,7 @@ class AnalyticsController extends Controller
                     })
                     ->whereBetween('purchase_date', [$monthStart, $monthEnd])
                     ->whereNotIn('status', ['cancelled'])
-                    ->sum('total_amount') ?? 0;
+                    ->sum('amount_paid') ?? 0;
 
                 $trendData[] = [
                     'month' => $monthStart->format('M y'),
@@ -701,7 +701,7 @@ class AnalyticsController extends Controller
                 $bookingsRevenue = Booking::whereIn('location_id', $locationIds)
                     ->whereDate('booking_date', $currentDate)
                     ->whereNotIn('status', ['cancelled'])
-                    ->sum('total_amount') ?? 0;
+                    ->sum('amount_paid') ?? 0;
 
                 $bookingsCount = Booking::whereIn('location_id', $locationIds)
                     ->whereDate('booking_date', $currentDate)
@@ -713,7 +713,7 @@ class AnalyticsController extends Controller
                     })
                     ->whereDate('purchase_date', $currentDate)
                     ->whereNotIn('status', ['cancelled'])
-                    ->sum('total_amount') ?? 0;
+                    ->sum('amount_paid') ?? 0;
 
                 $trendData[] = [
                     'month' => $currentDate->format('M d'),
@@ -744,7 +744,7 @@ class AnalyticsController extends Controller
             $bookingsRevenue = Booking::where('location_id', $location->id)
                 ->whereBetween('booking_date', [$startDate, $endDate])
                 ->whereNotIn('status', ['cancelled'])
-                ->sum('total_amount') ?? 0;
+                ->sum('amount_paid') ?? 0;
 
             $bookingsCount = Booking::where('location_id', $location->id)
                 ->whereBetween('booking_date', [$startDate, $endDate])
@@ -756,7 +756,7 @@ class AnalyticsController extends Controller
                 })
                 ->whereBetween('purchase_date', [$startDate, $endDate])
                 ->whereNotIn('status', ['cancelled'])
-                ->sum('total_amount') ?? 0;
+                ->sum('amount_paid') ?? 0;
 
             $totalRevenue = $bookingsRevenue + $attractionRevenue;
 
@@ -858,7 +858,7 @@ class AnalyticsController extends Controller
             $bookingsRevenue = Booking::whereIn('location_id', $locationIds)
                 ->whereDate('booking_date', $date)
                 ->whereNotIn('status', ['cancelled'])
-                ->sum('total_amount');
+                ->sum('amount_paid');
 
             $bookingsParticipants = Booking::whereIn('location_id', $locationIds)
                 ->whereDate('booking_date', $date)
@@ -870,7 +870,7 @@ class AnalyticsController extends Controller
                 })
                 ->whereDate('purchase_date', $date)
                 ->whereNotIn('status', ['cancelled'])
-                ->sum('total_amount');
+                ->sum('amount_paid');
 
             $attractionTickets = AttractionPurchase::whereHas('attraction', function ($query) use ($locationIds) {
                     $query->whereIn('location_id', $locationIds);
@@ -947,7 +947,7 @@ class AnalyticsController extends Controller
                 'id' => $attraction->id,
                 'name' => $attraction->name,
                 'tickets_sold' => $purchases->sum('quantity') ?? 0,
-                'revenue' => round($purchases->sum('total_amount') ?? 0, 2),
+                'revenue' => round($purchases->sum('amount_paid') ?? 0, 2),
             ];
         })->filter(function ($item) {
             // Only include attractions with sales

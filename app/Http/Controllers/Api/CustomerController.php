@@ -181,7 +181,7 @@ class CustomerController extends Controller
                 ->when($user && $user->role !== 'company_admin', function ($query) use ($user) {
                     $query->where('location_id', $user->location_id);
                 })
-                ->sum('total_amount');
+                ->sum('amount_paid');
 
             // Calculate total purchase tickets
             $totalPurchaseTickets = AttractionPurchase::where('guest_email', $customer->email)
@@ -199,7 +199,7 @@ class CustomerController extends Controller
                         $q->where('location_id', $user->location_id);
                     });
                 })
-                ->sum('total_amount');
+                ->sum('amount_paid');
 
             // Calculate total quantity of tickets purchased
             $totalTicketQuantity = AttractionPurchase::where('guest_email', $customer->email)
@@ -540,7 +540,7 @@ class CustomerController extends Controller
             ->when($locationId, fn($q) => $q->where('location_id', $locationId))
             ->when($startDate && $endDate, fn($q) => $q->whereBetween('created_at', [$startDate, $endDate]))
             ->when($startDate && !$endDate, fn($q) => $q->where('created_at', '>=', $startDate))
-            ->sum('total_amount');
+            ->sum('amount_paid');
 
         $totalPurchaseRevenue = AttractionPurchase::query()
             ->when($locationId, function($q) use ($locationId) {
@@ -548,7 +548,7 @@ class CustomerController extends Controller
             })
             ->when($startDate && $endDate, fn($q) => $q->whereBetween('created_at', [$startDate, $endDate]))
             ->when($startDate && !$endDate, fn($q) => $q->where('created_at', '>=', $startDate))
-            ->sum('total_amount');
+            ->sum('amount_paid');
 
         $totalRevenueSum = $totalRevenue + $totalPurchaseRevenue;
         $avgRevenuePerCustomer = $totalCustomers > 0 ? round($totalRevenueSum / $totalCustomers, 2) : 0;
@@ -606,14 +606,14 @@ class CustomerController extends Controller
         $prevTotalRevenue = Booking::query()
             ->when($locationId, fn($q) => $q->where('location_id', $locationId))
             ->when($previousPeriodStart && $previousPeriodEnd, fn($q) => $q->whereBetween('created_at', [$previousPeriodStart, $previousPeriodEnd]))
-            ->sum('total_amount');
+            ->sum('amount_paid');
 
         $prevPurchaseRevenue = AttractionPurchase::query()
             ->when($locationId, function($q) use ($locationId) {
                 $q->whereHas('attraction', fn($query) => $query->where('location_id', $locationId));
             })
             ->when($previousPeriodStart && $previousPeriodEnd, fn($q) => $q->whereBetween('created_at', [$previousPeriodStart, $previousPeriodEnd]))
-            ->sum('total_amount');
+            ->sum('amount_paid');
 
         $prevTotalRevenueSum = $prevTotalRevenue + $prevPurchaseRevenue;
 
@@ -690,14 +690,14 @@ class CustomerController extends Controller
             $bookingRevenue = Booking::query()
                 ->when($locationId, fn($q) => $q->where('location_id', $locationId))
                 ->whereBetween('created_at', [$monthStart, $monthEnd])
-                ->sum('total_amount');
+                ->sum('amount_paid');
 
             $purchaseRevenue = AttractionPurchase::query()
                 ->when($locationId, function($q) use ($locationId) {
                     $q->whereHas('attraction', fn($query) => $query->where('location_id', $locationId));
                 })
                 ->whereBetween('created_at', [$monthStart, $monthEnd])
-                ->sum('total_amount');
+                ->sum('amount_paid');
 
             $bookingCount = Booking::query()
                 ->when($locationId, fn($q) => $q->where('location_id', $locationId))
@@ -787,13 +787,13 @@ class CustomerController extends Controller
         foreach ($allCustomerEmails as $email) {
             $totalSpent = Booking::where('guest_email', $email)
                 ->when($locationId, fn($q) => $q->where('location_id', $locationId))
-                ->sum('total_amount');
+                ->sum('amount_paid');
 
             $purchaseSpent = AttractionPurchase::where('guest_email', $email)
                 ->when($locationId, function($q) use ($locationId) {
                     $q->whereHas('attraction', fn($query) => $query->where('location_id', $locationId));
                 })
-                ->sum('total_amount');
+                ->sum('amount_paid');
 
             $customerValues[] = $totalSpent + $purchaseSpent;
         }
@@ -899,13 +899,13 @@ class CustomerController extends Controller
         $recentCustomers = $recentBookings->map(function($customer) use ($locationId) {
             $totalSpent = Booking::where('guest_email', $customer->guest_email)
                 ->when($locationId, fn($q) => $q->where('location_id', $locationId))
-                ->sum('total_amount');
+                ->sum('amount_paid');
 
             $purchaseSpent = AttractionPurchase::where('guest_email', $customer->guest_email)
                 ->when($locationId, function($q) use ($locationId) {
                     $q->whereHas('attraction', fn($query) => $query->where('location_id', $locationId));
                 })
-                ->sum('total_amount');
+                ->sum('amount_paid');
 
             $bookingCount = Booking::where('guest_email', $customer->guest_email)
                 ->when($locationId, fn($q) => $q->where('location_id', $locationId))
@@ -1099,7 +1099,7 @@ class CustomerController extends Controller
                     ->when($locationId, fn($q) => $q->where('location_id', $locationId))
                     ->when($startDate && $endDate, fn($q) => $q->whereBetween('created_at', [$startDate, $endDate]))
                     ->when($startDate && !$endDate, fn($q) => $q->where('created_at', '>=', $startDate))
-                    ->sum('total_amount');
+                    ->sum('amount_paid');
 
                 $purchaseSpent = AttractionPurchase::where('guest_email', $email)
                     ->when($locationId, function($q) use ($locationId) {
@@ -1107,7 +1107,7 @@ class CustomerController extends Controller
                     })
                     ->when($startDate && $endDate, fn($q) => $q->whereBetween('created_at', [$startDate, $endDate]))
                     ->when($startDate && !$endDate, fn($q) => $q->where('created_at', '>=', $startDate))
-                    ->sum('total_amount');
+                    ->sum('amount_paid');
 
                 $totalPurchases = AttractionPurchase::where('guest_email', $email)
                     ->when($locationId, function($q) use ($locationId) {
@@ -1142,14 +1142,14 @@ class CustomerController extends Controller
                 $bookingRevenue = Booking::query()
                     ->when($locationId, fn($q) => $q->where('location_id', $locationId))
                     ->whereBetween('created_at', [$monthStart, $monthEnd])
-                    ->sum('total_amount');
+                    ->sum('amount_paid');
 
                 $purchaseRevenue = AttractionPurchase::query()
                     ->when($locationId, function($q) use ($locationId) {
                         $q->whereHas('attraction', fn($query) => $query->where('location_id', $locationId));
                     })
                     ->whereBetween('created_at', [$monthStart, $monthEnd])
-                    ->sum('total_amount');
+                    ->sum('amount_paid');
 
                 $exportData['revenue_by_month'][] = [
                     'month' => $monthStart->format('M Y'),
@@ -1167,7 +1167,7 @@ class CustomerController extends Controller
                 ->when($startDate && $endDate, fn($q) => $q->whereBetween('created_at', [$startDate, $endDate]))
                 ->when($startDate && !$endDate, fn($q) => $q->where('created_at', '>=', $startDate))
                 ->whereNotNull('guest_email')
-                ->selectRaw('guest_email, guest_name, COUNT(*) as booking_count, SUM(total_amount) as total_spent')
+                ->selectRaw('guest_email, guest_name, COUNT(*) as booking_count, SUM(amount_paid) as total_spent')
                 ->groupBy('guest_email', 'guest_name')
                 ->orderByDesc('booking_count')
                 ->limit(20)
@@ -1191,7 +1191,7 @@ class CustomerController extends Controller
                 ->when($startDate && $endDate, fn($q) => $q->whereBetween('created_at', [$startDate, $endDate]))
                 ->when($startDate && !$endDate, fn($q) => $q->where('created_at', '>=', $startDate))
                 ->whereNotNull('guest_email')
-                ->selectRaw('attraction_id, COUNT(*) as purchase_count, SUM(total_amount) as total_revenue')
+                ->selectRaw('attraction_id, COUNT(*) as purchase_count, SUM(amount_paid) as total_revenue')
                 ->groupBy('attraction_id')
                 ->orderByDesc('purchase_count')
                 ->limit(10)
@@ -1213,7 +1213,7 @@ class CustomerController extends Controller
                 ->when($startDate && !$endDate, fn($q) => $q->where('created_at', '>=', $startDate))
                 ->whereNotNull('guest_email')
                 ->whereNotNull('package_id')
-                ->selectRaw('package_id, COUNT(*) as booking_count, SUM(total_amount) as total_revenue')
+                ->selectRaw('package_id, COUNT(*) as booking_count, SUM(amount_paid) as total_revenue')
                 ->groupBy('package_id')
                 ->orderByDesc('booking_count')
                 ->limit(10)
