@@ -32,87 +32,99 @@ class BookingController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
-        $query = Booking::with(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns', 'payments']);
+        try {
+            $query = Booking::with(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns', 'payments']);
 
-        // Role-based filtering
-        if ($request->has('user_id')) {
-            $authUser = User::where('id', $request->user_id)->first();
-            // log the auth user info
-            if ($authUser->role === 'location_manager') {
-                $query->byLocation($authUser->location_id);
+            // Role-based filtering
+            if ($request->has('user_id')) {
+                $authUser = User::where('id', $request->user_id)->first();
+                // log the auth user info
+                if ($authUser && $authUser->role === 'location_manager') {
+                    $query->byLocation($authUser->location_id);
+                }
             }
-        }
 
-        // Filter by location
-        if ($request->has('location_id')) {
-            $query->byLocation($request->location_id);
-        }
+            // Filter by location
+            if ($request->has('location_id')) {
+                $query->byLocation($request->location_id);
+            }
 
-        // reference number
-        if ($request->has('reference_number')) {
-            $query->where('reference_number', $request->reference_number);
-        }
+            // reference number
+            if ($request->has('reference_number')) {
+                $query->where('reference_number', $request->reference_number);
+            }
 
-        // Filter by status
-        if ($request->has('status')) {
-            $query->byStatus($request->status);
-        }
+            // Filter by status
+            if ($request->has('status')) {
+                $query->byStatus($request->status);
+            }
 
-        // Filter by customer
-        if ($request->has('customer_id')) {
-            $query->byCustomer($request->customer_id);
-        }
+            // Filter by customer
+            if ($request->has('customer_id')) {
+                $query->byCustomer($request->customer_id);
+            }
 
-        // booking date
-        if ($request->has('booking_date')) {
-            $query->byDate($request->booking_date);
-        }
+            // booking date
+            if ($request->has('booking_date')) {
+                $query->byDate($request->booking_date);
+            }
 
-        // Search by reference number, customer name, email, phone, or guest info
-        if ($request->has('search')) {
-            $search = $request->search;
-            $query->where(function ($q) use ($search) {
-                $q->where('reference_number', 'like', "%{$search}%")
-                  ->orWhere('guest_name', 'like', "%{$search}%")
-                  ->orWhere('guest_email', 'like', "%{$search}%")
-                  ->orWhere('guest_phone', 'like', "%{$search}%")
-                  ->orWhereHas('customer', function ($customerQuery) use ($search) {
-                      $customerQuery->where('first_name', 'like', "%{$search}%")
-                                  ->orWhere('last_name', 'like', "%{$search}%")
-                                  ->orWhere('email', 'like', "%{$search}%")
-                                  ->orWhere('phone', 'like', "%{$search}%");
-                  });
-            });
-        }
+            // Search by reference number, customer name, email, phone, or guest info
+            if ($request->has('search')) {
+                $search = $request->search;
+                $query->where(function ($q) use ($search) {
+                    $q->where('reference_number', 'like', "%{$search}%")
+                      ->orWhere('guest_name', 'like', "%{$search}%")
+                      ->orWhere('guest_email', 'like', "%{$search}%")
+                      ->orWhere('guest_phone', 'like', "%{$search}%")
+                      ->orWhereHas('customer', function ($customerQuery) use ($search) {
+                          $customerQuery->where('first_name', 'like', "%{$search}%")
+                                      ->orWhere('last_name', 'like', "%{$search}%")
+                                      ->orWhere('email', 'like', "%{$search}%")
+                                      ->orWhere('phone', 'like', "%{$search}%");
+                      });
+                });
+            }
 
-        // Sort
-        $sortBy = $request->get('sort_by', 'booking_date');
-        $sortOrder = $request->get('sort_order', 'desc');
+            // Sort
+            $sortBy = $request->get('sort_by', 'booking_date');
+            $sortOrder = $request->get('sort_order', 'desc');
 
-        if (in_array($sortBy, ['booking_date', 'booking_time', 'total_amount', 'status', 'created_at'])) {
-            $query->orderBy($sortBy, $sortOrder);
-        }
+            if (in_array($sortBy, ['booking_date', 'booking_time', 'total_amount', 'status', 'created_at'])) {
+                $query->orderBy($sortBy, $sortOrder);
+            }
 
-        // Note: Booking reminders should be handled by a scheduled job, not on every API request
-        // See: app/Console/Kernel.php for scheduled reminder job
+            $perPage = min($request->get('per_page', 15), 100); // Max 100 items per page
+            $bookings = $query->paginate($perPage);
 
-        $perPage = min($request->get('per_page', 15), 100); // Max 100 items per page
-        $bookings = $query->paginate($perPage);
-
-        return response()->json([
-            'success' => true,
-            'data' => [
-                'bookings' => $bookings->items(),
-                'pagination' => [
-                    'current_page' => $bookings->currentPage(),
-                    'last_page' => $bookings->lastPage(),
-                    'per_page' => $bookings->perPage(),
-                    'total' => $bookings->total(),
-                    'from' => $bookings->firstItem(),
-                    'to' => $bookings->lastItem(),
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'bookings' => $bookings->items(),
+                    'pagination' => [
+                        'current_page' => $bookings->currentPage(),
+                        'last_page' => $bookings->lastPage(),
+                        'per_page' => $bookings->perPage(),
+                        'total' => $bookings->total(),
+                        'from' => $bookings->firstItem(),
+                        'to' => $bookings->lastItem(),
+                    ],
                 ],
-            ],
-        ]);
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Error in bookings index', [
+                'error' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch bookings',
+                'error' => config('app.debug') ? $e->getMessage() : 'Server error',
+            ], 500);
+        }
     }
 
     // customer booking index based on customer id and guest email
