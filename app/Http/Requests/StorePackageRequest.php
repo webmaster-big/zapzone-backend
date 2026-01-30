@@ -46,6 +46,7 @@ class StorePackageRequest extends FormRequest
             'invitation_download_link' => 'nullable|string|max:2048',
             'invitation_file' => 'nullable|string|max:3000000000',
             'booking_window_days' => 'nullable|integer|min:1|max:365',
+            'min_booking_notice_hours' => 'nullable|integer|min:0|max:8760', // max 1 year in hours
             'attraction_ids' => 'nullable|array',
             'attraction_ids.*' => 'exists:attractions,id',
             'addon_ids' => 'nullable|array',

@@ -595,7 +595,7 @@ class AttractionController extends Controller
 
                     // Handle image - support both 'image' and 'images' fields
                     $imageData = $attractionData['images'] ?? $attractionData['image'] ?? null;
-                    
+
                     if ($imageData) {
                         if (is_array($imageData) && count($imageData) > 0) {
                             $uploadedImages = [];
@@ -640,7 +640,7 @@ class AttractionController extends Controller
                         'error' => $e->getMessage(),
                         'trace' => $e->getTraceAsString(),
                     ]);
-                    
+
                     $errors[] = [
                         'index' => $index,
                         'name' => $attractionData['name'] ?? 'Unknown',

@@ -36,6 +36,7 @@ class Package extends Model
         'invitation_download_link',
         'invitation_file',
         'booking_window_days',
+        'min_booking_notice_hours',
         'partial_payment_percentage',
         'partial_payment_fixed',
     ];
@@ -53,6 +54,7 @@ class Package extends Model
         'is_active' => 'boolean',
         'has_guest_of_honor' => 'boolean',
         'booking_window_days' => 'integer',
+        'min_booking_notice_hours' => 'integer',
     ];
 
     // Relationships

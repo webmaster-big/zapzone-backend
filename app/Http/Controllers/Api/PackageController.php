@@ -1483,4 +1483,62 @@ class PackageController extends Controller
             'message' => 'Availability schedule deleted successfully',
         ]);
     }
+
+    /**
+     * Bulk update min_booking_notice_hours for multiple packages.
+     * Allows setting the minimum booking notice time for selected packages at once.
+     */
+    public function bulkUpdateMinBookingNotice(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'package_ids' => 'required|array|min:1',
+            'package_ids.*' => 'required|integer|exists:packages,id',
+            'min_booking_notice_hours' => 'required|integer|min:0|max:8760', // max 1 year in hours
+        ]);
+
+        $packageIds = $validated['package_ids'];
+        $minBookingNoticeHours = $validated['min_booking_notice_hours'];
+
+        // Update all selected packages
+        $updatedCount = Package::whereIn('id', $packageIds)
+            ->update(['min_booking_notice_hours' => $minBookingNoticeHours]);
+
+        // Get package names for logging
+        $packageNames = Package::whereIn('id', $packageIds)->pluck('name')->toArray();
+
+        // Log the bulk update
+        $currentUser = auth()->user();
+        ActivityLog::log(
+            action: 'Bulk Package Min Booking Notice Updated',
+            category: 'update',
+            description: "Updated min_booking_notice_hours to {$minBookingNoticeHours} hours for {$updatedCount} packages",
+            userId: auth()->id(),
+            locationId: null,
+            entityType: 'package',
+            metadata: [
+                'updated_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'updated_at' => now()->toIso8601String(),
+                'update_details' => [
+                    'min_booking_notice_hours' => $minBookingNoticeHours,
+                    'updated_count' => $updatedCount,
+                    'package_ids' => $packageIds,
+                    'package_names' => $packageNames,
+                ],
+            ]
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => "{$updatedCount} package(s) updated successfully with minimum booking notice of {$minBookingNoticeHours} hours",
+            'data' => [
+                'updated_count' => $updatedCount,
+                'min_booking_notice_hours' => $minBookingNoticeHours,
+                'package_ids' => $packageIds,
+            ],
+        ]);
+    }
 }

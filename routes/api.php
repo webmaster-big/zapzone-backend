@@ -237,6 +237,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Package routes
     Route::post('packages/room/create', [PackageController::class, 'storePackageRoom']);
+    Route::patch('packages/bulk-update-min-notice', [PackageController::class, 'bulkUpdateMinBookingNotice']);
     Route::apiResource('packages', PackageController::class);
     Route::post('packages/{id}/restore', [PackageController::class, 'restore']);
     Route::delete('packages/{id}/force', [PackageController::class, 'forceDelete']);
