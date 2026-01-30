@@ -33,7 +33,26 @@ class BookingController extends Controller
     public function index(Request $request): JsonResponse
     {
         try {
-            $query = Booking::with(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns', 'payments']);
+            // Optimized query - load only necessary fields from relationships to reduce memory
+            $query = Booking::select([
+                    'id', 'reference_number', 'customer_id', 'package_id', 'location_id', 'room_id',
+                    'created_by', 'guest_name', 'guest_email', 'guest_phone', 'booking_date', 'booking_time',
+                    'participants', 'duration', 'duration_unit', 'total_amount', 'amount_paid',
+                    'discount_amount', 'payment_method', 'payment_status', 'status', 'notes',
+                    'guest_of_honor_name', 'guest_of_honor_age', 'created_at', 'updated_at'
+                ])
+                ->with([
+                    'customer:id,first_name,last_name,email,phone',
+                    'package:id,name,price',
+                    'location:id,name',
+                    'room:id,name',
+                    'creator:id,first_name,last_name,email',
+                    'attractions:id,booking_id,attraction_id,quantity,price_at_booking',
+                    'attractions.attraction:id,name',
+                    'addOns:id,booking_id,add_on_id,quantity,price_at_booking',
+                    'addOns.addOn:id,name',
+                    // Skip payments in list view - load only when viewing single booking
+                ]);
 
             // Role-based filtering
             if ($request->has('user_id')) {
@@ -130,7 +149,23 @@ class BookingController extends Controller
     // customer booking index based on customer id and guest email
     public function customerBookings(Request $request): JsonResponse
     {
-        $query = Booking::with(['package', 'location', 'room', 'creator', 'attractions', 'addOns', 'payments']);
+        // Optimized query - load only necessary fields
+        $query = Booking::select([
+                'id', 'reference_number', 'customer_id', 'package_id', 'location_id', 'room_id',
+                'created_by', 'guest_name', 'guest_email', 'booking_date', 'booking_time',
+                'participants', 'total_amount', 'amount_paid', 'payment_status', 'status',
+                'guest_of_honor_name', 'created_at'
+            ])
+            ->with([
+                'package:id,name,price',
+                'location:id,name',
+                'room:id,name',
+                'creator:id,first_name,last_name',
+                'attractions:id,booking_id,attraction_id,quantity,price_at_booking',
+                'attractions.attraction:id,name',
+                'addOns:id,booking_id,add_on_id,quantity,price_at_booking',
+                'addOns.addOn:id,name',
+            ]);
 
         // filter by search by location, reference number, package name
         if ($request->has('search')) {
@@ -473,13 +508,31 @@ class BookingController extends Controller
     // export index functionality with filters similar to index method but without pagination with date range, amount, status range too and other advanced filters
     public function exportIndex(Request $request): JsonResponse
     {
-        $query = Booking::with(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns', 'payments']);
+        // Optimized query for export - load only necessary fields
+        $query = Booking::select([
+                'id', 'reference_number', 'customer_id', 'package_id', 'location_id', 'room_id',
+                'created_by', 'guest_name', 'guest_email', 'guest_phone', 'booking_date', 'booking_time',
+                'participants', 'duration', 'duration_unit', 'total_amount', 'amount_paid',
+                'discount_amount', 'payment_method', 'payment_status', 'status', 'notes',
+                'guest_of_honor_name', 'guest_of_honor_age', 'created_at'
+            ])
+            ->with([
+                'customer:id,first_name,last_name,email,phone',
+                'package:id,name,price',
+                'location:id,name',
+                'room:id,name',
+                'creator:id,first_name,last_name,email',
+                'attractions:id,booking_id,attraction_id,quantity,price_at_booking',
+                'attractions.attraction:id,name',
+                'addOns:id,booking_id,add_on_id,quantity,price_at_booking',
+                'addOns.addOn:id,name',
+            ]);
 
         // Role-based filtering
         if ($request->has('user_id')) {
             $authUser = User::where('id', $request->user_id)->first();
             // log the auth user info
-            if ($authUser->role === 'location_manager') {
+            if ($authUser && $authUser->role === 'location_manager') {
                 $query->byLocation($authUser->location_id);
             }
         }
@@ -525,12 +578,14 @@ class BookingController extends Controller
             $query->orderBy($sortBy, $sortOrder);
         }
 
-        $bookings = $query->get();
+        // Limit export to 1000 records max to prevent memory exhaustion
+        $bookings = $query->limit(1000)->get();
 
         return response()->json([
             'success' => true,
             'data' => [
                 'bookings' => $bookings,
+                'limited' => $bookings->count() >= 1000,
             ],
         ]);
     }
