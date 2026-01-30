@@ -237,6 +237,7 @@ class PackageTimeSlotController extends Controller
         $packageTimeSlot->delete();
 
         // Log time slot deletion
+        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Package Time Slot Deleted',
             category: 'delete',
@@ -245,7 +246,19 @@ class PackageTimeSlotController extends Controller
             locationId: null,
             entityType: 'package_time_slot',
             entityId: $timeSlotId,
-            metadata: ['package_id' => $packageId, 'room_id' => $roomId]
+            metadata: [
+                'deleted_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'deleted_at' => now()->toIso8601String(),
+                'time_slot_details' => [
+                    'time_slot_id' => $timeSlotId,
+                    'package_id' => $packageId,
+                    'room_id' => $roomId,
+                ],
+            ]
         );
 
         return response()->json([

@@ -351,7 +351,19 @@ class AuthorizeNetAccountController extends Controller
                 userId: $user->id,
                 locationId: $locationId,
                 entityType: 'authorize_net_account',
-                entityId: $accountId
+                entityId: $accountId,
+                metadata: [
+                    'disconnected_by' => [
+                        'user_id' => $user->id,
+                        'name' => $user->first_name . ' ' . $user->last_name,
+                        'email' => $user->email,
+                    ],
+                    'disconnected_at' => now()->toIso8601String(),
+                    'account_details' => [
+                        'account_id' => $accountId,
+                        'location_id' => $locationId,
+                    ],
+                ]
             );
 
             Log::info('Authorize.Net account disconnected', [

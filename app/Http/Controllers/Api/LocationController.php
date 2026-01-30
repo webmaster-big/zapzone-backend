@@ -105,6 +105,7 @@ class LocationController extends Controller
         $location->delete();
 
         // Log location deletion
+        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Location Deleted',
             category: 'delete',
@@ -113,7 +114,19 @@ class LocationController extends Controller
             locationId: $locationId,
             entityType: 'location',
             entityId: $locationId,
-            metadata: ['company_id' => $companyId]
+            metadata: [
+                'deleted_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'deleted_at' => now()->toIso8601String(),
+                'location_details' => [
+                    'location_id' => $locationId,
+                    'name' => $locationName,
+                    'company_id' => $companyId,
+                ],
+            ]
         );
 
         return response()->json([

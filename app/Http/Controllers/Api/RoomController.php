@@ -194,6 +194,7 @@ class RoomController extends Controller
         $room->delete();
 
         // Log room deletion
+        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Room Deleted',
             category: 'delete',
@@ -201,7 +202,20 @@ class RoomController extends Controller
             userId: auth()->id(),
             locationId: $locationId,
             entityType: 'room',
-            entityId: $roomId
+            entityId: $roomId,
+            metadata: [
+                'deleted_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'deleted_at' => now()->toIso8601String(),
+                'room_details' => [
+                    'room_id' => $roomId,
+                    'name' => $roomName,
+                    'location_id' => $locationId,
+                ],
+            ]
         );
 
         return response()->json([
@@ -288,6 +302,7 @@ class RoomController extends Controller
                 $deletedCount++;
 
                 // Log each room deletion
+                $currentUser = auth()->user();
                 ActivityLog::log(
                     action: 'Room Bulk Deleted',
                     category: 'delete',
@@ -295,18 +310,42 @@ class RoomController extends Controller
                     userId: auth()->id(),
                     locationId: $locationId,
                     entityType: 'room',
-                    entityId: $id
+                    entityId: $id,
+                    metadata: [
+                        'deleted_by' => [
+                            'user_id' => auth()->id(),
+                            'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                            'email' => $currentUser?->email,
+                        ],
+                        'deleted_at' => now()->toIso8601String(),
+                        'room_details' => [
+                            'room_id' => $id,
+                            'name' => $roomName,
+                            'location_id' => $locationId,
+                        ],
+                        'bulk_operation' => true,
+                    ]
                 );
             }
         }
 
         // Log the bulk operation summary
+        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Rooms Bulk Delete',
             category: 'delete',
             description: "Bulk deleted {$deletedCount} rooms",
             userId: auth()->id(),
-            metadata: ['count' => $deletedCount, 'ids' => $ids]
+            metadata: [
+                'deleted_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'deleted_at' => now()->toIso8601String(),
+                'deleted_count' => $deletedCount,
+                'room_ids' => $ids,
+            ]
         );
 
         return response()->json([

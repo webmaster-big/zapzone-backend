@@ -45,7 +45,21 @@ class AuthController extends RoutingController
             locationId: $user->location_id,
             entityType: 'user',
             entityId: $user->id,
-            metadata: ['role' => $user->role, 'email' => $user->email]
+            metadata: [
+                'login_at' => now()->toIso8601String(),
+                'user_details' => [
+                    'user_id' => $user->id,
+                    'name' => $user->first_name . ' ' . $user->last_name,
+                    'email' => $user->email,
+                    'role' => $user->role,
+                    'location_id' => $user->location_id,
+                    'company_id' => $user->company_id,
+                ],
+                'login_info' => [
+                    'ip_address' => request()->ip(),
+                    'user_agent' => request()->userAgent(),
+                ],
+            ]
         );
 
         return $this->createTokenResponse($user, $type);
@@ -166,7 +180,19 @@ class AuthController extends RoutingController
                 userId: $isCustomer ? null : $user->id,
                 locationId: $isCustomer ? null : ($user->location_id ?? null),
                 entityType: $isCustomer ? 'customer' : 'user',
-                entityId: $user->id
+                entityId: $user->id,
+                metadata: [
+                    'logout_at' => now()->toIso8601String(),
+                    ($isCustomer ? 'customer_details' : 'user_details') => [
+                        'id' => $user->id,
+                        'name' => $user->first_name . ' ' . $user->last_name,
+                        'email' => $user->email,
+                    ],
+                    'logout_info' => [
+                        'ip_address' => request()->ip(),
+                        'user_agent' => request()->userAgent(),
+                    ],
+                ]
             );
         }
 

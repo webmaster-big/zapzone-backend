@@ -149,7 +149,20 @@ class NotificationController extends Controller
             userId: auth()->id(),
             locationId: $locationId,
             entityType: 'notification',
-            entityId: $notificationId
+            entityId: $notificationId,
+            metadata: [
+                'deleted_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $user->first_name . ' ' . $user->last_name,
+                    'email' => $user->email,
+                ],
+                'deleted_at' => now()->toIso8601String(),
+                'notification_details' => [
+                    'notification_id' => $notificationId,
+                    'title' => $title,
+                    'location_id' => $locationId,
+                ],
+            ]
         );
 
         return response()->json([

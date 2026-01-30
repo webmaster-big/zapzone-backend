@@ -335,6 +335,7 @@ class CustomerController extends Controller
         $customer->load(['bookings', 'giftCards']);
 
         // Log customer update
+        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Customer Updated',
             category: 'update',
@@ -343,7 +344,21 @@ class CustomerController extends Controller
             locationId: null,
             entityType: 'customer',
             entityId: $customer->id,
-            metadata: array_keys($validated)
+            metadata: [
+                'updated_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'updated_at' => now()->toIso8601String(),
+                'updated_fields' => array_keys($validated),
+                'customer_details' => [
+                    'customer_id' => $customer->id,
+                    'name' => $customer->first_name . ' ' . $customer->last_name,
+                    'email' => $customer->email,
+                    'phone' => $customer->phone,
+                ],
+            ]
         );
 
         return response()->json([
@@ -374,7 +389,19 @@ class CustomerController extends Controller
             userId: auth()->id(),
             locationId: null,
             entityType: 'customer',
-            entityId: $customerId
+            entityId: $customerId,
+            metadata: [
+                'deleted_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $user->first_name . ' ' . $user->last_name,
+                    'email' => $user->email,
+                ],
+                'deleted_at' => now()->toIso8601String(),
+                'customer_details' => [
+                    'customer_id' => $customerId,
+                    'name' => $customerName,
+                ],
+            ]
         );
 
         return response()->json([

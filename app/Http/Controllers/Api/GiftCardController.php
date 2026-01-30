@@ -146,6 +146,7 @@ class GiftCardController extends Controller
         $giftCard->load(['creator', 'packages']);
 
         // Log gift card update activity
+        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Gift Card Updated',
             category: 'update',
@@ -155,7 +156,19 @@ class GiftCardController extends Controller
             entityType: 'gift_card',
             entityId: $giftCard->id,
             metadata: [
-                'code' => $giftCard->code,
+                'updated_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'updated_at' => now()->toIso8601String(),
+                'gift_card_details' => [
+                    'gift_card_id' => $giftCard->id,
+                    'code' => $giftCard->code,
+                    'type' => $giftCard->type,
+                    'balance' => $giftCard->balance,
+                    'status' => $giftCard->status,
+                ],
                 'updated_fields' => array_keys($validated),
             ]
         );
@@ -178,6 +191,7 @@ class GiftCardController extends Controller
         $giftCard->update(['deleted' => true, 'status' => 'deleted']);
 
         // Log gift card deletion activity
+        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Gift Card Deleted',
             category: 'delete',
@@ -185,7 +199,19 @@ class GiftCardController extends Controller
             userId: auth()->id(),
             locationId: null,
             entityType: 'gift_card',
-            entityId: $giftCardId
+            entityId: $giftCardId,
+            metadata: [
+                'deleted_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'deleted_at' => now()->toIso8601String(),
+                'gift_card_details' => [
+                    'gift_card_id' => $giftCardId,
+                    'code' => $giftCardCode,
+                ],
+            ]
         );
 
         return response()->json([
@@ -277,6 +303,7 @@ class GiftCardController extends Controller
         }
 
         // Log gift card redemption activity
+        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Gift Card Redeemed',
             category: 'update',
@@ -286,10 +313,22 @@ class GiftCardController extends Controller
             entityType: 'gift_card',
             entityId: $giftCard->id,
             metadata: [
-                'gift_card_code' => $giftCard->code,
-                'customer_id' => $validated['customer_id'] ?? null,
-                'redeemed_amount' => $validated['amount'],
-                'remaining_balance' => $newBalance,
+                'redeemed_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'redeemed_at' => now()->toIso8601String(),
+                'gift_card_details' => [
+                    'gift_card_id' => $giftCard->id,
+                    'code' => $giftCard->code,
+                ],
+                'redemption_details' => [
+                    'customer_id' => $validated['customer_id'] ?? null,
+                    'amount_redeemed' => $validated['amount'],
+                    'previous_balance' => $giftCard->balance + $validated['amount'],
+                    'remaining_balance' => $newBalance,
+                ],
             ]
         );
 

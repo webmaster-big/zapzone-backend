@@ -241,10 +241,28 @@ class AttractionPurchaseController extends Controller
             entityType: 'attraction_purchase',
             entityId: $purchase->id,
             metadata: [
-                'attraction_id' => $purchase->attraction_id,
-                'customer_id' => $purchase->customer_id,
-                'quantity' => $purchase->quantity,
-                'total_amount' => $purchase->total_amount,
+                'created_by' => [
+                    'user_id' => $purchase->created_by,
+                    'name' => $purchase->createdBy ? $purchase->createdBy->first_name . ' ' . $purchase->createdBy->last_name : null,
+                    'email' => $purchase->createdBy?->email,
+                ],
+                'created_at' => now()->toIso8601String(),
+                'purchase_details' => [
+                    'purchase_id' => $purchase->id,
+                    'attraction_id' => $purchase->attraction_id,
+                    'attraction_name' => $purchase->attraction->name,
+                    'quantity' => $purchase->quantity,
+                    'total_amount' => $purchase->total_amount,
+                    'amount_paid' => $purchase->amount_paid,
+                    'payment_method' => $purchase->payment_method,
+                    'status' => $purchase->status,
+                ],
+                'customer_details' => [
+                    'customer_id' => $purchase->customer_id,
+                    'name' => $customerName,
+                    'email' => $purchase->customer?->email ?? $purchase->guest_email,
+                    'phone' => $purchase->customer?->phone ?? $purchase->guest_phone,
+                ],
             ]
           );
         }
@@ -508,6 +526,7 @@ class AttractionPurchaseController extends Controller
 
         // Log attraction purchase update activity
         $customerName = $attractionPurchase->customer ? "{$attractionPurchase->customer->first_name} {$attractionPurchase->customer->last_name}" : $attractionPurchase->guest_name;
+        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Attraction Purchase Updated',
             category: 'update',
@@ -517,8 +536,24 @@ class AttractionPurchaseController extends Controller
             entityType: 'attraction_purchase',
             entityId: $attractionPurchase->id,
             metadata: [
-                'attraction_id' => $attractionPurchase->attraction_id,
+                'updated_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'updated_at' => now()->toIso8601String(),
                 'updated_fields' => array_keys($validated),
+                'purchase_details' => [
+                    'purchase_id' => $attractionPurchase->id,
+                    'attraction_id' => $attractionPurchase->attraction_id,
+                    'attraction_name' => $attractionPurchase->attraction->name,
+                    'quantity' => $attractionPurchase->quantity,
+                    'total_amount' => $attractionPurchase->total_amount,
+                ],
+                'customer_details' => [
+                    'customer_id' => $attractionPurchase->customer_id,
+                    'name' => $customerName,
+                ],
             ]
         );
 
@@ -552,7 +587,20 @@ class AttractionPurchaseController extends Controller
             userId: auth()->id(),
             locationId: $locationId,
             entityType: 'attraction_purchase',
-            entityId: $purchaseId
+            entityId: $purchaseId,
+            metadata: [
+                'deleted_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $user->first_name . ' ' . $user->last_name,
+                    'email' => $user->email,
+                ],
+                'deleted_at' => now()->toIso8601String(),
+                'purchase_details' => [
+                    'purchase_id' => $purchaseId,
+                    'attraction_name' => $attractionName,
+                    'location_id' => $locationId,
+                ],
+            ]
         );
 
         return response()->json([
@@ -961,6 +1009,7 @@ public function checkIn(int $id): JsonResponse
         }
 
         // Log bulk deletion
+        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Bulk Attraction Purchases Deleted',
             category: 'delete',
@@ -968,7 +1017,17 @@ public function checkIn(int $id): JsonResponse
             userId: auth()->id(),
             locationId: $locationIds[0] ?? null,
             entityType: 'attraction_purchase',
-            metadata: ['deleted_count' => $deletedCount, 'ids' => $validated['ids']]
+            metadata: [
+                'deleted_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'deleted_at' => now()->toIso8601String(),
+                'deleted_count' => $deletedCount,
+                'purchase_ids' => $validated['ids'],
+                'affected_locations' => array_unique($locationIds),
+            ]
         );
 
         return response()->json([

@@ -203,6 +203,7 @@ class AddOnController extends Controller
         Log::info("Add-On '{$addOn->name}' (ID: {$addOn->id}) was updated from '{$originalName}'.");
 
         // Log add-on update
+        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Add-On Updated',
             category: 'update',
@@ -210,7 +211,26 @@ class AddOnController extends Controller
             userId: auth()->id(),
             locationId: $addOn->location_id,
             entityType: 'addon',
-            entityId: $addOn->id
+            entityId: $addOn->id,
+            metadata: [
+                'updated_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'updated_at' => now()->toIso8601String(),
+                'changes' => [
+                    'original_name' => $originalName,
+                    'new_name' => $addOn->name,
+                ],
+                'addon_details' => [
+                    'addon_id' => $addOn->id,
+                    'name' => $addOn->name,
+                    'price' => $addOn->price,
+                    'location_id' => $addOn->location_id,
+                    'is_active' => $addOn->is_active,
+                ],
+            ]
         );
 
         return response()->json([
@@ -248,7 +268,20 @@ class AddOnController extends Controller
             userId: auth()->id(),
             locationId: $locationId,
             entityType: 'addon',
-            entityId: $addOnId
+            entityId: $addOnId,
+            metadata: [
+                'deleted_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $deletedBy->first_name . ' ' . $deletedBy->last_name,
+                    'email' => $deletedBy->email,
+                ],
+                'deleted_at' => now()->toIso8601String(),
+                'addon_details' => [
+                    'addon_id' => $addOnId,
+                    'name' => $addOnName,
+                    'location_id' => $locationId,
+                ],
+            ]
         );
 
         return response()->json([
@@ -378,6 +411,7 @@ class AddOnController extends Controller
         }
 
         // Log bulk deletion
+        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Bulk Add-Ons Deleted',
             category: 'delete',
@@ -385,7 +419,17 @@ class AddOnController extends Controller
             userId: auth()->id(),
             locationId: $locationIds[0] ?? null,
             entityType: 'addon',
-            metadata: ['deleted_count' => $deletedCount, 'ids' => $validated['ids']]
+            metadata: [
+                'deleted_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'deleted_at' => now()->toIso8601String(),
+                'deleted_count' => $deletedCount,
+                'addon_ids' => $validated['ids'],
+                'affected_locations' => array_unique($locationIds),
+            ]
         );
 
         return response()->json([
@@ -511,6 +555,7 @@ class AddOnController extends Controller
 
         // Log bulk import
         if (count($importedAddOns) > 0) {
+            $currentUser = auth()->user();
             ActivityLog::log(
                 action: 'Bulk Add-Ons Imported',
                 category: 'create',
@@ -518,7 +563,19 @@ class AddOnController extends Controller
                 userId: auth()->id(),
                 locationId: $importedAddOns[0]->location_id ?? null,
                 entityType: 'addon',
-                metadata: ['imported_count' => count($importedAddOns), 'failed_count' => count($errors)]
+                metadata: [
+                    'imported_by' => [
+                        'user_id' => auth()->id(),
+                        'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                        'email' => $currentUser?->email,
+                    ],
+                    'imported_at' => now()->toIso8601String(),
+                    'import_details' => [
+                        'imported_count' => count($importedAddOns),
+                        'failed_count' => count($errors),
+                        'addon_ids' => array_map(fn($a) => $a->id, $importedAddOns),
+                    ],
+                ]
             );
         }
 

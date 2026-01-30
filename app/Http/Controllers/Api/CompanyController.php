@@ -142,6 +142,7 @@ class CompanyController extends Controller
         $company->delete();
 
         // Log company deletion
+        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Company Deleted',
             category: 'delete',
@@ -149,7 +150,19 @@ class CompanyController extends Controller
             userId: auth()->id(),
             locationId: null,
             entityType: 'company',
-            entityId: $companyId
+            entityId: $companyId,
+            metadata: [
+                'deleted_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'deleted_at' => now()->toIso8601String(),
+                'company_details' => [
+                    'company_id' => $companyId,
+                    'name' => $companyName,
+                ],
+            ]
         );
 
         return response()->json([

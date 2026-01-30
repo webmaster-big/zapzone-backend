@@ -376,7 +376,20 @@ class AttractionController extends Controller
             userId: auth()->id(),
             locationId: $locationId,
             entityType: 'attraction',
-            entityId: $attractionId
+            entityId: $attractionId,
+            metadata: [
+                'deleted_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $deletedBy->first_name . ' ' . $deletedBy->last_name,
+                    'email' => $deletedBy->email,
+                ],
+                'deleted_at' => now()->toIso8601String(),
+                'attraction_details' => [
+                    'attraction_id' => $attractionId,
+                    'name' => $attractionName,
+                    'location_id' => $locationId,
+                ],
+            ]
         );
 
         return response()->json([
@@ -753,6 +766,7 @@ class AttractionController extends Controller
         }
 
         // Log bulk deletion
+        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Bulk Attractions Deleted',
             category: 'delete',
@@ -760,7 +774,17 @@ class AttractionController extends Controller
             userId: auth()->id(),
             locationId: $locationIds[0] ?? null,
             entityType: 'attraction',
-            metadata: ['deleted_count' => $deletedCount, 'ids' => $validated['ids']]
+            metadata: [
+                'deleted_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'deleted_at' => now()->toIso8601String(),
+                'deleted_count' => $deletedCount,
+                'attraction_ids' => $validated['ids'],
+                'affected_locations' => array_unique($locationIds),
+            ]
         );
 
         return response()->json([

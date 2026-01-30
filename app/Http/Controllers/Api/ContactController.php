@@ -134,6 +134,7 @@ class ContactController extends Controller
         $contact->load(['company', 'location', 'creator']);
 
         // Log activity
+        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Contact Created',
             category: 'create',
@@ -141,7 +142,25 @@ class ContactController extends Controller
             userId: auth()->id(),
             locationId: $contact->location_id,
             entityType: 'contact',
-            entityId: $contact->id
+            entityId: $contact->id,
+            metadata: [
+                'created_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'created_at' => now()->toIso8601String(),
+                'contact_details' => [
+                    'contact_id' => $contact->id,
+                    'email' => $contact->email,
+                    'name' => trim($contact->first_name . ' ' . $contact->last_name),
+                    'phone' => $contact->phone,
+                    'company_id' => $contact->company_id,
+                    'location_id' => $contact->location_id,
+                    'source' => $contact->source,
+                    'tags' => $contact->tags,
+                ],
+            ]
         );
 
         return response()->json([
@@ -199,6 +218,7 @@ class ContactController extends Controller
         $contact->load(['company', 'location', 'creator']);
 
         // Log activity
+        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Contact Updated',
             category: 'update',
@@ -206,7 +226,21 @@ class ContactController extends Controller
             userId: auth()->id(),
             locationId: $contact->location_id,
             entityType: 'contact',
-            entityId: $contact->id
+            entityId: $contact->id,
+            metadata: [
+                'updated_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'updated_at' => now()->toIso8601String(),
+                'updated_fields' => array_keys($validated),
+                'contact_details' => [
+                    'contact_id' => $contact->id,
+                    'email' => $contact->email,
+                    'name' => trim($contact->first_name . ' ' . $contact->last_name),
+                ],
+            ]
         );
 
         return response()->json([
@@ -228,6 +262,7 @@ class ContactController extends Controller
         $contact->delete();
 
         // Log activity
+        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Contact Deleted',
             category: 'delete',
@@ -235,7 +270,20 @@ class ContactController extends Controller
             userId: auth()->id(),
             locationId: $locationId,
             entityType: 'contact',
-            entityId: $contactId
+            entityId: $contactId,
+            metadata: [
+                'deleted_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'deleted_at' => now()->toIso8601String(),
+                'contact_details' => [
+                    'contact_id' => $contactId,
+                    'email' => $email,
+                    'location_id' => $locationId,
+                ],
+            ]
         );
 
         return response()->json([
@@ -325,6 +373,7 @@ class ContactController extends Controller
             DB::commit();
 
             // Log activity
+            $currentUser = auth()->user();
             ActivityLog::log(
                 action: 'Contacts Bulk Import',
                 category: 'create',
@@ -332,9 +381,21 @@ class ContactController extends Controller
                 userId: auth()->id(),
                 locationId: $locationId,
                 metadata: [
-                    'imported' => $imported,
-                    'skipped' => $skipped,
-                    'errors_count' => count($errors),
+                    'imported_by' => [
+                        'user_id' => auth()->id(),
+                        'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                        'email' => $currentUser?->email,
+                    ],
+                    'imported_at' => now()->toIso8601String(),
+                    'import_details' => [
+                        'company_id' => $companyId,
+                        'location_id' => $locationId,
+                        'source' => $source,
+                        'imported_count' => $imported,
+                        'skipped_count' => $skipped,
+                        'errors_count' => count($errors),
+                        'global_tags' => $globalTags,
+                    ],
                 ]
             );
 
@@ -371,12 +432,22 @@ class ContactController extends Controller
         $deletedCount = Contact::whereIn('id', $validated['ids'])->delete();
 
         // Log activity
+        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Contacts Bulk Delete',
             category: 'delete',
             description: "Bulk deleted {$deletedCount} contacts",
             userId: auth()->id(),
-            metadata: ['count' => $deletedCount, 'ids' => $validated['ids']]
+            metadata: [
+                'deleted_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'deleted_at' => now()->toIso8601String(),
+                'deleted_count' => $deletedCount,
+                'contact_ids' => $validated['ids'],
+            ]
         );
 
         return response()->json([
@@ -429,15 +500,27 @@ class ContactController extends Controller
         }
 
         // Log activity
+        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Contacts Bulk Update',
             category: 'update',
             description: "Bulk updated {$updatedCount} contacts ({$validated['action']})",
             userId: auth()->id(),
             metadata: [
-                'count' => $updatedCount,
-                'action' => $validated['action'],
-                'ids' => $validated['ids'],
+                'updated_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'updated_at' => now()->toIso8601String(),
+                'update_details' => [
+                    'action' => $validated['action'],
+                    'updated_count' => $updatedCount,
+                    'contact_ids' => $validated['ids'],
+                    'tags' => $validated['tags'] ?? null,
+                    'status' => $validated['status'] ?? null,
+                    'location_id' => $validated['location_id'] ?? null,
+                ],
             ]
         );
 

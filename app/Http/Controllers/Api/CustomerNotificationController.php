@@ -142,6 +142,7 @@ class CustomerNotificationController extends Controller
         $customerNotification->delete();
 
         // Log notification deletion
+        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Customer Notification Deleted',
             category: 'delete',
@@ -150,7 +151,20 @@ class CustomerNotificationController extends Controller
             locationId: $locationId,
             entityType: 'customer_notification',
             entityId: $notificationId,
-            metadata: ['customer_id' => $customerId]
+            metadata: [
+                'deleted_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'deleted_at' => now()->toIso8601String(),
+                'notification_details' => [
+                    'notification_id' => $notificationId,
+                    'title' => $title,
+                    'customer_id' => $customerId,
+                    'location_id' => $locationId,
+                ],
+            ]
         );
 
         return response()->json([

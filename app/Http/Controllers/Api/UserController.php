@@ -127,6 +127,7 @@ class UserController extends Controller
         $user->load(['company', 'location']);
 
         // Log user creation
+        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'User Created',
             category: 'create',
@@ -135,7 +136,22 @@ class UserController extends Controller
             locationId: $user->location_id,
             entityType: 'user',
             entityId: $user->id,
-            metadata: ['role' => $user->role, 'email' => $user->email]
+            metadata: [
+                'created_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'created_at' => now()->toIso8601String(),
+                'user_details' => [
+                    'user_id' => $user->id,
+                    'name' => $user->first_name . ' ' . $user->last_name,
+                    'email' => $user->email,
+                    'role' => $user->role,
+                    'location_id' => $user->location_id,
+                    'company_id' => $user->company_id,
+                ],
+            ]
         );
 
         return response()->json([
@@ -190,6 +206,7 @@ class UserController extends Controller
         $user->load(['company', 'location']);
 
         // Log user update
+        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'User Updated',
             category: 'update',
@@ -198,7 +215,21 @@ class UserController extends Controller
             locationId: $user->location_id,
             entityType: 'user',
             entityId: $user->id,
-            metadata: array_keys($validated)
+            metadata: [
+                'updated_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'updated_at' => now()->toIso8601String(),
+                'updated_fields' => array_keys($validated),
+                'user_details' => [
+                    'user_id' => $user->id,
+                    'name' => $user->first_name . ' ' . $user->last_name,
+                    'email' => $user->email,
+                    'role' => $user->role,
+                ],
+            ]
         );
 
         return response()->json([
@@ -316,7 +347,20 @@ class UserController extends Controller
             userId: auth()->id(),
             locationId: $locationId,
             entityType: 'user',
-            entityId: $userId
+            entityId: $userId,
+            metadata: [
+                'deleted_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $deletedBy->first_name . ' ' . $deletedBy->last_name,
+                    'email' => $deletedBy->email,
+                ],
+                'deleted_at' => now()->toIso8601String(),
+                'user_details' => [
+                    'user_id' => $userId,
+                    'name' => $userName,
+                    'location_id' => $locationId,
+                ],
+            ]
         );
 
         return response()->json([
@@ -436,6 +480,7 @@ class UserController extends Controller
         }
 
         // Log bulk deletion
+        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Bulk Users Deleted',
             category: 'delete',
@@ -443,7 +488,17 @@ class UserController extends Controller
             userId: auth()->id(),
             locationId: $locationIds[0] ?? null,
             entityType: 'user',
-            metadata: ['deleted_count' => $deletedCount, 'ids' => $idsToDelete]
+            metadata: [
+                'deleted_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'deleted_at' => now()->toIso8601String(),
+                'deleted_count' => $deletedCount,
+                'user_ids' => $idsToDelete,
+                'affected_locations' => array_unique($locationIds),
+            ]
         );
 
         return response()->json([

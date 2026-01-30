@@ -162,6 +162,7 @@ class PromoController extends Controller
         $promo->update(['deleted' => true, 'status' => 'inactive']);
 
         // Log promo deletion
+        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Promo Deleted',
             category: 'delete',
@@ -169,7 +170,19 @@ class PromoController extends Controller
             userId: auth()->id(),
             locationId: null,
             entityType: 'promo',
-            entityId: $promoId
+            entityId: $promoId,
+            metadata: [
+                'deleted_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'deleted_at' => now()->toIso8601String(),
+                'promo_details' => [
+                    'promo_id' => $promoId,
+                    'code' => $promoCode,
+                ],
+            ]
         );
 
         return response()->json([

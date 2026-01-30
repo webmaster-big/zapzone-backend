@@ -462,6 +462,7 @@ class PackageController extends Controller
         $package->delete();
 
         // Log package deletion
+        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Package Deleted',
             category: 'delete',
@@ -469,7 +470,21 @@ class PackageController extends Controller
             userId: auth()->id(),
             locationId: $locationId,
             entityType: 'package',
-            entityId: $packageId
+            entityId: $packageId,
+            metadata: [
+                'deleted_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'deleted_at' => now()->toIso8601String(),
+                'package_details' => [
+                    'package_id' => $packageId,
+                    'name' => $packageName,
+                    'location_id' => $locationId,
+                ],
+                'soft_delete' => true,
+            ]
         );
 
         return response()->json([
@@ -511,6 +526,7 @@ class PackageController extends Controller
         $package->restore();
 
         // Log package restoration
+        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Package Restored',
             category: 'update',
@@ -518,7 +534,20 @@ class PackageController extends Controller
             userId: auth()->id(),
             locationId: $package->location_id,
             entityType: 'package',
-            entityId: $package->id
+            entityId: $package->id,
+            metadata: [
+                'restored_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'restored_at' => now()->toIso8601String(),
+                'package_details' => [
+                    'package_id' => $package->id,
+                    'name' => $package->name,
+                    'location_id' => $package->location_id,
+                ],
+            ]
         );
 
         return response()->json([
@@ -560,6 +589,7 @@ class PackageController extends Controller
         $package->forceDelete();
 
         // Log package permanent deletion
+        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Package Permanently Deleted',
             category: 'delete',
@@ -567,7 +597,21 @@ class PackageController extends Controller
             userId: auth()->id(),
             locationId: $locationId,
             entityType: 'package',
-            entityId: $packageId
+            entityId: $packageId,
+            metadata: [
+                'deleted_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'deleted_at' => now()->toIso8601String(),
+                'package_details' => [
+                    'package_id' => $packageId,
+                    'name' => $packageName,
+                    'location_id' => $locationId,
+                ],
+                'permanent_delete' => true,
+            ]
         );
 
         return response()->json([
@@ -1339,6 +1383,7 @@ class PackageController extends Controller
         ]);
 
         // Log the activity
+        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Availability Schedules Updated',
             category: 'update',
@@ -1346,7 +1391,21 @@ class PackageController extends Controller
             userId: auth()->id() ?? null,
             locationId: $package->location_id,
             entityType: 'package',
-            entityId: $package->id
+            entityId: $package->id,
+            metadata: [
+                'updated_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'updated_at' => now()->toIso8601String(),
+                'package_details' => [
+                    'package_id' => $package->id,
+                    'name' => $package->name,
+                ],
+                'schedules_deleted' => $existingSchedulesCount,
+                'schedules_created' => count($createdSchedules),
+            ]
         );
 
         return response()->json([
@@ -1390,6 +1449,7 @@ class PackageController extends Controller
         ]);
 
         // Log the activity
+        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Availability Schedule Deleted',
             category: 'delete',
@@ -1397,7 +1457,25 @@ class PackageController extends Controller
             userId: auth()->id() ?? null,
             locationId: $package->location_id,
             entityType: 'package',
-            entityId: $package->id
+            entityId: $package->id,
+            metadata: [
+                'deleted_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'deleted_at' => now()->toIso8601String(),
+                'schedule_details' => [
+                    'schedule_id' => $scheduleId,
+                    'availability_type' => $schedule->availability_type,
+                    'day_configuration' => $schedule->day_configuration,
+                    'time_range' => $schedule->time_slot_start . ' - ' . $schedule->time_slot_end,
+                ],
+                'package_details' => [
+                    'package_id' => $package->id,
+                    'name' => $package->name,
+                ],
+            ]
         );
 
         return response()->json([

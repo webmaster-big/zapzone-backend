@@ -174,6 +174,7 @@ class DayOffController extends Controller
         }
 
         // Log activity
+        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Day Off Created',
             category: 'create',
@@ -181,7 +182,29 @@ class DayOffController extends Controller
             userId: auth()->id(),
             locationId: $dayOff->location_id,
             entityType: 'day_off',
-            entityId: $dayOff->id
+            entityId: $dayOff->id,
+            metadata: [
+                'created_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'created_at' => now()->toIso8601String(),
+                'day_off_details' => [
+                    'day_off_id' => $dayOff->id,
+                    'date' => $dayOff->date->format('Y-m-d'),
+                    'time_start' => $dayOff->time_start,
+                    'time_end' => $dayOff->time_end,
+                    'reason' => $dayOff->reason,
+                    'is_recurring' => $dayOff->is_recurring,
+                    'location_id' => $dayOff->location_id,
+                    'scope' => $scope,
+                ],
+                'affected_resources' => [
+                    'package_ids' => $dayOff->package_ids,
+                    'room_ids' => $dayOff->room_ids,
+                ],
+            ]
         );
 
         return response()->json([
@@ -234,6 +257,7 @@ class DayOffController extends Controller
         $dayOff->load('location');
 
         // Log activity
+        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Day Off Updated',
             category: 'update',
@@ -241,7 +265,24 @@ class DayOffController extends Controller
             userId: auth()->id(),
             locationId: $dayOff->location_id,
             entityType: 'day_off',
-            entityId: $dayOff->id
+            entityId: $dayOff->id,
+            metadata: [
+                'updated_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'updated_at' => now()->toIso8601String(),
+                'updated_fields' => array_keys($validated),
+                'day_off_details' => [
+                    'day_off_id' => $dayOff->id,
+                    'date' => $dayOff->date->format('Y-m-d'),
+                    'time_start' => $dayOff->time_start,
+                    'time_end' => $dayOff->time_end,
+                    'reason' => $dayOff->reason,
+                    'location_id' => $dayOff->location_id,
+                ],
+            ]
         );
 
         return response()->json([
@@ -263,6 +304,7 @@ class DayOffController extends Controller
         $dayOff->delete();
 
         // Log activity
+        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Day Off Deleted',
             category: 'delete',
@@ -270,7 +312,20 @@ class DayOffController extends Controller
             userId: auth()->id(),
             locationId: $locationId,
             entityType: 'day_off',
-            entityId: $dayOffId
+            entityId: $dayOffId,
+            metadata: [
+                'deleted_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'deleted_at' => now()->toIso8601String(),
+                'day_off_details' => [
+                    'day_off_id' => $dayOffId,
+                    'date' => $dayOffDate,
+                    'location_id' => $locationId,
+                ],
+            ]
         );
 
         return response()->json([
@@ -374,6 +429,7 @@ class DayOffController extends Controller
                 $deletedCount++;
 
                 // Log each deletion
+                $currentUser = auth()->user();
                 ActivityLog::log(
                     action: 'Day Off Bulk Deleted',
                     category: 'delete',
@@ -381,18 +437,42 @@ class DayOffController extends Controller
                     userId: auth()->id(),
                     locationId: $locationId,
                     entityType: 'day_off',
-                    entityId: $id
+                    entityId: $id,
+                    metadata: [
+                        'deleted_by' => [
+                            'user_id' => auth()->id(),
+                            'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                            'email' => $currentUser?->email,
+                        ],
+                        'deleted_at' => now()->toIso8601String(),
+                        'day_off_details' => [
+                            'day_off_id' => $id,
+                            'date' => $dayOffDate,
+                            'location_id' => $locationId,
+                        ],
+                        'bulk_operation' => true,
+                    ]
                 );
             }
         }
 
         // Log bulk operation summary
+        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Day Offs Bulk Delete',
             category: 'delete',
             description: "Bulk deleted {$deletedCount} day offs",
             userId: auth()->id(),
-            metadata: ['count' => $deletedCount, 'ids' => $ids]
+            metadata: [
+                'deleted_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'deleted_at' => now()->toIso8601String(),
+                'deleted_count' => $deletedCount,
+                'day_off_ids' => $ids,
+            ]
         );
 
         return response()->json([
