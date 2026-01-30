@@ -47,11 +47,8 @@ class BookingController extends Controller
                     'location:id,name',
                     'room:id,name',
                     'creator:id,first_name,last_name,email',
-                    'attractions:id,booking_id,attraction_id,quantity,price_at_booking',
-                    'attractions.attraction:id,name',
-                    'addOns:id,booking_id,add_on_id,quantity,price_at_booking',
-                    'addOns.addOn:id,name',
-                    // Skip payments in list view - load only when viewing single booking
+                    'attractions:id,name',  // BelongsToMany - pivot data loaded automatically
+                    'addOns:id,name',       // BelongsToMany - pivot data loaded automatically
                 ]);
 
             // Role-based filtering
@@ -161,10 +158,8 @@ class BookingController extends Controller
                 'location:id,name',
                 'room:id,name',
                 'creator:id,first_name,last_name',
-                'attractions:id,booking_id,attraction_id,quantity,price_at_booking',
-                'attractions.attraction:id,name',
-                'addOns:id,booking_id,add_on_id,quantity,price_at_booking',
-                'addOns.addOn:id,name',
+                'attractions:id,name',  // BelongsToMany - pivot data loaded automatically
+                'addOns:id,name',       // BelongsToMany - pivot data loaded automatically
             ]);
 
         // filter by search by location, reference number, package name
@@ -522,10 +517,8 @@ class BookingController extends Controller
                 'location:id,name',
                 'room:id,name',
                 'creator:id,first_name,last_name,email',
-                'attractions:id,booking_id,attraction_id,quantity,price_at_booking',
-                'attractions.attraction:id,name',
-                'addOns:id,booking_id,add_on_id,quantity,price_at_booking',
-                'addOns.addOn:id,name',
+                'attractions:id,name',  // BelongsToMany - pivot data loaded automatically
+                'addOns:id,name',       // BelongsToMany - pivot data loaded automatically
             ]);
 
         // Role-based filtering
