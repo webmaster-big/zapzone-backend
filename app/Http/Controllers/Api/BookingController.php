@@ -93,8 +93,8 @@ class BookingController extends Controller
             $query->orderBy($sortBy, $sortOrder);
         }
 
-        // Send booking reminders for bookings scheduled for tomorrow
-        $this->sendBookingReminders();
+        // Note: Booking reminders should be handled by a scheduled job, not on every API request
+        // See: app/Console/Kernel.php for scheduled reminder job
 
         $perPage = min($request->get('per_page', 15), 100); // Max 100 items per page
         $bookings = $query->paginate($perPage);
