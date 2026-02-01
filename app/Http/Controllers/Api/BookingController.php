@@ -273,6 +273,7 @@ class BookingController extends Controller
             'notes' => 'nullable|string',
             'internal_notes' => 'nullable|string',
             'send_notification' => 'nullable|boolean',
+            'sent_email_to_staff' => 'nullable|boolean',
             'special_requests' => 'nullable|string',
             'guest_of_honor_name' => 'nullable|string|max:255',
             'guest_of_honor_age' => 'nullable|integer|min:0|max:150',
@@ -494,6 +495,8 @@ class BookingController extends Controller
         }
 
         // Send email notification to staff members at the booking location
+        // Only send if sent_email_to_staff is true (default to true if not specified)
+        if ($validated['sent_email_to_staff'] ?? true) {
         try {
             // Get all users at this location
             $staffUsers = User::where('location_id', $booking->location_id)
@@ -552,6 +555,12 @@ class BookingController extends Controller
             Log::warning('Failed to send staff booking notifications', [
                 'booking_id' => $booking->id,
                 'error' => $e->getMessage(),
+            ]);
+        }
+        } else {
+            Log::info('Staff email notifications skipped', [
+                'booking_id' => $booking->id,
+                'sent_email_to_staff' => false,
             ]);
         }
 

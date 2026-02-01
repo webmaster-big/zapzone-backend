@@ -181,6 +181,11 @@ class AttractionController extends Controller
      */
     public function store(Request $request): JsonResponse
     {
+        // Convert empty duration to null
+        if ($request->has('duration') && $request->duration === '') {
+            $request->merge(['duration' => null]);
+        }
+
         $validated = $request->validate([
             'name' => 'required|string|max:255',
             'description' => 'required|string',
@@ -189,7 +194,7 @@ class AttractionController extends Controller
             'max_capacity' => 'required|integer|min:1',
             'category' => 'required|string|max:255',
             'unit' => 'nullable|string|max:50',
-            'duration' => 'nullable|numeric|min:0',
+            'duration' => 'nullable|numeric|min:0|gte:0',
             'duration_unit' => ['nullable', Rule::in(['hours', 'minutes', 'hours and minutes'])],
             'availability' => 'nullable|array',
             'image' => 'nullable|array',
@@ -266,6 +271,11 @@ class AttractionController extends Controller
      */
     public function update(Request $request, Attraction $attraction): JsonResponse
     {
+        // Convert empty duration to null
+        if ($request->has('duration') && $request->duration === '') {
+            $request->merge(['duration' => null]);
+        }
+
         $validated = $request->validate([
             'location_id' => 'sometimes|exists:locations,id',
             'name' => 'sometimes|string|max:255',
@@ -275,7 +285,7 @@ class AttractionController extends Controller
             'max_capacity' => 'sometimes|integer|min:1',
             'category' => 'sometimes|string|max:255',
             'unit' => 'nullable|string|max:50',
-            'duration' => 'nullable|numeric|min:0',
+            'duration' => 'nullable|numeric|min:0|gte:0',
             'duration_unit' => ['nullable', Rule::in(['hours', 'minutes', 'hours and minutes'])],
             'availability' => 'nullable|array',
             'image' => 'nullable|max:27262976',
@@ -549,7 +559,7 @@ class AttractionController extends Controller
                 'attractions.*.maxCapacity' => 'nullable|integer|min:1',
                 'attractions.*.category' => 'required|string|max:255',
                 'attractions.*.unit' => 'nullable|string|max:50',
-                'attractions.*.duration' => 'nullable|numeric|min:0',
+                'attractions.*.duration' => 'nullable|numeric|min:0|gte:0',
                 'attractions.*.duration_unit' => 'nullable|string',
                 'attractions.*.durationUnit' => 'nullable|string',
                 'attractions.*.availability' => 'nullable|array',
