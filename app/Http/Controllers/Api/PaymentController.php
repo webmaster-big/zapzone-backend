@@ -92,7 +92,7 @@ class PaymentController extends Controller
             'customer_id' => 'nullable|exists:customers,id',
             'amount' => 'required|numeric|min:0.01',
             'currency' => 'string|size:3',
-            'method' => ['required', Rule::in(['card', 'cash'])],
+            'method' => ['required', Rule::in(['card', 'cash', 'authorize.net'])],
             'status' => ['sometimes', Rule::in(['pending', 'completed', 'failed', 'refunded'])],
             'notes' => 'nullable|string',
             'payment_id' => 'nullable|string|unique:payments,payment_id',
@@ -680,7 +680,7 @@ class PaymentController extends Controller
                         'location_id' => $request->location_id,
                         'amount' => $request->amount,
                         'currency' => 'USD',
-                        'method' => 'card',
+                        'method' => 'Authorize.net',
                         'status' => 'completed',
                         'transaction_id' => $transactionId,
                         'payment_id' => $transactionId,
@@ -955,7 +955,7 @@ class PaymentController extends Controller
         $request->validate([
             'location_id' => 'nullable|exists:locations,id',
             'status' => ['nullable', Rule::in(['pending', 'completed', 'failed', 'refunded'])],
-            'method' => ['nullable', Rule::in(['card', 'cash'])],
+            'method' => ['nullable', Rule::in(['card', 'cash', 'authorize.net'])],
             'payable_type' => ['nullable', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE])],
             'customer_id' => 'nullable|exists:customers,id',
             'start_date' => 'nullable|date',
@@ -1258,7 +1258,7 @@ class PaymentController extends Controller
             'location_id' => 'nullable|exists:locations,id',
             'customer_id' => 'nullable|exists:customers,id',
             'status' => ['nullable', Rule::in(['pending', 'completed', 'failed', 'refunded'])],
-            'method' => ['nullable', Rule::in(['card', 'cash'])],
+            'method' => ['nullable', Rule::in(['card', 'cash', 'authorize.net'])],
             'view_mode' => ['nullable', Rule::in(['report', 'individual'])],
         ]);
 
