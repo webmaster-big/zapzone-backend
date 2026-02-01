@@ -900,17 +900,17 @@ class BookingController extends Controller
             'room_id', 'package_id', 'notes', 'internal_notes', 'special_requests',
             'guest_of_honor_name', 'guest_of_honor_age', 'guest_of_honor_gender'
         ]);
-        $originalAddons = $booking->addOns()->with('addOn')->get()->map(fn($a) => [
-            'addon_id' => $a->add_on_id,
-            'name' => $a->addOn->name ?? 'N/A',
-            'quantity' => $a->quantity,
-            'price' => $a->price_at_booking,
+        $originalAddons = $booking->addOns()->get()->map(fn($a) => [
+            'addon_id' => $a->id,
+            'name' => $a->name ?? 'N/A',
+            'quantity' => $a->pivot->quantity,
+            'price' => $a->pivot->price_at_booking,
         ])->toArray();
-        $originalAttractions = $booking->attractions()->with('attraction')->get()->map(fn($a) => [
-            'attraction_id' => $a->attraction_id,
-            'name' => $a->attraction->name ?? 'N/A',
-            'quantity' => $a->quantity,
-            'price' => $a->price_at_booking,
+        $originalAttractions = $booking->attractions()->get()->map(fn($a) => [
+            'attraction_id' => $a->id,
+            'name' => $a->name ?? 'N/A',
+            'quantity' => $a->pivot->quantity,
+            'price' => $a->pivot->price_at_booking,
         ])->toArray();
 
         // Update timestamps based on status
