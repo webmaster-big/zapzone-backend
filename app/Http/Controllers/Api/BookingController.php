@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Mail\BookingConfirmation;
 use App\Mail\BookingReminder;
+use App\Mail\StaffBookingNotification;
 use App\Services\GmailApiService;
 use App\Models\ActivityLog;
 use App\Models\Booking;
@@ -487,6 +488,68 @@ class BookingController extends Controller
         } catch (\Exception $e) {
             // Log error but don't fail the booking creation
             Log::warning('Failed to create/update contact from booking', [
+                'booking_id' => $booking->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        // Send email notification to staff members at the booking location
+        try {
+            // Get all users at this location
+            $staffUsers = User::where('location_id', $booking->location_id)
+                ->whereNotNull('email')
+                ->get();
+
+            // Also get company admin(s) if company exists
+            if ($booking->location && $booking->location->company_id) {
+                $companyAdmins = User::where('company_id', $booking->location->company_id)
+                    ->where('role', 'company_admin')
+                    ->whereNotNull('email')
+                    ->get();
+
+                // Merge and dedupe by email
+                $staffUsers = $staffUsers->merge($companyAdmins)->unique('email');
+            }
+
+            // Check if Gmail API should be used
+            $useGmailApi = config('gmail.enabled', false) &&
+                          (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
+
+            foreach ($staffUsers as $staffUser) {
+                try {
+                    $recipientName = $staffUser->first_name ?? $staffUser->name ?? 'Team Member';
+
+                    if ($useGmailApi) {
+                        $gmailService = new GmailApiService();
+                        $mailable = new StaffBookingNotification($booking, $recipientName);
+                        $mailable->build(); // Ensure the mailable is built before rendering
+                        $emailBody = $mailable->render();
+
+                        $gmailService->sendEmail(
+                            $staffUser->email,
+                            "🎉 New Booking Alert - {$booking->reference_number}",
+                            $emailBody,
+                            $booking->location->company->name ?? 'ZapZone'
+                        );
+                    } else {
+                        Mail::to($staffUser->email)->send(new StaffBookingNotification($booking, $recipientName));
+                    }
+
+                    Log::info('Staff booking notification sent', [
+                        'booking_id' => $booking->id,
+                        'staff_email' => $staffUser->email,
+                    ]);
+                } catch (\Exception $e) {
+                    Log::warning('Failed to send staff booking notification', [
+                        'booking_id' => $booking->id,
+                        'staff_email' => $staffUser->email,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+        } catch (\Exception $e) {
+            // Log error but don't fail the booking creation
+            Log::warning('Failed to send staff booking notifications', [
                 'booking_id' => $booking->id,
                 'error' => $e->getMessage(),
             ]);

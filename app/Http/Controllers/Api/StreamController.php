@@ -31,16 +31,16 @@ class StreamController extends Controller
         {
             // Disable time limit for long-running streams
             set_time_limit(0);
-            
+
             // Turn off output buffering completely
             // Clear ALL output buffers to prevent memory buildup
             while (ob_get_level() > 0) {
                 ob_end_flush();
             }
-            
+
             // Start a clean output buffer that flushes immediately
             ob_implicit_flush(true);
-            
+
             // Disable query logging to prevent memory buildup
             DB::connection()->disableQueryLog();
         }
@@ -57,7 +57,7 @@ class StreamController extends Controller
                 echo "event: {$event}\n";
             }
             echo "data: {$data}\n\n";
-            
+
             // Force immediate output - no buffering
             if (ob_get_level() > 0) {
                 ob_flush();

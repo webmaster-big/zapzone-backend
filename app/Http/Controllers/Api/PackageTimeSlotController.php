@@ -616,8 +616,8 @@ class PackageTimeSlotController extends Controller
         // Check if there's enough advance notice
         if ($hoursUntilSlot < $package->min_booking_notice_hours) {
             $minHours = $package->min_booking_notice_hours;
-            $formattedNotice = $minHours >= 24 
-                ? round($minHours / 24, 1) . ' day(s)' 
+            $formattedNotice = $minHours >= 24
+                ? round($minHours / 24, 1) . ' day(s)'
                 : $minHours . ' hour(s)';
 
             return [
@@ -737,10 +737,10 @@ class PackageTimeSlotController extends Controller
             // Find the latest possible slot end time from the schedule
             $latestTimeSlot = end($timeSlots);
             $latestSlotEnd = Carbon::parse($date . ' ' . $latestTimeSlot)->addMinutes($slotDurationInMinutes);
-            
+
             // Subtract the minimum booking notice hours to get the cutoff
             $cutoffEndTime = (clone $latestSlotEnd)->subHours($package->min_booking_notice_hours);
-            
+
             Log::debug('Calculated slot cutoff time', [
                 'package_id' => $package->id,
                 'latest_slot_end' => $latestSlotEnd->format('H:i'),
