@@ -410,6 +410,9 @@
                 <div class="booking-date-header">
                     {{ $booking->booking_date ? $booking->booking_date->format('l, F j, Y') : 'Date TBD' }}
                 </div>
+                <div style="font-size: 7pt; color: #888; margin-top: 3px;">
+                    Created: {{ $booking->created_at ? $booking->created_at->format('M j, Y g:i A') : 'N/A' }}
+                </div>
                 <span class="status-badge status-{{ strtolower($booking->status) }}">
                     {{ ucfirst(str_replace('_', ' ', $booking->status)) }}
                 </span>

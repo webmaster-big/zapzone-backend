@@ -277,6 +277,9 @@
                     {{ \Carbon\Carbon::parse($booking->booking_date)->format('l, M j, Y') }}
                     at {{ \Carbon\Carbon::parse($booking->booking_time)->format('g:i A') }}
                 </div>
+                <div style="font-size: 7pt; color: #9ca3af; margin-top: 2px;">
+                    Created: {{ $booking->created_at ? $booking->created_at->format('M j, Y g:i A') : 'N/A' }}
+                </div>
             </div>
             <span class="status-badge status-{{ $booking->status }}">
                 {{ ucfirst($booking->status) }}

@@ -188,6 +188,7 @@
                     @if($payable->room)Room: {{ $payable->room->name }}@if($payable->room->capacity) ({{ $payable->room->capacity }} capacity)@endif · @endif
                     @if($payable->participants){{ $payable->participants }} guests · @endif
                     Ref: {{ $payable->reference_number ?? 'N/A' }}
+                    @if($payable->created_at) · Booked: {{ $payable->created_at->format('M j, Y g:i A') }}@endif
                 </div>
             </div>
 
