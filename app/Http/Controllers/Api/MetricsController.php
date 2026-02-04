@@ -44,8 +44,11 @@ class MetricsController extends Controller
         $dateFrom = $request->query('date_from');
         $dateTo = $request->query('date_to');
 
-        // Apply timeframe preset if not using custom dates
-        if (!$dateFrom && !$dateTo) {
+        // If custom dates are provided, use them and set timeframe to 'custom'
+        if ($dateFrom || $dateTo) {
+            $timeframe = 'custom';
+        } else {
+            // Apply timeframe preset
             switch ($timeframe) {
                 case 'last_24h':
                     $dateFrom = now()->subHours(24)->toDateString();
@@ -59,6 +62,7 @@ class MetricsController extends Controller
                     $dateFrom = now()->subDays(30)->toDateString();
                     $dateTo = now()->toDateString();
                     break;
+                case 'custom':
                 case 'all_time':
                 default:
                     // No date filter - all time metrics
@@ -66,9 +70,6 @@ class MetricsController extends Controller
                     $dateTo = null;
                     break;
             }
-        } else {
-            // If custom dates are provided, set timeframe to 'custom'
-            $timeframe = 'custom';
         }
 
         // Determine location filter based on user role
@@ -331,8 +332,11 @@ class MetricsController extends Controller
             $dateFrom = $request->query('date_from');
             $dateTo = $request->query('date_to');
 
-            // Apply timeframe preset if not using custom dates
-            if (!$dateFrom && !$dateTo) {
+            // If custom dates are provided, use them and set timeframe to 'custom'
+            if ($dateFrom || $dateTo) {
+                $timeframe = 'custom';
+            } else {
+                // Apply timeframe preset
                 switch ($timeframe) {
                     case 'last_24h':
                         $dateFrom = now()->subHours(24)->toDateString();
@@ -346,14 +350,13 @@ class MetricsController extends Controller
                         $dateFrom = now()->subDays(30)->toDateString();
                         $dateTo = now()->toDateString();
                         break;
+                    case 'custom':
                     case 'all_time':
                     default:
                         $dateFrom = null;
                         $dateTo = null;
                         break;
                 }
-            } else {
-                $timeframe = 'custom';
             }
 
             // Log incoming request for debugging
