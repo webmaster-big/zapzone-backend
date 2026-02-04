@@ -146,10 +146,12 @@ Route::patch('payments/{payment}', [PaymentController::class, 'update']);
 // Public booking creation
 Route::post('bookings', [BookingController::class, 'store']);
 Route::post('bookings/{booking}/qrcode', [BookingController::class, 'storeQrCode']);
+Route::delete('bookings/{booking}', [BookingController::class, 'destroy']);
 
 // Public attraction purchase creation
 Route::post('attraction-purchases', [AttractionPurchaseController::class, 'store']);
 Route::post('attraction-purchases/{attractionPurchase}/qrcode', [AttractionPurchaseController::class, 'storeQrCode']);
+Route::delete('attraction-purchases/{attractionPurchase}', [AttractionPurchaseController::class, 'destroy']);
 
 // Locations Route
 Route::get('locations', [LocationController::class, 'index']);
@@ -267,7 +269,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('attractions/bulk-delete', [AttractionController::class, 'bulkDelete']);
 
     // Attraction Purchase routes
-    Route::apiResource('attraction-purchases', AttractionPurchaseController::class)->except(['store']);
+    Route::apiResource('attraction-purchases', AttractionPurchaseController::class)->except(['store', 'destroy']);
     // update status
     Route::patch('attraction-purchases/{attractionPurchase}/update-status', [AttractionPurchaseController::class, 'updateStatus']);
     Route::get('attraction-purchases/statistics', [AttractionPurchaseController::class, 'statistics']);
@@ -331,7 +333,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('bookings/summaries/day/{date}', [BookingController::class, 'summariesDay']);
     Route::get('bookings/summaries/week/{week?}', [BookingController::class, 'summariesWeek']);
 
-    Route::apiResource('bookings', BookingController::class)->except(['store']);
+    Route::apiResource('bookings', BookingController::class)->except(['store', 'destroy']);
     Route::patch('bookings/{booking}/cancel', [BookingController::class, 'cancel']);
     Route::post('bookings/check-in', [BookingController::class, 'checkIn']);
     Route::patch('bookings/{booking}/complete', [BookingController::class, 'complete']);
