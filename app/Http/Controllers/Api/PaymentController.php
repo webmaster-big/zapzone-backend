@@ -224,25 +224,25 @@ class PaymentController extends Controller
         ]);
     }
 
-    /**
-     * Update payable_id and payable_type for a payment
-     * Simple update without activity logging or relationship loading
-     */
-    public function updatePayable(Request $request, Payment $payment): JsonResponse
-    {
-        $validated = $request->validate([
-            'payable_id' => 'required|integer',
-            'payable_type' => ['required', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE])],
-        ]);
+    // /**
+    //  * Update payable_id and payable_type for a payment
+    //  * Simple update without activity logging or relationship loading
+    //  */
+    // public function updatePayable(Request $request, Payment $payment): JsonResponse
+    // {
+    //     $validated = $request->validate([
+    //         'payable_id' => 'required|integer',
+    //         'payable_type' => ['required', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE])],
+    //     ]);
 
-        $payment->update($validated);
+    //     $payment->update($validated);
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Payment payable updated successfully',
-            'data' => $payment->only(['id', 'payable_id', 'payable_type', 'amount', 'status'])
-        ]);
-    }
+    //     return response()->json([
+    //         'success' => true,
+    //         'message' => 'Payment payable updated successfully',
+    //         'data' => $payment->only(['id', 'payable_id', 'payable_type', 'amount', 'status'])
+    //     ]);
+    // }
 
     public function update(Request $request, Payment $payment): JsonResponse
     {

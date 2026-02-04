@@ -33,7 +33,7 @@ class EmailNotificationService
     {
         try {
             $booking->load(['customer', 'package', 'location', 'room', 'addOns']);
-            
+
             $notifications = EmailNotification::findForBooking($booking, $triggerType);
 
             if ($notifications->isNotEmpty()) {
@@ -153,7 +153,7 @@ class EmailNotificationService
      */
     protected function sendNotification(EmailNotification $notification, $entity, string $type, ?string $overrideRecipient = null): void
     {
-        $recipients = $overrideRecipient 
+        $recipients = $overrideRecipient
             ? [['email' => $overrideRecipient, 'type' => 'custom']]
             : $this->getRecipients($notification, $entity, $type);
 
@@ -565,7 +565,7 @@ class EmailNotificationService
         if ($payable instanceof Booking) {
             $location = $payable->location;
             $company = $location?->company;
-            $customerName = $payable->customer 
+            $customerName = $payable->customer
                 ? trim($payable->customer->first_name . ' ' . $payable->customer->last_name)
                 : ($payable->guest_name ?? 'Guest');
         }
@@ -725,11 +725,11 @@ HTML;
         return <<<HTML
 <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
     <h1 style="color: #333;">Booking Confirmation</h1>
-    
+
     <p>Dear {{customer_name}},</p>
-    
+
     <p>Thank you for your booking! Here are your booking details:</p>
-    
+
     <div style="background: #f9f9f9; padding: 20px; border-radius: 8px; margin: 20px 0;">
         <h3 style="margin-top: 0;">Booking Details</h3>
         <p><strong>Reference:</strong> {{booking_reference}}</p>
@@ -740,25 +740,25 @@ HTML;
         <p><strong>Room:</strong> {{room_name}}</p>
         <p><strong>Total:</strong> {{booking_total}}</p>
     </div>
-    
+
     <div style="background: #f0f8ff; padding: 20px; border-radius: 8px; margin: 20px 0;">
         <h3 style="margin-top: 0;">Location</h3>
         <p><strong>{{location_name}}</strong></p>
         <p>{{location_address}}</p>
         <p>Phone: {{location_phone}}</p>
     </div>
-    
+
     <div style="text-align: center; margin: 30px 0;">
         {{qr_code}}
         <p style="color: #666; font-size: 12px;">Show this QR code at check-in</p>
     </div>
-    
+
     <p>If you have any questions, please contact us at {{location_email}} or {{location_phone}}.</p>
-    
+
     <p>We look forward to seeing you!</p>
-    
+
     <p>Best regards,<br>{{company_name}} Team</p>
-    
+
     <hr style="margin: 30px 0; border: none; border-top: 1px solid #eee;">
     <p style="color: #999; font-size: 12px;">© {{current_year}} {{company_name}}. All rights reserved.</p>
 </div>
@@ -773,11 +773,11 @@ HTML;
         return <<<HTML
 <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
     <h1 style="color: #333;">Purchase Confirmation</h1>
-    
+
     <p>Dear {{customer_name}},</p>
-    
+
     <p>Thank you for your purchase! Here are your purchase details:</p>
-    
+
     <div style="background: #f9f9f9; padding: 20px; border-radius: 8px; margin: 20px 0;">
         <h3 style="margin-top: 0;">Purchase Details</h3>
         <p><strong>Attraction:</strong> {{attraction_name}}</p>
@@ -786,25 +786,25 @@ HTML;
         <p><strong>Total:</strong> {{purchase_total}}</p>
         <p><strong>Date:</strong> {{purchase_date}}</p>
     </div>
-    
+
     <div style="background: #f0f8ff; padding: 20px; border-radius: 8px; margin: 20px 0;">
         <h3 style="margin-top: 0;">Location</h3>
         <p><strong>{{location_name}}</strong></p>
         <p>{{location_address}}</p>
         <p>Phone: {{location_phone}}</p>
     </div>
-    
+
     <div style="text-align: center; margin: 30px 0;">
         {{qr_code}}
         <p style="color: #666; font-size: 12px;">Show this QR code when you arrive</p>
     </div>
-    
+
     <p>If you have any questions, please contact us at {{location_email}} or {{location_phone}}.</p>
-    
+
     <p>Enjoy your experience!</p>
-    
+
     <p>Best regards,<br>{{company_name}} Team</p>
-    
+
     <hr style="margin: 30px 0; border: none; border-top: 1px solid #eee;">
     <p style="color: #999; font-size: 12px;">© {{current_year}} {{company_name}}. All rights reserved.</p>
 </div>

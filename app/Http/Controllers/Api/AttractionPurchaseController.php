@@ -633,7 +633,7 @@ class AttractionPurchaseController extends Controller
         $previousStatus = $attractionPurchase->status;
         $attractionPurchase->update($validated);
 
-        // Note: Automated email notifications for status changes (completed/cancelled) 
+        // Note: Automated email notifications for status changes (completed/cancelled)
         // can be added when those trigger types are supported in email_notifications table
 
         return response()->json([
@@ -658,7 +658,7 @@ class AttractionPurchaseController extends Controller
         $attractionPurchase->update(['status' => 'completed']);
         $attractionPurchase->load(['attraction', 'customer', 'createdBy']);
 
-        // Note: Automated email notifications for completion can be added 
+        // Note: Automated email notifications for completion can be added
         // when 'purchase_completed' trigger type is supported
 
         return response()->json([
@@ -683,7 +683,7 @@ class AttractionPurchaseController extends Controller
         $attractionPurchase->update(['status' => 'cancelled']);
         $attractionPurchase->load(['attraction', 'customer', 'createdBy']);
 
-        // Note: Automated email notifications for cancellation can be added 
+        // Note: Automated email notifications for cancellation can be added
         // when 'purchase_cancelled' trigger type is supported
 
         return response()->json([

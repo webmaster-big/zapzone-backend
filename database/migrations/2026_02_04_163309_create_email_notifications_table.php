@@ -17,11 +17,11 @@ return new class extends Migration
                 $table->foreignId('company_id')->constrained()->onDelete('cascade');
                 $table->foreignId('location_id')->nullable()->constrained()->onDelete('cascade');
                 $table->string('name'); // Friendly name for the notification
-                
+
                 // Trigger type - stored as string to allow flexibility for future additions
                 // See EmailNotification::TRIGGER_TYPES for full list
                 $table->string('trigger_type')->default('booking_created');
-                
+
                 $table->enum('entity_type', ['package', 'attraction', 'all'])->default('all'); // What entity type this applies to
                 $table->json('entity_ids')->nullable(); // Array of package_ids or attraction_ids (null = all)
                 $table->foreignId('email_template_id')->nullable()->constrained()->onDelete('set null');
@@ -31,11 +31,11 @@ return new class extends Migration
                 $table->json('custom_emails')->nullable(); // Custom email addresses
                 $table->boolean('include_qr_code')->default(true); // Whether to include QR code in email
                 $table->boolean('is_active')->default(true);
-                
+
                 // Timing settings for reminder-type notifications
                 $table->integer('send_before_hours')->nullable(); // For reminders: how many hours before
                 $table->integer('send_after_hours')->nullable(); // For follow-ups: how many hours after
-                
+
                 $table->timestamps();
 
                 // Indexes

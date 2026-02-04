@@ -14,7 +14,7 @@ class EmailNotification extends Model
     // ============================================
     // TRIGGER TYPES
     // ============================================
-    
+
     // Booking Triggers
     const TRIGGER_BOOKING_CREATED = 'booking_created';
     const TRIGGER_BOOKING_CONFIRMED = 'booking_confirmed';
@@ -26,14 +26,14 @@ class EmailNotification extends Model
     const TRIGGER_BOOKING_REMINDER = 'booking_reminder'; // Uses send_before_hours
     const TRIGGER_BOOKING_FOLLOWUP = 'booking_followup'; // Uses send_after_hours
     const TRIGGER_BOOKING_NO_SHOW = 'booking_no_show';
-    
+
     // Payment Triggers (for bookings)
     const TRIGGER_PAYMENT_RECEIVED = 'payment_received';
     const TRIGGER_PAYMENT_FAILED = 'payment_failed';
     const TRIGGER_PAYMENT_REFUNDED = 'payment_refunded';
     const TRIGGER_PAYMENT_PARTIAL = 'payment_partial';
     const TRIGGER_PAYMENT_PENDING = 'payment_pending';
-    
+
     // Attraction Purchase Triggers
     const TRIGGER_PURCHASE_CREATED = 'purchase_created';
     const TRIGGER_PURCHASE_CONFIRMED = 'purchase_confirmed';
@@ -146,7 +146,7 @@ class EmailNotification extends Model
     public function appliesToEntity(?int $entityId): bool
     {
         $entityIds = $this->entity_ids ?? [];
-        
+
         // If entity_ids is empty or null, applies to all
         if (empty($entityIds)) {
             return true;
@@ -234,7 +234,7 @@ class EmailNotification extends Model
     public static function findForPayment($payment, string $triggerType): \Illuminate\Support\Collection
     {
         $locationId = null;
-        
+
         // Get location from payable entity
         if ($payment->payable_type === 'App\\Models\\Booking') {
             $locationId = $payment->payable?->location_id;

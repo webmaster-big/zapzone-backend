@@ -367,7 +367,7 @@ class EmailNotificationController extends Controller
 
         // Determine which variable set based on trigger type category
         $category = EmailNotification::getTriggerCategory($triggerType);
-        
+
         $typeMapping = [
             'booking' => 'booking',
             'payment' => 'payment',
@@ -699,7 +699,7 @@ class EmailNotificationController extends Controller
         }
 
         // Determine if this is a booking or purchase trigger
-        $isBookingTrigger = str_starts_with($notification->trigger_type, 'booking_') || 
+        $isBookingTrigger = str_starts_with($notification->trigger_type, 'booking_') ||
                            str_starts_with($notification->trigger_type, 'payment_');
 
         if ($isBookingTrigger) {
