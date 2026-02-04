@@ -680,7 +680,7 @@ class PaymentController extends Controller
                         'location_id' => $request->location_id,
                         'amount' => $request->amount,
                         'currency' => 'USD',
-                        'method' => 'Authorize.net',
+                        'method' => 'authorize.net',
                         'status' => 'completed',
                         'transaction_id' => $transactionId,
                         'payment_id' => $transactionId,

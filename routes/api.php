@@ -15,6 +15,7 @@ use App\Http\Controllers\Api\CustomerController;
 use App\Http\Controllers\Api\CustomerNotificationController;
 use App\Http\Controllers\Api\DayOffController;
 use App\Http\Controllers\Api\EmailCampaignController;
+use App\Http\Controllers\Api\EmailNotificationController;
 use App\Http\Controllers\Api\EmailTemplateController;
 use App\Http\Controllers\Api\GiftCardController;
 use App\Http\Controllers\Api\GlobalNoteController;
@@ -427,6 +428,25 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('/{contact}', [ContactController::class, 'destroy']);
         Route::post('/{contact}/add-tag', [ContactController::class, 'addTag']);
         Route::post('/{contact}/remove-tag', [ContactController::class, 'removeTag']);
+    });
+
+    // Email Notification routes (automated notifications for bookings/purchases)
+    Route::prefix('email-notifications')->group(function () {
+        Route::get('/', [EmailNotificationController::class, 'index']);
+        Route::post('/', [EmailNotificationController::class, 'store']);
+        Route::get('/variables', [EmailNotificationController::class, 'getVariables']);
+        Route::get('/entities', [EmailNotificationController::class, 'getEntities']);
+        Route::get('/trigger-types', [EmailNotificationController::class, 'getTriggerTypes']);
+        Route::get('/entity-types', [EmailNotificationController::class, 'getEntityTypes']);
+        Route::get('/recipient-types', [EmailNotificationController::class, 'getRecipientTypes']);
+        Route::get('/{emailNotification}', [EmailNotificationController::class, 'show']);
+        Route::put('/{emailNotification}', [EmailNotificationController::class, 'update']);
+        Route::delete('/{emailNotification}', [EmailNotificationController::class, 'destroy']);
+        Route::patch('/{emailNotification}/toggle-status', [EmailNotificationController::class, 'toggleStatus']);
+        Route::post('/{emailNotification}/duplicate', [EmailNotificationController::class, 'duplicate']);
+        Route::post('/{emailNotification}/send-test', [EmailNotificationController::class, 'sendTest']);
+        Route::get('/{emailNotification}/logs', [EmailNotificationController::class, 'getLogs']);
+        Route::post('/{emailNotification}/logs/{logId}/resend', [EmailNotificationController::class, 'resendLog']);
     });
 });
 

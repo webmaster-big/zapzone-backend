@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Mail\BookingConfirmation;
 use App\Mail\BookingReminder;
 use App\Mail\StaffBookingNotification;
+use App\Services\EmailNotificationService;
 use App\Services\GmailApiService;
 use App\Models\ActivityLog;
 use App\Models\Booking;
@@ -564,6 +565,17 @@ class BookingController extends Controller
             ]);
         }
 
+        // Process automated email notifications (based on email_notifications table)
+        try {
+            $emailNotificationService = new EmailNotificationService();
+            $emailNotificationService->processBookingCreated($booking);
+        } catch (\Exception $e) {
+            // Log error but don't fail the booking creation
+            Log::warning('Failed to process automated email notifications for booking', [
+                'booking_id' => $booking->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
 
         return response()->json([
             'success' => true,

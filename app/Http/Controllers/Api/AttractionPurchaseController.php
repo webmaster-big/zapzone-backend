@@ -7,6 +7,7 @@ use App\Models\AttractionPurchase;
 use App\Models\Attraction;
 use App\Mail\AttractionPurchaseReceipt;
 use App\Services\GmailApiService;
+use App\Services\EmailNotificationService;
 use App\Models\ActivityLog;
 use App\Models\Contact;
 use App\Models\CustomerNotification;
@@ -295,6 +296,17 @@ class AttractionPurchaseController extends Controller
         } catch (\Exception $e) {
             // Log but don't fail the purchase if contact creation fails
             Log::warning('Failed to create contact from attraction purchase', [
+                'purchase_id' => $purchase->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        // Send automated email notifications based on configured notification rules
+        try {
+            $emailNotificationService = new EmailNotificationService();
+            $emailNotificationService->processPurchaseCreated($purchase);
+        } catch (\Exception $e) {
+            Log::warning('Failed to send automated email notifications for attraction purchase', [
                 'purchase_id' => $purchase->id,
                 'error' => $e->getMessage(),
             ]);
@@ -618,7 +630,11 @@ class AttractionPurchaseController extends Controller
             'payment_method' => ['nullable', Rule::in(['card', 'in-store', 'paylater', 'authorize.net'])],
         ]);
 
+        $previousStatus = $attractionPurchase->status;
         $attractionPurchase->update($validated);
+
+        // Note: Automated email notifications for status changes (completed/cancelled) 
+        // can be added when those trigger types are supported in email_notifications table
 
         return response()->json([
             'success' => true,
@@ -642,6 +658,9 @@ class AttractionPurchaseController extends Controller
         $attractionPurchase->update(['status' => 'completed']);
         $attractionPurchase->load(['attraction', 'customer', 'createdBy']);
 
+        // Note: Automated email notifications for completion can be added 
+        // when 'purchase_completed' trigger type is supported
+
         return response()->json([
             'success' => true,
             'message' => 'Purchase marked as completed',
@@ -663,6 +682,9 @@ class AttractionPurchaseController extends Controller
 
         $attractionPurchase->update(['status' => 'cancelled']);
         $attractionPurchase->load(['attraction', 'customer', 'createdBy']);
+
+        // Note: Automated email notifications for cancellation can be added 
+        // when 'purchase_cancelled' trigger type is supported
 
         return response()->json([
             'success' => true,
