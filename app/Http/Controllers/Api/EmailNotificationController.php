@@ -73,22 +73,28 @@ class EmailNotificationController extends Controller
      */
     public function store(Request $request): JsonResponse
     {
+        $allTriggerTypes = array_keys(EmailNotification::getAllTriggerTypes());
+        $allEntityTypes = array_keys(EmailNotification::getEntityTypes());
+        $allRecipientTypes = array_keys(EmailNotification::getRecipientTypes());
+
         $validated = $request->validate([
             'name' => 'required|string|max:255',
-            'trigger_type' => ['required', Rule::in(['booking_created', 'purchase_created'])],
-            'entity_type' => ['required', Rule::in(['package', 'attraction'])],
+            'trigger_type' => ['required', Rule::in($allTriggerTypes)],
+            'entity_type' => ['required', Rule::in($allEntityTypes)],
             'entity_ids' => 'nullable|array',
             'entity_ids.*' => 'integer',
             'email_template_id' => 'nullable|exists:email_templates,id',
             'subject' => 'required_without:email_template_id|nullable|string|max:255',
             'body' => 'required_without:email_template_id|nullable|string',
             'recipient_types' => 'required|array|min:1',
-            'recipient_types.*' => [Rule::in(['customer', 'staff', 'company_admin', 'location_manager', 'custom'])],
+            'recipient_types.*' => [Rule::in($allRecipientTypes)],
             'custom_emails' => 'nullable|array',
             'custom_emails.*' => 'email',
             'include_qr_code' => 'boolean',
             'is_active' => 'boolean',
             'location_id' => 'nullable|exists:locations,id',
+            'send_before_hours' => 'nullable|integer|min:1',
+            'send_after_hours' => 'nullable|integer|min:1',
         ]);
 
         $user = Auth::user();
@@ -110,6 +116,8 @@ class EmailNotificationController extends Controller
                 'custom_emails' => $validated['custom_emails'] ?? [],
                 'include_qr_code' => $validated['include_qr_code'] ?? true,
                 'is_active' => $validated['is_active'] ?? true,
+                'send_before_hours' => $validated['send_before_hours'] ?? null,
+                'send_after_hours' => $validated['send_after_hours'] ?? null,
             ]);
 
             DB::commit();
@@ -184,22 +192,28 @@ class EmailNotificationController extends Controller
             ], 404);
         }
 
+        $allTriggerTypes = array_keys(EmailNotification::getAllTriggerTypes());
+        $allEntityTypes = array_keys(EmailNotification::getEntityTypes());
+        $allRecipientTypes = array_keys(EmailNotification::getRecipientTypes());
+
         $validated = $request->validate([
             'name' => 'sometimes|required|string|max:255',
-            'trigger_type' => ['sometimes', 'required', Rule::in(['booking_created', 'purchase_created'])],
-            'entity_type' => ['sometimes', 'required', Rule::in(['package', 'attraction'])],
+            'trigger_type' => ['sometimes', 'required', Rule::in($allTriggerTypes)],
+            'entity_type' => ['sometimes', 'required', Rule::in($allEntityTypes)],
             'entity_ids' => 'nullable|array',
             'entity_ids.*' => 'integer',
             'email_template_id' => 'nullable|exists:email_templates,id',
             'subject' => 'nullable|string|max:255',
             'body' => 'nullable|string',
             'recipient_types' => 'sometimes|required|array|min:1',
-            'recipient_types.*' => [Rule::in(['customer', 'staff', 'company_admin', 'location_manager', 'custom'])],
+            'recipient_types.*' => [Rule::in($allRecipientTypes)],
             'custom_emails' => 'nullable|array',
             'custom_emails.*' => 'email',
             'include_qr_code' => 'boolean',
             'is_active' => 'boolean',
             'location_id' => 'nullable|exists:locations,id',
+            'send_before_hours' => 'nullable|integer|min:1',
+            'send_after_hours' => 'nullable|integer|min:1',
         ]);
 
         try {
