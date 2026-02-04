@@ -92,13 +92,13 @@ class MetricsController extends Controller
 
         // Apply date range filter
         if ($dateFrom) {
-            $bookingQuery->where('booking_date', '>=', $dateFrom);
-            $purchaseQuery->where('purchase_date', '>=', $dateFrom);
+            $bookingQuery->whereDate('created_at', '>=', $dateFrom);
+            $purchaseQuery->whereDate('created_at', '>=', $dateFrom);
         }
 
         if ($dateTo) {
-            $bookingQuery->where('booking_date', '<=', $dateTo);
-            $purchaseQuery->where('purchase_date', '<=', $dateTo);
+            $bookingQuery->whereDate('created_at', '<=', $dateTo);
+            $purchaseQuery->whereDate('created_at', '<=', $dateTo);
         }
 
         // Calculate booking metrics
@@ -159,10 +159,10 @@ class MetricsController extends Controller
                     $q->where('location_id', $locationId);
                 }
                 if ($dateFrom) {
-                    $q->where('booking_date', '>=', $dateFrom);
+                    $q->whereDate('created_at', '>=', $dateFrom);
                 }
                 if ($dateTo) {
-                    $q->where('booking_date', '<=', $dateTo);
+                    $q->whereDate('created_at', '<=', $dateTo);
                 }
             })->orWhereHas('attractionPurchases', function ($q) use ($locationId, $dateFrom, $dateTo) {
                 if ($locationId) {
@@ -171,10 +171,10 @@ class MetricsController extends Controller
                     });
                 }
                 if ($dateFrom) {
-                    $q->where('purchase_date', '>=', $dateFrom);
+                    $q->whereDate('created_at', '>=', $dateFrom);
                 }
                 if ($dateTo) {
-                    $q->where('purchase_date', '<=', $dateTo);
+                    $q->whereDate('created_at', '<=', $dateTo);
                 }
             });
         }
@@ -190,10 +190,10 @@ class MetricsController extends Controller
             });
         }
         if ($dateFrom) {
-            $recentPurchasesQuery->where('purchase_date', '>=', $dateFrom);
+            $recentPurchasesQuery->whereDate('created_at', '>=', $dateFrom);
         }
         if ($dateTo) {
-            $recentPurchasesQuery->where('purchase_date', '<=', $dateTo);
+            $recentPurchasesQuery->whereDate('created_at', '<=', $dateTo);
         }
 
         $recentPurchases = $recentPurchasesQuery
@@ -383,13 +383,13 @@ class MetricsController extends Controller
 
         // Apply date range filter
         if ($dateFrom) {
-            $bookingQuery->where('booking_date', '>=', $dateFrom);
-            $purchaseQuery->where('purchase_date', '>=', $dateFrom);
+            $bookingQuery->whereDate('created_at', '>=', $dateFrom);
+            $purchaseQuery->whereDate('created_at', '>=', $dateFrom);
         }
 
         if ($dateTo) {
-            $bookingQuery->where('booking_date', '<=', $dateTo);
-            $purchaseQuery->where('purchase_date', '<=', $dateTo);
+            $bookingQuery->whereDate('created_at', '<=', $dateTo);
+            $purchaseQuery->whereDate('created_at', '<=', $dateTo);
         }
 
         // Calculate booking metrics
@@ -434,10 +434,10 @@ class MetricsController extends Controller
                     $q->where('location_id', $locationId);
                 }
                 if ($dateFrom) {
-                    $q->where('booking_date', '>=', $dateFrom);
+                    $q->whereDate('created_at', '>=', $dateFrom);
                 }
                 if ($dateTo) {
-                    $q->where('booking_date', '<=', $dateTo);
+                    $q->whereDate('created_at', '<=', $dateTo);
                 }
             })->orWhereHas('attractionPurchases', function ($q) use ($locationId, $dateFrom, $dateTo) {
                 if ($locationId) {
@@ -446,10 +446,10 @@ class MetricsController extends Controller
                     });
                 }
                 if ($dateFrom) {
-                    $q->where('purchase_date', '>=', $dateFrom);
+                    $q->whereDate('created_at', '>=', $dateFrom);
                 }
                 if ($dateTo) {
-                    $q->where('purchase_date', '<=', $dateTo);
+                    $q->whereDate('created_at', '<=', $dateTo);
                 }
             });
         }
@@ -470,10 +470,10 @@ class MetricsController extends Controller
             });
         }
         if ($dateFrom) {
-            $recentPurchasesQuery->where('purchase_date', '>=', $dateFrom);
+            $recentPurchasesQuery->whereDate('created_at', '>=', $dateFrom);
         }
         if ($dateTo) {
-            $recentPurchasesQuery->where('purchase_date', '<=', $dateTo);
+            $recentPurchasesQuery->whereDate('created_at', '<=', $dateTo);
         }
 
         $recentPurchases = $recentPurchasesQuery
@@ -506,10 +506,10 @@ class MetricsController extends Controller
             $recentBookingsQuery->where('location_id', $locationId);
         }
         if ($dateFrom) {
-            $recentBookingsQuery->where('booking_date', '>=', $dateFrom);
+            $recentBookingsQuery->whereDate('created_at', '>=', $dateFrom);
         }
         if ($dateTo) {
-            $recentBookingsQuery->where('booking_date', '<=', $dateTo);
+            $recentBookingsQuery->whereDate('created_at', '<=', $dateTo);
         }
 
         $recentBookings = $recentBookingsQuery
@@ -637,10 +637,10 @@ class MetricsController extends Controller
             // Booking stats for this location
             $locationBookingQuery = Booking::where('location_id', $location->id);
             if ($dateFrom) {
-                $locationBookingQuery->where('booking_date', '>=', $dateFrom);
+                $locationBookingQuery->whereDate('created_at', '>=', $dateFrom);
             }
             if ($dateTo) {
-                $locationBookingQuery->where('booking_date', '<=', $dateTo);
+                $locationBookingQuery->whereDate('created_at', '<=', $dateTo);
             }
 
             $locationBookings = $locationBookingQuery->count();
@@ -654,10 +654,10 @@ class MetricsController extends Controller
                 $q->where('location_id', $location->id);
             });
             if ($dateFrom) {
-                $locationPurchaseQuery->where('purchase_date', '>=', $dateFrom);
+                $locationPurchaseQuery->whereDate('created_at', '>=', $dateFrom);
             }
             if ($dateTo) {
-                $locationPurchaseQuery->where('purchase_date', '<=', $dateTo);
+                $locationPurchaseQuery->whereDate('created_at', '<=', $dateTo);
             }
 
             $locationPurchases = $locationPurchaseQuery->count();
