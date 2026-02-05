@@ -18,8 +18,11 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Carbon\Carbon;
+use App\Mail\BookingCancellation;
+use App\Mail\AttractionPurchaseCancellation;
 use net\authorize\api\contract\v1 as AnetAPI;
 use net\authorize\api\controller as AnetController;
 use net\authorize\api\constants\ANetEnvironment;
@@ -92,8 +95,8 @@ class PaymentController extends Controller
             'customer_id' => 'nullable|exists:customers,id',
             'amount' => 'required|numeric|min:0.01',
             'currency' => 'string|size:3',
-            'method' => ['required', Rule::in(['card', 'cash', 'authorize.net'])],
-            'status' => ['sometimes', Rule::in(['pending', 'completed', 'failed', 'refunded'])],
+            'method' => ['required', Rule::in(['card', 'cash', 'authorize.net', 'in-store'])],
+            'status' => ['sometimes', Rule::in(['pending', 'completed', 'failed', 'refunded', 'voided'])],
             'notes' => 'nullable|string',
             'payment_id' => 'nullable|string|unique:payments,payment_id',
             'location_id' => 'nullable|exists:locations,id',
@@ -244,197 +247,674 @@ class PaymentController extends Controller
     //     ]);
     // }
 
-    public function update(Request $request, Payment $payment): JsonResponse
+    /**
+     * Refund a payment via Authorize.Net
+     * Allows specifying a partial or full refund amount
+     * Requires the original transaction to be settled (usually 24-48 hours after capture)
+     */
+    public function refund(Request $request, Payment $payment): JsonResponse
     {
         $validated = $request->validate([
-            'status' => ['sometimes', Rule::in(['pending', 'completed', 'failed', 'refunded'])],
+            'amount' => 'sometimes|numeric|min:0.01',
             'notes' => 'sometimes|nullable|string',
+            'cancel' => 'sometimes|boolean',
         ]);
 
-        $previousStatus = $payment->status;
-
-        if (isset($validated['status'])) {
-            if ($validated['status'] === 'completed' && $payment->status !== 'completed') {
-                $validated['paid_at'] = now();
-            } elseif ($validated['status'] === 'refunded' && $payment->status !== 'refunded') {
-                $validated['refunded_at'] = now();
-            }
-        }
-
-        $payment->update($validated);
-
-        // Create notifications if status changed to completed
-        if (isset($validated['status']) && $validated['status'] === 'completed' && $previousStatus !== 'completed') {
-            // Customer notification
-            if ($payment->customer_id) {
-                CustomerNotification::create([
-                    'customer_id' => $payment->customer_id,
-                    'location_id' => $payment->location_id,
-                    'type' => 'payment',
-                    'priority' => 'medium',
-                    'title' => 'Payment Confirmed',
-                    'message' => "Your payment of $" . number_format($payment->amount, 2) . " has been confirmed.",
-                    'status' => 'unread',
-                    'action_url' => "/payments/{$payment->id}",
-                    'action_text' => 'View Payment',
-                    'metadata' => [
-                        'payment_id' => $payment->id,
-                        'transaction_id' => $payment->transaction_id,
-                        'amount' => $payment->amount,
-                    ],
-                ]);
-            }
-
-            // Location notification
-            if ($payment->location_id) {
-                Notification::create([
-                    'location_id' => $payment->location_id,
-                    'type' => 'payment',
-                    'priority' => 'medium',
-                    'user_id' => auth()->id(),
-                    'title' => 'Payment Confirmed',
-                    'message' => "Payment of $" . number_format($payment->amount, 2) . " has been marked as completed.",
-                    'status' => 'unread',
-                    'action_url' => "/payments/{$payment->id}",
-                    'action_text' => 'View Payment',
-                    'metadata' => [
-                        'payment_id' => $payment->id,
-                        'transaction_id' => $payment->transaction_id,
-                        'amount' => $payment->amount,
-                        'customer_id' => $payment->customer_id,
-                    ],
-                ]);
-            }
-        }
-
-        // Log payment update activity if status changed
-        if (isset($validated['status'])) {
-            $customerName = $payment->customer
-                ? "{$payment->customer->first_name} {$payment->customer->last_name}"
-                : 'Guest';
-
-            ActivityLog::log(
-                action: 'Payment Status Changed',
-                category: 'update',
-                description: "Payment {$payment->transaction_id} status changed from '{$previousStatus}' to '{$validated['status']}'",
-                userId: auth()->id(),
-                locationId: $payment->location_id,
-                entityType: 'payment',
-                entityId: $payment->id,
-                metadata: [
-                    'transaction_id' => $payment->transaction_id,
-                    'changed_by' => auth()->user() ? auth()->user()->name ?? auth()->user()->email : 'System',
-                    'changed_at' => now()->toIso8601String(),
-                    'status_change' => [
-                        'from' => $previousStatus,
-                        'to' => $validated['status'],
-                    ],
-                    'payment_details' => [
-                        'amount' => $payment->amount,
-                        'method' => $payment->method,
-                    ],
-                    'customer' => [
-                        'id' => $payment->customer_id,
-                        'name' => $customerName,
-                    ],
-                    'payable' => [
-                        'type' => $payment->payable_type,
-                        'id' => $payment->payable_id,
-                    ],
-                    'notes' => $validated['notes'] ?? $payment->notes,
-                ]
-            );
-        }
-
-        return response()->json(['success' => true, 'message' => 'Payment updated successfully', 'data' => $payment]);
-    }
-
-    public function refund(Payment $payment): JsonResponse
-    {
         if ($payment->status !== 'completed') {
             return response()->json(['success' => false, 'message' => 'Only completed payments can be refunded'], 400);
         }
 
-        $payment->update(['status' => 'refunded', 'refunded_at' => now()]);
-
-        // Create notification for customer
-        if ($payment->customer_id) {
-            CustomerNotification::create([
-                'customer_id' => $payment->customer_id,
-                'location_id' => $payment->location_id,
-                'type' => 'payment',
-                'priority' => 'high',
-                'title' => 'Payment Refunded',
-                'message' => "Your payment of $" . number_format($payment->amount, 2) . " has been refunded.",
-                'status' => 'unread',
-                'action_url' => "/payments/{$payment->id}",
-                'action_text' => 'View Payment',
-                'metadata' => [
-                    'payment_id' => $payment->id,
-                    'transaction_id' => $payment->transaction_id,
-                    'amount' => $payment->amount,
-                    'refunded_at' => now()->toDateTimeString(),
-                ],
-            ]);
+        if ($payment->method !== 'authorize.net') {
+            return response()->json(['success' => false, 'message' => 'Only Authorize.Net payments can be refunded through this endpoint'], 400);
         }
 
-        // Create notification for location staff
-        if ($payment->location_id) {
-            Notification::create([
-                'location_id' => $payment->location_id,
-                'type' => 'payment',
-                'priority' => 'high',
-                'user_id' => auth()->id(),
-                'title' => 'Payment Refunded',
-                'message' => "Payment of $" . number_format($payment->amount, 2) . " has been refunded. Transaction: {$payment->transaction_id}",
-                'status' => 'unread',
-                'action_url' => "/payments/{$payment->id}",
-                'action_text' => 'View Payment',
-                'metadata' => [
-                    'payment_id' => $payment->id,
-                    'transaction_id' => $payment->transaction_id,
-                    'amount' => $payment->amount,
-                    'customer_id' => $payment->customer_id,
-                    'refunded_at' => now()->toDateTimeString(),
+        $refundAmount = $validated['amount'] ?? $payment->amount;
+
+        // Calculate total already refunded for this original payment
+        $totalAlreadyRefunded = Payment::where('status', 'refunded')
+            ->where('notes', 'like', '%Refund from Payment #' . $payment->id . ' %')
+            ->sum('amount');
+
+        $maxRefundable = round($payment->amount - $totalAlreadyRefunded, 2);
+
+        if ($refundAmount > $maxRefundable) {
+            return response()->json([
+                'success' => false,
+                'message' => $maxRefundable <= 0
+                    ? 'This payment has already been fully refunded'
+                    : 'Refund amount cannot exceed the remaining refundable balance of $' . number_format($maxRefundable, 2),
+                'data' => [
+                    'original_amount' => (float) $payment->amount,
+                    'total_already_refunded' => $totalAlreadyRefunded,
+                    'max_refundable' => $maxRefundable,
                 ],
-            ]);
+            ], 400);
         }
 
-        // Log payment refund activity with detailed metadata
-        $customerName = $payment->customer
-            ? "{$payment->customer->first_name} {$payment->customer->last_name}"
-            : 'Guest';
+        try {
+            // 1. Get Authorize.Net account for the location
+            $account = AuthorizeNetAccount::where('location_id', $payment->location_id)
+                ->where('is_active', true)
+                ->first();
 
-        ActivityLog::log(
-            action: 'Payment Refunded',
-            category: 'update',
-            description: "Payment of $" . number_format($payment->amount, 2) . " refunded for {$customerName}",
-            userId: auth()->id(),
-            locationId: $payment->location_id,
-            entityType: 'payment',
-            entityId: $payment->id,
-            metadata: [
+            if (!$account) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No active Authorize.Net account found for this location',
+                ], 503);
+            }
+
+            // 2. Get decrypted credentials
+            $apiLoginId = trim($account->api_login_id);
+            $transactionKey = trim($account->transaction_key);
+            $environment = $account->isProduction() ? ANetEnvironment::PRODUCTION : ANetEnvironment::SANDBOX;
+
+            // 3. Build merchant authentication
+            $merchantAuthentication = new AnetAPI\MerchantAuthenticationType();
+            $merchantAuthentication->setName($apiLoginId);
+            $merchantAuthentication->setTransactionKey($transactionKey);
+
+            // 4. Create credit card payment type (last 4 digits required for refund)
+            // For refunds, Authorize.Net requires a payment reference
+            $creditCard = new AnetAPI\CreditCardType();
+            $creditCard->setCardNumber('XXXX' . substr($payment->payment_id ?? $payment->transaction_id, -4));
+            $creditCard->setExpirationDate('XXXX');
+
+            $paymentType = new AnetAPI\PaymentType();
+            $paymentType->setCreditCard($creditCard);
+
+            // 5. Create refund transaction request
+            $transactionRequestType = new AnetAPI\TransactionRequestType();
+            $transactionRequestType->setTransactionType('refundTransaction');
+            $transactionRequestType->setAmount($refundAmount);
+            $transactionRequestType->setPayment($paymentType);
+            $transactionRequestType->setRefTransId($payment->transaction_id);
+
+            // 6. Create and execute the request
+            $apiRequest = new AnetAPI\CreateTransactionRequest();
+            $apiRequest->setMerchantAuthentication($merchantAuthentication);
+            $apiRequest->setTransactionRequest($transactionRequestType);
+
+            $controller = new AnetController\CreateTransactionController($apiRequest);
+            $response = $controller->executeWithApiResponse($environment);
+
+            // 7. Process response
+            if ($response != null && $response->getMessages()->getResultCode() == 'Ok') {
+                $tresponse = $response->getTransactionResponse();
+
+                if ($tresponse != null && $tresponse->getMessages() != null) {
+                    $refundTransactionId = $tresponse->getTransId();
+                    $isFullRefund = ($refundAmount + $totalAlreadyRefunded) >= $payment->amount;
+
+                    // Create a NEW refund payment record (preserves the original payment as-is)
+                    $refundPayment = Payment::create([
+                        'payable_id' => $payment->payable_id,
+                        'payable_type' => $payment->payable_type,
+                        'customer_id' => $payment->customer_id,
+                        'transaction_id' => $refundTransactionId,
+                        'amount' => $refundAmount,
+                        'currency' => $payment->currency ?? 'USD',
+                        'method' => 'authorize.net',
+                        'status' => 'refunded',
+                        'notes' => "Refund from Payment #{$payment->id} "
+                            . ($validated['notes'] ?? '' ? " — {$validated['notes']}" : ''),
+                        'refunded_at' => now(),
+                        'payment_id' => $refundTransactionId,
+                        'location_id' => $payment->location_id,
+                    ]);
+
+                    // Append a reference note to the original payment (do NOT change its status)
+                    $payment->update([
+                        'notes' => trim(($payment->notes ?? '') . "\nRefund of $" . number_format($refundAmount, 2) . " issued → Refund Payment #{$refundPayment->id} (TXN: {$refundTransactionId})"),
+                    ]);
+
+                    Log::info('💰 Authorize.Net refund successful', [
+                        'original_payment_id' => $payment->id,
+                        'original_transaction_id' => $payment->transaction_id,
+                        'refund_payment_id' => $refundPayment->id,
+                        'refund_transaction_id' => $refundTransactionId,
+                        'refund_amount' => $refundAmount,
+                        'original_amount' => $payment->amount,
+                        'total_refunded' => $totalAlreadyRefunded + $refundAmount,
+                        'is_full_refund' => $isFullRefund,
+                        'location_id' => $payment->location_id,
+                    ]);
+
+                    // Create notification for customer
+                    if ($payment->customer_id) {
+                        CustomerNotification::create([
+                            'customer_id' => $payment->customer_id,
+                            'location_id' => $payment->location_id,
+                            'type' => 'payment',
+                            'priority' => 'high',
+                            'title' => $isFullRefund ? 'Payment Refunded' : 'Partial Refund Processed',
+                            'message' => "A refund of $" . number_format($refundAmount, 2) . " has been processed for your payment.",
+                            'status' => 'unread',
+                            'action_url' => "/payments/{$refundPayment->id}",
+                            'action_text' => 'View Refund',
+                            'metadata' => [
+                                'original_payment_id' => $payment->id,
+                                'refund_payment_id' => $refundPayment->id,
+                                'transaction_id' => $payment->transaction_id,
+                                'refund_transaction_id' => $refundTransactionId,
+                                'refund_amount' => $refundAmount,
+                                'original_amount' => $payment->amount,
+                                'is_full_refund' => $isFullRefund,
+                                'refunded_at' => now()->toDateTimeString(),
+                            ],
+                        ]);
+                    }
+
+                    // Create notification for location staff
+                    if ($payment->location_id) {
+                        Notification::create([
+                            'location_id' => $payment->location_id,
+                            'type' => 'payment',
+                            'priority' => 'high',
+                            'user_id' => auth()->id(),
+                            'title' => $isFullRefund ? 'Payment Refunded' : 'Partial Refund Processed',
+                            'message' => "Refund of $" . number_format($refundAmount, 2) . " for Payment #{$payment->id} (TXN: {$payment->transaction_id}). Refund Payment #{$refundPayment->id}",
+                            'status' => 'unread',
+                            'action_url' => "/payments/{$refundPayment->id}",
+                            'action_text' => 'View Refund',
+                            'metadata' => [
+                                'original_payment_id' => $payment->id,
+                                'refund_payment_id' => $refundPayment->id,
+                                'transaction_id' => $payment->transaction_id,
+                                'refund_transaction_id' => $refundTransactionId,
+                                'refund_amount' => $refundAmount,
+                                'original_amount' => $payment->amount,
+                                'customer_id' => $payment->customer_id,
+                                'is_full_refund' => $isFullRefund,
+                                'refunded_at' => now()->toDateTimeString(),
+                            ],
+                        ]);
+                    }
+
+                    // Log activity
+                    $customerName = $payment->customer
+                        ? "{$payment->customer->first_name} {$payment->customer->last_name}"
+                        : 'Guest';
+
+                    ActivityLog::log(
+                        action: $isFullRefund ? 'Payment Refunded' : 'Payment Partially Refunded',
+                        category: 'create',
+                        description: "Refund of $" . number_format($refundAmount, 2) . " processed via Authorize.Net for {$customerName}. Refund Payment #{$refundPayment->id}",
+                        userId: auth()->id(),
+                        locationId: $payment->location_id,
+                        entityType: 'payment',
+                        entityId: $refundPayment->id,
+                        metadata: [
+                            'original_payment_id' => $payment->id,
+                            'refund_payment_id' => $refundPayment->id,
+                            'transaction_id' => $payment->transaction_id,
+                            'refund_transaction_id' => $refundTransactionId,
+                            'refunded_by' => auth()->user() ? auth()->user()->name ?? auth()->user()->email : 'System',
+                            'refunded_at' => now()->toIso8601String(),
+                            'payment_details' => [
+                                'original_amount' => $payment->amount,
+                                'refund_amount' => $refundAmount,
+                                'total_refunded' => $totalAlreadyRefunded + $refundAmount,
+                                'remaining_balance' => $maxRefundable - $refundAmount,
+                                'is_full_refund' => $isFullRefund,
+                                'method' => $payment->method,
+                            ],
+                            'customer' => [
+                                'id' => $payment->customer_id,
+                                'name' => $customerName,
+                            ],
+                            'payable' => [
+                                'type' => $payment->payable_type,
+                                'id' => $payment->payable_id,
+                            ],
+                            'notes' => $validated['notes'] ?? null,
+                        ]
+                    );
+
+                    // Update the related booking or attraction purchase
+                    $isCancelled = $validated['cancel'] ?? $isFullRefund;
+                    $payable = null;
+
+                    if ($payment->payable_type === Payment::TYPE_BOOKING && $payment->payable_id) {
+                        $payable = Booking::find($payment->payable_id);
+                        if ($payable) {
+                            if ($isCancelled) {
+                                $payable->update([
+                                    'status' => 'cancelled',
+                                    'payment_status' => 'refunded',
+                                    'cancelled_at' => now(),
+                                    'amount_paid' => max(0, $payable->amount_paid - $refundAmount),
+                                ]);
+                            } else {
+                                $payable->update([
+                                    'amount_paid' => max(0, $payable->amount_paid - $refundAmount),
+                                    'payment_status' => ($payable->amount_paid - $refundAmount) <= 0 ? 'refunded' : 'partial',
+                                ]);
+                            }
+
+                            // Send cancellation email
+                            if ($isCancelled) {
+                                $email = $payable->customer_email;
+                                if ($email) {
+                                    try {
+                                        Mail::to($email)->send(new BookingCancellation($payable, $refundPayment, $refundAmount, 'refund'));
+                                        Log::info('📧 Booking cancellation email sent', ['booking_id' => $payable->id, 'email' => $email]);
+                                    } catch (\Exception $e) {
+                                        Log::error('Failed to send booking cancellation email', ['error' => $e->getMessage(), 'booking_id' => $payable->id]);
+                                    }
+                                }
+                            }
+                        }
+                    } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE && $payment->payable_id) {
+                        $payable = AttractionPurchase::find($payment->payable_id);
+                        if ($payable) {
+                            if ($isCancelled) {
+                                $payable->update([
+                                    'status' => 'cancelled',
+                                    'amount_paid' => max(0, $payable->amount_paid - $refundAmount),
+                                ]);
+                            } else {
+                                $payable->update([
+                                    'amount_paid' => max(0, $payable->amount_paid - $refundAmount),
+                                ]);
+                            }
+
+                            // Send cancellation email
+                            if ($isCancelled) {
+                                $email = $payable->customer_email;
+                                if ($email) {
+                                    try {
+                                        Mail::to($email)->send(new AttractionPurchaseCancellation($payable, $refundPayment, $refundAmount, 'refund'));
+                                        Log::info('📧 Attraction purchase cancellation email sent', ['purchase_id' => $payable->id, 'email' => $email]);
+                                    } catch (\Exception $e) {
+                                        Log::error('Failed to send attraction purchase cancellation email', ['error' => $e->getMessage(), 'purchase_id' => $payable->id]);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    return response()->json([
+                        'success' => true,
+                        'message' => $isFullRefund ? 'Full refund processed successfully' : 'Partial refund processed successfully',
+                        'data' => [
+                            'original_payment' => $payment->fresh(),
+                            'refund_payment' => $refundPayment->fresh(),
+                        ],
+                        'refund_transaction_id' => $refundTransactionId,
+                        'refund_amount' => $refundAmount,
+                        'total_refunded' => $totalAlreadyRefunded + $refundAmount,
+                        'remaining_balance' => $maxRefundable - $refundAmount,
+                        'is_full_refund' => $isFullRefund,
+                        'payable_cancelled' => $isCancelled,
+                        'payable' => $payable?->fresh(),
+                    ]);
+                } else {
+                    $errorMessage = 'Refund transaction failed';
+                    $errorCode = null;
+                    if ($tresponse && $tresponse->getErrors() != null) {
+                        $errorCode = $tresponse->getErrors()[0]->getErrorCode();
+                        $errorMessage = $tresponse->getErrors()[0]->getErrorText();
+                    }
+
+                    Log::warning('Authorize.Net refund transaction failed', [
+                        'error' => $errorMessage,
+                        'error_code' => $errorCode,
+                        'transaction_id' => $payment->transaction_id,
+                        'location_id' => $payment->location_id,
+                    ]);
+
+                    return response()->json([
+                        'success' => false,
+                        'message' => $errorMessage,
+                        'error_code' => $errorCode,
+                    ], 400);
+                }
+            } else {
+                $errorMessage = 'Unknown error';
+                $errorCode = null;
+                if ($response != null) {
+                    $errorMessages = $response->getMessages()->getMessage();
+                    $errorCode = $errorMessages[0]->getCode();
+                    $errorMessage = $errorMessages[0]->getText();
+                }
+
+                Log::error('Authorize.Net refund API error', [
+                    'error' => $errorMessage,
+                    'error_code' => $errorCode,
+                    'transaction_id' => $payment->transaction_id,
+                    'location_id' => $payment->location_id,
+                ]);
+
+                return response()->json([
+                    'success' => false,
+                    'message' => $errorMessage,
+                    'error_code' => $errorCode,
+                ], 400);
+            }
+        } catch (\Illuminate\Contracts\Encryption\DecryptException $e) {
+            Log::error('Refund - credential decryption failed', [
+                'error' => $e->getMessage(),
+                'location_id' => $payment->location_id,
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Payment configuration error. Please contact support.',
+                'error_code' => 'DECRYPTION_FAILED',
+            ], 500);
+        } catch (\Exception $e) {
+            Log::error('Refund processing exception', [
+                'error' => $e->getMessage(),
                 'transaction_id' => $payment->transaction_id,
-                'refunded_by' => auth()->user() ? auth()->user()->name ?? auth()->user()->email : 'System',
-                'refunded_at' => now()->toIso8601String(),
-                'payment_details' => [
-                    'amount' => $payment->amount,
-                    'method' => $payment->method,
-                    'original_status' => 'completed',
-                    'new_status' => 'refunded',
-                ],
-                'customer' => [
-                    'id' => $payment->customer_id,
-                    'name' => $customerName,
-                ],
-                'payable' => [
-                    'type' => $payment->payable_type,
-                    'id' => $payment->payable_id,
-                ],
-            ]
-        );
+                'location_id' => $payment->location_id,
+                'trace' => $e->getTraceAsString(),
+            ]);
 
-        return response()->json(['success' => true, 'message' => 'Payment refunded successfully', 'data' => $payment]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Refund processing failed: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Void a transaction via Authorize.Net
+     * Used for unsettled transactions (before the batch is settled, typically within 24 hours)
+     */
+    public function voidTransaction(Payment $payment): JsonResponse
+    {
+        if (!in_array($payment->status, ['completed', 'pending'])) {
+            return response()->json(['success' => false, 'message' => 'Only completed or pending payments can be voided'], 400);
+        }
+
+        if ($payment->method !== 'authorize.net') {
+            return response()->json(['success' => false, 'message' => 'Only Authorize.Net payments can be voided through this endpoint'], 400);
+        }
+
+        try {
+            // 1. Get Authorize.Net account for the location
+            $account = AuthorizeNetAccount::where('location_id', $payment->location_id)
+                ->where('is_active', true)
+                ->first();
+
+            if (!$account) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No active Authorize.Net account found for this location',
+                ], 503);
+            }
+
+            // 2. Get decrypted credentials
+            $apiLoginId = trim($account->api_login_id);
+            $transactionKey = trim($account->transaction_key);
+            $environment = $account->isProduction() ? ANetEnvironment::PRODUCTION : ANetEnvironment::SANDBOX;
+
+            // 3. Build merchant authentication
+            $merchantAuthentication = new AnetAPI\MerchantAuthenticationType();
+            $merchantAuthentication->setName($apiLoginId);
+            $merchantAuthentication->setTransactionKey($transactionKey);
+
+            // 4. Create void transaction request
+            $transactionRequestType = new AnetAPI\TransactionRequestType();
+            $transactionRequestType->setTransactionType('voidTransaction');
+            $transactionRequestType->setRefTransId($payment->transaction_id);
+
+            // 5. Create and execute the request
+            $apiRequest = new AnetAPI\CreateTransactionRequest();
+            $apiRequest->setMerchantAuthentication($merchantAuthentication);
+            $apiRequest->setTransactionRequest($transactionRequestType);
+
+            $controller = new AnetController\CreateTransactionController($apiRequest);
+            $response = $controller->executeWithApiResponse($environment);
+
+            // 6. Process response
+            if ($response != null && $response->getMessages()->getResultCode() == 'Ok') {
+                $tresponse = $response->getTransactionResponse();
+
+                if ($tresponse != null && $tresponse->getMessages() != null) {
+                    $previousStatus = $payment->status;
+                    $voidAmount = $payment->amount;
+
+                    // Update original payment status to voided
+                    $payment->update([
+                        'status' => 'voided',
+                        'refunded_at' => now(),
+                    ]);
+
+                    // Create a NEW void payment record for the audit trail
+                    $voidPayment = Payment::create([
+                        'payable_id' => $payment->payable_id,
+                        'payable_type' => $payment->payable_type,
+                        'customer_id' => $payment->customer_id,
+                        'transaction_id' => 'VOID-' . $payment->transaction_id,
+                        'amount' => $voidAmount,
+                        'currency' => $payment->currency ?? 'USD',
+                        'method' => 'authorize.net',
+                        'status' => 'voided',
+                        'notes' => "Void of Payment #{$payment->id} (Original TXN: {$payment->transaction_id})",
+                        'refunded_at' => now(),
+                        'payment_id' => 'VOID-' . ($payment->payment_id ?? $payment->transaction_id),
+                        'location_id' => $payment->location_id,
+                    ]);
+
+                    // Append reference note to original payment
+                    $payment->update([
+                        'notes' => trim(($payment->notes ?? '') . "\nTransaction voided → Void Payment #{$voidPayment->id}"),
+                    ]);
+
+                    Log::info('🚫 Authorize.Net void successful', [
+                        'original_payment_id' => $payment->id,
+                        'void_payment_id' => $voidPayment->id,
+                        'transaction_id' => $payment->transaction_id,
+                        'amount' => $voidAmount,
+                        'location_id' => $payment->location_id,
+                    ]);
+
+                    // Create notification for customer
+                    if ($payment->customer_id) {
+                        CustomerNotification::create([
+                            'customer_id' => $payment->customer_id,
+                            'location_id' => $payment->location_id,
+                            'type' => 'payment',
+                            'priority' => 'high',
+                            'title' => 'Payment Voided',
+                            'message' => "Your payment of $" . number_format($voidAmount, 2) . " has been voided.",
+                            'status' => 'unread',
+                            'action_url' => "/payments/{$voidPayment->id}",
+                            'action_text' => 'View Details',
+                            'metadata' => [
+                                'original_payment_id' => $payment->id,
+                                'void_payment_id' => $voidPayment->id,
+                                'transaction_id' => $payment->transaction_id,
+                                'amount' => $voidAmount,
+                                'voided_at' => now()->toDateTimeString(),
+                            ],
+                        ]);
+                    }
+
+                    // Create notification for location staff
+                    if ($payment->location_id) {
+                        Notification::create([
+                            'location_id' => $payment->location_id,
+                            'type' => 'payment',
+                            'priority' => 'high',
+                            'user_id' => auth()->id(),
+                            'title' => 'Payment Voided',
+                            'message' => "Payment #{$payment->id} of $" . number_format($voidAmount, 2) . " has been voided. Void Payment #{$voidPayment->id}",
+                            'status' => 'unread',
+                            'action_url' => "/payments/{$voidPayment->id}",
+                            'action_text' => 'View Details',
+                            'metadata' => [
+                                'original_payment_id' => $payment->id,
+                                'void_payment_id' => $voidPayment->id,
+                                'transaction_id' => $payment->transaction_id,
+                                'amount' => $voidAmount,
+                                'customer_id' => $payment->customer_id,
+                                'voided_at' => now()->toDateTimeString(),
+                            ],
+                        ]);
+                    }
+
+                    // Log activity
+                    $customerName = $payment->customer
+                        ? "{$payment->customer->first_name} {$payment->customer->last_name}"
+                        : 'Guest';
+
+                    ActivityLog::log(
+                        action: 'Payment Voided',
+                        category: 'create',
+                        description: "Payment #{$payment->id} of $" . number_format($voidAmount, 2) . " voided via Authorize.Net for {$customerName}. Void Payment #{$voidPayment->id}",
+                        userId: auth()->id(),
+                        locationId: $payment->location_id,
+                        entityType: 'payment',
+                        entityId: $voidPayment->id,
+                        metadata: [
+                            'original_payment_id' => $payment->id,
+                            'void_payment_id' => $voidPayment->id,
+                            'transaction_id' => $payment->transaction_id,
+                            'voided_by' => auth()->user() ? auth()->user()->name ?? auth()->user()->email : 'System',
+                            'voided_at' => now()->toIso8601String(),
+                            'payment_details' => [
+                                'amount' => $voidAmount,
+                                'method' => $payment->method,
+                                'original_status' => $previousStatus,
+                                'new_status' => 'voided',
+                            ],
+                            'customer' => [
+                                'id' => $payment->customer_id,
+                                'name' => $customerName,
+                            ],
+                            'payable' => [
+                                'type' => $payment->payable_type,
+                                'id' => $payment->payable_id,
+                            ],
+                        ]
+                    );
+
+                    // Update the related booking or attraction purchase (void = always cancel)
+                    $payable = null;
+
+                    if ($payment->payable_type === Payment::TYPE_BOOKING && $payment->payable_id) {
+                        $payable = Booking::find($payment->payable_id);
+                        if ($payable) {
+                            $payable->update([
+                                'status' => 'cancelled',
+                                'payment_status' => 'refunded',
+                                'cancelled_at' => now(),
+                                'amount_paid' => max(0, $payable->amount_paid - $voidAmount),
+                            ]);
+
+                            // Send cancellation email
+                            $email = $payable->customer_email;
+                            if ($email) {
+                                try {
+                                    Mail::to($email)->send(new BookingCancellation($payable, $voidPayment, $voidAmount, 'void'));
+                                    Log::info('📧 Booking void cancellation email sent', ['booking_id' => $payable->id, 'email' => $email]);
+                                } catch (\Exception $e) {
+                                    Log::error('Failed to send booking void cancellation email', ['error' => $e->getMessage(), 'booking_id' => $payable->id]);
+                                }
+                            }
+                        }
+                    } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE && $payment->payable_id) {
+                        $payable = AttractionPurchase::find($payment->payable_id);
+                        if ($payable) {
+                            $payable->update([
+                                'status' => 'cancelled',
+                                'amount_paid' => max(0, $payable->amount_paid - $voidAmount),
+                            ]);
+
+                            // Send cancellation email
+                            $email = $payable->customer_email;
+                            if ($email) {
+                                try {
+                                    Mail::to($email)->send(new AttractionPurchaseCancellation($payable, $voidPayment, $voidAmount, 'void'));
+                                    Log::info('📧 Attraction purchase void cancellation email sent', ['purchase_id' => $payable->id, 'email' => $email]);
+                                } catch (\Exception $e) {
+                                    Log::error('Failed to send attraction purchase void cancellation email', ['error' => $e->getMessage(), 'purchase_id' => $payable->id]);
+                                }
+                            }
+                        }
+                    }
+
+                    return response()->json([
+                        'success' => true,
+                        'message' => 'Payment voided successfully',
+                        'data' => [
+                            'original_payment' => $payment->fresh(),
+                            'void_payment' => $voidPayment->fresh(),
+                        ],
+                        'void_amount' => $voidAmount,
+                        'payable_cancelled' => true,
+                        'payable' => $payable?->fresh(),
+                    ]);
+                } else {
+                    $errorMessage = 'Void transaction failed';
+                    $errorCode = null;
+                    if ($tresponse && $tresponse->getErrors() != null) {
+                        $errorCode = $tresponse->getErrors()[0]->getErrorCode();
+                        $errorMessage = $tresponse->getErrors()[0]->getErrorText();
+                    }
+
+                    Log::warning('Authorize.Net void transaction failed', [
+                        'error' => $errorMessage,
+                        'error_code' => $errorCode,
+                        'transaction_id' => $payment->transaction_id,
+                        'location_id' => $payment->location_id,
+                    ]);
+
+                    return response()->json([
+                        'success' => false,
+                        'message' => $errorMessage,
+                        'error_code' => $errorCode,
+                    ], 400);
+                }
+            } else {
+                $errorMessage = 'Unknown error';
+                $errorCode = null;
+                if ($response != null) {
+                    $errorMessages = $response->getMessages()->getMessage();
+                    $errorCode = $errorMessages[0]->getCode();
+                    $errorMessage = $errorMessages[0]->getText();
+                }
+
+                Log::error('Authorize.Net void API error', [
+                    'error' => $errorMessage,
+                    'error_code' => $errorCode,
+                    'transaction_id' => $payment->transaction_id,
+                    'location_id' => $payment->location_id,
+                ]);
+
+                return response()->json([
+                    'success' => false,
+                    'message' => $errorMessage,
+                    'error_code' => $errorCode,
+                ], 400);
+            }
+        } catch (\Illuminate\Contracts\Encryption\DecryptException $e) {
+            Log::error('Void - credential decryption failed', [
+                'error' => $e->getMessage(),
+                'location_id' => $payment->location_id,
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Payment configuration error. Please contact support.',
+                'error_code' => 'DECRYPTION_FAILED',
+            ], 500);
+        } catch (\Exception $e) {
+            Log::error('Void processing exception', [
+                'error' => $e->getMessage(),
+                'transaction_id' => $payment->transaction_id,
+                'location_id' => $payment->location_id,
+                'trace' => $e->getTraceAsString(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Void processing failed: ' . $e->getMessage(),
+            ], 500);
+        }
     }
 
     /**
@@ -954,8 +1434,8 @@ class PaymentController extends Controller
     {
         $request->validate([
             'location_id' => 'nullable|exists:locations,id',
-            'status' => ['nullable', Rule::in(['pending', 'completed', 'failed', 'refunded'])],
-            'method' => ['nullable', Rule::in(['card', 'cash', 'authorize.net'])],
+            'status' => ['nullable', Rule::in(['pending', 'completed', 'failed', 'refunded', 'voided'])],
+            'method' => ['nullable', Rule::in(['card', 'cash', 'authorize.net', 'in-store'])],
             'payable_type' => ['nullable', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE])],
             'customer_id' => 'nullable|exists:customers,id',
             'start_date' => 'nullable|date',
@@ -1257,8 +1737,8 @@ class PaymentController extends Controller
             'week' => 'nullable|string',
             'location_id' => 'nullable|exists:locations,id',
             'customer_id' => 'nullable|exists:customers,id',
-            'status' => ['nullable', Rule::in(['pending', 'completed', 'failed', 'refunded'])],
-            'method' => ['nullable', Rule::in(['card', 'cash', 'authorize.net'])],
+            'status' => ['nullable', Rule::in(['pending', 'completed', 'failed', 'refunded', 'voided'])],
+            'method' => ['nullable', Rule::in(['card', 'cash', 'authorize.net', 'in-store'])],
             'view_mode' => ['nullable', Rule::in(['report', 'individual'])],
         ]);
 
@@ -1544,7 +2024,7 @@ class PaymentController extends Controller
             'start_date' => 'nullable|date',
             'end_date' => 'nullable|date|after_or_equal:start_date',
             'location_id' => 'nullable|exists:locations,id',
-            'status' => ['nullable', Rule::in(['pending', 'completed', 'failed', 'refunded'])],
+            'status' => ['nullable', Rule::in(['pending', 'completed', 'failed', 'refunded', 'voided'])],
         ]);
 
         // Get authenticated user

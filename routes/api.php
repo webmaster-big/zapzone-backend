@@ -141,8 +141,7 @@ Route::get('customers/bookings', [BookingController::class, 'customerBookings'])
 
 // Public payment processing
 Route::post('payments/charge', [PaymentController::class, 'charge']);
-Route::put('payments/{payment}', [PaymentController::class, 'update']);
-Route::patch('payments/{payment}', [PaymentController::class, 'update']);
+// Refund & Void routes are under auth middleware (see below)
 
 // Public booking creation
 Route::post('bookings', [BookingController::class, 'store']);
@@ -358,6 +357,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Payment routes
     Route::apiResource('payments', PaymentController::class)->except(['update']);
     Route::patch('payments/{payment}/refund', [PaymentController::class, 'refund']);
+    Route::patch('payments/{payment}/void', [PaymentController::class, 'voidTransaction']);
     Route::patch('payments/{payment}/payable', [PaymentController::class, 'updatePayable']);
     Route::get('payments/{payment}/invoice', [PaymentController::class, 'invoice']);
     Route::get('payments/{payment}/invoice/view', [PaymentController::class, 'invoiceView']);
