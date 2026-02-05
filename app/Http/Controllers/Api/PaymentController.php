@@ -619,6 +619,252 @@ class PaymentController extends Controller
     }
 
     /**
+     * Manual refund for non-Authorize.Net payments (cash, in-store, card)
+     * Creates a new payment record with 'refunded' status to track the refund.
+     * Updates the related booking or attraction purchase accordingly.
+     * No external payment gateway call — the actual money return is handled by staff in person.
+     */
+    public function manualRefund(Request $request, Payment $payment): JsonResponse
+    {
+        $validated = $request->validate([
+            'amount' => 'sometimes|numeric|min:0.01',
+            'notes' => 'required|string|max:1000',
+            'cancel' => 'sometimes|boolean',
+        ]);
+
+        if ($payment->status !== 'completed') {
+            return response()->json(['success' => false, 'message' => 'Only completed payments can be refunded'], 400);
+        }
+
+        if ($payment->method === 'authorize.net') {
+            return response()->json(['success' => false, 'message' => 'Authorize.Net payments must be refunded through the /refund endpoint'], 400);
+        }
+
+        $refundAmount = $validated['amount'] ?? $payment->amount;
+
+        // Calculate total already refunded for this original payment
+        $totalAlreadyRefunded = Payment::where('status', 'refunded')
+            ->where('notes', 'like', '%Refund from Payment #' . $payment->id . ' %')
+            ->sum('amount');
+
+        $maxRefundable = round($payment->amount - $totalAlreadyRefunded, 2);
+
+        if ($refundAmount > $maxRefundable) {
+            return response()->json([
+                'success' => false,
+                'message' => $maxRefundable <= 0
+                    ? 'This payment has already been fully refunded'
+                    : 'Refund amount cannot exceed the remaining refundable balance of $' . number_format($maxRefundable, 2),
+                'data' => [
+                    'original_amount' => (float) $payment->amount,
+                    'total_already_refunded' => $totalAlreadyRefunded,
+                    'max_refundable' => $maxRefundable,
+                ],
+            ], 400);
+        }
+
+        $isFullRefund = ($refundAmount + $totalAlreadyRefunded) >= $payment->amount;
+
+        // Create a NEW refund payment record
+        $refundPayment = Payment::create([
+            'payable_id' => $payment->payable_id,
+            'payable_type' => $payment->payable_type,
+            'customer_id' => $payment->customer_id,
+            'transaction_id' => 'REFUND-' . $payment->transaction_id . '-' . strtoupper(Str::random(4)),
+            'amount' => $refundAmount,
+            'currency' => $payment->currency ?? 'USD',
+            'method' => $payment->method,
+            'status' => 'refunded',
+            'notes' => "Refund from Payment #{$payment->id} (Original TXN: {$payment->transaction_id}) — {$validated['notes']}",
+            'refunded_at' => now(),
+            'payment_id' => null,
+            'location_id' => $payment->location_id,
+        ]);
+
+        // Append reference note to the original payment
+        $payment->update([
+            'notes' => trim(($payment->notes ?? '') . "\nManual refund of $" . number_format($refundAmount, 2) . " issued → Refund Payment #{$refundPayment->id}"),
+        ]);
+
+        Log::info('💰 Manual refund processed', [
+            'original_payment_id' => $payment->id,
+            'refund_payment_id' => $refundPayment->id,
+            'refund_amount' => $refundAmount,
+            'original_amount' => $payment->amount,
+            'total_refunded' => $totalAlreadyRefunded + $refundAmount,
+            'is_full_refund' => $isFullRefund,
+            'method' => $payment->method,
+            'location_id' => $payment->location_id,
+        ]);
+
+        // Create notification for customer
+        if ($payment->customer_id) {
+            CustomerNotification::create([
+                'customer_id' => $payment->customer_id,
+                'location_id' => $payment->location_id,
+                'type' => 'payment',
+                'priority' => 'high',
+                'title' => $isFullRefund ? 'Payment Refunded' : 'Partial Refund Processed',
+                'message' => "A refund of $" . number_format($refundAmount, 2) . " has been processed for your {$payment->method} payment.",
+                'status' => 'unread',
+                'action_url' => "/payments/{$refundPayment->id}",
+                'action_text' => 'View Refund',
+                'metadata' => [
+                    'original_payment_id' => $payment->id,
+                    'refund_payment_id' => $refundPayment->id,
+                    'refund_amount' => $refundAmount,
+                    'original_amount' => $payment->amount,
+                    'is_full_refund' => $isFullRefund,
+                    'method' => $payment->method,
+                    'refunded_at' => now()->toDateTimeString(),
+                ],
+            ]);
+        }
+
+        // Create notification for location staff
+        if ($payment->location_id) {
+            Notification::create([
+                'location_id' => $payment->location_id,
+                'type' => 'payment',
+                'priority' => 'high',
+                'user_id' => auth()->id(),
+                'title' => $isFullRefund ? 'Manual Refund Processed' : 'Manual Partial Refund Processed',
+                'message' => "Manual refund of $" . number_format($refundAmount, 2) . " ({$payment->method}) for Payment #{$payment->id}. Refund Payment #{$refundPayment->id}",
+                'status' => 'unread',
+                'action_url' => "/payments/{$refundPayment->id}",
+                'action_text' => 'View Refund',
+                'metadata' => [
+                    'original_payment_id' => $payment->id,
+                    'refund_payment_id' => $refundPayment->id,
+                    'refund_amount' => $refundAmount,
+                    'original_amount' => $payment->amount,
+                    'customer_id' => $payment->customer_id,
+                    'is_full_refund' => $isFullRefund,
+                    'method' => $payment->method,
+                    'refunded_at' => now()->toDateTimeString(),
+                ],
+            ]);
+        }
+
+        // Log activity
+        $customerName = $payment->customer
+            ? "{$payment->customer->first_name} {$payment->customer->last_name}"
+            : 'Guest';
+
+        ActivityLog::log(
+            action: $isFullRefund ? 'Manual Payment Refund' : 'Manual Partial Payment Refund',
+            category: 'create',
+            description: "Manual refund of $" . number_format($refundAmount, 2) . " ({$payment->method}) for {$customerName}. Refund Payment #{$refundPayment->id}",
+            userId: auth()->id(),
+            locationId: $payment->location_id,
+            entityType: 'payment',
+            entityId: $refundPayment->id,
+            metadata: [
+                'original_payment_id' => $payment->id,
+                'refund_payment_id' => $refundPayment->id,
+                'transaction_id' => $payment->transaction_id,
+                'refunded_by' => auth()->user() ? auth()->user()->name ?? auth()->user()->email : 'System',
+                'refunded_at' => now()->toIso8601String(),
+                'payment_details' => [
+                    'original_amount' => $payment->amount,
+                    'refund_amount' => $refundAmount,
+                    'total_refunded' => $totalAlreadyRefunded + $refundAmount,
+                    'remaining_balance' => $maxRefundable - $refundAmount,
+                    'is_full_refund' => $isFullRefund,
+                    'method' => $payment->method,
+                ],
+                'customer' => [
+                    'id' => $payment->customer_id,
+                    'name' => $customerName,
+                ],
+                'payable' => [
+                    'type' => $payment->payable_type,
+                    'id' => $payment->payable_id,
+                ],
+                'notes' => $validated['notes'],
+            ]
+        );
+
+        // Update the related booking or attraction purchase
+        $isCancelled = $validated['cancel'] ?? $isFullRefund;
+        $payable = null;
+
+        if ($payment->payable_type === Payment::TYPE_BOOKING && $payment->payable_id) {
+            $payable = Booking::find($payment->payable_id);
+            if ($payable) {
+                if ($isCancelled) {
+                    $payable->update([
+                        'status' => 'cancelled',
+                        'payment_status' => 'refunded',
+                        'cancelled_at' => now(),
+                        'amount_paid' => max(0, $payable->amount_paid - $refundAmount),
+                    ]);
+                } else {
+                    $payable->update([
+                        'amount_paid' => max(0, $payable->amount_paid - $refundAmount),
+                        'payment_status' => ($payable->amount_paid - $refundAmount) <= 0 ? 'refunded' : 'partial',
+                    ]);
+                }
+
+                // Send cancellation email
+                if ($isCancelled) {
+                    $email = $payable->customer_email;
+                    if ($email) {
+                        try {
+                            Mail::to($email)->send(new BookingCancellation($payable, $refundPayment, $refundAmount, 'refund'));
+                            Log::info('📧 Booking cancellation email sent (manual refund)', ['booking_id' => $payable->id, 'email' => $email]);
+                        } catch (\Exception $e) {
+                            Log::error('Failed to send booking cancellation email (manual refund)', ['error' => $e->getMessage(), 'booking_id' => $payable->id]);
+                        }
+                    }
+                }
+            }
+        } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE && $payment->payable_id) {
+            $payable = AttractionPurchase::find($payment->payable_id);
+            if ($payable) {
+                if ($isCancelled) {
+                    $payable->update([
+                        'status' => 'cancelled',
+                        'amount_paid' => max(0, $payable->amount_paid - $refundAmount),
+                    ]);
+                } else {
+                    $payable->update([
+                        'amount_paid' => max(0, $payable->amount_paid - $refundAmount),
+                    ]);
+                }
+
+                // Send cancellation email
+                if ($isCancelled) {
+                    $email = $payable->customer_email;
+                    if ($email) {
+                        try {
+                            Mail::to($email)->send(new AttractionPurchaseCancellation($payable, $refundPayment, $refundAmount, 'refund'));
+                            Log::info('📧 Attraction purchase cancellation email sent (manual refund)', ['purchase_id' => $payable->id, 'email' => $email]);
+                        } catch (\Exception $e) {
+                            Log::error('Failed to send attraction purchase cancellation email (manual refund)', ['error' => $e->getMessage(), 'purchase_id' => $payable->id]);
+                        }
+                    }
+                }
+            }
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => $isFullRefund ? 'Full manual refund processed successfully' : 'Partial manual refund processed successfully',
+            'data' => [
+                'original_payment' => $payment->fresh(),
+                'refund_payment' => $refundPayment->fresh(),
+            ],
+            'refund_amount' => $refundAmount,
+            'total_refunded' => $totalAlreadyRefunded + $refundAmount,
+            'remaining_balance' => $maxRefundable - $refundAmount,
+            'is_full_refund' => $isFullRefund,
+            'payable_cancelled' => $isCancelled,
+            'payable' => $payable?->fresh(),
+        ]);
+    }
+
+    /**
      * Void a transaction via Authorize.Net
      * Used for unsettled transactions (before the batch is settled, typically within 24 hours)
      */

@@ -357,6 +357,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Payment routes
     Route::apiResource('payments', PaymentController::class)->except(['update']);
     Route::patch('payments/{payment}/refund', [PaymentController::class, 'refund']);
+    Route::patch('payments/{payment}/manual-refund', [PaymentController::class, 'manualRefund']);
     Route::patch('payments/{payment}/void', [PaymentController::class, 'voidTransaction']);
     Route::patch('payments/{payment}/payable', [PaymentController::class, 'updatePayable']);
     Route::get('payments/{payment}/invoice', [PaymentController::class, 'invoice']);
