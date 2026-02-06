@@ -109,24 +109,6 @@ class PackageTimeSlotController extends Controller
             'notes' => 'nullable|string',
         ]);
 
-        // Check minimum advance booking time requirement (prevents last-minute bookings)
-        $minNoticeCheck = $this->checkMinBookingNotice(
-            $validated['package_id'],
-            $validated['booked_date'],
-            $validated['time_slot_start']
-        );
-
-        if (!$minNoticeCheck['allowed']) {
-            return response()->json([
-                'success' => false,
-                'message' => $minNoticeCheck['message'],
-                'data' => [
-                    'min_booking_notice_hours' => $minNoticeCheck['min_hours'],
-                    'hours_until_slot' => $minNoticeCheck['hours_until_slot'],
-                ],
-            ], 422);
-        }
-
         // Check for booking conflicts
         $conflict = $this->checkTimeSlotConflict(
             $validated['room_id'],
@@ -571,72 +553,6 @@ class PackageTimeSlotController extends Controller
     }
 
     /**
-     * Check if the booking meets the minimum advance notice requirement.
-     * Prevents last-minute bookings to ensure adequate preparation and cleanup time.
-     * Returns an array with 'allowed' boolean and details.
-     */
-    private function checkMinBookingNotice($packageId, $date, $startTime): array
-    {
-        $package = Package::find($packageId);
-
-        if (!$package) {
-            return [
-                'allowed' => false,
-                'message' => 'Package not found',
-                'min_hours' => null,
-                'hours_until_slot' => null,
-            ];
-        }
-
-        // If no minimum advance notice is set, allow the booking
-        if ($package->min_booking_notice_hours === null || $package->min_booking_notice_hours === 0) {
-            return [
-                'allowed' => true,
-                'message' => 'No minimum advance notice required',
-                'min_hours' => 0,
-                'hours_until_slot' => null,
-            ];
-        }
-
-        // Calculate time until the booking slot
-        $slotDateTime = Carbon::parse($date . ' ' . $startTime);
-        $now = Carbon::now();
-        $hoursUntilSlot = $now->diffInHours($slotDateTime, false); // false = can be negative if in past
-
-        // If the slot is in the past, don't allow
-        if ($hoursUntilSlot < 0) {
-            return [
-                'allowed' => false,
-                'message' => 'Cannot book a time slot in the past',
-                'min_hours' => $package->min_booking_notice_hours,
-                'hours_until_slot' => $hoursUntilSlot,
-            ];
-        }
-
-        // Check if there's enough advance notice
-        if ($hoursUntilSlot < $package->min_booking_notice_hours) {
-            $minHours = $package->min_booking_notice_hours;
-            $formattedNotice = $minHours >= 24
-                ? round($minHours / 24, 1) . ' day(s)'
-                : $minHours . ' hour(s)';
-
-            return [
-                'allowed' => false,
-                'message' => "This package requires at least {$formattedNotice} advance booking time. Please select a time slot further in the future to ensure adequate preparation time.",
-                'min_hours' => $minHours,
-                'hours_until_slot' => $hoursUntilSlot,
-            ];
-        }
-
-        return [
-            'allowed' => true,
-            'message' => 'Advance booking time requirement met',
-            'min_hours' => $package->min_booking_notice_hours,
-            'hours_until_slot' => $hoursUntilSlot,
-        ];
-    }
-
-    /**
      * Find an available room for a specific date and time.
      */
     private function findAvailableRoom($packageId, $date, $startTime, $duration, $durationUnit)
@@ -730,56 +646,10 @@ class PackageTimeSlotController extends Controller
         // Calculate actual duration in minutes using helper method
         $slotDurationInMinutes = $this->getDurationInMinutes($duration, $durationUnit);
 
-        // Calculate the cutoff end time if minimum booking notice is set
-        // This ensures cleanup/closing time by cutting off the last X hours of slots
-        $cutoffEndTime = null;
-        if ($package->min_booking_notice_hours !== null && $package->min_booking_notice_hours > 0 && !empty($timeSlots)) {
-            // Find the latest possible slot end time from the schedule
-            $latestTimeSlot = end($timeSlots);
-            $latestSlotEnd = Carbon::parse($date . ' ' . $latestTimeSlot)->addMinutes($slotDurationInMinutes);
-
-            // Subtract the minimum booking notice hours to get the cutoff
-            $cutoffEndTime = (clone $latestSlotEnd)->subHours($package->min_booking_notice_hours);
-
-            Log::debug('Calculated slot cutoff time', [
-                'package_id' => $package->id,
-                'latest_slot_end' => $latestSlotEnd->format('H:i'),
-                'min_booking_notice_hours' => $package->min_booking_notice_hours,
-                'cutoff_end_time' => $cutoffEndTime->format('H:i'),
-            ]);
-        }
-
         // Iterate through each time slot from the schedule
         foreach ($timeSlots as $timeSlot) {
             $currentTime = Carbon::parse($date . ' ' . $timeSlot);
             $slotEndTime = (clone $currentTime)->addMinutes($slotDurationInMinutes);
-
-            // Filter out slots that end after the cutoff time (ensures cleanup/closing time)
-            if ($cutoffEndTime !== null && $slotEndTime->gt($cutoffEndTime)) {
-                Log::debug('Time slot excluded - ends after cutoff time', [
-                    'package_id' => $package->id,
-                    'date' => $date,
-                    'time_slot' => $currentTime->format('H:i'),
-                    'slot_end_time' => $slotEndTime->format('H:i'),
-                    'cutoff_end_time' => $cutoffEndTime->format('H:i'),
-                ]);
-                continue; // Skip this slot - exceeds the allowed end time
-            }
-
-            // Also filter based on current time (prevents booking slots that already started or starting too soon)
-            if ($package->min_booking_notice_hours !== null && $package->min_booking_notice_hours > 0) {
-                $hoursUntilSlot = Carbon::now()->diffInHours($currentTime, false);
-                if ($hoursUntilSlot < $package->min_booking_notice_hours) {
-                    Log::debug('Time slot excluded - insufficient advance booking time from now', [
-                        'package_id' => $package->id,
-                        'date' => $date,
-                        'time_slot' => $currentTime->format('H:i'),
-                        'min_booking_notice_hours' => $package->min_booking_notice_hours,
-                        'hours_until_slot' => $hoursUntilSlot,
-                    ]);
-                    continue; // Skip this slot - too close to current time
-                }
-            }
 
             // Check if this time slot is blocked by a day off for this specific package
             $isPackageBlocked = DayOff::isTimeSlotBlockedForPackage(
