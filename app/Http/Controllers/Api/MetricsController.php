@@ -109,7 +109,7 @@ class MetricsController extends Controller
         $cancelledBookings = (clone $bookingQuery)->where('status', 'cancelled')->count();
         $checkedInBookings = (clone $bookingQuery)->where('status', 'checked-in')->count();
         $totalParticipants = (clone $bookingQuery)->sum('participants') ?? 0;
-        $bookingRevenue = (clone $bookingQuery)->whereIn('status', ['confirmed', 'completed', 'checked-in'])->sum('amount_paid') ?? 0;
+        $bookingRevenue = (clone $bookingQuery)->whereNotIn('status', ['cancelled'])->sum('amount_paid') ?? 0;
 
         Log::info('Booking metrics calculated', [
             'total' => $totalBookings,
@@ -132,8 +132,8 @@ class MetricsController extends Controller
         // Revenue from completed purchases only
         $purchaseRevenue = (clone $purchaseQuery)->where('status', 'completed')->sum('amount_paid') ?? 0;
 
-        // Also include pending purchases in some cases (you may want all non-cancelled)
-        $allPurchaseRevenue = (clone $purchaseQuery)->whereIn('status', ['completed', 'pending'])->sum('amount_paid') ?? 0;
+        // All non-cancelled purchases revenue
+        $allPurchaseRevenue = (clone $purchaseQuery)->whereNotIn('status', ['cancelled'])->sum('amount_paid') ?? 0;
 
         Log::info('Purchase metrics calculated', [
             'total_purchases' => $totalPurchases,
@@ -399,7 +399,7 @@ class MetricsController extends Controller
         $completedBookings = (clone $bookingQuery)->where('status', 'completed')->count();
         $cancelledBookings = (clone $bookingQuery)->where('status', 'cancelled')->count();
         $totalParticipants = (clone $bookingQuery)->sum('participants') ?? 0;
-        $bookingRevenue = (clone $bookingQuery)->whereIn('status', ['confirmed', 'completed', 'checked-in'])->sum('amount_paid') ?? 0;
+        $bookingRevenue = (clone $bookingQuery)->whereNotIn('status', ['cancelled'])->sum('amount_paid') ?? 0;
 
         // Calculate purchase metrics
         $totalPurchases = $purchaseQuery->count();
@@ -412,8 +412,8 @@ class MetricsController extends Controller
         // Revenue from completed purchases only
         $purchaseRevenue = (clone $purchaseQuery)->where('status', 'completed')->sum('amount_paid') ?? 0;
 
-        // Also include pending purchases (all non-cancelled)
-        $allPurchaseRevenue = (clone $purchaseQuery)->whereIn('status', ['completed', 'pending'])->sum('amount_paid') ?? 0;
+        // All non-cancelled purchases revenue
+        $allPurchaseRevenue = (clone $purchaseQuery)->whereNotIn('status', ['cancelled'])->sum('amount_paid') ?? 0;
 
         // Calculate total revenue (using all non-cancelled purchases)
         $totalRevenue = $bookingRevenue + $allPurchaseRevenue;
