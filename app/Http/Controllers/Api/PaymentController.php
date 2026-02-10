@@ -1682,6 +1682,8 @@ class PaymentController extends Controller
         // Get customer info
         $customer = $payment->customer;
 
+        $timezone = $location->timezone ?? 'UTC';
+
         $pdf = Pdf::loadView('exports.payment-invoice', [
             'payment' => $payment,
             'payable' => $payable,
@@ -1689,6 +1691,7 @@ class PaymentController extends Controller
             'location' => $location,
             'company' => $company,
             'companyName' => $companyName,
+            'timezone' => $timezone,
         ]);
 
         $pdf->setPaper('A4', 'portrait');
@@ -1736,6 +1739,8 @@ class PaymentController extends Controller
         // Get customer info
         $customer = $payment->customer;
 
+        $timezone = $location->timezone ?? 'UTC';
+
         $pdf = Pdf::loadView('exports.payment-invoice', [
             'payment' => $payment,
             'payable' => $payable,
@@ -1743,6 +1748,7 @@ class PaymentController extends Controller
             'location' => $location,
             'company' => $company,
             'companyName' => $companyName,
+            'timezone' => $timezone,
         ]);
 
         $pdf->setPaper('A4', 'portrait');
@@ -1874,6 +1880,8 @@ class PaymentController extends Controller
             $filters['payable_type'] = $request->payable_type;
         }
 
+        $timezone = isset($location) && $location ? ($location->timezone ?? 'UTC') : 'UTC';
+
         $pdf = Pdf::loadView('exports.payment-invoices-report', [
             'payments' => $payments,
             'summary' => $summary,
@@ -1882,6 +1890,7 @@ class PaymentController extends Controller
             'locationName' => $locationName,
             'filters' => count($filters) > 0 ? $filters : null,
             'reportTitle' => 'Payment Invoices Report',
+            'timezone' => $timezone,
         ]);
 
         $pdf->setPaper('A4', 'portrait');
@@ -1954,6 +1963,7 @@ class PaymentController extends Controller
             }
 
             $customer = $payment->customer;
+            $timezone = $location->timezone ?? 'UTC';
 
             // Render the invoice view
             $invoiceHtml = view('exports.payment-invoice', [
@@ -1963,6 +1973,7 @@ class PaymentController extends Controller
                 'location' => $location,
                 'company' => $company,
                 'companyName' => $companyName,
+                'timezone' => $timezone,
             ])->render();
 
             $html .= $invoiceHtml;
@@ -2227,6 +2238,8 @@ class PaymentController extends Controller
                 $filters['method'] = $request->method;
             }
 
+            $reportTimezone = isset($location) && $location ? ($location->timezone ?? 'UTC') : 'UTC';
+
             $pdf = Pdf::loadView('exports.payment-invoices-report', [
                 'payments' => $payments,
                 'summary' => $summary,
@@ -2235,6 +2248,7 @@ class PaymentController extends Controller
                 'locationName' => $locationName,
                 'filters' => count($filters) > 0 ? $filters : null,
                 'reportTitle' => $this->getReportTitle($request, $dateRange),
+                'timezone' => $reportTimezone,
             ]);
         } else {
             // Individual invoices (one per page)
@@ -2264,6 +2278,7 @@ class PaymentController extends Controller
                     'location' => $paymentLocation,
                     'company' => $paymentCompany,
                     'companyName' => $paymentCompanyName,
+                    'timezone' => $paymentLocation->timezone ?? 'UTC',
                 ])->render();
 
                 $html .= $invoiceHtml;
@@ -2493,6 +2508,8 @@ class PaymentController extends Controller
             'total_bookings' => $payments->unique('payable_id')->count(),
         ];
 
+        $packageTimezone = isset($location) && $location ? ($location->timezone ?? 'UTC') : 'UTC';
+
         $pdf = Pdf::loadView('exports.package-invoices-report', [
             'payments' => $payments,
             'package' => $package,
@@ -2501,6 +2518,7 @@ class PaymentController extends Controller
             'companyName' => $companyName,
             'locationName' => $locationName,
             'dateRange' => $dateRange,
+            'timezone' => $packageTimezone,
         ]);
 
         $pdf->setPaper('A4', 'portrait');

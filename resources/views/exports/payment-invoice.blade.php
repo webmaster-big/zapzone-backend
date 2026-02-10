@@ -159,7 +159,7 @@
             <div class="header-right">
                 <div class="invoice-label">Invoice</div>
                 <div class="invoice-number">#{{ str_pad($payment->id, 6, '0', STR_PAD_LEFT) }}</div>
-                <div class="invoice-date">{{ $payment->created_at->format('F j, Y') }}</div>
+                <div class="invoice-date">{{ $payment->created_at->timezone($timezone)->format('F j, Y') }}</div>
                 <span class="status status-{{ $payment->status }}">{{ $payment->status }}</span>
             </div>
         </div>
@@ -188,7 +188,7 @@
                     @if($payable->room)Room: {{ $payable->room->name }}@if($payable->room->capacity) ({{ $payable->room->capacity }} capacity)@endif · @endif
                     @if($payable->participants){{ $payable->participants }} guests · @endif
                     Ref: {{ $payable->reference_number ?? 'N/A' }}
-                    @if($payable->created_at) · Booked: {{ $payable->created_at->format('M j, Y g:i A') }}@endif
+                    @if($payable->created_at) · Booked: {{ $payable->created_at->timezone($timezone)->format('M j, Y g:i A') }}@endif
                 </div>
             </div>
 
@@ -208,7 +208,7 @@
                         <div class="info-title">Payment Details</div>
                         <div class="info-content">
                             <div class="info-line">{{ ucfirst($payment->method) }} · {{ $payment->transaction_id }}</div>
-                            @if($payment->paid_at)<div class="info-line info-muted">Paid {{ $payment->paid_at->format('M j, Y g:i A') }}</div>@endif
+                            @if($payment->paid_at)<div class="info-line info-muted">Paid {{ $payment->paid_at->timezone($timezone)->format('M j, Y g:i A') }}</div>@endif
                         </div>
                     </div>
                 </div>
@@ -330,7 +330,7 @@
                         <div class="info-title">Transaction</div>
                         <div class="info-content">
                             <div class="info-line">{{ $payment->transaction_id }}</div>
-                            <div class="info-line info-muted">{{ ucfirst($payment->method) }} · {{ $payment->created_at->format('M j, Y') }}</div>
+                            <div class="info-line info-muted">{{ ucfirst($payment->method) }} · {{ $payment->created_at->timezone($timezone)->format('M j, Y') }}</div>
                         </div>
                     </div>
                 </div>
@@ -364,7 +364,7 @@
                         <div class="info-title">Payment Info</div>
                         <div class="info-content">
                             <div class="info-line">{{ $payment->transaction_id }}</div>
-                            <div class="info-line info-muted">{{ ucfirst($payment->method) }}@if($payment->paid_at) · {{ $payment->paid_at->format('M j, Y') }}@endif</div>
+                            <div class="info-line info-muted">{{ ucfirst($payment->method) }}@if($payment->paid_at) · {{ $payment->paid_at->timezone($timezone)->format('M j, Y') }}@endif</div>
                         </div>
                     </div>
                 </div>
@@ -385,9 +385,9 @@
 
         <div class="footer">
             <div class="footer-thanks">Thank you for your business</div>
-            <div class="footer-meta">{{ $companyName ?? 'ZapZone' }} · {{ now()->format('M j, Y') }}</div>
+            <div class="footer-meta">{{ $companyName ?? 'ZapZone' }} · {{ now()->timezone($timezone)->format('M j, Y') }}</div>
             @if($payment->status === 'refunded' && $payment->refunded_at)
-                <div class="footer-refund">REFUNDED {{ $payment->refunded_at->format('M j, Y') }}</div>
+                <div class="footer-refund">REFUNDED {{ $payment->refunded_at->timezone($timezone)->format('M j, Y') }}</div>
             @endif
         </div>
     </div>

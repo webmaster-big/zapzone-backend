@@ -373,8 +373,8 @@
                             </div>
                         </td>
                         <td>
-                            {{ $payment->created_at->format('M j, Y') }}<br>
-                            <span style="color: #a0aec0; font-size: 7pt;">{{ $payment->created_at->format('g:i A') }}</span>
+                            {{ $payment->created_at->timezone($timezone)->format('M j, Y') }}<br>
+                            <span style="color: #a0aec0; font-size: 7pt;">{{ $payment->created_at->timezone($timezone)->format('g:i A') }}</span>
                         </td>
                         <td>
                             <span class="method-badge {{ $payment->method }}">{{ strtoupper($payment->method) }}</span>
@@ -430,7 +430,7 @@
         <!-- Footer -->
         <div class="footer">
             <div class="footer-thanks">{{ $package->name }} - Invoice Report</div>
-            <div class="footer-meta">{{ $companyName }} · Generated {{ now()->format('F j, Y g:i A') }}</div>
+            <div class="footer-meta">{{ $companyName }} · Generated {{ now()->timezone($timezone)->format('F j, Y g:i A') }}</div>
         </div>
     </div>
 </body>

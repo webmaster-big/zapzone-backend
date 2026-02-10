@@ -115,7 +115,7 @@
             @else
                 <div class="company-name">{{ $companyName ?? 'ZapZone' }}</div>
             @endif
-            <div class="report-meta">Generated {{ now()->format('M j, Y g:i A') }}</div>
+            <div class="report-meta">Generated {{ now()->timezone($timezone)->format('M j, Y g:i A') }}</div>
         </div>
     </div>
 
@@ -172,7 +172,7 @@
             @forelse($payments as $payment)
             <tr>
                 <td>{{ str_pad($payment->id, 5, '0', STR_PAD_LEFT) }}</td>
-                <td>{{ $payment->created_at->format('M j, Y') }}</td>
+                <td>{{ $payment->created_at->timezone($timezone)->format('M j, Y') }}</td>
                 <td>
                     @if($payment->customer)
                         {{ $payment->customer->first_name }} {{ $payment->customer->last_name }}
@@ -220,7 +220,7 @@
     </table>
 
     <div class="footer">
-        <div class="footer-text">{{ $companyName ?? 'ZapZone' }} · Report generated {{ now()->format('M j, Y g:i A') }}</div>
+        <div class="footer-text">{{ $companyName ?? 'ZapZone' }} · Report generated {{ now()->timezone($timezone)->format('M j, Y g:i A') }}</div>
     </div>
 </body>
 </html>
