@@ -310,7 +310,7 @@
                             <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #eff6ff; border-radius: 6px; border: 1px solid #3b82f6; margin: 16px 0;">
                                 <tr>
                                     <td style="padding: 16px; text-align: center;">
-                                        <p style="margin: 0 0 12px 0; padding: 0; font-size: 14px; font-weight: 600; color: #1e40af;">🎉 Download Your Party Invitation</p>
+                                        <p style="margin: 0 0 12px 0; padding: 0; font-size: 14px; font-weight: 600; color: #1e40af;">Download Your Party Invitation</p>
                                         <a href="{{ $booking->package->invitation_download_link }}" style="display: inline-block; padding: 12px 24px; background-color: #3b82f6; color: #ffffff; text-decoration: none; border-radius: 6px; font-size: 14px; font-weight: 600;">Download Invitation</a>
                                         <p style="margin: 12px 0 0 0; padding: 0; font-size: 12px; color: #6b7280;">Click the button above to download your personalized invitation</p>
                                     </td>
@@ -320,7 +320,7 @@
 
                             <!-- Important Notes Section -->
                             @if($customerNotes || (isset($globalNotes) && $globalNotes->isNotEmpty()))
-                            <h3 style="margin: 24px 0 12px 0; padding: 0; font-size: 16px; font-weight: 600; color: #111827;">📋 Important Information</h3>
+                            <h3 style="margin: 24px 0 12px 0; padding: 0; font-size: 16px; font-weight: 600; color: #111827;">Important Information</h3>
                             <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #fef3c7; border-radius: 6px; border: 1px solid #fbbf24; margin: 16px 0;">
                                 <tr>
                                     <td style="padding: 16px;">
@@ -356,7 +356,7 @@
                                             <svg width="200" height="200" viewBox="0 0 200 200" style="display: block; margin: 0 auto;">
                                                 <rect width="200" height="200" fill="#f3f4f6"/>
                                                 <text x="100" y="100" text-anchor="middle" dominant-baseline="middle" fill="#6b7280" font-family="Arial, sans-serif" font-size="14">
-                                                    <tspan x="100" dy="-10">📎 QR Code</tspan>
+                                                    <tspan x="100" dy="-10">QR Code</tspan>
                                                     <tspan x="100" dy="20">Available in</tspan>
                                                     <tspan x="100" dy="20">Attachment</tspan>
                                                 </text>
@@ -364,7 +364,7 @@
                                         </div>
 
                                         <p style="margin: 16px 0 0 0; padding: 0; font-size: 12px; line-height: 1.6; color: #6b7280;">Reference: {{ $booking->reference_number }}</p>
-                                        <p style="margin: 4px 0 0 0; padding: 0; font-size: 13px; line-height: 1.6; color: #1e40af; font-weight: 500;">✓ Your QR code is attached to this email</p>
+                                        <p style="margin: 4px 0 0 0; padding: 0; font-size: 13px; line-height: 1.6; color: #1e40af; font-weight: 500;">Your QR code is attached to this email</p>
                                     </td>
                                 </tr>
                             </table>

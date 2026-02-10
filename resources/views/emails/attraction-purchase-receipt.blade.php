@@ -412,7 +412,7 @@
                                         </div>
 
                                         <p style="margin: 16px 0 0 0; padding: 0; font-size: 12px; line-height: 1.6; color: #6b7280;">Order #{{ str_pad($purchase->id, 6, '0', STR_PAD_LEFT) }}</p>
-                                        <p style="margin: 4px 0 0 0; padding: 0; font-size: 13px; line-height: 1.6; color: #1e40af; font-weight: 500;">✓ Your QR code is attached to this email</p>
+                                        <p style="margin: 4px 0 0 0; padding: 0; font-size: 13px; line-height: 1.6; color: #1e40af; font-weight: 500;">Your QR code is attached to this email</p>
                                     </td>
                                 </tr>
                             </table>

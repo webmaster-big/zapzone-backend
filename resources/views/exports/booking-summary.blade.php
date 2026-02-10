@@ -422,7 +422,7 @@
         <!-- Guest of Honor (if available) -->
         @if($booking->guest_of_honor_name)
         <div class="guest-of-honor-box">
-            <div class="guest-of-honor-label">🎂 Guest of Honor 🎂</div>
+            <div class="guest-of-honor-label">Guest of Honor</div>
             <div class="guest-of-honor-name">{{ $booking->guest_of_honor_name }}</div>
             <div class="guest-of-honor-details">
                 @if($booking->guest_of_honor_age)
@@ -441,23 +441,23 @@
                 {{ $booking->package->name ?? 'Package Details' }}
             </div>
             <div class="party-datetime">
-                📅 {{ $booking->booking_date ? $booking->booking_date->format('M d, Y') : 'TBD' }}
+                {{ $booking->booking_date ? $booking->booking_date->format('M d, Y') : 'TBD' }}
                 @if($booking->booking_time)
-                    &nbsp;&nbsp;⏰ {{ \Carbon\Carbon::parse($booking->booking_time)->format('g:i A') }}
+                    &nbsp;&nbsp;{{ \Carbon\Carbon::parse($booking->booking_time)->format('g:i A') }}
                 @endif
                 @if($booking->duration)
-                    &nbsp;&nbsp;⏱️ {{ $booking->duration }} {{ $booking->duration_unit ?? 'hours' }}
+                    &nbsp;&nbsp;{{ $booking->duration }} {{ $booking->duration_unit ?? 'hours' }}
                 @endif
             </div>
             <div class="party-room">
                 @if($booking->room)
-                    🚪 Room: <strong>{{ $booking->room->name }}</strong>
+                    Room: <strong>{{ $booking->room->name }}</strong>
                     @if($booking->room->capacity)
                         (Capacity: {{ $booking->room->capacity }})
                     @endif
                 @endif
                 @if($booking->participants)
-                    &nbsp;&nbsp;👥 Guests: <strong>{{ $booking->participants }}</strong>
+                    &nbsp;&nbsp;Guests: <strong>{{ $booking->participants }}</strong>
                 @endif
             </div>
         </div>
@@ -606,7 +606,7 @@
         <!-- Special Requests -->
         @if($booking->special_requests)
         <div class="notes-section">
-            <div class="notes-title">📝 Special Requests</div>
+            <div class="notes-title">Special Requests</div>
             <div class="notes-content">{{ $booking->special_requests }}</div>
         </div>
         @endif
@@ -614,7 +614,7 @@
         <!-- Customer Notes -->
         @if($booking->notes)
         <div class="notes-section">
-            <div class="notes-title">📋 Notes</div>
+            <div class="notes-title">Notes</div>
             <div class="notes-content">{{ $booking->notes }}</div>
         </div>
         @endif
@@ -622,7 +622,7 @@
         <!-- Internal Notes (Staff Only) -->
         @if($booking->internal_notes)
         <div class="internal-notes-section">
-            <div class="internal-notes-title">⚠️ Internal Notes (Staff Only)</div>
+            <div class="internal-notes-title">Internal Notes (Staff Only)</div>
             <div class="internal-notes-content">{{ $booking->internal_notes }}</div>
         </div>
         @endif

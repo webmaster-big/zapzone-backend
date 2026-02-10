@@ -535,7 +535,7 @@
                         <div class="card-body">
                             @if($booking->guest_of_honor_name)
                             <div class="goh-highlight">
-                                <div class="goh-label">🎂 Guest of Honor</div>
+                                <div class="goh-label">Guest of Honor</div>
                                 <span class="goh-name">{{ $booking->guest_of_honor_name }}</span>
                                 @if($booking->guest_of_honor_age)
                                     <span class="goh-age">- Turning {{ $booking->guest_of_honor_age }}</span>
@@ -563,8 +563,8 @@
                                         <div class="info-block-title">Package & Room</div>
                                         <div class="info-block-value">
                                             <strong>{{ $booking->package->name ?? 'N/A' }}</strong><br>
-                                            🚪 {{ $booking->room->name ?? 'TBD' }}
-                                            @if($booking->participants) · 👥 {{ $booking->participants }}@endif
+                                            {{ $booking->room->name ?? 'TBD' }}
+                                            @if($booking->participants) · {{ $booking->participants }} guests@endif
                                         </div>
                                     </div>
                                 </div>
@@ -574,7 +574,7 @@
                                         @if(($booking->total_amount - ($booking->amount_paid ?? 0)) > 0)
                                             <div>Balance: <span class="payment-balance">${{ number_format($booking->total_amount - ($booking->amount_paid ?? 0), 2) }}</span></div>
                                         @else
-                                            <div style="color: #166534;">✓ Paid</div>
+                                            <div style="color: #166534;">Paid</div>
                                         @endif
                                     </div>
                                 </div>
@@ -582,7 +582,7 @@
 
                             @if($booking->internal_notes)
                             <div class="notes-preview">
-                                <span class="notes-preview-label">⚠️ Internal Notes:</span>
+                                <span class="notes-preview-label">Internal Notes:</span>
                                 {{ Str::limit($booking->internal_notes, 200) }}
                             </div>
                             @endif
@@ -635,7 +635,7 @@
                     <!-- Guest of Honor -->
                     @if($booking->guest_of_honor_name)
                     <div style="background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); border: 2px solid #f59e0b; border-radius: 6px; padding: 10px; margin-bottom: 12px; text-align: center;">
-                        <div style="font-size: 7pt; color: #92400e; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 3px;">🎂 Guest of Honor 🎂</div>
+                        <div style="font-size: 7pt; color: #92400e; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 3px;">Guest of Honor</div>
                         <div style="font-size: 14pt; font-weight: bold; color: #92400e; margin-bottom: 2px;">{{ $booking->guest_of_honor_name }}</div>
                         <div style="font-size: 9pt; color: #b45309;">
                             @if($booking->guest_of_honor_age)Turning {{ $booking->guest_of_honor_age }} years old@endif
@@ -650,13 +650,13 @@
                             {{ $booking->package->name ?? 'Package Details' }}
                         </div>
                         <div style="font-size: 10pt; color: #333; margin-bottom: 3px;">
-                            📅 {{ $booking->booking_date ? $booking->booking_date->format('M d, Y') : 'TBD' }}
-                            @if($booking->booking_time) ⏰ {{ \Carbon\Carbon::parse($booking->booking_time)->format('g:i A') }}@endif
-                            @if($booking->duration) ⏱️ {{ $booking->duration }} {{ $booking->duration_unit ?? 'hours' }}@endif
+                            {{ $booking->booking_date ? $booking->booking_date->format('M d, Y') : 'TBD' }}
+                            @if($booking->booking_time) {{ \Carbon\Carbon::parse($booking->booking_time)->format('g:i A') }}@endif
+                            @if($booking->duration) {{ $booking->duration }} {{ $booking->duration_unit ?? 'hours' }}@endif
                         </div>
                         <div style="font-size: 9pt; color: #666;">
-                            @if($booking->room)🚪 Room: <strong>{{ $booking->room->name }}</strong>@endif
-                            @if($booking->participants) 👥 Guests: <strong>{{ $booking->participants }}</strong>@endif
+                            @if($booking->room)Room: <strong>{{ $booking->room->name }}</strong>@endif
+                            @if($booking->participants) Guests: <strong>{{ $booking->participants }}</strong>@endif
                         </div>
                     </div>
 
@@ -711,14 +711,14 @@
 
                     @if($booking->special_requests)
                     <div style="background: #fff7ed; border: 1px solid #fed7aa; border-radius: 4px; padding: 8px 10px; margin-bottom: 10px;">
-                        <div style="font-size: 8pt; font-weight: bold; color: #c2410c; text-transform: uppercase; margin-bottom: 4px;">📝 Special Requests</div>
+                        <div style="font-size: 8pt; font-weight: bold; color: #c2410c; text-transform: uppercase; margin-bottom: 4px;">Special Requests</div>
                         <div style="font-size: 8pt; color: #7c2d12; white-space: pre-wrap;">{{ $booking->special_requests }}</div>
                     </div>
                     @endif
 
                     @if($booking->internal_notes)
                     <div class="internal-notes-section">
-                        <div class="internal-notes-title">⚠️ Internal Notes (Staff Only)</div>
+                        <div class="internal-notes-title">Internal Notes (Staff Only)</div>
                         <div class="internal-notes-content">{{ $booking->internal_notes }}</div>
                     </div>
                     @endif

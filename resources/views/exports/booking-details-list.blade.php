@@ -357,7 +357,7 @@
                             (Bal: ${{ number_format($booking->total_amount - ($booking->amount_paid ?? 0), 2) }})
                         </span>
                     @else
-                        <span style="color: #16a34a;">✓ Paid</span>
+                        <span style="color: #16a34a;">Paid</span>
                     @endif
                 </div>
             </div>
