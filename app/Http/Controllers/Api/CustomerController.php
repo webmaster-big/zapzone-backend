@@ -565,6 +565,7 @@ class CustomerController extends Controller
 
         $totalRevenue = Booking::query()
             ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+            ->whereNotIn('status', ['cancelled'])
             ->when($startDate && $endDate, fn($q) => $q->whereBetween('created_at', [$startDate, $endDate]))
             ->when($startDate && !$endDate, fn($q) => $q->where('created_at', '>=', $startDate))
             ->sum('amount_paid');
@@ -573,6 +574,7 @@ class CustomerController extends Controller
             ->when($locationId, function($q) use ($locationId) {
                 $q->whereHas('attraction', fn($query) => $query->where('location_id', $locationId));
             })
+            ->whereNotIn('status', ['cancelled'])
             ->when($startDate && $endDate, fn($q) => $q->whereBetween('created_at', [$startDate, $endDate]))
             ->when($startDate && !$endDate, fn($q) => $q->where('created_at', '>=', $startDate))
             ->sum('amount_paid');
@@ -632,6 +634,7 @@ class CustomerController extends Controller
         // Previous period revenue
         $prevTotalRevenue = Booking::query()
             ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+            ->whereNotIn('status', ['cancelled'])
             ->when($previousPeriodStart && $previousPeriodEnd, fn($q) => $q->whereBetween('created_at', [$previousPeriodStart, $previousPeriodEnd]))
             ->sum('amount_paid');
 
@@ -639,6 +642,7 @@ class CustomerController extends Controller
             ->when($locationId, function($q) use ($locationId) {
                 $q->whereHas('attraction', fn($query) => $query->where('location_id', $locationId));
             })
+            ->whereNotIn('status', ['cancelled'])
             ->when($previousPeriodStart && $previousPeriodEnd, fn($q) => $q->whereBetween('created_at', [$previousPeriodStart, $previousPeriodEnd]))
             ->sum('amount_paid');
 

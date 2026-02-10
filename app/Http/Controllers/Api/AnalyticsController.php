@@ -295,14 +295,31 @@ class AnalyticsController extends Controller
             ->get()
             ->keyBy('hour');
 
+        // Get attraction purchases grouped by hour
+        $attractionsByHour = AttractionPurchase::byLocation($locationId)
+            ->whereBetween('created_at', [$startDate, $endDate])
+            ->whereNotIn('status', ['cancelled'])
+            ->select(
+                DB::raw('HOUR(created_at) as hour'),
+                DB::raw('SUM(amount_paid) as revenue'),
+                DB::raw('COUNT(*) as purchases')
+            )
+            ->groupBy('hour')
+            ->get()
+            ->keyBy('hour');
+
         // Generate data for each hour (9 AM to 9 PM)
         for ($hour = 9; $hour <= 21; $hour++) {
-            $hourData = $bookingsByHour->get($hour);
+            $bookingData = $bookingsByHour->get($hour);
+            $attractionData = $attractionsByHour->get($hour);
+
+            $bookingRev = $bookingData ? round($bookingData->revenue, 2) : 0;
+            $attractionRev = $attractionData ? round($attractionData->revenue, 2) : 0;
 
             $hourlyData[] = [
                 'hour' => sprintf('%02d:00', $hour),
-                'revenue' => $hourData ? round($hourData->revenue, 2) : 0,
-                'bookings' => $hourData ? $hourData->bookings : 0,
+                'revenue' => round($bookingRev + $attractionRev, 2),
+                'bookings' => $bookingData ? $bookingData->bookings : 0,
             ];
         }
 
