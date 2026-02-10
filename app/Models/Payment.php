@@ -27,6 +27,8 @@ class Payment extends Model
         'method',
         'status',
         'notes',
+        'signature_image',
+        'terms_accepted',
         'paid_at',
         'refunded_at',
         'payment_id',
@@ -37,6 +39,7 @@ class Payment extends Model
         'amount' => 'decimal:2',
         'paid_at' => 'datetime',
         'refunded_at' => 'datetime',
+        'terms_accepted' => 'boolean',
     ];
 
     // Relationships

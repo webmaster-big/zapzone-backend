@@ -531,7 +531,7 @@ class BookingController extends Controller
 
                         $gmailService->sendEmail(
                             $staffUser->email,
-                            "🎉 New Booking Alert - {$booking->reference_number}",
+                            "New Booking Alert - {$booking->reference_number}",
                             $emailBody,
                             $booking->location->company->name ?? 'ZapZone'
                         );
@@ -562,18 +562,6 @@ class BookingController extends Controller
             Log::info('Staff email notifications skipped', [
                 'booking_id' => $booking->id,
                 'sent_email_to_staff' => false,
-            ]);
-        }
-
-        // Process automated email notifications (based on email_notifications table)
-        try {
-            $emailNotificationService = new EmailNotificationService();
-            $emailNotificationService->processBookingCreated($booking);
-        } catch (\Exception $e) {
-            // Log error but don't fail the booking creation
-            Log::warning('Failed to process automated email notifications for booking', [
-                'booking_id' => $booking->id,
-                'error' => $e->getMessage(),
             ]);
         }
 
@@ -1089,7 +1077,7 @@ class BookingController extends Controller
         $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
 
         // Send notification email if requested
-        if (isset($validated['send_notification']) && $validated['send_notification'] === true) {
+        if ($request->boolean('send_notification')) {
             $this->sendNotificationEmail($booking, 'updated');
         }
 
@@ -1591,8 +1579,10 @@ class BookingController extends Controller
     /**
      * Update internal notes only for a booking
      */
-    public function updateInternalNotes(Request $request, Booking $booking): JsonResponse
+    public function updateInternalNotes(Request $request, string $id): JsonResponse
     {
+        $booking = Booking::findOrFail($id);
+
         $validated = $request->validate([
             'internal_notes' => 'required|string',
         ]);

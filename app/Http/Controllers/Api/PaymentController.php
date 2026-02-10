@@ -100,6 +100,8 @@ class PaymentController extends Controller
             'notes' => 'nullable|string',
             'payment_id' => 'nullable|string|unique:payments,payment_id',
             'location_id' => 'nullable|exists:locations,id',
+            'signature_image' => 'nullable|string',
+            'terms_accepted' => 'nullable|boolean',
         ]);
 
         // Handle backward compatibility: convert booking_id to payable_id/payable_type
@@ -117,6 +119,11 @@ class PaymentController extends Controller
         }
 
         $validated['transaction_id'] = 'TXN' . now()->format('YmdHis') . strtoupper(Str::random(6));
+
+        // Handle signature image upload (base64)
+        if (isset($validated['signature_image']) && !empty($validated['signature_image'])) {
+            $validated['signature_image'] = $this->handleSignatureUpload($validated['signature_image']);
+        }
 
         if ($validated['status'] === 'completed') {
             $validated['paid_at'] = now();
@@ -227,25 +234,111 @@ class PaymentController extends Controller
         ]);
     }
 
-    // /**
-    //  * Update payable_id and payable_type for a payment
-    //  * Simple update without activity logging or relationship loading
-    //  */
-    // public function updatePayable(Request $request, Payment $payment): JsonResponse
-    // {
-    //     $validated = $request->validate([
-    //         'payable_id' => 'required|integer',
-    //         'payable_type' => ['required', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE])],
-    //     ]);
+    /**
+     * Link a payment to a booking or attraction purchase.
+     *
+     * Use this after charging the customer and then creating the booking/purchase.
+     * Flow: charge → create booking/purchase → call this to link payment to the entity.
+     *
+     * Updates the payable_id and payable_type on the payment record, and syncs
+     * the amount_paid on the related booking or attraction purchase.
+     */
+    public function updatePayable(Request $request, Payment $payment): JsonResponse
+    {
+        $validated = $request->validate([
+            'payable_id' => 'required|integer',
+            'payable_type' => ['required', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE])],
+        ]);
 
-    //     $payment->update($validated);
+        // Verify the target entity exists
+        if ($validated['payable_type'] === Payment::TYPE_BOOKING) {
+            $payable = Booking::find($validated['payable_id']);
+            if (!$payable) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Booking not found',
+                ], 404);
+            }
+        } elseif ($validated['payable_type'] === Payment::TYPE_ATTRACTION_PURCHASE) {
+            $payable = AttractionPurchase::find($validated['payable_id']);
+            if (!$payable) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Attraction purchase not found',
+                ], 404);
+            }
+        }
 
-    //     return response()->json([
-    //         'success' => true,
-    //         'message' => 'Payment payable updated successfully',
-    //         'data' => $payment->only(['id', 'payable_id', 'payable_type', 'amount', 'status'])
-    //     ]);
-    // }
+        $previousPayableId = $payment->payable_id;
+        $previousPayableType = $payment->payable_type;
+
+        // Update the payment's payable link
+        $payment->update($validated);
+
+        // Sync amount_paid on the newly linked entity
+        if ($payment->status === 'completed') {
+            $totalPaid = Payment::where('payable_id', $validated['payable_id'])
+                ->where('payable_type', $validated['payable_type'])
+                ->where('status', 'completed')
+                ->sum('amount');
+
+            $payable->update(['amount_paid' => $totalPaid]);
+
+            // Auto-determine status for attraction purchases
+            if ($validated['payable_type'] === Payment::TYPE_ATTRACTION_PURCHASE) {
+                if ($totalPaid >= $payable->total_amount && $payable->status === AttractionPurchase::STATUS_PENDING) {
+                    $payable->update(['status' => AttractionPurchase::STATUS_CONFIRMED]);
+                }
+            }
+        }
+
+        // If the payment was previously linked to another entity, recalculate that entity's amount_paid
+        if ($previousPayableId && $previousPayableType) {
+            $previousTotalPaid = Payment::where('payable_id', $previousPayableId)
+                ->where('payable_type', $previousPayableType)
+                ->where('status', 'completed')
+                ->sum('amount');
+
+            if ($previousPayableType === Payment::TYPE_BOOKING) {
+                $previousPayable = Booking::find($previousPayableId);
+            } else {
+                $previousPayable = AttractionPurchase::find($previousPayableId);
+            }
+
+            if ($previousPayable) {
+                $previousPayable->update(['amount_paid' => $previousTotalPaid]);
+            }
+        }
+
+        // Log activity
+        ActivityLog::log(
+            action: 'Payment Linked',
+            category: 'update',
+            description: "Payment #{$payment->id} (\${$payment->amount}) linked to {$validated['payable_type']} #{$validated['payable_id']}",
+            userId: auth()->id(),
+            locationId: $payment->location_id,
+            entityType: 'payment',
+            entityId: $payment->id,
+            metadata: [
+                'payment_id' => $payment->id,
+                'payable_id' => $validated['payable_id'],
+                'payable_type' => $validated['payable_type'],
+                'previous_payable_id' => $previousPayableId,
+                'previous_payable_type' => $previousPayableType,
+                'amount' => $payment->amount,
+                'linked_by' => auth()->user() ? auth()->user()->name ?? auth()->user()->email : 'System',
+            ]
+        );
+
+        $payment->load(['customer', 'location']);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Payment linked to ' . str_replace('_', ' ', $validated['payable_type']) . ' successfully',
+            'data' => $payment,
+            'payable' => $payable->fresh(),
+        ]);
+    }
 
     /**
      * Refund a payment via Authorize.Net
@@ -510,12 +603,14 @@ class PaymentController extends Controller
                         if ($payable) {
                             if ($isCancelled) {
                                 $payable->update([
-                                    'status' => 'cancelled',
+                                    'status' => $isFullRefund ? AttractionPurchase::STATUS_REFUNDED : AttractionPurchase::STATUS_PENDING,
                                     'amount_paid' => max(0, $payable->amount_paid - $refundAmount),
                                 ]);
                             } else {
+                                $newAmountPaid = max(0, $payable->amount_paid - $refundAmount);
                                 $payable->update([
-                                    'amount_paid' => max(0, $payable->amount_paid - $refundAmount),
+                                    'amount_paid' => $newAmountPaid,
+                                    'status' => $newAmountPaid <= 0 ? AttractionPurchase::STATUS_REFUNDED : AttractionPurchase::STATUS_PENDING,
                                 ]);
                             }
 
@@ -824,12 +919,14 @@ class PaymentController extends Controller
             if ($payable) {
                 if ($isCancelled) {
                     $payable->update([
-                        'status' => 'cancelled',
+                        'status' => $isFullRefund ? AttractionPurchase::STATUS_REFUNDED : AttractionPurchase::STATUS_PENDING,
                         'amount_paid' => max(0, $payable->amount_paid - $refundAmount),
                     ]);
                 } else {
+                    $newAmountPaid = max(0, $payable->amount_paid - $refundAmount);
                     $payable->update([
-                        'amount_paid' => max(0, $payable->amount_paid - $refundAmount),
+                        'amount_paid' => $newAmountPaid,
+                        'status' => $newAmountPaid <= 0 ? AttractionPurchase::STATUS_REFUNDED : AttractionPurchase::STATUS_PENDING,
                     ]);
                 }
 
@@ -1065,9 +1162,10 @@ class PaymentController extends Controller
                     } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE && $payment->payable_id) {
                         $payable = AttractionPurchase::find($payment->payable_id);
                         if ($payable) {
+                            $newAmountPaid = max(0, $payable->amount_paid - $voidAmount);
                             $payable->update([
-                                'status' => 'cancelled',
-                                'amount_paid' => max(0, $payable->amount_paid - $voidAmount),
+                                'status' => $newAmountPaid <= 0 ? AttractionPurchase::STATUS_REFUNDED : AttractionPurchase::STATUS_PENDING,
+                                'amount_paid' => $newAmountPaid,
                             ]);
 
                             // Send cancellation email
@@ -1186,12 +1284,6 @@ class PaymentController extends Controller
             'amount' => 'required|numeric|min:0.01',
             'order_id' => 'nullable|string',
             'customer_id' => 'nullable|exists:customers,id',
-            // New polymorphic fields
-            'payable_id' => 'nullable|integer',
-            'payable_type' => ['nullable', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE])],
-            // Backward compatibility
-            'booking_id' => 'nullable|exists:bookings,id',
-            'attraction_purchase_id' => 'nullable|exists:attraction_purchases,id',
             'description' => 'nullable|string',
             'customer' => 'nullable|array',
             'customer.first_name' => 'nullable|string|max:50',
@@ -1203,23 +1295,9 @@ class PaymentController extends Controller
             'customer.state' => 'nullable|string|max:40',
             'customer.zip' => 'nullable|string|max:20',
             'customer.country' => 'nullable|string|max:60',
+            'signature_image' => 'nullable|string',
+            'terms_accepted' => 'nullable|boolean',
         ]);
-
-        // Determine payable_id and payable_type from request
-        $payableId = $request->payable_id;
-        $payableType = $request->payable_type;
-
-        // Backward compatibility: convert booking_id to payable_id/payable_type
-        if ($request->booking_id && !$payableId) {
-            $payableId = $request->booking_id;
-            $payableType = Payment::TYPE_BOOKING;
-        }
-
-        // Handle attraction_purchase_id
-        if ($request->attraction_purchase_id && !$payableId) {
-            $payableId = $request->attraction_purchase_id;
-            $payableType = Payment::TYPE_ATTRACTION_PURCHASE;
-        }
 
         try {
             // 1. Get Authorize.Net account for the location
@@ -1399,9 +1477,9 @@ class PaymentController extends Controller
                     }
 
                     // Success - create payment record
+                    // Note: payable_id and payable_type are NOT set here.
+                    // They are linked later via PATCH /payments/{id}/payable after creating the booking/purchase.
                     $payment = Payment::create([
-                        'payable_id' => $payableId,
-                        'payable_type' => $payableType,
                         'customer_id' => $request->customer_id,
                         'location_id' => $request->location_id,
                         'amount' => $request->amount,
@@ -1412,6 +1490,8 @@ class PaymentController extends Controller
                         'payment_id' => $transactionId,
                         'notes' => $request->description ?? 'Authorize.Net payment via Accept.js',
                         'paid_at' => now(),
+                        'signature_image' => $request->signature_image ? $this->handleSignatureUpload($request->signature_image) : null,
+                        'terms_accepted' => $request->boolean('terms_accepted', false),
                     ]);
 
                     Log::info('Authorize.Net payment successful with customer data', [
@@ -2444,5 +2524,43 @@ class PaymentController extends Controller
         }
 
         return $pdf->download($filename);
+    }
+
+    /**
+     * Handle signature image upload from base64 data URI.
+     * Stores the image to storage/app/public/images/signatures/ and returns the relative path.
+     *
+     * @param string $image Base64 data URI or existing path
+     * @return string Relative path to the stored signature image
+     */
+    private function handleSignatureUpload(string $image): string
+    {
+        // Check if it's a base64 string
+        if (is_string($image) && strpos($image, 'data:image') === 0) {
+            // Extract base64 data
+            preg_match('/data:image\/(\w+);base64,/', $image, $matches);
+            $imageType = $matches[1] ?? 'png';
+            $base64Data = substr($image, strpos($image, ',') + 1);
+            $imageData = base64_decode($base64Data, true);
+
+            // Generate unique filename
+            $filename = uniqid() . '.' . $imageType;
+            $path = 'images/signatures';
+            $fullPath = storage_path('app/public/' . $path);
+
+            // Create directory if it doesn't exist
+            if (!file_exists($fullPath)) {
+                mkdir($fullPath, 0755, true);
+            }
+
+            // Save the file
+            file_put_contents($fullPath . '/' . $filename, $imageData);
+
+            // Return the relative path
+            return $path . '/' . $filename;
+        }
+
+        // If it's already a file path or URL, return as is
+        return $image;
     }
 }

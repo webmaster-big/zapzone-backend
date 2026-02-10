@@ -179,7 +179,9 @@ class AttractionPurchaseController extends Controller
         $totalAmount = $attraction->price * $validated['quantity'];
 
         $validated['total_amount'] = $totalAmount;
-        $validated['status'] = 'pending';
+        // Determine initial status based on payment
+        $amountPaid = $validated['amount_paid'] ?? 0;
+        $validated['status'] = ($amountPaid >= $totalAmount) ? AttractionPurchase::STATUS_CONFIRMED : AttractionPurchase::STATUS_PENDING;
         $validated['created_by'] = auth()->id() ?? null;
 
         $purchase = AttractionPurchase::create($validated);
@@ -519,7 +521,7 @@ class AttractionPurchaseController extends Controller
             'quantity' => 'sometimes|integer|min:1',
             'amount_paid' => 'sometimes|nullable|numeric|min:0',
             'payment_method' => ['sometimes', 'nullable', Rule::in(['card', 'in-store', 'paylater', 'authorize.net'])],
-            'status' => ['sometimes', Rule::in(['pending', 'completed', 'cancelled'])],
+            'status' => ['sometimes', Rule::in(AttractionPurchase::STATUSES)],
             'purchase_date' => 'sometimes|date',
             'notes' => 'nullable|string',
         ]);
@@ -625,45 +627,57 @@ class AttractionPurchaseController extends Controller
     public function updateStatus(Request $request, AttractionPurchase $attractionPurchase): JsonResponse
     {
         $validated = $request->validate([
-            'status' => ['required', Rule::in(['pending', 'completed', 'cancelled'])],
+            'status' => ['required', Rule::in(AttractionPurchase::STATUSES)],
             'amount_paid' => 'nullable|numeric|min:0',
             'payment_method' => ['nullable', Rule::in(['card', 'in-store', 'paylater', 'authorize.net'])],
         ]);
 
         $previousStatus = $attractionPurchase->status;
-        $attractionPurchase->update($validated);
 
-        // Note: Automated email notifications for status changes (completed/cancelled)
-        // can be added when those trigger types are supported in email_notifications table
+        // Auto-determine status based on amount_paid vs total_amount when amount_paid changes
+        if (isset($validated['amount_paid']) && !isset($validated['status'])) {
+            $newAmountPaid = $validated['amount_paid'];
+            if ($newAmountPaid >= $attractionPurchase->total_amount) {
+                $validated['status'] = AttractionPurchase::STATUS_CONFIRMED;
+            } else {
+                $validated['status'] = AttractionPurchase::STATUS_PENDING;
+            }
+        }
+
+        $attractionPurchase->update($validated);
 
         return response()->json([
             'success' => true,
             'message' => 'Attraction purchase status updated successfully',
-            'data' => $attractionPurchase,
+            'data' => $attractionPurchase->fresh(['attraction', 'customer', 'createdBy']),
         ]);
     }
 
     /**
-     * Mark purchase as completed.
+     * Mark purchase as confirmed (fully paid, awaiting check-in).
      */
-    public function markAsCompleted(AttractionPurchase $attractionPurchase): JsonResponse
+    public function markAsConfirmed(AttractionPurchase $attractionPurchase): JsonResponse
     {
-        if ($attractionPurchase->status === 'completed') {
+        if ($attractionPurchase->status === AttractionPurchase::STATUS_CONFIRMED) {
             return response()->json([
                 'success' => false,
-                'message' => 'Purchase is already completed',
+                'message' => 'Purchase is already confirmed',
             ], 400);
         }
 
-        $attractionPurchase->update(['status' => 'completed']);
-        $attractionPurchase->load(['attraction', 'customer', 'createdBy']);
+        if ($attractionPurchase->status === AttractionPurchase::STATUS_CHECKED_IN) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Purchase has already been checked in',
+            ], 400);
+        }
 
-        // Note: Automated email notifications for completion can be added
-        // when 'purchase_completed' trigger type is supported
+        $attractionPurchase->update(['status' => AttractionPurchase::STATUS_CONFIRMED]);
+        $attractionPurchase->load(['attraction', 'customer', 'createdBy']);
 
         return response()->json([
             'success' => true,
-            'message' => 'Purchase marked as completed',
+            'message' => 'Purchase marked as confirmed',
             'data' => $attractionPurchase,
         ]);
     }
@@ -673,18 +687,22 @@ class AttractionPurchaseController extends Controller
      */
     public function cancel(AttractionPurchase $attractionPurchase): JsonResponse
     {
-        if ($attractionPurchase->status === 'cancelled') {
+        if ($attractionPurchase->status === AttractionPurchase::STATUS_CANCELLED) {
             return response()->json([
                 'success' => false,
                 'message' => 'Purchase is already cancelled',
             ], 400);
         }
 
-        $attractionPurchase->update(['status' => 'cancelled']);
-        $attractionPurchase->load(['attraction', 'customer', 'createdBy']);
+        if ($attractionPurchase->status === AttractionPurchase::STATUS_CHECKED_IN) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Cannot cancel a checked-in purchase',
+            ], 400);
+        }
 
-        // Note: Automated email notifications for cancellation can be added
-        // when 'purchase_cancelled' trigger type is supported
+        $attractionPurchase->update(['status' => AttractionPurchase::STATUS_CANCELLED]);
+        $attractionPurchase->load(['attraction', 'customer', 'createdBy']);
 
         return response()->json([
             'success' => true,
@@ -710,18 +728,20 @@ class AttractionPurchaseController extends Controller
 
         $stats = [
             'total_purchases' => $query->count(),
-            'total_revenue' => $query->where('status', 'completed')->sum('total_amount'),
-            'pending_purchases' => $query->where('status', 'pending')->count(),
-            'completed_purchases' => $query->where('status', 'completed')->count(),
-            'cancelled_purchases' => $query->where('status', 'cancelled')->count(),
-            'total_quantity_sold' => $query->where('status', 'completed')->sum('quantity'),
+            'total_revenue' => (clone $query)->whereIn('status', [AttractionPurchase::STATUS_CONFIRMED, AttractionPurchase::STATUS_CHECKED_IN])->sum('total_amount'),
+            'pending_purchases' => (clone $query)->where('status', AttractionPurchase::STATUS_PENDING)->count(),
+            'confirmed_purchases' => (clone $query)->where('status', AttractionPurchase::STATUS_CONFIRMED)->count(),
+            'checked_in_purchases' => (clone $query)->where('status', AttractionPurchase::STATUS_CHECKED_IN)->count(),
+            'cancelled_purchases' => (clone $query)->where('status', AttractionPurchase::STATUS_CANCELLED)->count(),
+            'refunded_purchases' => (clone $query)->where('status', AttractionPurchase::STATUS_REFUNDED)->count(),
+            'total_quantity_sold' => (clone $query)->whereIn('status', [AttractionPurchase::STATUS_CONFIRMED, AttractionPurchase::STATUS_CHECKED_IN])->sum('quantity'),
             'by_payment_method' => AttractionPurchase::selectRaw('payment_method, COUNT(*) as count, SUM(total_amount) as revenue')
-                ->where('status', 'completed')
+                ->whereIn('status', [AttractionPurchase::STATUS_CONFIRMED, AttractionPurchase::STATUS_CHECKED_IN])
                 ->groupBy('payment_method')
                 ->get(),
             'top_attractions' => AttractionPurchase::with('attraction')
                 ->selectRaw('attraction_id, COUNT(*) as purchase_count, SUM(quantity) as total_quantity, SUM(total_amount) as total_revenue')
-                ->where('status', 'completed')
+                ->whereIn('status', [AttractionPurchase::STATUS_CONFIRMED, AttractionPurchase::STATUS_CHECKED_IN])
                 ->groupBy('attraction_id')
                 ->orderBy('total_revenue', 'desc')
                 ->limit(10)
@@ -945,15 +965,15 @@ public function checkIn(int $id): JsonResponse
             ->findOrFail($id);
 
         // Validate ticket status
-        if ($purchase->status === 'completed') {
+        if ($purchase->status === AttractionPurchase::STATUS_CHECKED_IN) {
             return response()->json([
                 'success' => false,
-                'message' => 'This ticket has already been used',
+                'message' => 'This ticket has already been checked in',
                 'data' => $purchase,
             ], 400);
         }
 
-        if ($purchase->status === 'cancelled') {
+        if ($purchase->status === AttractionPurchase::STATUS_CANCELLED) {
             return response()->json([
                 'success' => false,
                 'message' => 'This ticket has been cancelled',
@@ -961,8 +981,24 @@ public function checkIn(int $id): JsonResponse
             ], 400);
         }
 
-        // Mark as completed (checked in)
-        $purchase->status = 'completed';
+        if ($purchase->status === AttractionPurchase::STATUS_REFUNDED) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This ticket has been refunded',
+                'data' => $purchase,
+            ], 400);
+        }
+
+        if ($purchase->status === AttractionPurchase::STATUS_PENDING) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This ticket has not been fully paid yet. Payment must be completed before check-in.',
+                'data' => $purchase,
+            ], 400);
+        }
+
+        // Mark as checked-in (only confirmed tickets can be checked in)
+        $purchase->status = AttractionPurchase::STATUS_CHECKED_IN;
         $purchase->save();
 
         // Reload with relationships
@@ -981,7 +1017,7 @@ public function checkIn(int $id): JsonResponse
                 'quantity' => $purchase->quantity,
                 'total_amount' => $purchase->total_amount,
                 'payment_method' => $purchase->payment_method,
-                'status' => $purchase->status, // Now 'completed'
+                'status' => $purchase->status, // Now 'checked-in'
                 'purchase_date' => $purchase->purchase_date,
                 'notes' => $purchase->notes,
                 'created_at' => $purchase->created_at,

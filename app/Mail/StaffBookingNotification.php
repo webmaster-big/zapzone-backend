@@ -36,7 +36,7 @@ class StaffBookingNotification extends Mailable
             ? $this->booking->customer->first_name . ' ' . $this->booking->customer->last_name
             : $this->booking->guest_name;
 
-        $this->subject('🎉 New Booking Alert - ' . $this->booking->reference_number)
+        $this->subject('New Booking Alert - ' . $this->booking->reference_number)
             ->view('emails.staff-booking-notification')
             ->with([
                 'booking' => $this->booking,

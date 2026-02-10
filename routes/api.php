@@ -275,7 +275,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('attraction-purchases/statistics', [AttractionPurchaseController::class, 'statistics']);
     Route::get('attraction-purchases/customer/{customerId}', [AttractionPurchaseController::class, 'getByCustomer']);
     Route::get('attraction-purchases/attraction/{attractionId}', [AttractionPurchaseController::class, 'getByAttraction']);
-    Route::patch('attraction-purchases/{attractionPurchase}/complete', [AttractionPurchaseController::class, 'markAsCompleted']);
+    Route::patch('attraction-purchases/{attractionPurchase}/confirm', [AttractionPurchaseController::class, 'markAsConfirmed']);
     Route::patch('attraction-purchases/{attractionPurchase}/cancel', [AttractionPurchaseController::class, 'cancel']);
     Route::post('attraction-purchases/{attractionPurchase}/send-receipt', [AttractionPurchaseController::class, 'sendReceipt']);
     Route::get('attraction-purchases/{id}/verify', [AttractionPurchaseController::class, 'verify']);
@@ -341,7 +341,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('bookings/search', [BookingController::class, 'search']);
     Route::patch('bookings/{booking}/status', [BookingController::class, 'updateStatus']);
     Route::patch('bookings/{booking}/payment-status', [BookingController::class, 'updatePaymentStatus']);
-    Route::patch('bookings/{booking}/internal-notes', [BookingController::class, 'updateInternalNotes']);
+    Route::patch('bookings/{id}/internal-notes', [BookingController::class, 'updateInternalNotes']);
     Route::post('bookings/bulk-delete', [BookingController::class, 'bulkDelete']);
     Route::get('bookings/{booking}/summary', [BookingController::class, 'summary']);
     Route::get('bookings/{booking}/summary/view', [BookingController::class, 'summaryView']);
