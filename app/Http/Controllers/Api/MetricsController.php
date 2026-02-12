@@ -96,13 +96,23 @@ class MetricsController extends Controller
 
         // Apply date range filter
         if ($dateFrom) {
-            $bookingQuery->whereDate('created_at', '>=', $dateFrom);
-            $purchaseQuery->whereDate('created_at', '>=', $dateFrom);
+            if ($useDateTime) {
+                $bookingQuery->where('created_at', '>=', $dateFrom);
+                $purchaseQuery->where('created_at', '>=', $dateFrom);
+            } else {
+                $bookingQuery->whereDate('created_at', '>=', $dateFrom);
+                $purchaseQuery->whereDate('created_at', '>=', $dateFrom);
+            }
         }
 
         if ($dateTo) {
-            $bookingQuery->whereDate('created_at', '<=', $dateTo);
-            $purchaseQuery->whereDate('created_at', '<=', $dateTo);
+            if ($useDateTime) {
+                $bookingQuery->where('created_at', '<=', $dateTo);
+                $purchaseQuery->where('created_at', '<=', $dateTo);
+            } else {
+                $bookingQuery->whereDate('created_at', '<=', $dateTo);
+                $purchaseQuery->whereDate('created_at', '<=', $dateTo);
+            }
         }
 
         // Calculate booking metrics
@@ -415,13 +425,23 @@ class MetricsController extends Controller
 
         // Apply date range filter
         if ($dateFrom) {
-            $bookingQuery->whereDate('created_at', '>=', $dateFrom);
-            $purchaseQuery->whereDate('created_at', '>=', $dateFrom);
+            if ($useDateTime) {
+                $bookingQuery->where('created_at', '>=', $dateFrom);
+                $purchaseQuery->where('created_at', '>=', $dateFrom);
+            } else {
+                $bookingQuery->whereDate('created_at', '>=', $dateFrom);
+                $purchaseQuery->whereDate('created_at', '>=', $dateFrom);
+            }
         }
 
         if ($dateTo) {
-            $bookingQuery->whereDate('created_at', '<=', $dateTo);
-            $purchaseQuery->whereDate('created_at', '<=', $dateTo);
+            if ($useDateTime) {
+                $bookingQuery->where('created_at', '<=', $dateTo);
+                $purchaseQuery->where('created_at', '<=', $dateTo);
+            } else {
+                $bookingQuery->whereDate('created_at', '<=', $dateTo);
+                $purchaseQuery->whereDate('created_at', '<=', $dateTo);
+            }
         }
 
         // Calculate booking metrics
