@@ -107,16 +107,11 @@ class NotificationController extends Controller
 
     public function markAllAsRead(Request $request): JsonResponse
     {
-        $locationId = $request->get('location_id');
+        $validated = $request->validate([
+            'location_id' => 'required|exists:locations,id',
+        ]);
 
-        if (!$locationId) {
-            return response()->json([
-                'success' => false,
-                'message' => 'location_id is required',
-            ], 422);
-        }
-
-        Notification::where('location_id', $locationId)
+        $count = Notification::where('location_id', $validated['location_id'])
             ->where('status', 'unread')
             ->update([
                 'status' => 'read',
@@ -126,6 +121,56 @@ class NotificationController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'All notifications marked as read',
+            'data' => [
+                'count' => $count,
+                'location_id' => $validated['location_id'],
+            ],
+        ]);
+    }
+
+    public function clearAll(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'location_id' => 'required|exists:locations,id',
+            'status' => ['nullable', Rule::in(['read', 'unread', 'archived'])],
+        ]);
+
+        $query = Notification::where('location_id', $validated['location_id']);
+
+        // If status is specified, only delete notifications with that status
+        if (isset($validated['status'])) {
+            $query->where('status', $validated['status']);
+        }
+
+        $count = $query->count();
+        $query->delete();
+
+        // Log activity
+        ActivityLog::log(
+            action: 'Notifications Cleared',
+            category: 'delete',
+            description: "Cleared {$count} notifications for location #{$validated['location_id']}" . (isset($validated['status']) ? " (status: {$validated['status']})" : ''),
+            userId: auth()->id(),
+            locationId: $validated['location_id'],
+            entityType: 'notification',
+            entityId: null,
+            metadata: [
+                'cleared_by' => auth()->user() ? auth()->user()->name ?? auth()->user()->email : 'System',
+                'cleared_at' => now()->toIso8601String(),
+                'location_id' => $validated['location_id'],
+                'count' => $count,
+                'status_filter' => $validated['status'] ?? 'all',
+            ]
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => "Successfully cleared {$count} notification(s)",
+            'data' => [
+                'count' => $count,
+                'location_id' => $validated['location_id'],
+                'status_filter' => $validated['status'] ?? 'all',
+            ],
         ]);
     }
 

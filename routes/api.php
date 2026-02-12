@@ -359,7 +359,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('payments/{payment}/refund', [PaymentController::class, 'refund']);
     Route::patch('payments/{payment}/manual-refund', [PaymentController::class, 'manualRefund']);
     Route::patch('payments/{payment}/void', [PaymentController::class, 'voidTransaction']);
-    Route::patch('payments/{payment}/payable', [PaymentController::class, 'updatePayable']);
+    Route::match(['put', 'patch'], 'payments/{id}/payable', [PaymentController::class, 'updatePayable']);
     Route::get('payments/{payment}/invoice', [PaymentController::class, 'invoice']);
     Route::get('payments/{payment}/invoice/view', [PaymentController::class, 'invoiceView']);
 
@@ -371,6 +371,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::apiResource('notifications', NotificationController::class);
     Route::patch('notifications/{notification}/mark-as-read', [NotificationController::class, 'markAsRead']);
     Route::patch('notifications/mark-all-as-read', [NotificationController::class, 'markAllAsRead']);
+    Route::delete('notifications/clear-all', [NotificationController::class, 'clearAll']);
 
     // Customer Notification routes
     Route::apiResource('customer-notifications', CustomerNotificationController::class);
