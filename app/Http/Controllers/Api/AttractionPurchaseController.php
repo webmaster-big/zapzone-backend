@@ -197,7 +197,7 @@ class AttractionPurchaseController extends Controller
                 'title' => 'Attraction Purchase Confirmed',
                 'message' => "Your purchase of {$purchase->quantity} x {$purchase->attraction->name} has been confirmed. Total: $" . number_format($purchase->total_amount, 2),
                 'status' => 'unread',
-                'action_url' => "/attraction-purchases/{$purchase->id}",
+                'action_url' => "/attractions/purchases/{$purchase->id}",
                 'action_text' => 'View Purchase',
                 'metadata' => [
                     'purchase_id' => $purchase->id,
@@ -219,7 +219,7 @@ class AttractionPurchaseController extends Controller
                 'title' => 'New Attraction Purchase',
                 'message' => "New purchase: {$purchase->quantity} x {$purchase->attraction->name} by {$customerName}. Total: $" . number_format($purchase->total_amount, 2),
                 'status' => 'unread',
-                'action_url' => "/attraction-purchases/{$purchase->id}",
+                'action_url' => "/attractions/purchases/{$purchase->id}",
                 'action_text' => 'View Purchase',
                 'metadata' => [
                     'purchase_id' => $purchase->id,
