@@ -372,13 +372,15 @@ class BookingController extends Controller
 
         // Create notification for location staff
         $customerName = $booking->customer ? "{$booking->customer->first_name} {$booking->customer->last_name}" : $booking->guest_name;
+        $formattedDate = \Carbon\Carbon::parse($booking->booking_date)->format('m-d');
+        $formattedTime = \Carbon\Carbon::parse($booking->booking_time)->format('H:i');
         Notification::create([
             'location_id' => $booking->location_id,
             'type' => 'booking',
             'priority' => 'medium',
             'user_id' => $booking->created_by ?? auth()->id(),
             'title' => 'New Booking Received',
-            'message' => "{$customerName} — {$booking->booking_date} at {$booking->booking_time} • $" . number_format($booking->total_amount, 2) . " ({$booking->reference_number})",
+            'message' => "{$customerName} — {$formattedDate} at {$formattedTime} • $" . number_format($booking->total_amount, 2) . " ({$booking->reference_number})",
             'status' => 'unread',
             'action_url' => "/bookings/{$booking->id}",
             'action_text' => 'View Booking',
