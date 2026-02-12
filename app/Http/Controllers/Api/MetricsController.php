@@ -43,6 +43,7 @@ class MetricsController extends Controller
         $timeframe = $request->query('timeframe', 'all_time');
         $dateFrom = $request->query('date_from');
         $dateTo = $request->query('date_to');
+        $useDateTime = false; // Flag to determine if we should use datetime or date-only comparison
 
         // If custom dates are provided, use them and set timeframe to 'custom'
         if ($dateFrom || $dateTo) {
@@ -51,16 +52,19 @@ class MetricsController extends Controller
             // Apply timeframe preset
             switch ($timeframe) {
                 case 'last_24h':
-                    $dateFrom = now()->subHours(24)->toDateString();
-                    $dateTo = now()->toDateString();
+                    $dateFrom = now()->subHours(24);
+                    $dateTo = now();
+                    $useDateTime = true; // Use datetime comparison for precise 24-hour window
                     break;
                 case 'last_7d':
-                    $dateFrom = now()->subDays(7)->toDateString();
-                    $dateTo = now()->toDateString();
+                    $dateFrom = now()->subDays(7);
+                    $dateTo = now();
+                    $useDateTime = true;
                     break;
                 case 'last_30d':
-                    $dateFrom = now()->subDays(30)->toDateString();
-                    $dateTo = now()->toDateString();
+                    $dateFrom = now()->subDays(30);
+                    $dateTo = now();
+                    $useDateTime = true;
                     break;
                 case 'custom':
                 case 'all_time':
@@ -154,27 +158,43 @@ class MetricsController extends Controller
         // Get unique customers count
         $customerQuery = Customer::query();
         if ($locationId || $dateFrom || $dateTo) {
-            $customerQuery->whereHas('bookings', function ($q) use ($locationId, $dateFrom, $dateTo) {
+            $customerQuery->whereHas('bookings', function ($q) use ($locationId, $dateFrom, $dateTo, $useDateTime) {
                 if ($locationId) {
                     $q->where('location_id', $locationId);
                 }
                 if ($dateFrom) {
-                    $q->whereDate('created_at', '>=', $dateFrom);
+                    if ($useDateTime) {
+                        $q->where('created_at', '>=', $dateFrom);
+                    } else {
+                        $q->whereDate('created_at', '>=', $dateFrom);
+                    }
                 }
                 if ($dateTo) {
-                    $q->whereDate('created_at', '<=', $dateTo);
+                    if ($useDateTime) {
+                        $q->where('created_at', '<=', $dateTo);
+                    } else {
+                        $q->whereDate('created_at', '<=', $dateTo);
+                    }
                 }
-            })->orWhereHas('attractionPurchases', function ($q) use ($locationId, $dateFrom, $dateTo) {
+            })->orWhereHas('attractionPurchases', function ($q) use ($locationId, $dateFrom, $dateTo, $useDateTime) {
                 if ($locationId) {
                     $q->whereHas('attraction', function ($aq) use ($locationId) {
                         $aq->where('location_id', $locationId);
                     });
                 }
                 if ($dateFrom) {
-                    $q->whereDate('created_at', '>=', $dateFrom);
+                    if ($useDateTime) {
+                        $q->where('created_at', '>=', $dateFrom);
+                    } else {
+                        $q->whereDate('created_at', '>=', $dateFrom);
+                    }
                 }
                 if ($dateTo) {
-                    $q->whereDate('created_at', '<=', $dateTo);
+                    if ($useDateTime) {
+                        $q->where('created_at', '<=', $dateTo);
+                    } else {
+                        $q->whereDate('created_at', '<=', $dateTo);
+                    }
                 }
             });
         }
@@ -190,10 +210,18 @@ class MetricsController extends Controller
             });
         }
         if ($dateFrom) {
-            $recentPurchasesQuery->whereDate('created_at', '>=', $dateFrom);
+            if ($useDateTime) {
+                $recentPurchasesQuery->where('created_at', '>=', $dateFrom);
+            } else {
+                $recentPurchasesQuery->whereDate('created_at', '>=', $dateFrom);
+            }
         }
         if ($dateTo) {
-            $recentPurchasesQuery->whereDate('created_at', '<=', $dateTo);
+            if ($useDateTime) {
+                $recentPurchasesQuery->where('created_at', '<=', $dateTo);
+            } else {
+                $recentPurchasesQuery->whereDate('created_at', '<=', $dateTo);
+            }
         }
 
         $recentPurchases = $recentPurchasesQuery
@@ -220,8 +248,8 @@ class MetricsController extends Controller
         $response = [
             'timeframe' => [
                 'type' => $timeframe,
-                'date_from' => $dateFrom,
-                'date_to' => $dateTo,
+                'date_from' => $dateFrom ? ($useDateTime ? $dateFrom->toDateTimeString() : $dateFrom) : null,
+                'date_to' => $dateTo ? ($useDateTime ? $dateTo->toDateTimeString() : $dateTo) : null,
                 'description' => match($timeframe) {
                     'last_24h' => 'Last 24 Hours',
                     'last_7d' => 'Last 7 Days',
@@ -331,6 +359,7 @@ class MetricsController extends Controller
             $timeframe = $request->query('timeframe', 'all_time');
             $dateFrom = $request->query('date_from');
             $dateTo = $request->query('date_to');
+            $useDateTime = false; // Flag to determine if we should use datetime or date-only comparison
 
             // If custom dates are provided, use them and set timeframe to 'custom'
             if ($dateFrom || $dateTo) {
@@ -339,16 +368,19 @@ class MetricsController extends Controller
                 // Apply timeframe preset
                 switch ($timeframe) {
                     case 'last_24h':
-                        $dateFrom = now()->subHours(24)->toDateString();
-                        $dateTo = now()->toDateString();
+                        $dateFrom = now()->subHours(24);
+                        $dateTo = now();
+                        $useDateTime = true; // Use datetime comparison for precise 24-hour window
                         break;
                     case 'last_7d':
-                        $dateFrom = now()->subDays(7)->toDateString();
-                        $dateTo = now()->toDateString();
+                        $dateFrom = now()->subDays(7);
+                        $dateTo = now();
+                        $useDateTime = true;
                         break;
                     case 'last_30d':
-                        $dateFrom = now()->subDays(30)->toDateString();
-                        $dateTo = now()->toDateString();
+                        $dateFrom = now()->subDays(30);
+                        $dateTo = now();
+                        $useDateTime = true;
                         break;
                     case 'custom':
                     case 'all_time':
@@ -429,27 +461,43 @@ class MetricsController extends Controller
         // Get unique customers count
         $customerQuery = Customer::query();
         if ($locationId || $dateFrom || $dateTo) {
-            $customerQuery->whereHas('bookings', function ($q) use ($locationId, $dateFrom, $dateTo) {
+            $customerQuery->whereHas('bookings', function ($q) use ($locationId, $dateFrom, $dateTo, $useDateTime) {
                 if ($locationId) {
                     $q->where('location_id', $locationId);
                 }
                 if ($dateFrom) {
-                    $q->whereDate('created_at', '>=', $dateFrom);
+                    if ($useDateTime) {
+                        $q->where('created_at', '>=', $dateFrom);
+                    } else {
+                        $q->whereDate('created_at', '>=', $dateFrom);
+                    }
                 }
                 if ($dateTo) {
-                    $q->whereDate('created_at', '<=', $dateTo);
+                    if ($useDateTime) {
+                        $q->where('created_at', '<=', $dateTo);
+                    } else {
+                        $q->whereDate('created_at', '<=', $dateTo);
+                    }
                 }
-            })->orWhereHas('attractionPurchases', function ($q) use ($locationId, $dateFrom, $dateTo) {
+            })->orWhereHas('attractionPurchases', function ($q) use ($locationId, $dateFrom, $dateTo, $useDateTime) {
                 if ($locationId) {
                     $q->whereHas('attraction', function ($aq) use ($locationId) {
                         $aq->where('location_id', $locationId);
                     });
                 }
                 if ($dateFrom) {
-                    $q->whereDate('created_at', '>=', $dateFrom);
+                    if ($useDateTime) {
+                        $q->where('created_at', '>=', $dateFrom);
+                    } else {
+                        $q->whereDate('created_at', '>=', $dateFrom);
+                    }
                 }
                 if ($dateTo) {
-                    $q->whereDate('created_at', '<=', $dateTo);
+                    if ($useDateTime) {
+                        $q->where('created_at', '<=', $dateTo);
+                    } else {
+                        $q->whereDate('created_at', '<=', $dateTo);
+                    }
                 }
             });
         }
@@ -470,10 +518,18 @@ class MetricsController extends Controller
             });
         }
         if ($dateFrom) {
-            $recentPurchasesQuery->whereDate('created_at', '>=', $dateFrom);
+            if ($useDateTime) {
+                $recentPurchasesQuery->where('created_at', '>=', $dateFrom);
+            } else {
+                $recentPurchasesQuery->whereDate('created_at', '>=', $dateFrom);
+            }
         }
         if ($dateTo) {
-            $recentPurchasesQuery->whereDate('created_at', '<=', $dateTo);
+            if ($useDateTime) {
+                $recentPurchasesQuery->where('created_at', '<=', $dateTo);
+            } else {
+                $recentPurchasesQuery->whereDate('created_at', '<=', $dateTo);
+            }
         }
 
         $recentPurchases = $recentPurchasesQuery
@@ -506,10 +562,18 @@ class MetricsController extends Controller
             $recentBookingsQuery->where('location_id', $locationId);
         }
         if ($dateFrom) {
-            $recentBookingsQuery->whereDate('created_at', '>=', $dateFrom);
+            if ($useDateTime) {
+                $recentBookingsQuery->where('created_at', '>=', $dateFrom);
+            } else {
+                $recentBookingsQuery->whereDate('created_at', '>=', $dateFrom);
+            }
         }
         if ($dateTo) {
-            $recentBookingsQuery->whereDate('created_at', '<=', $dateTo);
+            if ($useDateTime) {
+                $recentBookingsQuery->where('created_at', '<=', $dateTo);
+            } else {
+                $recentBookingsQuery->whereDate('created_at', '<=', $dateTo);
+            }
         }
 
         $recentBookings = $recentBookingsQuery
@@ -548,8 +612,8 @@ class MetricsController extends Controller
         $response = [
             'timeframe' => [
                 'type' => $timeframe,
-                'date_from' => $dateFrom,
-                'date_to' => $dateTo,
+                'date_from' => $dateFrom ? ($useDateTime ? $dateFrom->toDateTimeString() : $dateFrom) : null,
+                'date_to' => $dateTo ? ($useDateTime ? $dateTo->toDateTimeString() : $dateTo) : null,
                 'description' => match($timeframe) {
                     'last_24h' => 'Last 24 Hours',
                     'last_7d' => 'Last 7 Days',
@@ -637,10 +701,11 @@ class MetricsController extends Controller
             // Booking stats for this location
             $locationBookingQuery = Booking::where('location_id', $location->id);
             if ($dateFrom) {
-                $locationBookingQuery->whereDate('created_at', '>=', $dateFrom);
+                // For location stats, always use date-only comparison for consistent reporting
+                $locationBookingQuery->whereDate('created_at', '>=', is_string($dateFrom) ? $dateFrom : $dateFrom->toDateString());
             }
             if ($dateTo) {
-                $locationBookingQuery->whereDate('created_at', '<=', $dateTo);
+                $locationBookingQuery->whereDate('created_at', '<=', is_string($dateTo) ? $dateTo : $dateTo->toDateString());
             }
 
             $locationBookings = $locationBookingQuery->count();
@@ -654,10 +719,11 @@ class MetricsController extends Controller
                 $q->where('location_id', $location->id);
             });
             if ($dateFrom) {
-                $locationPurchaseQuery->whereDate('created_at', '>=', $dateFrom);
+                // For location stats, always use date-only comparison for consistent reporting
+                $locationPurchaseQuery->whereDate('created_at', '>=', is_string($dateFrom) ? $dateFrom : $dateFrom->toDateString());
             }
             if ($dateTo) {
-                $locationPurchaseQuery->whereDate('created_at', '<=', $dateTo);
+                $locationPurchaseQuery->whereDate('created_at', '<=', is_string($dateTo) ? $dateTo : $dateTo->toDateString());
             }
 
             $locationPurchases = $locationPurchaseQuery->count();
