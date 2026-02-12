@@ -243,8 +243,15 @@ class PaymentController extends Controller
      * Updates the payable_id and payable_type on the payment record, and syncs
      * the amount_paid on the related booking or attraction purchase.
      */
-    public function updatePayable(Request $request, Payment $payment): JsonResponse
+    public function updatePayable(Request $request, string $id): JsonResponse
     {
+        $transactionId = $request->query('transaction_id');
+
+        // Find payment by ID or transaction_id
+        $payment = $id
+            ? Payment::findOrFail($id)
+            : Payment::where('transaction_id', $transactionId)->firstOrFail();
+
         $validated = $request->validate([
             'payable_id' => 'required|integer',
             'payable_type' => ['required', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE])],
