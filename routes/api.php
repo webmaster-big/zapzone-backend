@@ -367,11 +367,11 @@ Route::middleware('auth:sanctum')->group(function () {
     // Activity Log routes
     Route::apiResource('activity-logs', ActivityLogController::class)->only(['index', 'store', 'show']);
 
-    // Notification routes
-    Route::apiResource('notifications', NotificationController::class);
-    Route::patch('notifications/{notification}/mark-as-read', [NotificationController::class, 'markAsRead']);
+    // Notification routes - custom routes MUST be before apiResource
     Route::patch('notifications/mark-all-as-read', [NotificationController::class, 'markAllAsRead']);
     Route::delete('notifications/clear-all', [NotificationController::class, 'clearAll']);
+    Route::patch('notifications/{notification}/mark-as-read', [NotificationController::class, 'markAsRead']);
+    Route::apiResource('notifications', NotificationController::class);
 
     // Customer Notification routes
     Route::apiResource('customer-notifications', CustomerNotificationController::class);
