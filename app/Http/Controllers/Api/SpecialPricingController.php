@@ -21,7 +21,7 @@ class SpecialPricingController extends Controller
         try {
             $perPage = min($request->get('per_page', 15), 500);
 
-            $query = SpecialPricing::with(['company:id,name', 'location:id,name']);
+            $query = SpecialPricing::with(['company:id,company_name', 'location:id,name']);
 
             // Role-based filtering
             if ($request->has('user_id')) {
@@ -181,7 +181,7 @@ class SpecialPricingController extends Controller
         }
 
         $specialPricing = SpecialPricing::create($validated);
-        $specialPricing->load(['company:id,name', 'location:id,name']);
+        $specialPricing->load(['company:id,company_name', 'location:id,name']);
         $specialPricing->recurrence_display = $specialPricing->getRecurrenceDisplay();
         $specialPricing->upcoming_dates = $specialPricing->getUpcomingDates(3);
 
@@ -208,7 +208,7 @@ class SpecialPricingController extends Controller
      */
     public function show(SpecialPricing $specialPricing): JsonResponse
     {
-        $specialPricing->load(['company:id,name', 'location:id,name']);
+        $specialPricing->load(['company:id,company_name', 'location:id,name']);
         $specialPricing->recurrence_display = $specialPricing->getRecurrenceDisplay();
         $specialPricing->upcoming_dates = $specialPricing->getUpcomingDates(10);
 
@@ -262,7 +262,7 @@ class SpecialPricingController extends Controller
 
         $specialPricing->update($validated);
         $specialPricing->refresh();
-        $specialPricing->load(['company:id,name', 'location:id,name']);
+        $specialPricing->load(['company:id,company_name', 'location:id,name']);
         $specialPricing->recurrence_display = $specialPricing->getRecurrenceDisplay();
         $specialPricing->upcoming_dates = $specialPricing->getUpcomingDates(3);
 

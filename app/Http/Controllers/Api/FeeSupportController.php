@@ -20,7 +20,7 @@ class FeeSupportController extends Controller
         try {
             $perPage = min($request->get('per_page', 15), 500);
 
-            $query = FeeSupport::with(['company:id,name', 'location:id,name']);
+            $query = FeeSupport::with(['company:id,company_name', 'location:id,name']);
 
             // Role-based filtering
             if ($request->has('user_id')) {
@@ -126,7 +126,7 @@ class FeeSupportController extends Controller
         ]);
 
         $feeSupport = FeeSupport::create($validated);
-        $feeSupport->load(['company:id,name', 'location:id,name']);
+        $feeSupport->load(['company:id,company_name', 'location:id,name']);
 
         // Log activity
         ActivityLog::log(
@@ -151,7 +151,7 @@ class FeeSupportController extends Controller
      */
     public function show(FeeSupport $feeSupport): JsonResponse
     {
-        $feeSupport->load(['company:id,name', 'location:id,name']);
+        $feeSupport->load(['company:id,company_name', 'location:id,name']);
 
         return response()->json([
             'success' => true,
@@ -184,7 +184,7 @@ class FeeSupportController extends Controller
 
         $feeSupport->update($validated);
         $feeSupport->refresh();
-        $feeSupport->load(['company:id,name', 'location:id,name']);
+        $feeSupport->load(['company:id,company_name', 'location:id,name']);
 
         // Log activity
         ActivityLog::log(
