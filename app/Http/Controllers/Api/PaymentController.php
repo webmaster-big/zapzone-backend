@@ -23,6 +23,10 @@ use Barryvdh\DomPDF\Facade\Pdf;
 use Carbon\Carbon;
 use App\Mail\BookingCancellation;
 use App\Mail\AttractionPurchaseCancellation;
+use App\Mail\BookingConfirmation;
+use App\Mail\AttractionPurchaseReceipt;
+use App\Services\GmailApiService;
+use App\Services\EmailNotificationService;
 use net\authorize\api\contract\v1 as AnetAPI;
 use net\authorize\api\controller as AnetController;
 use net\authorize\api\constants\ANetEnvironment;
@@ -1304,6 +1308,12 @@ class PaymentController extends Controller
             'customer.country' => 'nullable|string|max:60',
             'signature_image' => 'nullable|string',
             'terms_accepted' => 'nullable|boolean',
+            // Payable linking - link payment to booking or attraction purchase
+            'payable_id' => 'nullable|integer',
+            'payable_type' => ['nullable', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE])],
+            // Email confirmation - send booking/purchase confirmation email after successful payment
+            'send_email' => 'nullable|boolean',
+            'qr_code' => 'nullable|string', // Base64 encoded QR code for email attachment
         ]);
 
         try {
@@ -1483,9 +1493,7 @@ class PaymentController extends Controller
                         ], 400);
                     }
 
-                    // Success - create payment record
-                    // Note: payable_id and payable_type are NOT set here.
-                    // They are linked later via PATCH /payments/{id}/payable after creating the booking/purchase.
+                    // Success - create payment record with optional payable linking
                     $payment = Payment::create([
                         'customer_id' => $request->customer_id,
                         'location_id' => $request->location_id,
@@ -1495,11 +1503,48 @@ class PaymentController extends Controller
                         'status' => 'completed',
                         'transaction_id' => $transactionId,
                         'payment_id' => $transactionId,
+                        'payable_id' => $request->payable_id,
+                        'payable_type' => $request->payable_type,
                         'notes' => $request->description ?? 'Authorize.Net payment via Accept.js',
                         'paid_at' => now(),
                         'signature_image' => $request->signature_image ? $this->handleSignatureUpload($request->signature_image) : null,
                         'terms_accepted' => $request->boolean('terms_accepted', false),
                     ]);
+
+                    // Update amount_paid on the linked booking or attraction purchase
+                    $payable = null;
+                    if ($payment->payable_id && $payment->payable_type) {
+                        if ($payment->payable_type === Payment::TYPE_BOOKING) {
+                            $payable = Booking::find($payment->payable_id);
+                            if ($payable) {
+                                $totalPaid = Payment::where('payable_id', $payable->id)
+                                    ->where('payable_type', Payment::TYPE_BOOKING)
+                                    ->where('status', 'completed')
+                                    ->sum('amount');
+                                $payable->update([
+                                    'amount_paid' => $totalPaid,
+                                    'payment_status' => $totalPaid >= $payable->total_amount ? 'paid' : 'partial',
+                                    'payment_method' => 'authorize.net',
+                                    'transaction_id' => $transactionId,
+                                    'status' => 'confirmed',
+                                ]);
+                            }
+                        } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE) {
+                            $payable = AttractionPurchase::find($payment->payable_id);
+                            if ($payable) {
+                                $totalPaid = Payment::where('payable_id', $payable->id)
+                                    ->where('payable_type', Payment::TYPE_ATTRACTION_PURCHASE)
+                                    ->where('status', 'completed')
+                                    ->sum('amount');
+                                $payable->update([
+                                    'amount_paid' => $totalPaid,
+                                    'payment_method' => 'authorize.net',
+                                    'transaction_id' => $transactionId,
+                                    'status' => $totalPaid >= $payable->total_amount ? AttractionPurchase::STATUS_CONFIRMED : AttractionPurchase::STATUS_PENDING,
+                                ]);
+                            }
+                        }
+                    }
 
                     Log::info('Authorize.Net payment successful with customer data', [
                         'transaction_id' => $transactionId,
@@ -1556,12 +1601,162 @@ class PaymentController extends Controller
                         ],
                     ]);
 
+                    // Send confirmation email if requested
+                    $emailSent = false;
+                    $emailError = null;
+                    $sendEmail = $request->boolean('send_email', false);
+
+                    if ($sendEmail && $payable) {
+                        try {
+                            $qrCode = $request->qr_code;
+
+                            if ($payment->payable_type === Payment::TYPE_BOOKING) {
+                                // Send booking confirmation email with QR code
+                                $booking = $payable;
+                                $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
+
+                                $recipientEmail = $booking->customer
+                                    ? $booking->customer->email
+                                    : $booking->guest_email;
+
+                                if ($recipientEmail && $qrCode) {
+                                    // Process QR code
+                                    $qrCodeData = $qrCode;
+                                    if (strpos($qrCodeData, 'data:image') === 0) {
+                                        $qrCodeData = substr($qrCodeData, strpos($qrCodeData, ',') + 1);
+                                    }
+
+                                    $qrCodeImage = base64_decode($qrCodeData);
+                                    if ($qrCodeImage) {
+                                        // Save QR code file
+                                        $fileName = 'qr_' . $booking->id . '.png';
+                                        $qrCodePath = 'qrcodes/' . $fileName;
+                                        $fullPath = storage_path('app/public/' . $qrCodePath);
+
+                                        $dir = dirname($fullPath);
+                                        if (!file_exists($dir)) {
+                                            mkdir($dir, 0755, true);
+                                        }
+                                        file_put_contents($fullPath, $qrCodeImage);
+
+                                        // Update booking with QR code path
+                                        $booking->update(['qr_code_path' => $qrCodePath]);
+
+                                        // Send email
+                                        $useGmailApi = config('gmail.enabled', false) &&
+                                            (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
+
+                                        if ($useGmailApi) {
+                                            $gmailService = new GmailApiService();
+                                            $mailable = new BookingConfirmation($booking, $fullPath);
+                                            $emailBody = $mailable->render();
+
+                                            $gmailService->sendEmail(
+                                                $recipientEmail,
+                                                'Your Booking Confirmation - Zap Zone',
+                                                $emailBody,
+                                                'Zap Zone',
+                                                [['data' => $qrCodeData, 'filename' => 'booking-qrcode.png', 'mime_type' => 'image/png']]
+                                            );
+                                        } else {
+                                            Mail::send([], [], function ($message) use ($booking, $fullPath, $recipientEmail) {
+                                                $mailable = new BookingConfirmation($booking, $fullPath);
+                                                $emailBody = $mailable->render();
+                                                $message->to($recipientEmail)
+                                                    ->subject('Your Booking Confirmation - Zap Zone')
+                                                    ->html($emailBody)
+                                                    ->attach($fullPath, ['as' => 'booking-qrcode.png', 'mime' => 'image/png']);
+                                            });
+                                        }
+
+                                        $emailSent = true;
+                                        Log::info('Booking confirmation email sent from charge()', [
+                                            'booking_id' => $booking->id,
+                                            'email' => $recipientEmail,
+                                        ]);
+                                    }
+                                }
+                            } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE) {
+                                // Send attraction purchase receipt email with QR code
+                                $purchase = $payable;
+                                $purchase->load(['attraction.location', 'customer', 'createdBy']);
+
+                                $recipientEmail = $purchase->customer
+                                    ? $purchase->customer->email
+                                    : $purchase->guest_email;
+
+                                if ($recipientEmail && $qrCode) {
+                                    // Process QR code
+                                    $qrCodeBase64 = $qrCode;
+                                    if (strpos($qrCodeBase64, 'data:image') === 0) {
+                                        $qrCodeBase64 = substr($qrCodeBase64, strpos($qrCodeBase64, ',') + 1);
+                                    }
+
+                                    if ($qrCodeBase64) {
+                                        $useGmailApi = config('gmail.enabled', false) &&
+                                            (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
+
+                                        if ($useGmailApi) {
+                                            $gmailService = new GmailApiService();
+                                            $mailable = new AttractionPurchaseReceipt($purchase, $qrCodeBase64);
+                                            $emailBody = $mailable->render();
+
+                                            $gmailService->sendEmail(
+                                                $recipientEmail,
+                                                'Your Attraction Purchase Receipt - Zap Zone',
+                                                $emailBody,
+                                                'Zap Zone',
+                                                [['data' => $qrCodeBase64, 'filename' => 'qrcode.png', 'mime_type' => 'image/png']]
+                                            );
+                                        } else {
+                                            $qrCodeImage = base64_decode($qrCodeBase64);
+                                            $tempPath = storage_path('app/temp/qr_' . $purchase->id . '_' . time() . '.png');
+                                            if (!file_exists(storage_path('app/temp'))) {
+                                                mkdir(storage_path('app/temp'), 0755, true);
+                                            }
+                                            file_put_contents($tempPath, $qrCodeImage);
+
+                                            Mail::send([], [], function ($message) use ($purchase, $tempPath, $recipientEmail, $qrCodeBase64) {
+                                                $mailable = new AttractionPurchaseReceipt($purchase, $qrCodeBase64);
+                                                $emailBody = $mailable->render();
+                                                $message->to($recipientEmail)
+                                                    ->subject('Your Attraction Purchase Receipt - Zap Zone')
+                                                    ->html($emailBody)
+                                                    ->attach($tempPath, ['as' => 'qrcode.png', 'mime' => 'image/png']);
+                                            });
+
+                                            if (file_exists($tempPath)) {
+                                                unlink($tempPath);
+                                            }
+                                        }
+
+                                        $emailSent = true;
+                                        Log::info('Attraction purchase receipt sent from charge()', [
+                                            'purchase_id' => $purchase->id,
+                                            'email' => $recipientEmail,
+                                        ]);
+                                    }
+                                }
+                            }
+                        } catch (\Exception $e) {
+                            $emailError = $e->getMessage();
+                            Log::error('Failed to send confirmation email from charge()', [
+                                'payment_id' => $payment->id,
+                                'payable_type' => $payment->payable_type,
+                                'payable_id' => $payment->payable_id,
+                                'error' => $e->getMessage(),
+                            ]);
+                        }
+                    }
+
                     return response()->json([
                         'success' => true,
                         'message' => 'Payment processed successfully',
                         'transaction_id' => $transactionId,
                         'auth_code' => $tresponse->getAuthCode(),
                         'payment' => $payment,
+                        'email_sent' => $emailSent,
+                        'email_error' => $emailError,
                     ]);
                 } else {
                     // Transaction failed
