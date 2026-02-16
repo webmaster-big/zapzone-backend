@@ -186,15 +186,23 @@ class SpecialPricingController extends Controller
         $specialPricing->upcoming_dates = $specialPricing->getUpcomingDates(3);
 
         // Log activity
+        $currentUser = $request->user();
         ActivityLog::log(
-            'created',
-            'special_pricing',
-            "Special pricing '{$specialPricing->name}' created",
-            $request->user()?->id,
-            $specialPricing->location_id,
-            'SpecialPricing',
-            $specialPricing->id,
-            $specialPricing->toArray()
+            action: 'Special Pricing Created',
+            category: 'create',
+            description: "Special pricing '{$specialPricing->name}' created",
+            userId: $currentUser?->id,
+            locationId: $specialPricing->location_id,
+            entityType: 'special_pricing',
+            entityId: $specialPricing->id,
+            metadata: [
+                'created_by' => [
+                    'user_id' => $currentUser?->id,
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'special_pricing_details' => $specialPricing->toArray(),
+            ]
         );
 
         return response()->json([
@@ -268,15 +276,24 @@ class SpecialPricingController extends Controller
         $specialPricing->upcoming_dates = $specialPricing->getUpcomingDates(3);
 
         // Log activity
+        $currentUser = $request->user();
         ActivityLog::log(
-            'updated',
-            'special_pricing',
-            "Special pricing '{$originalName}' updated",
-            $request->user()?->id,
-            $specialPricing->location_id,
-            'SpecialPricing',
-            $specialPricing->id,
-            ['original' => $originalData, 'updated' => $specialPricing->toArray()]
+            action: 'Special Pricing Updated',
+            category: 'update',
+            description: "Special pricing '{$originalName}' updated",
+            userId: $currentUser?->id,
+            locationId: $specialPricing->location_id,
+            entityType: 'special_pricing',
+            entityId: $specialPricing->id,
+            metadata: [
+                'updated_by' => [
+                    'user_id' => $currentUser?->id,
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'original' => $originalData,
+                'updated' => $specialPricing->toArray(),
+            ]
         );
 
         return response()->json([
@@ -294,15 +311,23 @@ class SpecialPricingController extends Controller
         $name = $specialPricing->name;
 
         // Log activity before deletion
+        $currentUser = $request->user();
         ActivityLog::log(
-            'deleted',
-            'special_pricing',
-            "Special pricing '{$name}' deleted",
-            $request->user()?->id,
-            $specialPricing->location_id,
-            'SpecialPricing',
-            $specialPricing->id,
-            $specialPricing->toArray()
+            action: 'Special Pricing Deleted',
+            category: 'delete',
+            description: "Special pricing '{$name}' deleted",
+            userId: $currentUser?->id,
+            locationId: $specialPricing->location_id,
+            entityType: 'special_pricing',
+            entityId: $specialPricing->id,
+            metadata: [
+                'deleted_by' => [
+                    'user_id' => $currentUser?->id,
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'special_pricing_details' => $specialPricing->toArray(),
+            ]
         );
 
         $specialPricing->delete();
@@ -324,15 +349,23 @@ class SpecialPricingController extends Controller
         $status = $specialPricing->is_active ? 'activated' : 'deactivated';
 
         // Log activity
+        $currentUser = $request->user();
         ActivityLog::log(
-            'status_toggled',
-            'special_pricing',
-            "Special pricing '{$specialPricing->name}' {$status}",
-            $request->user()?->id,
-            $specialPricing->location_id,
-            'SpecialPricing',
-            $specialPricing->id,
-            ['is_active' => $specialPricing->is_active]
+            action: "Special Pricing {$status}",
+            category: 'update',
+            description: "Special pricing '{$specialPricing->name}' {$status}",
+            userId: $currentUser?->id,
+            locationId: $specialPricing->location_id,
+            entityType: 'special_pricing',
+            entityId: $specialPricing->id,
+            metadata: [
+                'toggled_by' => [
+                    'user_id' => $currentUser?->id,
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'is_active' => $specialPricing->is_active,
+            ]
         );
 
         return response()->json([
@@ -533,15 +566,21 @@ class SpecialPricingController extends Controller
         $count = SpecialPricing::whereIn('id', $validated['ids'])->delete();
 
         // Log activity
+        $currentUser = $request->user();
         ActivityLog::log(
-            'bulk_deleted',
-            'special_pricing',
-            "{$count} special pricing(s) deleted",
-            $request->user()?->id,
-            null,
-            'SpecialPricing',
-            null,
-            ['deleted_ids' => $validated['ids']]
+            action: 'Special Pricings Bulk Deleted',
+            category: 'delete',
+            description: "{$count} special pricing(s) deleted",
+            userId: $currentUser?->id,
+            metadata: [
+                'deleted_by' => [
+                    'user_id' => $currentUser?->id,
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'deleted_count' => $count,
+                'deleted_ids' => $validated['ids'],
+            ]
         );
 
         return response()->json([

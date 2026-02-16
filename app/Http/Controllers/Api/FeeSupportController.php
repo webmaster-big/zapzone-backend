@@ -129,15 +129,23 @@ class FeeSupportController extends Controller
         $feeSupport->load(['company:id,company_name', 'location:id,name']);
 
         // Log activity
+        $currentUser = $request->user();
         ActivityLog::log(
-            'created',
-            'fee_support',
-            "Fee support '{$feeSupport->fee_name}' created",
-            $request->user()?->id,
-            $feeSupport->location_id,
-            'FeeSupport',
-            $feeSupport->id,
-            $feeSupport->toArray()
+            action: 'Fee Support Created',
+            category: 'create',
+            description: "Fee support '{$feeSupport->fee_name}' created",
+            userId: $currentUser?->id,
+            locationId: $feeSupport->location_id,
+            entityType: 'fee_support',
+            entityId: $feeSupport->id,
+            metadata: [
+                'created_by' => [
+                    'user_id' => $currentUser?->id,
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'fee_support_details' => $feeSupport->toArray(),
+            ]
         );
 
         return response()->json([
@@ -188,15 +196,24 @@ class FeeSupportController extends Controller
         $feeSupport->load(['company:id,company_name', 'location:id,name']);
 
         // Log activity
+        $currentUser = $request->user();
         ActivityLog::log(
-            'updated',
-            'fee_support',
-            "Fee support '{$originalName}' updated",
-            $request->user()?->id,
-            $feeSupport->location_id,
-            'FeeSupport',
-            $feeSupport->id,
-            ['original' => $originalData, 'updated' => $feeSupport->toArray()]
+            action: 'Fee Support Updated',
+            category: 'update',
+            description: "Fee support '{$originalName}' updated",
+            userId: $currentUser?->id,
+            locationId: $feeSupport->location_id,
+            entityType: 'fee_support',
+            entityId: $feeSupport->id,
+            metadata: [
+                'updated_by' => [
+                    'user_id' => $currentUser?->id,
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'original' => $originalData,
+                'updated' => $feeSupport->toArray(),
+            ]
         );
 
         return response()->json([
@@ -214,15 +231,23 @@ class FeeSupportController extends Controller
         $feeName = $feeSupport->fee_name;
 
         // Log activity before deletion
+        $currentUser = $request->user();
         ActivityLog::log(
-            'deleted',
-            'fee_support',
-            "Fee support '{$feeName}' deleted",
-            $request->user()?->id,
-            $feeSupport->location_id,
-            'FeeSupport',
-            $feeSupport->id,
-            $feeSupport->toArray()
+            action: 'Fee Support Deleted',
+            category: 'delete',
+            description: "Fee support '{$feeName}' deleted",
+            userId: $currentUser?->id,
+            locationId: $feeSupport->location_id,
+            entityType: 'fee_support',
+            entityId: $feeSupport->id,
+            metadata: [
+                'deleted_by' => [
+                    'user_id' => $currentUser?->id,
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'fee_support_details' => $feeSupport->toArray(),
+            ]
         );
 
         $feeSupport->delete();
@@ -244,15 +269,23 @@ class FeeSupportController extends Controller
         $status = $feeSupport->is_active ? 'activated' : 'deactivated';
 
         // Log activity
+        $currentUser = $request->user();
         ActivityLog::log(
-            'status_toggled',
-            'fee_support',
-            "Fee support '{$feeSupport->fee_name}' {$status}",
-            $request->user()?->id,
-            $feeSupport->location_id,
-            'FeeSupport',
-            $feeSupport->id,
-            ['is_active' => $feeSupport->is_active]
+            action: "Fee Support {$status}",
+            category: 'update',
+            description: "Fee support '{$feeSupport->fee_name}' {$status}",
+            userId: $currentUser?->id,
+            locationId: $feeSupport->location_id,
+            entityType: 'fee_support',
+            entityId: $feeSupport->id,
+            metadata: [
+                'toggled_by' => [
+                    'user_id' => $currentUser?->id,
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'is_active' => $feeSupport->is_active,
+            ]
         );
 
         return response()->json([
@@ -325,15 +358,21 @@ class FeeSupportController extends Controller
         $count = FeeSupport::whereIn('id', $validated['ids'])->delete();
 
         // Log activity
+        $currentUser = $request->user();
         ActivityLog::log(
-            'bulk_deleted',
-            'fee_support',
-            "{$count} fee support(s) deleted",
-            $request->user()?->id,
-            null,
-            'FeeSupport',
-            null,
-            ['deleted_ids' => $validated['ids']]
+            action: 'Fee Supports Bulk Deleted',
+            category: 'delete',
+            description: "{$count} fee support(s) deleted",
+            userId: $currentUser?->id,
+            metadata: [
+                'deleted_by' => [
+                    'user_id' => $currentUser?->id,
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'deleted_count' => $count,
+                'deleted_ids' => $validated['ids'],
+            ]
         );
 
         return response()->json([
