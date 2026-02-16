@@ -181,6 +181,14 @@ Route::post('contacts/deactivate', [ContactController::class, 'deactivate']);
 // Public Day Off
 Route::get('day-offs/location/{locationId}', [DayOffController::class, 'getByLocation']);
 
+// Public Special Pricing (for booking flows)
+Route::get('special-pricings/for-entity', [SpecialPricingController::class, 'getForEntity']);
+Route::post('special-pricings/check-date', [SpecialPricingController::class, 'checkDate']);
+Route::get('special-pricings/upcoming-dates', [SpecialPricingController::class, 'getUpcomingDates']);
+
+// Public Fee Support (for booking flows)
+Route::get('fee-supports/for-entity', [FeeSupportController::class, 'getForEntity']);
+
 
 // Protected routes (require authentication)
 Route::middleware('auth:sanctum')->group(function () {
@@ -297,17 +305,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('day-offs/check-date', [DayOffController::class, 'checkDate']);
     Route::post('day-offs/bulk-delete', [DayOffController::class, 'bulkDelete']);
 
-    // Special Pricing routes (recurring/one-time discounts)
-    Route::get('special-pricings/for-entity', [SpecialPricingController::class, 'getForEntity']);
+    // Special Pricing routes (protected admin routes)
     Route::get('special-pricings/location/{locationId}', [SpecialPricingController::class, 'getByLocation']);
-    Route::get('special-pricings/upcoming-dates', [SpecialPricingController::class, 'getUpcomingDates']);
-    Route::post('special-pricings/check-date', [SpecialPricingController::class, 'checkDate']);
     Route::patch('special-pricings/{specialPricing}/toggle-status', [SpecialPricingController::class, 'toggleStatus']);
     Route::post('special-pricings/bulk-delete', [SpecialPricingController::class, 'bulkDelete']);
     Route::apiResource('special-pricings', SpecialPricingController::class);
 
-    // Fee Support routes
-    Route::get('fee-supports/for-entity', [FeeSupportController::class, 'getForEntity']);
+    // Fee Support routes (protected admin routes)
     Route::get('fee-supports/location/{locationId}', [FeeSupportController::class, 'getByLocation']);
     Route::patch('fee-supports/{feeSupport}/toggle-status', [FeeSupportController::class, 'toggleStatus']);
     Route::post('fee-supports/bulk-delete', [FeeSupportController::class, 'bulkDelete']);
