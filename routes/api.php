@@ -28,6 +28,7 @@ use App\Http\Controllers\Api\PackageTimeSlotController;
 use App\Http\Controllers\Api\PaymentController;
 use App\Http\Controllers\Api\PromoController;
 use App\Http\Controllers\Api\RoomController;
+use App\Http\Controllers\Api\SpecialPricingController;
 use App\Http\Controllers\Api\ShareableTokenController;
 use App\Http\Controllers\Api\StreamController;
 use App\Http\Controllers\Api\StripeController;
@@ -295,6 +296,15 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::apiResource('day-offs', DayOffController::class);
     Route::post('day-offs/check-date', [DayOffController::class, 'checkDate']);
     Route::post('day-offs/bulk-delete', [DayOffController::class, 'bulkDelete']);
+
+    // Special Pricing routes (recurring/one-time discounts)
+    Route::get('special-pricings/for-entity', [SpecialPricingController::class, 'getForEntity']);
+    Route::get('special-pricings/location/{locationId}', [SpecialPricingController::class, 'getByLocation']);
+    Route::get('special-pricings/upcoming-dates', [SpecialPricingController::class, 'getUpcomingDates']);
+    Route::post('special-pricings/check-date', [SpecialPricingController::class, 'checkDate']);
+    Route::patch('special-pricings/{specialPricing}/toggle-status', [SpecialPricingController::class, 'toggleStatus']);
+    Route::post('special-pricings/bulk-delete', [SpecialPricingController::class, 'bulkDelete']);
+    Route::apiResource('special-pricings', SpecialPricingController::class);
 
     // Fee Support routes
     Route::get('fee-supports/for-entity', [FeeSupportController::class, 'getForEntity']);
