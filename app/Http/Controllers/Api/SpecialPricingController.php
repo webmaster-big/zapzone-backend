@@ -187,12 +187,13 @@ class SpecialPricingController extends Controller
 
         // Log activity
         ActivityLog::log(
-            'special_pricing',
             'created',
+            'special_pricing',
             "Special pricing '{$specialPricing->name}' created",
             $request->user()?->id,
+            $specialPricing->location_id,
+            'SpecialPricing',
             $specialPricing->id,
-            null,
             $specialPricing->toArray()
         );
 
@@ -268,13 +269,14 @@ class SpecialPricingController extends Controller
 
         // Log activity
         ActivityLog::log(
-            'special_pricing',
             'updated',
+            'special_pricing',
             "Special pricing '{$originalName}' updated",
             $request->user()?->id,
+            $specialPricing->location_id,
+            'SpecialPricing',
             $specialPricing->id,
-            $originalData,
-            $specialPricing->toArray()
+            ['original' => $originalData, 'updated' => $specialPricing->toArray()]
         );
 
         return response()->json([
@@ -293,13 +295,14 @@ class SpecialPricingController extends Controller
 
         // Log activity before deletion
         ActivityLog::log(
-            'special_pricing',
             'deleted',
+            'special_pricing',
             "Special pricing '{$name}' deleted",
             $request->user()?->id,
+            $specialPricing->location_id,
+            'SpecialPricing',
             $specialPricing->id,
-            $specialPricing->toArray(),
-            null
+            $specialPricing->toArray()
         );
 
         $specialPricing->delete();
@@ -322,12 +325,13 @@ class SpecialPricingController extends Controller
 
         // Log activity
         ActivityLog::log(
-            'special_pricing',
             'status_toggled',
+            'special_pricing',
             "Special pricing '{$specialPricing->name}' {$status}",
             $request->user()?->id,
+            $specialPricing->location_id,
+            'SpecialPricing',
             $specialPricing->id,
-            null,
             ['is_active' => $specialPricing->is_active]
         );
 
@@ -530,13 +534,14 @@ class SpecialPricingController extends Controller
 
         // Log activity
         ActivityLog::log(
-            'special_pricing',
             'bulk_deleted',
+            'special_pricing',
             "{$count} special pricing(s) deleted",
             $request->user()?->id,
             null,
-            ['deleted_ids' => $validated['ids']],
-            null
+            'SpecialPricing',
+            null,
+            ['deleted_ids' => $validated['ids']]
         );
 
         return response()->json([

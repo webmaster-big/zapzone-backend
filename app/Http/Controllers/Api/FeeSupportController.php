@@ -130,12 +130,13 @@ class FeeSupportController extends Controller
 
         // Log activity
         ActivityLog::log(
-            'fee_support',
             'created',
+            'fee_support',
             "Fee support '{$feeSupport->fee_name}' created",
             $request->user()?->id,
+            $feeSupport->location_id,
+            'FeeSupport',
             $feeSupport->id,
-            null,
             $feeSupport->toArray()
         );
 
@@ -188,13 +189,14 @@ class FeeSupportController extends Controller
 
         // Log activity
         ActivityLog::log(
-            'fee_support',
             'updated',
+            'fee_support',
             "Fee support '{$originalName}' updated",
             $request->user()?->id,
+            $feeSupport->location_id,
+            'FeeSupport',
             $feeSupport->id,
-            $originalData,
-            $feeSupport->toArray()
+            ['original' => $originalData, 'updated' => $feeSupport->toArray()]
         );
 
         return response()->json([
@@ -213,13 +215,14 @@ class FeeSupportController extends Controller
 
         // Log activity before deletion
         ActivityLog::log(
-            'fee_support',
             'deleted',
+            'fee_support',
             "Fee support '{$feeName}' deleted",
             $request->user()?->id,
+            $feeSupport->location_id,
+            'FeeSupport',
             $feeSupport->id,
-            $feeSupport->toArray(),
-            null
+            $feeSupport->toArray()
         );
 
         $feeSupport->delete();
@@ -242,12 +245,13 @@ class FeeSupportController extends Controller
 
         // Log activity
         ActivityLog::log(
-            'fee_support',
             'status_toggled',
+            'fee_support',
             "Fee support '{$feeSupport->fee_name}' {$status}",
             $request->user()?->id,
+            $feeSupport->location_id,
+            'FeeSupport',
             $feeSupport->id,
-            null,
             ['is_active' => $feeSupport->is_active]
         );
 
@@ -322,13 +326,14 @@ class FeeSupportController extends Controller
 
         // Log activity
         ActivityLog::log(
-            'fee_support',
             'bulk_deleted',
+            'fee_support',
             "{$count} fee support(s) deleted",
             $request->user()?->id,
             null,
-            ['deleted_ids' => $validated['ids']],
-            null
+            'FeeSupport',
+            null,
+            ['deleted_ids' => $validated['ids']]
         );
 
         return response()->json([
