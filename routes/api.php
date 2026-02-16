@@ -17,6 +17,7 @@ use App\Http\Controllers\Api\DayOffController;
 use App\Http\Controllers\Api\EmailCampaignController;
 use App\Http\Controllers\Api\EmailNotificationController;
 use App\Http\Controllers\Api\EmailTemplateController;
+use App\Http\Controllers\Api\FeeSupportController;
 use App\Http\Controllers\Api\GiftCardController;
 use App\Http\Controllers\Api\GlobalNoteController;
 use App\Http\Controllers\Api\LocationController;
@@ -294,6 +295,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::apiResource('day-offs', DayOffController::class);
     Route::post('day-offs/check-date', [DayOffController::class, 'checkDate']);
     Route::post('day-offs/bulk-delete', [DayOffController::class, 'bulkDelete']);
+
+    // Fee Support routes
+    Route::get('fee-supports/for-entity', [FeeSupportController::class, 'getForEntity']);
+    Route::get('fee-supports/location/{locationId}', [FeeSupportController::class, 'getByLocation']);
+    Route::patch('fee-supports/{feeSupport}/toggle-status', [FeeSupportController::class, 'toggleStatus']);
+    Route::post('fee-supports/bulk-delete', [FeeSupportController::class, 'bulkDelete']);
+    Route::apiResource('fee-supports', FeeSupportController::class);
 
     // Add-on routes
     Route::apiResource('addons', AddOnController::class);
