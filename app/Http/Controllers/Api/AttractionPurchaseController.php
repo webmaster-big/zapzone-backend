@@ -304,13 +304,21 @@ class AttractionPurchaseController extends Controller
         }
 
         // Send automated email notifications based on configured notification rules
-        try {
-            $emailNotificationService = new EmailNotificationService();
-            $emailNotificationService->processPurchaseCreated($purchase);
-        } catch (\Exception $e) {
-            Log::warning('Failed to send automated email notifications for attraction purchase', [
+        // Only send if send_email is not explicitly false
+        $sendEmail = $validated['send_email'] ?? true;
+        if ($sendEmail) {
+            try {
+                $emailNotificationService = new EmailNotificationService();
+                $emailNotificationService->processPurchaseCreated($purchase);
+            } catch (\Exception $e) {
+                Log::warning('Failed to send automated email notifications for attraction purchase', [
+                    'purchase_id' => $purchase->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        } else {
+            Log::info('Email notifications skipped per send_email=false', [
                 'purchase_id' => $purchase->id,
-                'error' => $e->getMessage(),
             ]);
         }
 

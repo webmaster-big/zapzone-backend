@@ -141,7 +141,8 @@ class PackageController extends Controller
                         'booking_links' => [],
                         'package_type' => $package->package_type,
                         'min_participants' => $package->min_participants,
-                        "price_per_additional" => $package->price_per_additional,
+                        'price_per_additional' => $package->price_per_additional,
+                        'availability_schedules' => $package->availabilitySchedules,
                     ];
                 }
 
@@ -157,6 +158,7 @@ class PackageController extends Controller
                     'city' => $package->location->city,
                     'state' => $package->location->state,
                     'phone' => $package->location->phone,
+                    'availability_schedules' => $package->availabilitySchedules,
                 ];
 
                 // Create booking link for this location

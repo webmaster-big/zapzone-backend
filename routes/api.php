@@ -381,7 +381,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('payments/{payment}/refund', [PaymentController::class, 'refund']);
     Route::patch('payments/{payment}/manual-refund', [PaymentController::class, 'manualRefund']);
     Route::patch('payments/{payment}/void', [PaymentController::class, 'voidTransaction']);
-    Route::match(['put', 'patch'], 'payments/{id}/payable', [PaymentController::class, 'updatePayable']);
+    // Route::match(['put', 'patch'], 'payments/{id}/payable', [PaymentController::class, 'updatePayable']); // Deprecated: payable linking is now handled in charge()
     Route::get('payments/{payment}/invoice', [PaymentController::class, 'invoice']);
     Route::get('payments/{payment}/invoice/view', [PaymentController::class, 'invoiceView']);
 

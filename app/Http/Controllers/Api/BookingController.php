@@ -274,6 +274,7 @@ class BookingController extends Controller
             'notes' => 'nullable|string',
             'internal_notes' => 'nullable|string',
             'send_notification' => 'nullable|boolean',
+            'send_email' => 'nullable|boolean',
             'sent_email_to_staff' => 'nullable|boolean',
             'special_requests' => 'nullable|string',
             'guest_of_honor_name' => 'nullable|string|max:255',
@@ -498,8 +499,9 @@ class BookingController extends Controller
         }
 
         // Send email notification to staff members at the booking location
-        // Only send if sent_email_to_staff is true (default to true if not specified)
-        if ($validated['sent_email_to_staff'] ?? true) {
+        // Only send if send_email is not explicitly false AND sent_email_to_staff is true
+        $sendEmail = $validated['send_email'] ?? true;
+        if ($sendEmail && ($validated['sent_email_to_staff'] ?? true)) {
         try {
             // Get all users at this location
             $staffUsers = User::where('location_id', $booking->location_id)
