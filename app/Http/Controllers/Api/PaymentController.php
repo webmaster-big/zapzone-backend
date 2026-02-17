@@ -27,6 +27,7 @@ use App\Mail\BookingConfirmation;
 use App\Mail\AttractionPurchaseReceipt;
 use App\Services\GmailApiService;
 use App\Services\EmailNotificationService;
+use App\Services\GoogleCalendarService;
 use net\authorize\api\contract\v1 as AnetAPI;
 use net\authorize\api\controller as AnetController;
 use net\authorize\api\constants\ANetEnvironment;
@@ -596,6 +597,16 @@ class PaymentController extends Controller
                                 ]);
                             }
 
+                            // Sync to Google Calendar
+                            try {
+                                $gcalService = app(GoogleCalendarService::class);
+                                if ($gcalService->isConnected()) {
+                                    $gcalService->updateEventFromBooking($payable->fresh());
+                                }
+                            } catch (\Exception $e) {
+                                Log::warning('Google Calendar sync failed on refund', ['booking_id' => $payable->id, 'error' => $e->getMessage()]);
+                            }
+
                             // Send cancellation email
                             if ($isCancelled) {
                                 $email = $payable->customer_email;
@@ -912,6 +923,16 @@ class PaymentController extends Controller
                     ]);
                 }
 
+                // Sync to Google Calendar
+                try {
+                    $gcalService = app(GoogleCalendarService::class);
+                    if ($gcalService->isConnected()) {
+                        $gcalService->updateEventFromBooking($payable->fresh());
+                    }
+                } catch (\Exception $e) {
+                    Log::warning('Google Calendar sync failed on manual refund', ['booking_id' => $payable->id, 'error' => $e->getMessage()]);
+                }
+
                 // Send cancellation email
                 if ($isCancelled) {
                     $email = $payable->customer_email;
@@ -1158,6 +1179,16 @@ class PaymentController extends Controller
                                 'cancelled_at' => now(),
                                 'amount_paid' => max(0, $payable->amount_paid - $voidAmount),
                             ]);
+
+                            // Sync to Google Calendar
+                            try {
+                                $gcalService = app(GoogleCalendarService::class);
+                                if ($gcalService->isConnected()) {
+                                    $gcalService->updateEventFromBooking($payable->fresh());
+                                }
+                            } catch (\Exception $e) {
+                                Log::warning('Google Calendar sync failed on void', ['booking_id' => $payable->id, 'error' => $e->getMessage()]);
+                            }
 
                             // Send cancellation email
                             $email = $payable->customer_email;
@@ -1528,6 +1559,17 @@ class PaymentController extends Controller
                                     'transaction_id' => $transactionId,
                                     'status' => 'confirmed',
                                 ]);
+
+                                // Sync to Google Calendar (booking confirmed after payment)
+                                try {
+                                    $gcalService = app(GoogleCalendarService::class);
+                                    if ($gcalService->isConnected()) {
+                                        $payable->load(['customer', 'package', 'location', 'room']);
+                                        $gcalService->createEventFromBooking($payable);
+                                    }
+                                } catch (\Exception $e) {
+                                    Log::warning('Google Calendar sync failed on charge', ['booking_id' => $payable->id, 'error' => $e->getMessage()]);
+                                }
                             }
                         } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE) {
                             $payable = AttractionPurchase::find($payment->payable_id);

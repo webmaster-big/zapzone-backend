@@ -20,6 +20,7 @@ use App\Http\Controllers\Api\EmailTemplateController;
 use App\Http\Controllers\Api\FeeSupportController;
 use App\Http\Controllers\Api\GiftCardController;
 use App\Http\Controllers\Api\GlobalNoteController;
+use App\Http\Controllers\Api\GoogleCalendarController;
 use App\Http\Controllers\Api\LocationController;
 use App\Http\Controllers\Api\MetricsController;
 use App\Http\Controllers\Api\NotificationController;
@@ -188,6 +189,9 @@ Route::get('special-pricings/upcoming-dates', [SpecialPricingController::class, 
 
 // Public Fee Support (for booking flows)
 Route::get('fee-supports/for-entity', [FeeSupportController::class, 'getForEntity']);
+
+// Google Calendar OAuth callback (must be public - Google redirects here)
+Route::get('google-calendar/callback', [GoogleCalendarController::class, 'handleCallback']);
 
 
 // Protected routes (require authentication)
@@ -471,6 +475,20 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/{emailNotification}/send-test', [EmailNotificationController::class, 'sendTest']);
         Route::get('/{emailNotification}/logs', [EmailNotificationController::class, 'getLogs']);
         Route::post('/{emailNotification}/logs/{logId}/resend', [EmailNotificationController::class, 'resendLog']);
+    });
+
+    // Google Calendar routes
+    Route::prefix('google-calendar')->group(function () {
+        Route::get('/status', [GoogleCalendarController::class, 'status']);
+        Route::post('/credentials', [GoogleCalendarController::class, 'saveCredentials']);
+        Route::put('/credentials', [GoogleCalendarController::class, 'updateCredentials']);
+        Route::get('/auth-url', [GoogleCalendarController::class, 'getAuthUrl']);
+        Route::post('/disconnect', [GoogleCalendarController::class, 'disconnect']);
+        Route::get('/calendars', [GoogleCalendarController::class, 'getCalendars']);
+        Route::put('/calendar', [GoogleCalendarController::class, 'updateCalendar']);
+        Route::post('/sync', [GoogleCalendarController::class, 'syncBookings']);
+        Route::post('/sync/{bookingId}', [GoogleCalendarController::class, 'syncSingleBooking']);
+        Route::delete('/bookings/{bookingId}/event', [GoogleCalendarController::class, 'removeBookingEvent']);
     });
 });
 

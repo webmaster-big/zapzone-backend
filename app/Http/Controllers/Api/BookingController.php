@@ -8,6 +8,7 @@ use App\Mail\BookingReminder;
 use App\Mail\StaffBookingNotification;
 use App\Services\EmailNotificationService;
 use App\Services\GmailApiService;
+use App\Services\GoogleCalendarService;
 use App\Models\ActivityLog;
 use App\Models\Booking;
 use App\Models\BookingAttraction;
@@ -567,6 +568,21 @@ class BookingController extends Controller
                 'booking_id' => $booking->id,
                 'sent_email_to_staff' => false,
             ]);
+        }
+
+        // Auto-sync to Google Calendar if connected
+        if (config('google_calendar.auto_sync', true)) {
+            try {
+                $gcalService = app(GoogleCalendarService::class);
+                if ($gcalService->isConnected()) {
+                    $gcalService->createEventFromBooking($booking);
+                }
+            } catch (\Exception $e) {
+                Log::warning('Google Calendar auto-sync failed for new booking', [
+                    'booking_id' => $booking->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
         }
 
         return response()->json([
@@ -1164,6 +1180,19 @@ class BookingController extends Controller
             ]
         );
 
+        // Auto-sync update to Google Calendar
+        try {
+            $gcalService = app(GoogleCalendarService::class);
+            if ($gcalService->isConnected()) {
+                $gcalService->updateEventFromBooking($booking);
+            }
+        } catch (\Exception $e) {
+            Log::warning('Google Calendar auto-sync failed for booking update', [
+                'booking_id' => $booking->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
         return response()->json([
             'success' => true,
             'message' => 'Booking updated successfully',
@@ -1192,6 +1221,19 @@ class BookingController extends Controller
         PackageTimeSlot::where('booking_id', $booking->id)->update([
             'status' => 'cancelled',
         ]);
+
+        // Update Google Calendar event (mark as cancelled) or delete it
+        try {
+            $gcalService = app(GoogleCalendarService::class);
+            if ($gcalService->isConnected() && $booking->google_calendar_event_id) {
+                $gcalService->updateEventFromBooking($booking);
+            }
+        } catch (\Exception $e) {
+            Log::warning('Google Calendar update failed for cancelled booking', [
+                'booking_id' => $booking->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
 
         return response()->json([
             'success' => true,
@@ -1243,6 +1285,16 @@ class BookingController extends Controller
 
         $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
 
+        // Sync to Google Calendar
+        try {
+            $gcalService = app(GoogleCalendarService::class);
+            if ($gcalService->isConnected()) {
+                $gcalService->updateEventFromBooking($booking);
+            }
+        } catch (\Exception $e) {
+            Log::warning('Google Calendar sync failed on check-in', ['booking_id' => $booking->id, 'error' => $e->getMessage()]);
+        }
+
         return response()->json([
             'success' => true,
             'message' => 'Booking checked in successfully',
@@ -1271,6 +1323,16 @@ class BookingController extends Controller
         PackageTimeSlot::where('booking_id', $booking->id)->update([
             'status' => 'completed',
         ]);
+
+        // Sync to Google Calendar
+        try {
+            $gcalService = app(GoogleCalendarService::class);
+            if ($gcalService->isConnected()) {
+                $gcalService->updateEventFromBooking($booking);
+            }
+        } catch (\Exception $e) {
+            Log::warning('Google Calendar sync failed on complete', ['booking_id' => $booking->id, 'error' => $e->getMessage()]);
+        }
 
         return response()->json([
             'success' => true,
@@ -1389,6 +1451,16 @@ class BookingController extends Controller
                     'status' => 'cancelled',
                 ],
             ]);
+        }
+
+        // Sync to Google Calendar
+        try {
+            $gcalService = app(GoogleCalendarService::class);
+            if ($gcalService->isConnected()) {
+                $gcalService->updateEventFromBooking($booking);
+            }
+        } catch (\Exception $e) {
+            Log::warning('Google Calendar sync failed on status update', ['booking_id' => $booking->id, 'error' => $e->getMessage()]);
         }
 
         // Log booking status change activity
@@ -1558,6 +1630,17 @@ class BookingController extends Controller
 
         foreach ($bookings as $booking) {
             $locationIds[] = $booking->location_id;
+
+            // Remove from Google Calendar before deleting
+            try {
+                $gcalService = app(GoogleCalendarService::class);
+                if ($gcalService->isConnected() && $booking->google_calendar_event_id) {
+                    $gcalService->deleteEvent($booking);
+                }
+            } catch (\Exception $e) {
+                Log::warning('Google Calendar event removal failed on bulk delete', ['booking_id' => $booking->id, 'error' => $e->getMessage()]);
+            }
+
             $booking->delete();
             $deletedCount++;
         }
@@ -1703,6 +1786,16 @@ class BookingController extends Controller
         // deleted by whom?
         $deletedBy = auth()->id();
         $user = User::findOrFail($deletedBy);
+
+        // Remove from Google Calendar before deleting
+        try {
+            $gcalService = app(GoogleCalendarService::class);
+            if ($gcalService->isConnected() && $booking->google_calendar_event_id) {
+                $gcalService->deleteEvent($booking);
+            }
+        } catch (\Exception $e) {
+            Log::warning('Google Calendar event removal failed on delete', ['booking_id' => $booking->id, 'error' => $e->getMessage()]);
+        }
 
         $booking->delete();
 
