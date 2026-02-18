@@ -307,7 +307,8 @@
             <div class="event-banner">
                 <div class="event-title">{{ $payable->attraction->name ?? 'Attraction Ticket' }}</div>
                 <div class="event-details">
-                    @if($payable->visit_date)Visit: {{ $payable->visit_date->format('l, F j, Y') }}@endif
+                    @if($payable->scheduled_date)Scheduled: {{ \Carbon\Carbon::parse($payable->scheduled_date)->format('l, F j, Y') }}@if($payable->scheduled_time) at {{ \Carbon\Carbon::parse($payable->scheduled_time)->format('g:i A') }}@endif
+                    @elseif($payable->purchase_date)Purchased: {{ $payable->purchase_date->format('l, F j, Y') }}@endif
                 </div>
                 <div class="event-meta">
                     Qty: {{ $payable->quantity ?? 1 }} · Status: {{ ucfirst($payable->status ?? 'completed') }}

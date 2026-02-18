@@ -136,9 +136,9 @@ class Payment extends Model
     public function getPayableDetails()
     {
         if ($this->isForBooking()) {
-            return Booking::find($this->payable_id);
+            return Booking::withTrashed()->find($this->payable_id);
         } elseif ($this->isForAttractionPurchase()) {
-            return AttractionPurchase::find($this->payable_id);
+            return AttractionPurchase::withTrashed()->find($this->payable_id);
         }
         return null;
     }

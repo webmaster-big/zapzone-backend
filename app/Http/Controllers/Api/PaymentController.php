@@ -312,9 +312,9 @@ class PaymentController extends Controller
                 ->sum('amount');
 
             if ($previousPayableType === Payment::TYPE_BOOKING) {
-                $previousPayable = Booking::find($previousPayableId);
+                $previousPayable = Booking::withTrashed()->find($previousPayableId);
             } else {
-                $previousPayable = AttractionPurchase::find($previousPayableId);
+                $previousPayable = AttractionPurchase::withTrashed()->find($previousPayableId);
             }
 
             if ($previousPayable) {
@@ -581,7 +581,7 @@ class PaymentController extends Controller
                     $payable = null;
 
                     if ($payment->payable_type === Payment::TYPE_BOOKING && $payment->payable_id) {
-                        $payable = Booking::find($payment->payable_id);
+                        $payable = Booking::withTrashed()->find($payment->payable_id);
                         if ($payable) {
                             if ($isCancelled) {
                                 $payable->update([
@@ -621,7 +621,7 @@ class PaymentController extends Controller
                             }
                         }
                     } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE && $payment->payable_id) {
-                        $payable = AttractionPurchase::find($payment->payable_id);
+                        $payable = AttractionPurchase::withTrashed()->find($payment->payable_id);
                         if ($payable) {
                             if ($isCancelled) {
                                 $payable->update([
@@ -907,7 +907,7 @@ class PaymentController extends Controller
         $payable = null;
 
         if ($payment->payable_type === Payment::TYPE_BOOKING && $payment->payable_id) {
-            $payable = Booking::find($payment->payable_id);
+            $payable = Booking::withTrashed()->find($payment->payable_id);
             if ($payable) {
                 if ($isCancelled) {
                     $payable->update([
@@ -947,7 +947,7 @@ class PaymentController extends Controller
                 }
             }
         } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE && $payment->payable_id) {
-            $payable = AttractionPurchase::find($payment->payable_id);
+            $payable = AttractionPurchase::withTrashed()->find($payment->payable_id);
             if ($payable) {
                 if ($isCancelled) {
                     $payable->update([
@@ -1171,7 +1171,7 @@ class PaymentController extends Controller
                     $payable = null;
 
                     if ($payment->payable_type === Payment::TYPE_BOOKING && $payment->payable_id) {
-                        $payable = Booking::find($payment->payable_id);
+                        $payable = Booking::withTrashed()->find($payment->payable_id);
                         if ($payable) {
                             $payable->update([
                                 'status' => 'cancelled',
@@ -1202,7 +1202,7 @@ class PaymentController extends Controller
                             }
                         }
                     } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE && $payment->payable_id) {
-                        $payable = AttractionPurchase::find($payment->payable_id);
+                        $payable = AttractionPurchase::withTrashed()->find($payment->payable_id);
                         if ($payable) {
                             $newAmountPaid = max(0, $payable->amount_paid - $voidAmount);
                             $payable->update([
@@ -1546,7 +1546,7 @@ class PaymentController extends Controller
                     $payable = null;
                     if ($payment->payable_id && $payment->payable_type) {
                         if ($payment->payable_type === Payment::TYPE_BOOKING) {
-                            $payable = Booking::find($payment->payable_id);
+                            $payable = Booking::withTrashed()->find($payment->payable_id);
                             if ($payable) {
                                 $totalPaid = Payment::where('payable_id', $payable->id)
                                     ->where('payable_type', Payment::TYPE_BOOKING)
@@ -1572,7 +1572,7 @@ class PaymentController extends Controller
                                 }
                             }
                         } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE) {
-                            $payable = AttractionPurchase::find($payment->payable_id);
+                            $payable = AttractionPurchase::withTrashed()->find($payment->payable_id);
                             if ($payable) {
                                 $totalPaid = Payment::where('payable_id', $payable->id)
                                     ->where('payable_type', Payment::TYPE_ATTRACTION_PURCHASE)
@@ -2067,9 +2067,9 @@ class PaymentController extends Controller
         // Load payable relationships for each payment
         foreach ($payments as $payment) {
             if ($payment->payable_type === Payment::TYPE_BOOKING) {
-                $payment->payable = Booking::with('package')->find($payment->payable_id);
+                $payment->payable = Booking::withTrashed()->with('package')->find($payment->payable_id);
             } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE) {
-                $payment->payable = AttractionPurchase::with('attraction')->find($payment->payable_id);
+                $payment->payable = AttractionPurchase::withTrashed()->with('attraction')->find($payment->payable_id);
             }
         }
 
