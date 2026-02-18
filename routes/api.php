@@ -282,11 +282,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('attractions/{attraction}/statistics', [AttractionController::class, 'statistics']);
     Route::post('attractions/bulk-delete', [AttractionController::class, 'bulkDelete']);
 
-    // Attraction Purchase routes
+    // Attraction Purchase routes - static GET routes MUST be before apiResource
+    Route::get('attraction-purchases/trashed', [AttractionPurchaseController::class, 'trashed']);
+    Route::get('attraction-purchases/statistics', [AttractionPurchaseController::class, 'statistics']);
+    Route::post('attraction-purchases/bulk-restore', [AttractionPurchaseController::class, 'bulkRestore']);
     Route::apiResource('attraction-purchases', AttractionPurchaseController::class)->except(['store', 'destroy']);
     // update status
     Route::patch('attraction-purchases/{attractionPurchase}/update-status', [AttractionPurchaseController::class, 'updateStatus']);
-    Route::get('attraction-purchases/statistics', [AttractionPurchaseController::class, 'statistics']);
     Route::get('attraction-purchases/customer/{customerId}', [AttractionPurchaseController::class, 'getByCustomer']);
     Route::get('attraction-purchases/attraction/{attractionId}', [AttractionPurchaseController::class, 'getByAttraction']);
     Route::patch('attraction-purchases/{attractionPurchase}/confirm', [AttractionPurchaseController::class, 'markAsConfirmed']);
@@ -295,6 +297,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('attraction-purchases/{id}/verify', [AttractionPurchaseController::class, 'verify']);
     Route::patch('attraction-purchases/{id}/check-in', [AttractionPurchaseController::class, 'checkIn']);
     Route::post('attraction-purchases/bulk-delete', [AttractionPurchaseController::class, 'bulkDelete']);
+    Route::post('attraction-purchases/{id}/restore', [AttractionPurchaseController::class, 'restore']);
+    Route::delete('attraction-purchases/{id}/force-delete', [AttractionPurchaseController::class, 'forceDelete']);
 
     // Room routes
     Route::apiResource('rooms', RoomController::class);
@@ -359,6 +363,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('bookings/summaries/day/{date}', [BookingController::class, 'summariesDay']);
     Route::get('bookings/summaries/week/{week?}', [BookingController::class, 'summariesWeek']);
 
+    // Soft delete routes - MUST be before apiResource to avoid {booking} catching "trashed"
+    Route::get('bookings/trashed', [BookingController::class, 'trashed']);
+    Route::post('bookings/bulk-restore', [BookingController::class, 'bulkRestore']);
+
     Route::apiResource('bookings', BookingController::class)->except(['store', 'destroy']);
     Route::patch('bookings/{booking}/cancel', [BookingController::class, 'cancel']);
     Route::post('bookings/check-in', [BookingController::class, 'checkIn']);
@@ -369,6 +377,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('bookings/{booking}/payment-status', [BookingController::class, 'updatePaymentStatus']);
     Route::patch('bookings/{id}/internal-notes', [BookingController::class, 'updateInternalNotes']);
     Route::post('bookings/bulk-delete', [BookingController::class, 'bulkDelete']);
+    Route::post('bookings/{id}/restore', [BookingController::class, 'restore']);
+    Route::delete('bookings/{id}/force-delete', [BookingController::class, 'forceDelete']);
     Route::get('bookings/{booking}/summary', [BookingController::class, 'summary']);
     Route::get('bookings/{booking}/summary/view', [BookingController::class, 'summaryView']);
 

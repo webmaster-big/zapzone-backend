@@ -167,6 +167,8 @@ class AttractionPurchaseController extends Controller
             'amount_paid' => 'nullable|numeric|min:0',
             'payment_method' => ['nullable', Rule::in(['card', 'in-store', 'paylater', 'authorize.net'])],
             'purchase_date' => 'required|date',
+            'scheduled_date' => 'nullable|date',
+            'scheduled_time' => 'nullable|date_format:H:i',
             'transaction_id' => 'nullable|string|max:255',
             'notes' => 'nullable|string',
             'send_email' => 'nullable|boolean', // Optional flag to control email sending
@@ -531,6 +533,8 @@ class AttractionPurchaseController extends Controller
             'payment_method' => ['sometimes', 'nullable', Rule::in(['card', 'in-store', 'paylater', 'authorize.net'])],
             'status' => ['sometimes', Rule::in(AttractionPurchase::STATUSES)],
             'purchase_date' => 'sometimes|date',
+            'scheduled_date' => 'nullable|date',
+            'scheduled_time' => 'nullable|date_format:H:i',
             'notes' => 'nullable|string',
         ]);
 
@@ -1100,6 +1104,211 @@ public function checkIn(int $id): JsonResponse
             'success' => true,
             'message' => "{$deletedCount} attraction purchases deleted successfully",
             'data' => ['deleted_count' => $deletedCount],
+        ]);
+    }
+
+    /**
+     * List soft-deleted attraction purchases (trash).
+     */
+    public function trashed(Request $request): JsonResponse
+    {
+        try {
+            $query = AttractionPurchase::onlyTrashed()->with(['attraction', 'customer', 'createdBy']);
+
+            // Role-based filtering
+            if ($request->has('user_id')) {
+                $authUser = User::where('id', $request->user_id)->first();
+                if ($authUser && $authUser->role === 'location_manager') {
+                    $query->whereHas('attraction', function ($q) use ($authUser) {
+                        $q->where('location_id', $authUser->location_id);
+                    });
+                }
+            }
+
+            // Filter by location
+            if ($request->has('location_id')) {
+                $query->byLocation($request->location_id);
+            }
+
+            // Search
+            if ($request->has('search')) {
+                $search = $request->search;
+                $query->where(function ($q) use ($search) {
+                    $q->whereHas('customer', function ($subQ) use ($search) {
+                        $subQ->where('first_name', 'like', "%{$search}%")
+                             ->orWhere('last_name', 'like', "%{$search}%")
+                             ->orWhere('email', 'like', "%{$search}%");
+                    })
+                    ->orWhere('guest_name', 'like', "%{$search}%")
+                    ->orWhere('guest_email', 'like', "%{$search}%")
+                    ->orWhereHas('attraction', function ($subQ) use ($search) {
+                        $subQ->where('name', 'like', "%{$search}%");
+                    });
+                });
+            }
+
+            $sortBy = $request->get('sort_by', 'deleted_at');
+            $sortOrder = $request->get('sort_order', 'desc');
+            $query->orderBy($sortBy, $sortOrder);
+
+            $perPage = min($request->get('per_page', 15), 100);
+            $purchases = $query->paginate($perPage);
+
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'purchases' => $purchases->items(),
+                    'pagination' => [
+                        'current_page' => $purchases->currentPage(),
+                        'last_page' => $purchases->lastPage(),
+                        'per_page' => $purchases->perPage(),
+                        'total' => $purchases->total(),
+                        'from' => $purchases->firstItem(),
+                        'to' => $purchases->lastItem(),
+                    ],
+                ],
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Error fetching trashed attraction purchases', [
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch trashed attraction purchases',
+                'error' => config('app.debug') ? $e->getMessage() : 'Server error',
+            ], 500);
+        }
+    }
+
+    /**
+     * Restore a soft-deleted attraction purchase.
+     */
+    public function restore(int $id): JsonResponse
+    {
+        $purchase = AttractionPurchase::onlyTrashed()->findOrFail($id);
+
+        $purchase->restore();
+        $purchase->load(['attraction', 'customer', 'createdBy']);
+
+        // Log restore activity
+        $currentUser = auth()->user();
+        $customerName = $purchase->customer
+            ? "{$purchase->customer->first_name} {$purchase->customer->last_name}"
+            : $purchase->guest_name;
+
+        ActivityLog::log(
+            action: 'Attraction Purchase Restored',
+            category: 'update',
+            description: "Attraction purchase restored: {$purchase->attraction->name} by {$customerName}",
+            userId: auth()->id(),
+            locationId: $purchase->attraction->location_id ?? null,
+            entityType: 'attraction_purchase',
+            entityId: $purchase->id,
+            metadata: [
+                'restored_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'restored_at' => now()->toIso8601String(),
+                'purchase_details' => [
+                    'purchase_id' => $purchase->id,
+                    'attraction_name' => $purchase->attraction->name,
+                    'quantity' => $purchase->quantity,
+                    'total_amount' => $purchase->total_amount,
+                ],
+            ]
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Attraction purchase restored successfully',
+            'data' => $purchase,
+        ]);
+    }
+
+    /**
+     * Permanently delete a soft-deleted attraction purchase.
+     */
+    public function forceDelete(int $id): JsonResponse
+    {
+        $purchase = AttractionPurchase::onlyTrashed()->findOrFail($id);
+
+        $attractionName = $purchase->attraction->name ?? 'Unknown';
+        $purchaseId = $purchase->id;
+        $locationId = $purchase->attraction->location_id ?? null;
+
+        $purchase->forceDelete();
+
+        // Log permanent deletion
+        $currentUser = auth()->user();
+        ActivityLog::log(
+            action: 'Attraction Purchase Permanently Deleted',
+            category: 'delete',
+            description: "Attraction purchase permanently deleted: {$attractionName}",
+            userId: auth()->id(),
+            locationId: $locationId,
+            entityType: 'attraction_purchase',
+            entityId: $purchaseId,
+            metadata: [
+                'deleted_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'deleted_at' => now()->toIso8601String(),
+            ]
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Attraction purchase permanently deleted',
+        ]);
+    }
+
+    /**
+     * Bulk restore soft-deleted attraction purchases.
+     */
+    public function bulkRestore(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'ids' => 'required|array|min:1',
+            'ids.*' => 'required|integer',
+        ]);
+
+        $purchases = AttractionPurchase::onlyTrashed()->whereIn('id', $validated['ids'])->get();
+        $restoredCount = 0;
+
+        foreach ($purchases as $purchase) {
+            $purchase->restore();
+            $restoredCount++;
+        }
+
+        // Log bulk restore
+        $currentUser = auth()->user();
+        ActivityLog::log(
+            action: 'Bulk Attraction Purchases Restored',
+            category: 'update',
+            description: "{$restoredCount} attraction purchases restored in bulk operation",
+            userId: auth()->id(),
+            entityType: 'attraction_purchase',
+            metadata: [
+                'restored_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'restored_at' => now()->toIso8601String(),
+                'restored_count' => $restoredCount,
+                'purchase_ids' => $validated['ids'],
+            ]
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => "{$restoredCount} attraction purchases restored successfully",
+            'data' => ['restored_count' => $restoredCount],
         ]);
     }
 

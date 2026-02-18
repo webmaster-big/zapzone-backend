@@ -6,7 +6,6 @@ use App\Http\Controllers\Controller;
 use App\Mail\BookingConfirmation;
 use App\Mail\BookingReminder;
 use App\Mail\StaffBookingNotification;
-use App\Services\EmailNotificationService;
 use App\Services\GmailApiService;
 use App\Services\GoogleCalendarService;
 use App\Models\ActivityLog;
@@ -23,7 +22,6 @@ use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Barryvdh\DomPDF\Facade\Pdf;
@@ -2350,6 +2348,198 @@ class BookingController extends Controller
         }
     }
 
-}
+    /**
+     * List soft-deleted bookings (trash).
+     */
+    public function trashed(Request $request): JsonResponse
+    {
+        try {
+            $query = Booking::onlyTrashed()->with(['customer', 'package', 'location', 'room', 'creator']);
 
+            // Role-based filtering
+            if ($request->has('user_id')) {
+                $authUser = User::where('id', $request->user_id)->first();
+                if ($authUser && $authUser->role === 'location_manager') {
+                    $query->where('location_id', $authUser->location_id);
+                }
+            }
+
+            // Filter by location
+            if ($request->has('location_id')) {
+                $query->where('location_id', $request->location_id);
+            }
+
+            // Search
+            if ($request->has('search')) {
+                $search = $request->search;
+                $query->where(function ($q) use ($search) {
+                    $q->where('reference_number', 'like', "%{$search}%")
+                      ->orWhere('guest_name', 'like', "%{$search}%")
+                      ->orWhere('guest_email', 'like', "%{$search}%")
+                      ->orWhereHas('customer', function ($subQ) use ($search) {
+                          $subQ->where('first_name', 'like', "%{$search}%")
+                               ->orWhere('last_name', 'like', "%{$search}%")
+                               ->orWhere('email', 'like', "%{$search}%");
+                      });
+                });
+            }
+
+            $sortBy = $request->get('sort_by', 'deleted_at');
+            $sortOrder = $request->get('sort_order', 'desc');
+            $query->orderBy($sortBy, $sortOrder);
+
+            $perPage = min($request->get('per_page', 15), 100);
+            $bookings = $query->paginate($perPage);
+
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'bookings' => $bookings->items(),
+                    'pagination' => [
+                        'current_page' => $bookings->currentPage(),
+                        'last_page' => $bookings->lastPage(),
+                        'per_page' => $bookings->perPage(),
+                        'total' => $bookings->total(),
+                        'from' => $bookings->firstItem(),
+                        'to' => $bookings->lastItem(),
+                    ],
+                ],
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Error fetching trashed bookings', [
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch trashed bookings',
+                'error' => config('app.debug') ? $e->getMessage() : 'Server error',
+            ], 500);
+        }
+    }
+
+    /**
+     * Restore a soft-deleted booking.
+     */
+    public function restore(int $id): JsonResponse
+    {
+        $booking = Booking::onlyTrashed()->findOrFail($id);
+
+        $booking->restore();
+        $booking->load(['customer', 'package', 'location', 'room', 'creator']);
+
+        // Log restore activity
+        $currentUser = auth()->user();
+        ActivityLog::log(
+            action: 'Booking Restored',
+            category: 'update',
+            description: "Booking {$booking->reference_number} restored",
+            userId: auth()->id(),
+            locationId: $booking->location_id,
+            entityType: 'booking',
+            entityId: $booking->id,
+            metadata: [
+                'restored_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'restored_at' => now()->toIso8601String(),
+                'reference_number' => $booking->reference_number,
+            ]
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Booking restored successfully',
+            'data' => $booking,
+        ]);
+    }
+
+    /**
+     * Permanently delete a soft-deleted booking.
+     */
+    public function forceDelete(int $id): JsonResponse
+    {
+        $booking = Booking::onlyTrashed()->findOrFail($id);
+
+        $referenceNumber = $booking->reference_number;
+        $bookingId = $booking->id;
+        $locationId = $booking->location_id;
+
+        $booking->forceDelete();
+
+        // Log permanent deletion
+        $currentUser = auth()->user();
+        ActivityLog::log(
+            action: 'Booking Permanently Deleted',
+            category: 'delete',
+            description: "Booking {$referenceNumber} permanently deleted",
+            userId: auth()->id(),
+            locationId: $locationId,
+            entityType: 'booking',
+            entityId: $bookingId,
+            metadata: [
+                'deleted_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'deleted_at' => now()->toIso8601String(),
+                'reference_number' => $referenceNumber,
+            ]
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Booking permanently deleted',
+        ]);
+    }
+
+    /**
+     * Bulk restore soft-deleted bookings.
+     */
+    public function bulkRestore(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'ids' => 'required|array|min:1',
+            'ids.*' => 'required|integer',
+        ]);
+
+        $bookings = Booking::onlyTrashed()->whereIn('id', $validated['ids'])->get();
+        $restoredCount = 0;
+
+        foreach ($bookings as $booking) {
+            $booking->restore();
+            $restoredCount++;
+        }
+
+        // Log bulk restore
+        $currentUser = auth()->user();
+        ActivityLog::log(
+            action: 'Bulk Bookings Restored',
+            category: 'update',
+            description: "{$restoredCount} bookings restored in bulk operation",
+            userId: auth()->id(),
+            entityType: 'booking',
+            metadata: [
+                'restored_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'restored_at' => now()->toIso8601String(),
+                'restored_count' => $restoredCount,
+                'booking_ids' => $validated['ids'],
+            ]
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => "{$restoredCount} bookings restored successfully",
+            'data' => ['restored_count' => $restoredCount],
+        ]);
+    }
+
+}
 

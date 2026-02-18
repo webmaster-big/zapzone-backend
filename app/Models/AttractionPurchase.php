@@ -5,9 +5,11 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\MorphMany;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class AttractionPurchase extends Model
 {
+    use SoftDeletes;
     /**
      * Status constants
      */
@@ -44,11 +46,15 @@ class AttractionPurchase extends Model
         'status',
         'transaction_id',
         'purchase_date',
+        'scheduled_date',
+        'scheduled_time',
         'notes',
     ];
 
     protected $casts = [
         'purchase_date' => 'date',
+        'scheduled_date' => 'date',
+        'scheduled_time' => 'datetime:H:i',
         'total_amount' => 'decimal:2',
         'amount_paid' => 'decimal:2',
     ];
