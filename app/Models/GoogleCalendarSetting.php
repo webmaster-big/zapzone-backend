@@ -4,15 +4,14 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class GoogleCalendarSetting extends Model
 {
     use HasFactory;
 
     protected $fillable = [
-        'client_id',
-        'client_secret',
-        'frontend_redirect_url',
+        'location_id',
         'google_account_email',
         'calendar_id',
         'access_token',
@@ -33,17 +32,40 @@ class GoogleCalendarSetting extends Model
     ];
 
     protected $hidden = [
-        'client_secret',
         'access_token',
         'refresh_token',
     ];
 
     /**
-     * Get the single settings record (singleton pattern).
+     * Get the location this Google Calendar setting belongs to.
      */
-    public static function getSettings(): ?self
+    public function location(): BelongsTo
     {
+        return $this->belongsTo(Location::class);
+    }
+
+    /**
+     * Get settings for a specific location.
+     */
+    public static function getSettings(?int $locationId = null): ?self
+    {
+        if ($locationId) {
+            return static::where('location_id', $locationId)->first();
+        }
+
+        // Fallback: return first record (legacy / no location specified)
         return static::first();
+    }
+
+    /**
+     * Get or create settings for a specific location.
+     */
+    public static function getOrCreateForLocation(int $locationId): self
+    {
+        return static::firstOrCreate(
+            ['location_id' => $locationId],
+            ['calendar_id' => 'primary', 'is_connected' => false]
+        );
     }
 
     /**

@@ -7,23 +7,29 @@ return [
     | Google Calendar Integration
     |--------------------------------------------------------------------------
     |
-    | OAuth2 credentials for Google Calendar integration.
-    | Credentials are stored in the database (google_calendar_settings table)
-    | so you do NOT need to set env vars on Forge.
+    | These are the APP's OAuth2 credentials (created once in Google Cloud Console).
+    | They are NOT the user's Google account — users connect their own account
+    | by simply clicking "Connect Google Calendar" and logging in with Google.
     |
-    | Env vars below are optional fallbacks if DB credentials are not set.
-    | Create credentials at: https://console.cloud.google.com/apis/credentials
-    | Enable the Google Calendar API in your project.
+    | Setup (one-time):
+    | 1. Go to https://console.cloud.google.com/apis/credentials
+    | 2. Create an OAuth 2.0 Client ID (Web application)
+    | 3. Add redirect URI: {APP_URL}/api/google-calendar/callback
+    | 4. Enable the Google Calendar API
+    | 5. Paste your Client ID and Client Secret below
     |
     */
 
-    'app_name' => env('GOOGLE_CALENDAR_APP_NAME', 'ZapZone Booking Calendar'),
+    'app_name' => 'Booking Calendar',
 
-    // Fallback: only used if not configured in DB via admin UI
-    'client_id' => env('GOOGLE_CALENDAR_CLIENT_ID'),
-    'client_secret' => env('GOOGLE_CALENDAR_CLIENT_SECRET'),
+    // Paste your Google Cloud Console OAuth credentials here (one-time setup)
+    'client_id' => env('GOOGLE_CALENDAR_CLIENT_ID', ''),
+    'client_secret' => env('GOOGLE_CALENDAR_CLIENT_SECRET', ''),
 
-    // Auto-sync new bookings to Google Calendar when created
+    // Where the user is redirected after Google login (your frontend settings page)
+    'frontend_redirect_url' => 'https://booking.zap-zone.com/settings/google-calendar',
+
+    // Auto-sync booking changes to Google Calendar
     'auto_sync' => env('GOOGLE_CALENDAR_AUTO_SYNC', true),
 
 ];

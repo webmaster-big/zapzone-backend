@@ -56,6 +56,7 @@ class Booking extends Model
         'checked_in_at',
         'completed_at',
         'cancelled_at',
+        'google_calendar_event_id',
     ];
 
     protected $casts = [

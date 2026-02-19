@@ -50,6 +50,11 @@ class Location extends Model
         return $this->hasOne(AuthorizeNetAccount::class);
     }
 
+    public function googleCalendarSetting(): HasOne
+    {
+        return $this->hasOne(GoogleCalendarSetting::class);
+    }
+
     public function notifications(): HasMany
     {
         return $this->hasMany(Notification::class);

@@ -15,18 +15,22 @@ class GoogleCalendarService
     protected ?Client $client = null;
     protected ?Calendar $service = null;
     protected ?GoogleCalendarSetting $settings = null;
+    protected ?int $locationId = null;
 
     /**
      * Initialize the Google Client with stored OAuth tokens.
+     * Pass a location_id to scope to a specific location's settings.
      */
-    public function __construct()
+    public function __construct(?int $locationId = null)
     {
-        $this->settings = GoogleCalendarSetting::getSettings();
+        $this->locationId = $locationId;
+        $this->settings = GoogleCalendarSetting::getSettings($locationId);
     }
 
     /**
      * Get the Google Client configured for OAuth2.
-     * Reads client_id/secret from DB first, falls back to env/config.
+     * App credentials come from config (set once in config/google_calendar.php).
+     * Per-location tokens (access_token/refresh_token) come from the database.
      */
     public function getClient(): Client
     {
@@ -34,19 +38,18 @@ class GoogleCalendarService
             return $this->client;
         }
 
-        // Resolve credentials: DB first, then config/env fallback
-        $clientId = $this->settings?->client_id ?: config('google_calendar.client_id');
-        $clientSecret = $this->settings?->client_secret ?: config('google_calendar.client_secret');
+        $clientId = config('google_calendar.client_id');
+        $clientSecret = config('google_calendar.client_secret');
 
         if (!$clientId || !$clientSecret) {
-            throw new \Exception('Google Calendar credentials not configured. Set them in Settings > Google Calendar.');
+            throw new \Exception('Google Calendar app credentials not configured. Update config/google_calendar.php with your Client ID and Secret from Google Cloud Console.');
         }
 
         // Auto-detect redirect URI from the current app URL
         $redirectUri = rtrim(config('app.url', 'http://localhost:8000'), '/') . '/api/google-calendar/callback';
 
         $this->client = new Client();
-        $this->client->setApplicationName(config('google_calendar.app_name', 'ZapZone Booking Calendar'));
+        $this->client->setApplicationName(config('google_calendar.app_name', 'Booking Calendar'));
         $this->client->setClientId($clientId);
         $this->client->setClientSecret($clientSecret);
         $this->client->setRedirectUri($redirectUri);
@@ -54,6 +57,12 @@ class GoogleCalendarService
         $this->client->setPrompt('consent');
         $this->client->addScope(Calendar::CALENDAR);
         $this->client->addScope(Calendar::CALENDAR_EVENTS);
+
+        // Encode location_id in state so the callback knows which location this is for
+        if ($this->locationId) {
+            $state = base64_encode(json_encode(['location_id' => $this->locationId]));
+            $this->client->setState($state);
+        }
 
         // Set stored tokens if available
         if ($this->settings && $this->settings->is_connected) {
@@ -134,8 +143,10 @@ class GoogleCalendarService
             $accountEmail = $calendarInfo->getId() ?: 'connected@google.com';
         }
 
-        // Store or update settings (singleton) — preserve existing client_id/secret
-        $settings = GoogleCalendarSetting::first() ?? new GoogleCalendarSetting();
+        // Store or update OAuth tokens for this location
+        $settings = $this->locationId
+            ? GoogleCalendarSetting::getOrCreateForLocation($this->locationId)
+            : (GoogleCalendarSetting::first() ?? new GoogleCalendarSetting());
         $settings->fill([
             'google_account_email' => $accountEmail,
             'calendar_id' => $settings->calendar_id ?: 'primary',
@@ -363,7 +374,7 @@ class GoogleCalendarService
      * Sync existing bookings from a given date to Google Calendar.
      * Returns counts of created, skipped, and failed events.
      */
-    public function syncExistingBookings(\DateTime $fromDate): array
+    public function syncExistingBookings(\DateTime $fromDate, ?int $locationId = null): array
     {
         if (!$this->isConnected()) {
             throw new \Exception('Google Calendar is not connected');
@@ -371,13 +382,21 @@ class GoogleCalendarService
 
         $results = ['created' => 0, 'skipped' => 0, 'failed' => 0, 'errors' => []];
 
+        // Use provided locationId or fall back to the service's locationId
+        $syncLocationId = $locationId ?? $this->locationId;
+
         // Get bookings from the given date onwards that don't have a Google event yet
-        // Exclude cancelled bookings
-        $bookings = Booking::with(['package', 'location', 'customer', 'room', 'attractions', 'addOns'])
+        // Exclude cancelled bookings, scoped to location
+        $query = Booking::with(['package', 'location', 'customer', 'room', 'attractions', 'addOns'])
             ->where('booking_date', '>=', $fromDate->format('Y-m-d'))
             ->whereNull('google_calendar_event_id')
-            ->whereNotIn('status', ['cancelled'])
-            ->orderBy('booking_date')
+            ->whereNotIn('status', ['cancelled']);
+
+        if ($syncLocationId) {
+            $query->where('location_id', $syncLocationId);
+        }
+
+        $bookings = $query->orderBy('booking_date')
             ->orderBy('booking_time')
             ->get();
 

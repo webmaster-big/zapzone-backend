@@ -490,8 +490,6 @@ Route::middleware('auth:sanctum')->group(function () {
     // Google Calendar routes
     Route::prefix('google-calendar')->group(function () {
         Route::get('/status', [GoogleCalendarController::class, 'status']);
-        Route::post('/credentials', [GoogleCalendarController::class, 'saveCredentials']);
-        Route::put('/credentials', [GoogleCalendarController::class, 'updateCredentials']);
         Route::get('/auth-url', [GoogleCalendarController::class, 'getAuthUrl']);
         Route::post('/disconnect', [GoogleCalendarController::class, 'disconnect']);
         Route::get('/calendars', [GoogleCalendarController::class, 'getCalendars']);

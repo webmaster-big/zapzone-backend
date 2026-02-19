@@ -571,7 +571,7 @@ class BookingController extends Controller
         // Auto-sync to Google Calendar if connected
         if (config('google_calendar.auto_sync', true)) {
             try {
-                $gcalService = app(GoogleCalendarService::class);
+                $gcalService = new GoogleCalendarService($booking->location_id);
                 if ($gcalService->isConnected()) {
                     $gcalService->createEventFromBooking($booking);
                 }
@@ -1180,7 +1180,7 @@ class BookingController extends Controller
 
         // Auto-sync update to Google Calendar
         try {
-            $gcalService = app(GoogleCalendarService::class);
+            $gcalService = new GoogleCalendarService($booking->location_id);
             if ($gcalService->isConnected()) {
                 $gcalService->updateEventFromBooking($booking);
             }
@@ -1222,7 +1222,7 @@ class BookingController extends Controller
 
         // Update Google Calendar event (mark as cancelled) or delete it
         try {
-            $gcalService = app(GoogleCalendarService::class);
+            $gcalService = new GoogleCalendarService($booking->location_id);
             if ($gcalService->isConnected() && $booking->google_calendar_event_id) {
                 $gcalService->updateEventFromBooking($booking);
             }
@@ -1285,7 +1285,7 @@ class BookingController extends Controller
 
         // Sync to Google Calendar
         try {
-            $gcalService = app(GoogleCalendarService::class);
+            $gcalService = new GoogleCalendarService($booking->location_id);
             if ($gcalService->isConnected()) {
                 $gcalService->updateEventFromBooking($booking);
             }
@@ -1324,7 +1324,7 @@ class BookingController extends Controller
 
         // Sync to Google Calendar
         try {
-            $gcalService = app(GoogleCalendarService::class);
+            $gcalService = new GoogleCalendarService($booking->location_id);
             if ($gcalService->isConnected()) {
                 $gcalService->updateEventFromBooking($booking);
             }
@@ -1453,7 +1453,7 @@ class BookingController extends Controller
 
         // Sync to Google Calendar
         try {
-            $gcalService = app(GoogleCalendarService::class);
+            $gcalService = new GoogleCalendarService($booking->location_id);
             if ($gcalService->isConnected()) {
                 $gcalService->updateEventFromBooking($booking);
             }
@@ -1631,7 +1631,7 @@ class BookingController extends Controller
 
             // Remove from Google Calendar before deleting
             try {
-                $gcalService = app(GoogleCalendarService::class);
+                $gcalService = new GoogleCalendarService($booking->location_id);
                 if ($gcalService->isConnected() && $booking->google_calendar_event_id) {
                     $gcalService->deleteEvent($booking);
                 }
@@ -1787,7 +1787,7 @@ class BookingController extends Controller
 
         // Remove from Google Calendar before deleting
         try {
-            $gcalService = app(GoogleCalendarService::class);
+            $gcalService = new GoogleCalendarService($booking->location_id);
             if ($gcalService->isConnected() && $booking->google_calendar_event_id) {
                 $gcalService->deleteEvent($booking);
             }

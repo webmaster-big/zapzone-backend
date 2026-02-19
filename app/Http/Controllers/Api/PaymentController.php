@@ -599,7 +599,7 @@ class PaymentController extends Controller
 
                             // Sync to Google Calendar
                             try {
-                                $gcalService = app(GoogleCalendarService::class);
+                                $gcalService = new GoogleCalendarService($payable->location_id);
                                 if ($gcalService->isConnected()) {
                                     $gcalService->updateEventFromBooking($payable->fresh());
                                 }
@@ -925,7 +925,7 @@ class PaymentController extends Controller
 
                 // Sync to Google Calendar
                 try {
-                    $gcalService = app(GoogleCalendarService::class);
+                    $gcalService = new GoogleCalendarService($payable->location_id);
                     if ($gcalService->isConnected()) {
                         $gcalService->updateEventFromBooking($payable->fresh());
                     }
@@ -1182,7 +1182,7 @@ class PaymentController extends Controller
 
                             // Sync to Google Calendar
                             try {
-                                $gcalService = app(GoogleCalendarService::class);
+                                $gcalService = new GoogleCalendarService($payable->location_id);
                                 if ($gcalService->isConnected()) {
                                     $gcalService->updateEventFromBooking($payable->fresh());
                                 }
@@ -1562,7 +1562,7 @@ class PaymentController extends Controller
 
                                 // Sync to Google Calendar (booking confirmed after payment)
                                 try {
-                                    $gcalService = app(GoogleCalendarService::class);
+                                    $gcalService = new GoogleCalendarService($payable->location_id);
                                     if ($gcalService->isConnected()) {
                                         $payable->load(['customer', 'package', 'location', 'room']);
                                         $gcalService->createEventFromBooking($payable);
