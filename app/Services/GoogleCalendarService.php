@@ -527,7 +527,11 @@ class GoogleCalendarService
         $description = implode("\n", $descriptionParts);
 
         // Calculate start and end times
-        $startDateTime = $booking->booking_date . 'T' . $booking->booking_time;
+        // booking_date is cast as 'date' (Carbon) and booking_time as 'datetime:H:i' (Carbon)
+        // Extract just the date portion and time portion to avoid "Double time specification" errors
+        $datePart = \Carbon\Carbon::parse($booking->booking_date)->toDateString(); // 'Y-m-d'
+        $timePart = \Carbon\Carbon::parse($booking->booking_time)->format('H:i:s'); // 'H:i:s'
+        $startDateTime = $datePart . 'T' . $timePart;
 
         // Calculate end time based on duration
         $durationMinutes = $booking->duration_unit === 'hours'

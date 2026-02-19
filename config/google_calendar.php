@@ -27,7 +27,7 @@ return [
     'client_secret' => env('GOOGLE_CALENDAR_CLIENT_SECRET', ''),
 
     // Where the user is redirected after Google login (your frontend settings page)
-    'frontend_redirect_url' => 'https://booking.zap-zone.com/settings/google-calendar',
+    'frontend_redirect_url' => env('GOOGLE_CALENDAR_FRONTEND_REDIRECT_URL', 'https://booking.zap-zone.com/manager/settings'),
 
     // Auto-sync booking changes to Google Calendar
     'auto_sync' => env('GOOGLE_CALENDAR_AUTO_SYNC', true),
