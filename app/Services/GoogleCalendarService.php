@@ -224,6 +224,9 @@ class GoogleCalendarService
                 Log::warning('Failed to revoke Google Calendar token', ['error' => $e->getMessage()]);
             }
 
+            // Delete all synced Google Calendar events before disconnecting
+            $this->deleteAllEvents();
+
             $this->settings->update([
                 'access_token' => null,
                 'refresh_token' => null,
@@ -234,6 +237,61 @@ class GoogleCalendarService
                 ]),
             ]);
         }
+    }
+
+    /**
+     * Delete all synced Google Calendar events for this location.
+     */
+    public function deleteAllEvents(): int
+    {
+        $deleted = 0;
+
+        if (!$this->isConnected()) {
+            return $deleted;
+        }
+
+        $calendarId = $this->settings->calendar_id ?? 'primary';
+
+        // Find all bookings that have a synced Google Calendar event for this location
+        $query = Booking::whereNotNull('google_calendar_event_id');
+        if ($this->locationId) {
+            $query->where('location_id', $this->locationId);
+        }
+
+        $bookings = $query->get();
+
+        foreach ($bookings as $booking) {
+            try {
+                $this->getCalendarService()->events->delete($calendarId, $booking->google_calendar_event_id);
+                $deleted++;
+            } catch (\Google\Service\Exception $e) {
+                // Event may already be deleted externally (404/410), that's fine
+                if ($e->getCode() !== 404 && $e->getCode() !== 410) {
+                    Log::warning('Failed to delete Google Calendar event during disconnect', [
+                        'booking_id' => $booking->id,
+                        'event_id' => $booking->google_calendar_event_id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            } catch (\Exception $e) {
+                Log::warning('Failed to delete Google Calendar event during disconnect', [
+                    'booking_id' => $booking->id,
+                    'event_id' => $booking->google_calendar_event_id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
+            // Clear the event ID regardless
+            $booking->update(['google_calendar_event_id' => null]);
+        }
+
+        Log::info('Deleted Google Calendar events on disconnect', [
+            'location_id' => $this->locationId,
+            'deleted' => $deleted,
+            'total' => $bookings->count(),
+        ]);
+
+        return $deleted;
     }
 
     /**
@@ -461,35 +519,35 @@ class GoogleCalendarService
 
         // Build the description
         $descriptionParts = [];
-        $descriptionParts[] = "📋 Booking Reference: {$booking->reference_number}";
-        $descriptionParts[] = "👤 Customer: {$customerName}";
+        $descriptionParts[] = "Booking Reference: {$booking->reference_number}";
+        $descriptionParts[] = "Customer: {$customerName}";
 
         if ($booking->customer_email ?? $booking->guest_email) {
-            $descriptionParts[] = "📧 Email: " . ($booking->customer_email ?? $booking->guest_email);
+            $descriptionParts[] = "Email: " . ($booking->customer_email ?? $booking->guest_email);
         }
         if ($booking->customer_phone ?? $booking->guest_phone) {
-            $descriptionParts[] = "📞 Phone: " . ($booking->customer_phone ?? $booking->guest_phone);
+            $descriptionParts[] = "Phone: " . ($booking->customer_phone ?? $booking->guest_phone);
         }
 
         $descriptionParts[] = "";
-        $descriptionParts[] = "📦 Package: {$packageName}";
-        $descriptionParts[] = "📍 Location: {$locationName}";
+        $descriptionParts[] = "Package: {$packageName}";
+        $descriptionParts[] = "Location: {$locationName}";
 
         if ($roomName) {
-            $descriptionParts[] = "🚪 Room: {$roomName}";
+            $descriptionParts[] = "Room: {$roomName}";
         }
 
-        $descriptionParts[] = "👥 Participants: {$booking->participants}";
-        $descriptionParts[] = "⏱ Duration: {$booking->duration} {$booking->duration_unit}";
-        $descriptionParts[] = "💰 Total: $" . number_format($booking->total_amount, 2);
-        $descriptionParts[] = "💳 Paid: $" . number_format($booking->amount_paid, 2);
-        $descriptionParts[] = "📊 Status: " . ucfirst($booking->status);
-        $descriptionParts[] = "💵 Payment: " . ucfirst($booking->payment_status);
+        $descriptionParts[] = "Participants: {$booking->participants}";
+        $descriptionParts[] = "Duration: {$booking->duration} {$booking->duration_unit}";
+        $descriptionParts[] = "Total: $" . number_format($booking->total_amount, 2);
+        $descriptionParts[] = "Paid: $" . number_format($booking->amount_paid, 2);
+        $descriptionParts[] = "Status: " . ucfirst($booking->status);
+        $descriptionParts[] = "Payment: " . ucfirst($booking->payment_status);
 
         // Attractions
         if ($booking->attractions && $booking->attractions->count() > 0) {
             $descriptionParts[] = "";
-            $descriptionParts[] = "🎯 Attractions:";
+            $descriptionParts[] = "Attractions:";
             foreach ($booking->attractions as $attraction) {
                 $qty = $attraction->pivot->quantity ?? 1;
                 $descriptionParts[] = "  - {$attraction->name} (x{$qty})";
@@ -499,7 +557,7 @@ class GoogleCalendarService
         // Add-ons
         if ($booking->addOns && $booking->addOns->count() > 0) {
             $descriptionParts[] = "";
-            $descriptionParts[] = "➕ Add-ons:";
+            $descriptionParts[] = "Add-ons:";
             foreach ($booking->addOns as $addOn) {
                 $qty = $addOn->pivot->quantity ?? 1;
                 $descriptionParts[] = "  - {$addOn->name} (x{$qty})";
@@ -509,7 +567,7 @@ class GoogleCalendarService
         // Guest of honor
         if ($booking->guest_of_honor_name) {
             $descriptionParts[] = "";
-            $descriptionParts[] = "🎂 Guest of Honor: {$booking->guest_of_honor_name}";
+            $descriptionParts[] = "Guest of Honor: {$booking->guest_of_honor_name}";
             if ($booking->guest_of_honor_age) {
                 $descriptionParts[] = "   Age: {$booking->guest_of_honor_age}";
             }
@@ -518,10 +576,10 @@ class GoogleCalendarService
         // Notes
         if ($booking->notes) {
             $descriptionParts[] = "";
-            $descriptionParts[] = "📝 Notes: {$booking->notes}";
+            $descriptionParts[] = "Notes: {$booking->notes}";
         }
         if ($booking->special_requests) {
-            $descriptionParts[] = "🌟 Special Requests: {$booking->special_requests}";
+            $descriptionParts[] = "Special Requests: {$booking->special_requests}";
         }
 
         $description = implode("\n", $descriptionParts);
@@ -538,7 +596,10 @@ class GoogleCalendarService
             ? (int) $booking->duration * 60
             : (int) $booking->duration;
 
-        $startCarbon = \Carbon\Carbon::parse($startDateTime);
+        // Parse in the location's timezone so the RFC3339 offset is correct
+        // (app timezone is UTC, but bookings are in America/Detroit)
+        $locationTimezone = $booking->location?->timezone ?? config('app.timezone', 'America/Detroit');
+        $startCarbon = \Carbon\Carbon::parse($startDateTime, $locationTimezone);
         $endCarbon = $startCarbon->copy()->addMinutes($durationMinutes);
 
         // Build location string
@@ -563,12 +624,12 @@ class GoogleCalendarService
 
         $start = new EventDateTime();
         $start->setDateTime($startCarbon->toRfc3339String());
-        $start->setTimeZone(config('app.timezone', 'America/Detroit'));
+        $start->setTimeZone($locationTimezone);
         $event->setStart($start);
 
         $end = new EventDateTime();
         $end->setDateTime($endCarbon->toRfc3339String());
-        $end->setTimeZone(config('app.timezone', 'America/Detroit'));
+        $end->setTimeZone($locationTimezone);
         $event->setEnd($end);
 
         // Set color based on status
