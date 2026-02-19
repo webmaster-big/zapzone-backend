@@ -533,10 +533,10 @@ class GoogleCalendarService
         $timePart = \Carbon\Carbon::parse($booking->booking_time)->format('H:i:s'); // 'H:i:s'
         $startDateTime = $datePart . 'T' . $timePart;
 
-        // Calculate end time based on duration
+        // Calculate end time based on duration (cast to int to avoid string type errors)
         $durationMinutes = $booking->duration_unit === 'hours'
-            ? $booking->duration * 60
-            : $booking->duration;
+            ? (int) $booking->duration * 60
+            : (int) $booking->duration;
 
         $startCarbon = \Carbon\Carbon::parse($startDateTime);
         $endCarbon = $startCarbon->copy()->addMinutes($durationMinutes);
