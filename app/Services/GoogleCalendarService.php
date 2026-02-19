@@ -596,9 +596,8 @@ class GoogleCalendarService
             ? (int) $booking->duration * 60
             : (int) $booking->duration;
 
-        // Database stores the actual local date/time as-is — use America/Detroit
-        $tz = 'America/Detroit';
-        $startCarbon = \Carbon\Carbon::parse($startDateTime, $tz);
+        // Parse without timezone — we just need to calculate end time
+        $startCarbon = \Carbon\Carbon::parse($startDateTime);
         $endCarbon = $startCarbon->copy()->addMinutes($durationMinutes);
 
         // Build location string
@@ -622,13 +621,13 @@ class GoogleCalendarService
         $event->setLocation($eventLocation);
 
         $start = new EventDateTime();
-        $start->setDateTime($startCarbon->toRfc3339String());
-        $start->setTimeZone($tz);
+        $start->setDateTime($startCarbon->format('Y-m-d\TH:i:s'));
+        $start->setTimeZone('America/Detroit');
         $event->setStart($start);
 
         $end = new EventDateTime();
-        $end->setDateTime($endCarbon->toRfc3339String());
-        $end->setTimeZone($tz);
+        $end->setDateTime($endCarbon->format('Y-m-d\TH:i:s'));
+        $end->setTimeZone('America/Detroit');
         $event->setEnd($end);
 
         // Set color based on status
