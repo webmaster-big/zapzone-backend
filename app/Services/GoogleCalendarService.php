@@ -217,15 +217,15 @@ class GoogleCalendarService
     public function disconnect(): void
     {
         if ($this->settings) {
+            // Delete all synced Google Calendar events BEFORE revoking the token
+            $this->deleteAllEvents();
+
             try {
                 $client = $this->getClient();
                 $client->revokeToken();
             } catch (\Exception $e) {
                 Log::warning('Failed to revoke Google Calendar token', ['error' => $e->getMessage()]);
             }
-
-            // Delete all synced Google Calendar events before disconnecting
-            $this->deleteAllEvents();
 
             $this->settings->update([
                 'access_token' => null,
@@ -596,10 +596,9 @@ class GoogleCalendarService
             ? (int) $booking->duration * 60
             : (int) $booking->duration;
 
-        // Parse in the location's timezone so the RFC3339 offset is correct
-        // (app timezone is UTC, but bookings are in America/Detroit)
-        $locationTimezone = $booking->location?->timezone ?? config('app.timezone', 'America/Detroit');
-        $startCarbon = \Carbon\Carbon::parse($startDateTime, $locationTimezone);
+        // Database stores the actual local date/time as-is — use America/Detroit
+        $tz = 'America/Detroit';
+        $startCarbon = \Carbon\Carbon::parse($startDateTime, $tz);
         $endCarbon = $startCarbon->copy()->addMinutes($durationMinutes);
 
         // Build location string
@@ -624,12 +623,12 @@ class GoogleCalendarService
 
         $start = new EventDateTime();
         $start->setDateTime($startCarbon->toRfc3339String());
-        $start->setTimeZone($locationTimezone);
+        $start->setTimeZone($tz);
         $event->setStart($start);
 
         $end = new EventDateTime();
         $end->setDateTime($endCarbon->toRfc3339String());
-        $end->setTimeZone($locationTimezone);
+        $end->setTimeZone($tz);
         $event->setEnd($end);
 
         // Set color based on status
