@@ -49,6 +49,16 @@ class AddOn extends Model
         return $this->belongsToMany(Booking::class, 'booking_add_ons');
     }
 
+    public function attractionPurchases(): BelongsToMany
+    {
+        return $this->belongsToMany(AttractionPurchase::class, 'attraction_purchase_add_ons', 'add_on_id', 'attraction_purchase_id');
+    }
+
+    public function attractions(): BelongsToMany
+    {
+        return $this->belongsToMany(Attraction::class, 'attraction_add_ons');
+    }
+
     // Scopes
     public function scopeActive($query)
     {

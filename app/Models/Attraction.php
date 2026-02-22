@@ -28,6 +28,7 @@ class Attraction extends Model
         'rating',
         'min_age',
         'is_active',
+        'add_ons_order',
     ];
 
     protected $casts = [
@@ -37,6 +38,7 @@ class Attraction extends Model
         'availability' => 'array',
         'image' => 'array',
         'is_active' => 'boolean',
+        'add_ons_order' => 'array',
     ];
 
     // Relationships
@@ -53,6 +55,11 @@ class Attraction extends Model
     public function bookings(): BelongsToMany
     {
         return $this->belongsToMany(Booking::class, 'booking_attractions');
+    }
+
+    public function addOns(): BelongsToMany
+    {
+        return $this->belongsToMany(AddOn::class, 'attraction_add_ons');
     }
 
     public function purchases(): HasMany

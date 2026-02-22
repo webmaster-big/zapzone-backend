@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\MorphMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
@@ -105,6 +106,16 @@ class AttractionPurchase extends Model
     public function createdBy()
     {
         return $this->belongsTo(User::class, 'created_by');
+    }
+
+    /**
+     * Get all add-ons for this attraction purchase.
+     */
+    public function addOns(): BelongsToMany
+    {
+        return $this->belongsToMany(AddOn::class, 'attraction_purchase_add_ons', 'attraction_purchase_id', 'add_on_id')
+            ->withPivot('quantity', 'price_at_purchase')
+            ->withTimestamps();
     }
 
     /**

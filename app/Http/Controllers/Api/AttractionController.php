@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\ActivityLog;
 use App\Models\Attraction;
+use App\Models\AttractionAddOn;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
@@ -18,7 +19,7 @@ class AttractionController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
-        $query = Attraction::with(['location', 'packages']);
+        $query = Attraction::with(['location', 'packages', 'addOns']);
 
         // Role-based filtering
         if ($request->has('user_id')) {
@@ -100,7 +101,7 @@ class AttractionController extends Controller
         $search = $request->get('search', null);
 
         if ($search) {
-            $attractions = Attraction::with(['location', 'packages'])
+            $attractions = Attraction::with(['location', 'packages', 'addOns'])
                 ->where('is_active', true)
                 ->where(function ($query) use ($search) {
                     $query->where('name', 'like', "%{$search}%")
@@ -110,7 +111,7 @@ class AttractionController extends Controller
                 ->get();
         } else {
             // Get all active attractions with their locations
-            $attractions = Attraction::with(['location', 'packages'])
+            $attractions = Attraction::with(['location', 'packages', 'addOns'])
                 ->where('is_active', true)
                 ->orderBy('name')
                 ->get();
@@ -203,6 +204,9 @@ class AttractionController extends Controller
             'min_age' => 'nullable|integer|min:0',
             'is_active' => 'boolean',
             'location_id' => 'nullable|exists:locations,id',
+            'addon_ids' => 'nullable|array',
+            'addon_ids.*' => 'exists:add_ons,id',
+            'add_ons_order' => 'nullable|array',
         ]);
 
         $validated['pricing_type'] = $validated['pricing_type'] ?? 'per_person';
@@ -242,7 +246,18 @@ class AttractionController extends Controller
         $validated['image'] = !empty($uploadedImages) ? $uploadedImages : [];
 
         $attraction = Attraction::create($validated);
-        $attraction->load(['location', 'packages']);
+
+        // Handle add-on IDs
+        if (isset($validated['addon_ids']) && is_array($validated['addon_ids'])) {
+            foreach ($validated['addon_ids'] as $addonId) {
+                AttractionAddOn::create([
+                    'attraction_id' => $attraction->id,
+                    'add_on_id' => $addonId,
+                ]);
+            }
+        }
+
+        $attraction->load(['location', 'packages', 'addOns']);
 
         return response()->json([
             'success' => true,
@@ -258,7 +273,7 @@ class AttractionController extends Controller
     {
         $attraction = Attraction::findOrFail($id);
 
-        $attraction->load(['location', 'packages', 'bookings']);
+        $attraction->load(['location', 'packages', 'bookings', 'addOns']);
 
         return response()->json([
             'success' => true,
@@ -293,6 +308,9 @@ class AttractionController extends Controller
             'rating' => 'nullable|numeric|between:0,5',
             'min_age' => 'nullable|integer|min:0',
             'is_active' => 'boolean',
+            'addon_ids' => 'sometimes|array',
+            'addon_ids.*' => 'exists:add_ons,id',
+            'add_ons_order' => 'nullable|array',
         ]);
 
         $validated['pricing_type'] = $validated['pricing_type'] ?? 'per_person';
@@ -344,7 +362,22 @@ class AttractionController extends Controller
         }
 
         $attraction->update($validated);
-        $attraction->load(['location', 'packages']);
+
+        // Handle add-on IDs sync
+        if (isset($validated['addon_ids'])) {
+            // Delete existing relationships
+            AttractionAddOn::where('attraction_id', $attraction->id)->delete();
+
+            // Create new relationships
+            foreach ($validated['addon_ids'] as $addonId) {
+                AttractionAddOn::create([
+                    'attraction_id' => $attraction->id,
+                    'add_on_id' => $addonId,
+                ]);
+            }
+        }
+
+        $attraction->load(['location', 'packages', 'addOns']);
 
         return response()->json([
             'success' => true,
@@ -413,7 +446,7 @@ class AttractionController extends Controller
      */
     public function getByLocation(int $locationId): JsonResponse
     {
-        $attractions = Attraction::with(['packages'])
+        $attractions = Attraction::with(['packages', 'addOns'])
             ->byLocation($locationId)
             ->active()
             ->orderBy('name')
@@ -430,7 +463,7 @@ class AttractionController extends Controller
      */
     public function getByCategory(string $category): JsonResponse
     {
-        $attractions = Attraction::with(['location', 'packages'])
+        $attractions = Attraction::with(['location', 'packages', 'addOns'])
             ->byCategory($category)
             ->active()
             ->orderBy('name')

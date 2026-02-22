@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\AttractionPurchase;
+use App\Models\AttractionPurchaseAddOn;
 use App\Models\Attraction;
 use App\Mail\AttractionPurchaseReceipt;
 use App\Services\GmailApiService;
@@ -27,7 +28,7 @@ class AttractionPurchaseController extends Controller
     public function index(Request $request): JsonResponse
     {
         try {
-            $query = AttractionPurchase::with(['attraction', 'customer', 'createdBy']);
+            $query = AttractionPurchase::with(['attraction', 'customer', 'createdBy', 'addOns']);
 
             // Role-based filtering
             if ($request->has('user_id')) {
@@ -172,6 +173,12 @@ class AttractionPurchaseController extends Controller
             'transaction_id' => 'nullable|string|max:255',
             'notes' => 'nullable|string',
             'send_email' => 'nullable|boolean', // Optional flag to control email sending
+
+            // Add-ons
+            'additional_addons' => 'nullable|array',
+            'additional_addons.*.addon_id' => 'required_with:additional_addons|exists:add_ons,id',
+            'additional_addons.*.quantity' => 'nullable|integer|min:1',
+            'additional_addons.*.price_at_purchase' => 'nullable|numeric|min:0',
         ]);
 
         // Get attraction to calculate total amount
@@ -187,7 +194,20 @@ class AttractionPurchaseController extends Controller
         $validated['created_by'] = auth()->id() ?? null;
 
         $purchase = AttractionPurchase::create($validated);
-        $purchase->load(['attraction', 'customer', 'createdBy']);
+
+        // Create add-on records
+        if (isset($validated['additional_addons']) && is_array($validated['additional_addons'])) {
+            foreach ($validated['additional_addons'] as $addon) {
+                AttractionPurchaseAddOn::create([
+                    'attraction_purchase_id' => $purchase->id,
+                    'add_on_id' => $addon['addon_id'],
+                    'quantity' => $addon['quantity'] ?? 1,
+                    'price_at_purchase' => $addon['price_at_purchase'] ?? 0,
+                ]);
+            }
+        }
+
+        $purchase->load(['attraction', 'customer', 'createdBy', 'addOns']);
 
         // Create notification for customer
         if ($purchase->customer_id) {
@@ -509,7 +529,7 @@ class AttractionPurchaseController extends Controller
      */
     public function show(AttractionPurchase $attractionPurchase): JsonResponse
     {
-        $attractionPurchase->load(['attraction', 'customer', 'createdBy']);
+        $attractionPurchase->load(['attraction', 'customer', 'createdBy', 'addOns']);
 
         return response()->json([
             'success' => true,
@@ -536,6 +556,12 @@ class AttractionPurchaseController extends Controller
             'scheduled_date' => 'nullable|date',
             'scheduled_time' => 'nullable|date_format:H:i',
             'notes' => 'nullable|string',
+
+            // Add-ons
+            'additional_addons' => 'nullable|array',
+            'additional_addons.*.addon_id' => 'required_with:additional_addons|exists:add_ons,id',
+            'additional_addons.*.quantity' => 'nullable|integer|min:1',
+            'additional_addons.*.price_at_purchase' => 'nullable|numeric|min:0',
         ]);
 
         // Recalculate total amount if attraction or quantity changed
@@ -548,7 +574,23 @@ class AttractionPurchaseController extends Controller
         }
 
         $attractionPurchase->update($validated);
-        $attractionPurchase->load(['attraction', 'customer', 'createdBy']);
+
+        // Update add-ons (delete-and-recreate strategy, same as booking addons)
+        if (isset($validated['additional_addons'])) {
+            AttractionPurchaseAddOn::where('attraction_purchase_id', $attractionPurchase->id)->delete();
+            if (is_array($validated['additional_addons'])) {
+                foreach ($validated['additional_addons'] as $addon) {
+                    AttractionPurchaseAddOn::create([
+                        'attraction_purchase_id' => $attractionPurchase->id,
+                        'add_on_id' => $addon['addon_id'],
+                        'quantity' => $addon['quantity'] ?? 1,
+                        'price_at_purchase' => $addon['price_at_purchase'] ?? 0,
+                    ]);
+                }
+            }
+        }
+
+        $attractionPurchase->load(['attraction', 'customer', 'createdBy', 'addOns']);
 
         // Log attraction purchase update activity
         $customerName = $attractionPurchase->customer ? "{$attractionPurchase->customer->first_name} {$attractionPurchase->customer->last_name}" : $attractionPurchase->guest_name;
@@ -661,7 +703,7 @@ class AttractionPurchaseController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Attraction purchase status updated successfully',
-            'data' => $attractionPurchase->fresh(['attraction', 'customer', 'createdBy']),
+            'data' => $attractionPurchase->fresh(['attraction', 'customer', 'createdBy', 'addOns']),
         ]);
     }
 
@@ -685,7 +727,7 @@ class AttractionPurchaseController extends Controller
         }
 
         $attractionPurchase->update(['status' => AttractionPurchase::STATUS_CONFIRMED]);
-        $attractionPurchase->load(['attraction', 'customer', 'createdBy']);
+        $attractionPurchase->load(['attraction', 'customer', 'createdBy', 'addOns']);
 
         return response()->json([
             'success' => true,
@@ -714,7 +756,7 @@ class AttractionPurchaseController extends Controller
         }
 
         $attractionPurchase->update(['status' => AttractionPurchase::STATUS_CANCELLED]);
-        $attractionPurchase->load(['attraction', 'customer', 'createdBy']);
+        $attractionPurchase->load(['attraction', 'customer', 'createdBy', 'addOns']);
 
         return response()->json([
             'success' => true,
@@ -1113,7 +1155,7 @@ public function checkIn(int $id): JsonResponse
     public function trashed(Request $request): JsonResponse
     {
         try {
-            $query = AttractionPurchase::onlyTrashed()->with(['attraction', 'customer', 'createdBy']);
+            $query = AttractionPurchase::onlyTrashed()->with(['attraction', 'customer', 'createdBy', 'addOns']);
 
             // Role-based filtering
             if ($request->has('user_id')) {
@@ -1189,7 +1231,7 @@ public function checkIn(int $id): JsonResponse
         $purchase = AttractionPurchase::onlyTrashed()->findOrFail($id);
 
         $purchase->restore();
-        $purchase->load(['attraction', 'customer', 'createdBy']);
+        $purchase->load(['attraction', 'customer', 'createdBy', 'addOns']);
 
         // Log restore activity
         $currentUser = auth()->user();
