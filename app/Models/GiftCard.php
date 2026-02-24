@@ -21,6 +21,7 @@ class GiftCard extends Model
         'status',
         'expiry_date',
         'created_by',
+        'location_id',
         'deleted',
     ];
 
@@ -35,6 +36,11 @@ class GiftCard extends Model
     public function creator(): BelongsTo
     {
         return $this->belongsTo(User::class, 'created_by');
+    }
+
+    public function location(): BelongsTo
+    {
+        return $this->belongsTo(Location::class);
     }
 
     public function packages(): BelongsToMany
@@ -69,6 +75,11 @@ class GiftCard extends Model
     public function scopeByType($query, $type)
     {
         return $query->where('type', $type);
+    }
+
+    public function scopeByLocation($query, $locationId)
+    {
+        return $query->where('location_id', $locationId);
     }
 
     // Helpers

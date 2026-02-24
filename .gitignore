@@ -29,3 +29,4 @@ Thumbs.db
 
 .env.example
 .env.production.example
+forge-env-additions.txt

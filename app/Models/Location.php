@@ -60,6 +60,11 @@ class Location extends Model
         return $this->hasMany(Notification::class);
     }
 
+    public function giftCards(): HasMany
+    {
+        return $this->hasMany(GiftCard::class);
+    }
+
     // Scopes
     public function scopeActive($query)
     {

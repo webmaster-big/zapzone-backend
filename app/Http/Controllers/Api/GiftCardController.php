@@ -18,7 +18,12 @@ class GiftCardController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
-        $query = GiftCard::with(['creator', 'packages', 'customers']);
+        $query = GiftCard::with(['creator', 'packages', 'customers', 'location']);
+
+        // Filter by location
+        if ($request->has('location_id')) {
+            $query->byLocation($request->location_id);
+        }
 
         // Filter by status
         if ($request->has('status')) {
@@ -91,6 +96,7 @@ class GiftCardController extends Controller
             'status' => ['sometimes', Rule::in(['active', 'inactive'])],
             'expiry_date' => 'nullable|date|after:today',
             'created_by' => 'required|exists:users,id',
+            'location_id' => 'nullable|exists:locations,id',
         ]);
 
         // Generate unique code if not provided
@@ -104,7 +110,7 @@ class GiftCardController extends Controller
         $validated['balance'] = $validated['initial_value'];
 
         $giftCard = GiftCard::create($validated);
-        $giftCard->load(['creator', 'packages']);
+        $giftCard->load(['creator', 'packages', 'location']);
 
         return response()->json([
             'success' => true,
@@ -118,7 +124,7 @@ class GiftCardController extends Controller
      */
     public function show(GiftCard $giftCard): JsonResponse
     {
-        $giftCard->load(['creator', 'packages', 'customers']);
+        $giftCard->load(['creator', 'packages', 'customers', 'location']);
 
         return response()->json([
             'success' => true,
@@ -140,10 +146,11 @@ class GiftCardController extends Controller
             'description' => 'sometimes|nullable|string',
             'status' => ['sometimes', Rule::in(['active', 'inactive', 'expired', 'redeemed', 'cancelled'])],
             'expiry_date' => 'sometimes|nullable|date',
+            'location_id' => 'nullable|exists:locations,id',
         ]);
 
         $giftCard->update($validated);
-        $giftCard->load(['creator', 'packages']);
+        $giftCard->load(['creator', 'packages', 'location']);
 
         // Log gift card update activity
         $currentUser = auth()->user();
@@ -152,7 +159,7 @@ class GiftCardController extends Controller
             category: 'update',
             description: "Gift card {$giftCard->code} updated",
             userId: auth()->id(),
-            locationId: null,
+            locationId: $giftCard->location_id,
             entityType: 'gift_card',
             entityId: $giftCard->id,
             metadata: [
@@ -168,6 +175,7 @@ class GiftCardController extends Controller
                     'type' => $giftCard->type,
                     'balance' => $giftCard->balance,
                     'status' => $giftCard->status,
+                    'location_id' => $giftCard->location_id,
                 ],
                 'updated_fields' => array_keys($validated),
             ]
@@ -197,7 +205,7 @@ class GiftCardController extends Controller
             category: 'delete',
             description: "Gift card {$giftCardCode} deleted",
             userId: auth()->id(),
-            locationId: null,
+            locationId: $giftCard->location_id,
             entityType: 'gift_card',
             entityId: $giftCardId,
             metadata: [
@@ -285,7 +293,7 @@ class GiftCardController extends Controller
         if (isset($validated['customer_id'])) {
             CustomerNotification::create([
                 'customer_id' => $validated['customer_id'],
-                'location_id' => null,
+                'location_id' => $giftCard->location_id,
                 'type' => 'gift_card',
                 'priority' => 'medium',
                 'title' => 'Gift Card Redeemed',
@@ -309,7 +317,7 @@ class GiftCardController extends Controller
             category: 'update',
             description: "Gift card {$giftCard->code} redeemed for $" . number_format($validated['amount'], 2),
             userId: auth()->id(),
-            locationId: null,
+            locationId: $giftCard->location_id,
             entityType: 'gift_card',
             entityId: $giftCard->id,
             metadata: [
