@@ -44,6 +44,10 @@ class EmailNotification extends Model
     const TRIGGER_PURCHASE_REMINDER = 'purchase_reminder';
     const TRIGGER_PURCHASE_FOLLOWUP = 'purchase_followup';
 
+    // Invitation Triggers
+    const TRIGGER_INVITATION_SENT = 'invitation_sent';
+    const TRIGGER_INVITATION_RSVP_RECEIVED = 'invitation_rsvp_received';
+
     // Entity types
     const ENTITY_PACKAGE = 'package';
     const ENTITY_ATTRACTION = 'attraction';
@@ -285,6 +289,10 @@ class EmailNotification extends Model
                 self::TRIGGER_PURCHASE_REFUNDED => 'Purchase Refunded',
                 self::TRIGGER_PURCHASE_REMINDER => 'Purchase Reminder',
                 self::TRIGGER_PURCHASE_FOLLOWUP => 'Purchase Follow-up',
+            ],
+            'invitation' => [
+                self::TRIGGER_INVITATION_SENT => 'Invitation Sent',
+                self::TRIGGER_INVITATION_RSVP_RECEIVED => 'RSVP Received',
             ],
         ];
     }

@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\AttractionPurchaseController;
 use App\Http\Controllers\Api\AuthController as ApiAuthController;
 use App\Http\Controllers\Api\AuthorizeNetAccountController;
 use App\Http\Controllers\Api\BookingController;
+use App\Http\Controllers\Api\BookingInvitationController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\CompanyController;
 use App\Http\Controllers\Api\ContactController;
@@ -29,6 +30,7 @@ use App\Http\Controllers\Api\PackageTimeSlotController;
 use App\Http\Controllers\Api\PaymentController;
 use App\Http\Controllers\Api\PromoController;
 use App\Http\Controllers\Api\RoomController;
+use App\Http\Controllers\Api\RsvpController;
 use App\Http\Controllers\Api\SpecialPricingController;
 use App\Http\Controllers\Api\ShareableTokenController;
 use App\Http\Controllers\Api\StreamController;
@@ -178,6 +180,10 @@ Route::post('shareable-tokens', [ShareableTokenController::class, 'store']);
 
 // Public contact deactivate (for email unsubscribe links)
 Route::post('contacts/deactivate', [ContactController::class, 'deactivate']);
+
+// Public RSVP routes (no auth required - guests access via unique token)
+Route::get('rsvp/{token}', [RsvpController::class, 'show']);
+Route::post('rsvp/{token}', [RsvpController::class, 'store']);
 
 // Public Day Off
 Route::get('day-offs/location/{locationId}', [DayOffController::class, 'getByLocation']);
@@ -381,6 +387,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::delete('bookings/{id}/force-delete', [BookingController::class, 'forceDelete']);
     Route::get('bookings/{booking}/summary', [BookingController::class, 'summary']);
     Route::get('bookings/{booking}/summary/view', [BookingController::class, 'summaryView']);
+
+    // Booking Invitation routes (customer sends invitations to guests)
+    Route::get('bookings/{booking}/invitations', [BookingInvitationController::class, 'index']);
+    Route::post('bookings/{booking}/invitations', [BookingInvitationController::class, 'store']);
+    Route::post('bookings/{booking}/invitations/{invitation}/resend', [BookingInvitationController::class, 'resend']);
+    Route::delete('bookings/{booking}/invitations/{invitation}', [BookingInvitationController::class, 'destroy']);
+    Route::get('bookings/{booking}/invitation-preview', [BookingInvitationController::class, 'preview']);
 
     // Payment Invoice routes (must be before apiResource to avoid route conflicts)
     Route::get('payments/invoices/report', [PaymentController::class, 'invoicesReport']);

@@ -133,6 +133,14 @@ class Booking extends Model
         return $this->morphMany(Payment::class, 'payable');
     }
 
+    /**
+     * Get all invitations for this booking.
+     */
+    public function invitations(): HasMany
+    {
+        return $this->hasMany(BookingInvitation::class);
+    }
+
     // Scopes
     public function scopeByStatus($query, $status)
     {
