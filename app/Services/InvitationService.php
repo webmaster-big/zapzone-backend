@@ -86,18 +86,6 @@ class InvitationService
         $htmlBody = $this->buildEmailHtml($variables);
         $attachments = $this->getInvitationAttachments($booking);
 
-        $senderEmail = config('gmail.sender_email', 'bookings@zap-zone.com');
-        $listUnsubscribe = "<mailto:{$senderEmail}?subject=Unsubscribe>";
-
-        $antiSpamHeaders = [
-            'List-Unsubscribe' => $listUnsubscribe,
-            'List-Unsubscribe-Post' => 'List-Unsubscribe=One-Click',
-            'Precedence' => 'bulk',
-            'X-Auto-Response-Suppress' => 'All',
-            'X-Mailer' => 'ZapZone-Invitations/1.0',
-            'Feedback-ID' => 'invitation:zapzone',
-        ];
-
         $useGmailApi = config('gmail.enabled', false) &&
             (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
 
@@ -107,19 +95,13 @@ class InvitationService
                 $subject,
                 $htmlBody,
                 $variables['company_name'] ?: 'Zap Zone',
-                $attachments,
-                $antiSpamHeaders
+                $attachments
             );
         } else {
-            \Illuminate\Support\Facades\Mail::html($htmlBody, function ($message) use ($invitation, $subject, $variables, $attachments, $antiSpamHeaders) {
+            \Illuminate\Support\Facades\Mail::html($htmlBody, function ($message) use ($invitation, $subject, $variables, $attachments) {
                 $message->to($invitation->guest_email)
                     ->subject($subject)
                     ->from(config('mail.from.address'), $variables['company_name'] ?: config('mail.from.name'));
-
-                $headers = $message->getSymfonyMessage()->getHeaders();
-                foreach ($antiSpamHeaders as $name => $value) {
-                    $headers->addTextHeader($name, $value);
-                }
 
                 foreach ($attachments as $attachment) {
                     $message->attachData(
