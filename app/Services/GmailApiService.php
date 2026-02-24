@@ -61,7 +61,7 @@ class GmailApiService
         $this->service = new Gmail($this->client);
     }
 
-    public function sendEmail($to, $subject, $htmlBody, $fromName = null, $attachments = [])
+    public function sendEmail($to, $subject, $htmlBody, $fromName = null, $attachments = [], $extraHeaders = [])
     {
         try {
             // Use config for sender name if not provided
@@ -78,7 +78,8 @@ class GmailApiService
                 $htmlBody,
                 $fromName,
                 $attachments,
-                $inlineImages
+                $inlineImages,
+                $extraHeaders
             );
 
             $result = $this->service->users_messages->send('me', $message);
@@ -187,7 +188,7 @@ class GmailApiService
         }, $htmlBody);
     }
 
-    private function createMessage($from, $to, $subject, $htmlBody, $fromName = 'Zap Zone', $attachments = [], $inlineImages = [])
+    private function createMessage($from, $to, $subject, $htmlBody, $fromName = 'Zap Zone', $attachments = [], $inlineImages = [], $extraHeaders = [])
     {
         $mixedBoundary = uniqid('mixed_');
         $relatedBoundary = uniqid('related_');
@@ -207,6 +208,12 @@ class GmailApiService
         $emailContent .= "To: {$to}\r\n";
         $emailContent .= "Reply-To: {$from}\r\n";
         $emailContent .= "Subject: {$subject}\r\n";
+
+        // Inject extra headers (e.g. List-Unsubscribe for anti-spam)
+        foreach ($extraHeaders as $headerName => $headerValue) {
+            $emailContent .= "{$headerName}: {$headerValue}\r\n";
+        }
+
         $emailContent .= "MIME-Version: 1.0\r\n";
 
         if ($hasAttachments && $hasInlineImages) {

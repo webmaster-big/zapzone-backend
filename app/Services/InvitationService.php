@@ -86,6 +86,9 @@ class InvitationService
         $htmlBody = $this->buildEmailHtml($variables);
         $attachments = $this->getInvitationAttachments($booking);
 
+        $senderEmail = config('gmail.sender_email', 'bookings@zap-zone.com');
+        $listUnsubscribe = "<mailto:{$senderEmail}?subject=Unsubscribe>";
+
         $useGmailApi = config('gmail.enabled', false) &&
             (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
 
@@ -95,13 +98,19 @@ class InvitationService
                 $subject,
                 $htmlBody,
                 $variables['company_name'] ?: 'Zap Zone',
-                $attachments
+                $attachments,
+                [
+                    'List-Unsubscribe' => $listUnsubscribe,
+                ]
             );
         } else {
-            \Illuminate\Support\Facades\Mail::html($htmlBody, function ($message) use ($invitation, $subject, $variables, $attachments) {
+            \Illuminate\Support\Facades\Mail::html($htmlBody, function ($message) use ($invitation, $subject, $variables, $attachments, $listUnsubscribe) {
                 $message->to($invitation->guest_email)
                     ->subject($subject)
                     ->from(config('mail.from.address'), $variables['company_name'] ?: config('mail.from.name'));
+
+                $message->getSymfonyMessage()->getHeaders()
+                    ->addTextHeader('List-Unsubscribe', $listUnsubscribe);
 
                 foreach ($attachments as $attachment) {
                     $message->attachData(
@@ -125,7 +134,7 @@ class InvitationService
 
         $packageName = $booking->package?->name ?? 'party';
         $bookingDate = $booking->booking_date?->format('F j, Y') ?? '';
-        $bookingTime = $booking->booking_time ?? '';
+        $bookingTime = $booking->booking_time ? $booking->booking_time->format('g:i A') : '';
         $locationName = $booking->location?->name ?? '';
         $rsvpUrl = $invitation->getRsvpUrl();
 
@@ -173,7 +182,7 @@ class InvitationService
             // Party / Booking info
             'package_name' => $package?->name ?? 'Party',
             'booking_date' => $booking->booking_date?->format('F j, Y') ?? '',
-            'booking_time' => $booking->booking_time ?? '',
+            'booking_time' => $booking->booking_time ? $booking->booking_time->format('g:i A') : '',
             'booking_participants' => (string) ($booking->participants ?? 0),
             'guest_of_honor_name' => $booking->guest_of_honor_name ?? '',
             'guest_of_honor_age' => $booking->guest_of_honor_age ?? '',
@@ -205,7 +214,7 @@ class InvitationService
         $hostName = $variables['host_first_name'] ?? 'Someone';
         $packageName = $variables['package_name'] ?? 'Party';
 
-        return "You're Invited to {$hostName}'s {$packageName}!";
+        return "You're Invited to {$hostName}'s {$packageName}";
     }
 
     /**
@@ -248,9 +257,9 @@ class InvitationService
                 <table width="520" cellpadding="0" cellspacing="0" border="0" style="max-width: 520px; width: 100%;">
                     <!-- Header -->
                     <tr>
-                        <td style="text-align: center; background-color: #1e40af; color: #ffffff; padding: 24px 32px; border-radius: 8px 8px 0 0;">
-                            <h1 style="margin: 0 0 8px 0; padding: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.01em; color: #ffffff;">You're Invited! 🎉</h1>
-                            <p style="margin: 0; padding: 0; font-size: 14px; opacity: 0.9; color: #ffffff;">{$hostName} has invited you to a party</p>
+                        <td style="text-align: center; background-color: #ffffff; padding: 24px 32px; border-radius: 8px 8px 0 0; border: 1px solid #e5e7eb; border-bottom: none;">
+                            <h1 style="margin: 0 0 8px 0; padding: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.01em; color: #111827;">You're Invited!</h1>
+                            <p style="margin: 0; padding: 0; font-size: 14px; color: #6b7280;">{$hostName} has invited you to a party</p>
                         </td>
                     </tr>
 
@@ -316,8 +325,11 @@ class InvitationService
                             <p style="margin: 24px 0 0 0; padding: 0; font-size: 14px; line-height: 1.6; color: #4b5563;">We hope to see you there!</p>
 
                             <hr style="margin: 24px 0; border: none; border-top: 1px solid #e5e7eb;">
-                            <p style="margin: 0; padding: 0; font-size: 12px; color: #9ca3af; text-align: center;">
+                            <p style="margin: 0 0 8px 0; padding: 0; font-size: 12px; color: #9ca3af; text-align: center;">
                                 &copy; {$currentYear} {$companyName}. All rights reserved.
+                            </p>
+                            <p style="margin: 0; padding: 0; font-size: 11px; color: #d1d5db; text-align: center;">
+                                This is a one-time party invitation and not a marketing email.
                             </p>
                         </td>
                     </tr>
