@@ -89,6 +89,15 @@ class InvitationService
         $senderEmail = config('gmail.sender_email', 'bookings@zap-zone.com');
         $listUnsubscribe = "<mailto:{$senderEmail}?subject=Unsubscribe>";
 
+        $antiSpamHeaders = [
+            'List-Unsubscribe' => $listUnsubscribe,
+            'List-Unsubscribe-Post' => 'List-Unsubscribe=One-Click',
+            'Precedence' => 'bulk',
+            'X-Auto-Response-Suppress' => 'All',
+            'X-Mailer' => 'ZapZone-Invitations/1.0',
+            'Feedback-ID' => 'invitation:zapzone',
+        ];
+
         $useGmailApi = config('gmail.enabled', false) &&
             (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
 
@@ -99,18 +108,18 @@ class InvitationService
                 $htmlBody,
                 $variables['company_name'] ?: 'Zap Zone',
                 $attachments,
-                [
-                    'List-Unsubscribe' => $listUnsubscribe,
-                ]
+                $antiSpamHeaders
             );
         } else {
-            \Illuminate\Support\Facades\Mail::html($htmlBody, function ($message) use ($invitation, $subject, $variables, $attachments, $listUnsubscribe) {
+            \Illuminate\Support\Facades\Mail::html($htmlBody, function ($message) use ($invitation, $subject, $variables, $attachments, $antiSpamHeaders) {
                 $message->to($invitation->guest_email)
                     ->subject($subject)
                     ->from(config('mail.from.address'), $variables['company_name'] ?: config('mail.from.name'));
 
-                $message->getSymfonyMessage()->getHeaders()
-                    ->addTextHeader('List-Unsubscribe', $listUnsubscribe);
+                $headers = $message->getSymfonyMessage()->getHeaders();
+                foreach ($antiSpamHeaders as $name => $value) {
+                    $headers->addTextHeader($name, $value);
+                }
 
                 foreach ($attachments as $attachment) {
                     $message->attachData(
@@ -214,7 +223,7 @@ class InvitationService
         $hostName = $variables['host_first_name'] ?? 'Someone';
         $packageName = $variables['package_name'] ?? 'Party';
 
-        return "You're Invited to {$hostName}'s {$packageName}";
+        return "Party Invitation from {$hostName} - {$packageName}";
     }
 
     /**
@@ -244,51 +253,52 @@ class InvitationService
 
         return <<<HTML
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Party Invitation</title>
+    <meta name="x-apple-disable-message-reformatting">
+    <title>Party Invitation from {$hostName}</title>
 </head>
-<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.5; color: #374151; background-color: #f9fafb;">
-    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f9fafb; padding: 40px 20px;">
+<body style="margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; line-height: 1.5; color: #374151; background-color: #f3f4f6;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f3f4f6; padding: 40px 20px;">
         <tr>
             <td align="center">
-                <table width="520" cellpadding="0" cellspacing="0" border="0" style="max-width: 520px; width: 100%;">
+                <table role="presentation" width="520" cellpadding="0" cellspacing="0" border="0" style="max-width: 520px; width: 100%;">
                     <!-- Header -->
                     <tr>
-                        <td style="text-align: center; background-color: #ffffff; padding: 24px 32px; border-radius: 8px 8px 0 0; border: 1px solid #e5e7eb; border-bottom: none;">
-                            <h1 style="margin: 0 0 8px 0; padding: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.01em; color: #111827;">You're Invited!</h1>
-                            <p style="margin: 0; padding: 0; font-size: 14px; color: #6b7280;">{$hostName} has invited you to a party</p>
+                        <td style="text-align: center; background-color: #1e3a5f; padding: 28px 32px; border-radius: 8px 8px 0 0;">
+                            <h1 style="margin: 0 0 6px 0; padding: 0; font-size: 24px; font-weight: 700; color: #ffffff;">You're Invited</h1>
+                            <p style="margin: 0; padding: 0; font-size: 14px; color: #cbd5e1;">{$hostName} has invited you to a party</p>
                         </td>
                     </tr>
 
                     <!-- Content -->
                     <tr>
                         <td style="background-color: #ffffff; padding: 32px; border-radius: 0 0 8px 8px; border: 1px solid #e5e7eb; border-top: none;">
-                            <p style="margin: 0 0 16px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #4b5563;">Hi {$guestName},</p>
+                            <p style="margin: 0 0 16px 0; padding: 0; font-size: 15px; line-height: 1.6; color: #374151;">Hi {$guestName},</p>
 
-                            <p style="margin: 0 0 16px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #4b5563;">You're invited to join <strong>{$hostName}</strong> for a <strong>{$packageName}</strong>!</p>
+                            <p style="margin: 0 0 16px 0; padding: 0; font-size: 15px; line-height: 1.6; color: #374151;">You have been personally invited by <strong>{$hostName}</strong> to attend a <strong>{$packageName}</strong> at {$companyName}.</p>
 
                             {$gohSection}
 
                             <!-- Party Details -->
-                            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f9fafb; border-radius: 6px; border: 1px solid #e5e7eb; margin: 20px 0;">
+                            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f8fafc; border-radius: 6px; border: 1px solid #e2e8f0; margin: 20px 0;">
                                 <tr>
-                                    <td style="padding: 16px;">
-                                        <h3 style="margin: 0 0 12px 0; padding: 0; font-size: 16px; font-weight: 600; color: #111827;">Party Details</h3>
-                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                    <td style="padding: 16px 20px;">
+                                        <h3 style="margin: 0 0 12px 0; padding: 0; font-size: 16px; font-weight: 600; color: #1e293b;">Party Details</h3>
+                                        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
                                             <tr>
-                                                <td style="padding: 4px 0; font-size: 14px; color: #6b7280; width: 100px;">Event</td>
-                                                <td style="padding: 4px 0; font-size: 14px; color: #111827; font-weight: 500;">{$packageName}</td>
+                                                <td style="padding: 5px 0; font-size: 14px; color: #64748b; width: 80px; vertical-align: top;">Event</td>
+                                                <td style="padding: 5px 0; font-size: 14px; color: #1e293b; font-weight: 600;">{$packageName}</td>
                                             </tr>
                                             <tr>
-                                                <td style="padding: 4px 0; font-size: 14px; color: #6b7280;">Date</td>
-                                                <td style="padding: 4px 0; font-size: 14px; color: #111827; font-weight: 500;">{$bookingDate}</td>
+                                                <td style="padding: 5px 0; font-size: 14px; color: #64748b; vertical-align: top;">Date</td>
+                                                <td style="padding: 5px 0; font-size: 14px; color: #1e293b; font-weight: 600;">{$bookingDate}</td>
                                             </tr>
                                             <tr>
-                                                <td style="padding: 4px 0; font-size: 14px; color: #6b7280;">Time</td>
-                                                <td style="padding: 4px 0; font-size: 14px; color: #111827; font-weight: 500;">{$bookingTime}</td>
+                                                <td style="padding: 5px 0; font-size: 14px; color: #64748b; vertical-align: top;">Time</td>
+                                                <td style="padding: 5px 0; font-size: 14px; color: #1e293b; font-weight: 600;">{$bookingTime}</td>
                                             </tr>
                                         </table>
                                     </td>
@@ -296,40 +306,58 @@ class InvitationService
                             </table>
 
                             <!-- Location -->
-                            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #eff6ff; border-radius: 6px; border: 1px solid #dbeafe; margin: 20px 0;">
+                            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f0f5ff; border-radius: 6px; border: 1px solid #dbeafe; margin: 20px 0;">
                                 <tr>
-                                    <td style="padding: 16px;">
-                                        <h3 style="margin: 0 0 8px 0; padding: 0; font-size: 16px; font-weight: 600; color: #111827;">Location</h3>
-                                        <p style="margin: 0 0 4px 0; font-size: 14px; font-weight: 500; color: #1e40af;">{$locationName}</p>
-                                        <p style="margin: 0 0 4px 0; font-size: 14px; color: #4b5563;">{$locationAddress}</p>
-                                        <p style="margin: 0; font-size: 14px; color: #4b5563;">{$locationPhone}</p>
+                                    <td style="padding: 16px 20px;">
+                                        <h3 style="margin: 0 0 8px 0; padding: 0; font-size: 16px; font-weight: 600; color: #1e293b;">Location</h3>
+                                        <p style="margin: 0 0 4px 0; font-size: 14px; font-weight: 600; color: #1e3a5f;">{$locationName}</p>
+                                        <p style="margin: 0 0 4px 0; font-size: 14px; color: #475569;">{$locationAddress}</p>
+                                        <p style="margin: 0; font-size: 14px; color: #475569;">{$locationPhone}</p>
+                                    </td>
+                                </tr>
+                            </table>
+
+                            <!-- RSVP Explanation -->
+                            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin: 24px 0 8px 0;">
+                                <tr>
+                                    <td style="text-align: center;">
+                                        <p style="margin: 0 0 6px 0; padding: 0; font-size: 15px; font-weight: 600; color: #1e293b;">Please let us know if you can make it</p>
+                                        <p style="margin: 0 0 20px 0; padding: 0; font-size: 13px; line-height: 1.5; color: #64748b;">Click the button below to confirm your attendance, let us know how many people are coming with you, and share any dietary needs or special requests.</p>
                                     </td>
                                 </tr>
                             </table>
 
                             <!-- RSVP Button -->
-                            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin: 28px 0;">
+                            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin: 0 0 20px 0;">
                                 <tr>
                                     <td align="center">
-                                        <a href="{$rsvpUrl}" style="display: inline-block; background-color: #1e40af; color: #ffffff; text-decoration: none; padding: 14px 36px; border-radius: 6px; font-size: 16px; font-weight: 600;">
-                                            RSVP Now
+                                        <!--[if mso]>
+                                        <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="{$rsvpUrl}" style="height:48px;v-text-anchor:middle;width:220px;" arcsize="13%" strokecolor="#1e3a5f" fillcolor="#1e3a5f">
+                                        <w:anchorlock/>
+                                        <center style="color:#ffffff;font-family:Arial,sans-serif;font-size:16px;font-weight:bold;">Respond Now</center>
+                                        </v:roundrect>
+                                        <![endif]-->
+                                        <!--[if !mso]><!-->
+                                        <a href="{$rsvpUrl}" style="display: inline-block; background-color: #1e3a5f; color: #ffffff; text-decoration: none; padding: 14px 40px; border-radius: 6px; font-size: 16px; font-weight: 600; font-family: Arial, Helvetica, sans-serif;">
+                                            Respond Now
                                         </a>
+                                        <!--<![endif]-->
                                     </td>
                                 </tr>
                             </table>
 
-                            <p style="margin: 0 0 8px 0; padding: 0; font-size: 12px; line-height: 1.6; color: #9ca3af; text-align: center;">
-                                Or copy this link: {$rsvpUrl}
+                            <p style="margin: 0 0 8px 0; padding: 0; font-size: 12px; line-height: 1.6; color: #94a3b8; text-align: center;">
+                                If the button does not work, copy and paste this link into your browser:<br>{$rsvpUrl}
                             </p>
 
-                            <p style="margin: 24px 0 0 0; padding: 0; font-size: 14px; line-height: 1.6; color: #4b5563;">We hope to see you there!</p>
+                            <p style="margin: 24px 0 0 0; padding: 0; font-size: 15px; line-height: 1.6; color: #374151;">We look forward to seeing you there.</p>
 
-                            <hr style="margin: 24px 0; border: none; border-top: 1px solid #e5e7eb;">
-                            <p style="margin: 0 0 8px 0; padding: 0; font-size: 12px; color: #9ca3af; text-align: center;">
-                                &copy; {$currentYear} {$companyName}. All rights reserved.
+                            <hr style="margin: 24px 0; border: none; border-top: 1px solid #e2e8f0;">
+                            <p style="margin: 0 0 6px 0; padding: 0; font-size: 12px; color: #94a3b8; text-align: center;">
+                                &copy; {$currentYear} {$companyName}
                             </p>
-                            <p style="margin: 0; padding: 0; font-size: 11px; color: #d1d5db; text-align: center;">
-                                This is a one-time party invitation and not a marketing email.
+                            <p style="margin: 0; padding: 0; font-size: 11px; color: #cbd5e1; text-align: center;">
+                                You received this email because {$hostName} invited you to a party at {$companyName}. This is a personal invitation, not a marketing or promotional email. No further emails will be sent unless you choose to RSVP.
                             </p>
                         </td>
                     </tr>
