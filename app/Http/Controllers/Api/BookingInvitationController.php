@@ -21,6 +21,29 @@ class BookingInvitationController extends Controller
     }
 
     /**
+     * Verify the authenticated customer owns the booking.
+     * Matches by customer_id OR by guest_email (for guest-checkout bookings).
+     */
+    private function customerOwnsBooking($customer, Booking $booking): bool
+    {
+        if (!$customer) {
+            return false;
+        }
+
+        // Direct customer_id match
+        if ($booking->customer_id && $booking->customer_id === $customer->id) {
+            return true;
+        }
+
+        // Guest-checkout bookings: match by email
+        if ($booking->guest_email && $booking->guest_email === $customer->email) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
      * List all invitations for a booking with summary stats.
      */
     public function index(Request $request, Booking $booking): JsonResponse
@@ -28,7 +51,7 @@ class BookingInvitationController extends Controller
         try {
             // Verify ownership: the authenticated customer must own this booking
             $customer = $request->user();
-            if (!$customer || $booking->customer_id !== $customer->id) {
+            if (!$this->customerOwnsBooking($customer, $booking)) {
                 return response()->json(['message' => 'Unauthorized'], 403);
             }
 
@@ -63,7 +86,7 @@ class BookingInvitationController extends Controller
         try {
             // Verify ownership
             $customer = $request->user();
-            if (!$customer || $booking->customer_id !== $customer->id) {
+            if (!$this->customerOwnsBooking($customer, $booking)) {
                 return response()->json(['message' => 'Unauthorized'], 403);
             }
 
@@ -178,7 +201,7 @@ class BookingInvitationController extends Controller
         try {
             // Verify ownership
             $customer = $request->user();
-            if (!$customer || $booking->customer_id !== $customer->id) {
+            if (!$this->customerOwnsBooking($customer, $booking)) {
                 return response()->json(['message' => 'Unauthorized'], 403);
             }
 
@@ -211,7 +234,7 @@ class BookingInvitationController extends Controller
         try {
             // Verify ownership
             $customer = $request->user();
-            if (!$customer || $booking->customer_id !== $customer->id) {
+            if (!$this->customerOwnsBooking($customer, $booking)) {
                 return response()->json(['message' => 'Unauthorized'], 403);
             }
 
@@ -249,7 +272,7 @@ class BookingInvitationController extends Controller
         try {
             // Verify ownership
             $customer = $request->user();
-            if (!$customer || $booking->customer_id !== $customer->id) {
+            if (!$this->customerOwnsBooking($customer, $booking)) {
                 return response()->json(['message' => 'Unauthorized'], 403);
             }
 
