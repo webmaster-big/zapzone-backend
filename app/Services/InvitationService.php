@@ -5,7 +5,9 @@ namespace App\Services;
 use App\Models\Booking;
 use App\Models\BookingInvitation;
 use App\Models\Contact;
+use App\Mail\PartyInvitation;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Storage;
 
 class InvitationService
@@ -77,40 +79,44 @@ class InvitationService
     }
 
     /**
-     * Send the invitation email.
+     * Send the invitation email using the same pattern as BookingConfirmation.
      */
     protected function sendInvitationEmail(BookingInvitation $invitation, Booking $booking): void
     {
         $variables = $this->buildInvitationVariables($invitation, $booking);
-        $subject = $this->buildEmailSubject($variables);
-        $htmlBody = $this->buildEmailHtml($variables);
         $attachments = $this->getInvitationAttachments($booking);
+
+        // Build the Mailable (same approach as BookingConfirmation)
+        $mailable = new PartyInvitation($booking, $invitation, $variables);
+        $mailable->build();
 
         $useGmailApi = config('gmail.enabled', false) &&
             (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
 
         if ($useGmailApi) {
+            // Render the mailable to HTML, then send via Gmail API
+            // This is the exact same pattern BookingController uses for booking confirmations
+            $emailBody = $mailable->render();
+            $subject = $mailable->subject;
+
             $this->gmailService->sendEmail(
                 $invitation->guest_email,
                 $subject,
-                $htmlBody,
+                $emailBody,
                 $variables['company_name'] ?: 'Zap Zone',
                 $attachments
             );
         } else {
-            \Illuminate\Support\Facades\Mail::html($htmlBody, function ($message) use ($invitation, $subject, $variables, $attachments) {
-                $message->to($invitation->guest_email)
-                    ->subject($subject)
-                    ->from(config('mail.from.address'), $variables['company_name'] ?: config('mail.from.name'));
+            // Fallback to Laravel Mail - attach files manually
+            foreach ($attachments as $attachment) {
+                $mailable->attachData(
+                    base64_decode($attachment['data']),
+                    $attachment['filename'],
+                    ['mime' => $attachment['mime_type']]
+                );
+            }
 
-                foreach ($attachments as $attachment) {
-                    $message->attachData(
-                        base64_decode($attachment['data']),
-                        $attachment['filename'],
-                        ['mime' => $attachment['mime_type']]
-                    );
-                }
-            });
+            Mail::to($invitation->guest_email)->send($mailable);
         }
     }
 

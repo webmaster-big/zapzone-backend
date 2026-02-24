@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Mail\PartyInvitation;
 use App\Models\Booking;
 use App\Models\BookingInvitation;
 use App\Services\InvitationService;
@@ -287,21 +288,19 @@ class BookingInvitationController extends Controller
             $dummyInvitation->booking_id = $booking->id;
             $dummyInvitation->setRelation('booking', $booking);
 
-            // Use reflection to access the protected method for preview
+            // Build variables via reflection (method is protected)
             $service = new InvitationService();
             $reflection = new \ReflectionClass($service);
-
             $buildVars = $reflection->getMethod('buildInvitationVariables');
             $buildVars->setAccessible(true);
             $variables = $buildVars->invoke($service, $dummyInvitation, $booking);
 
-            $buildHtml = $reflection->getMethod('buildEmailHtml');
-            $buildHtml->setAccessible(true);
-            $html = $buildHtml->invoke($service, $variables);
+            // Use the same Mailable as actual emails for accurate preview
+            $mailable = new PartyInvitation($booking, $dummyInvitation, $variables);
+            $mailable->build();
 
-            $buildSubject = $reflection->getMethod('buildEmailSubject');
-            $buildSubject->setAccessible(true);
-            $subject = $buildSubject->invoke($service, $variables);
+            $html = $mailable->render();
+            $subject = $mailable->subject;
 
             return response()->json([
                 'subject' => $subject,
