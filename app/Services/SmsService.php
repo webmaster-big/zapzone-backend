@@ -3,11 +3,10 @@
 namespace App\Services;
 
 use Illuminate\Support\Facades\Log;
-use Twilio\Rest\Client;
 
 class SmsService
 {
-    protected ?Client $client = null;
+    protected $client = null;
     protected ?string $fromNumber = null;
 
     public function __construct()
@@ -16,19 +15,20 @@ class SmsService
         $token = config('twilio.auth_token');
         $this->fromNumber = config('twilio.from_number');
 
-        if ($sid && $token && $this->fromNumber) {
-            $this->client = new Client($sid, $token);
+        if ($sid && $token && $this->fromNumber && class_exists(\Twilio\Rest\Client::class)) {
+            $this->client = new \Twilio\Rest\Client($sid, $token);
         }
     }
 
     /**
-     * Check if Twilio SMS is configured.
+     * Check if Twilio SMS is configured and the SDK is installed.
      */
     public static function isConfigured(): bool
     {
         return !empty(config('twilio.sid'))
             && !empty(config('twilio.auth_token'))
-            && !empty(config('twilio.from_number'));
+            && !empty(config('twilio.from_number'))
+            && class_exists(\Twilio\Rest\Client::class);
     }
 
     /**
