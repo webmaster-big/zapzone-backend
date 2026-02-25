@@ -96,9 +96,9 @@ class InvitationService
         if ($useGmailApi) {
             // Render the mailable to HTML, then send via Gmail API
             // Match exactly how BookingController sends booking confirmations:
-            // - No extra headers
-            // - Skip inline image embedding (prevents logo showing as attachment
-            //   and avoids CID attachments that trigger spam filters)
+            // Same args pattern: (to, subject, body, fromName, attachments)
+            // No extra headers, no skipInlineImages - let CID embedding work
+            // just like booking confirmation does (logo gets properly embedded)
             $emailBody = $mailable->render();
             $subject = $mailable->subject;
 
@@ -107,9 +107,7 @@ class InvitationService
                 $subject,
                 $emailBody,
                 $variables['company_name'] ?: 'Zap Zone',
-                $attachments,
-                [],    // no extra headers
-                true   // skip inline image embedding - keep logo as URL
+                $attachments
             );
         } else {
             // Fallback to Laravel Mail - attach files manually
