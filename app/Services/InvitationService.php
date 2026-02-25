@@ -94,19 +94,19 @@ class InvitationService
             (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
 
         if ($useGmailApi) {
-            // Send exactly like ShareableTokenController does:
-            // 4 args only (to, subject, body, fromName) - no attachments.
-            // Logo <img> gets CID-embedded by processInlineImages which
-            // works perfectly when there are no file attachments (Gmail
-            // shows CID images inline, not as downloadable attachments).
             $emailBody = $mailable->render();
             $subject = $mailable->subject;
 
+            // No file attachments, skip CID image embedding.
+            // Logo stays as <img src="https://..."> - Gmail loads it from URL directly.
             $this->gmailService->sendEmail(
                 $invitation->guest_email,
                 $subject,
                 $emailBody,
-                $variables['company_name'] ?: 'Zap Zone'
+                $variables['company_name'] ?: 'Zap Zone',
+                [],    // no attachments
+                [],    // no extra headers
+                true   // skip CID embedding - logo stays as URL
             );
         } else {
             // Fallback to Laravel Mail - attach files manually
