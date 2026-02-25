@@ -36,9 +36,7 @@ class PartyInvitation extends Mailable
         $hostFirst = $this->variables['host_first_name'] ?? 'Someone';
         $packageName = $this->formatPackageName($this->variables['package_name'] ?? 'Party');
 
-        // Short, personal subject — avoids spam triggers from "Party Invitation"
-        // and long package names that look promotional
-        $this->subject("{$hostFirst} invited you to a party at {$companyName}")
+        $this->subject("{$hostFirst} invited you to {$packageName} - {$companyName}")
             ->view('emails.party-invitation')
             ->with([
                 'guestName' => $this->variables['guest_first_name'],

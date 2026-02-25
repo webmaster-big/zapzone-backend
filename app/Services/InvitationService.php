@@ -96,21 +96,17 @@ class InvitationService
         if ($useGmailApi) {
             // Render the mailable to HTML, then send via Gmail API
             // This is the exact same pattern BookingController uses for booking confirmations
+            // IMPORTANT: Do NOT add extra headers (Precedence, X-Mailer, etc.)
+            // Booking confirmation sends no extra headers and lands in inbox.
+            // Adding headers like Precedence:bulk actually triggers spam filters.
             $emailBody = $mailable->render();
             $subject = $mailable->subject;
-
-            // Use the host's first name in the From display so the recipient
-            // sees a person's name, not just a business — reduces spam scoring.
-            // Do NOT add Precedence:bulk — that actively tells Gmail this is bulk email.
-            $hostFirst = $variables['host_first_name'] ?? null;
-            $companyName = $variables['company_name'] ?: 'Zap Zone';
-            $fromName = $hostFirst ? "{$hostFirst} via {$companyName}" : $companyName;
 
             $this->gmailService->sendEmail(
                 $invitation->guest_email,
                 $subject,
                 $emailBody,
-                $fromName,
+                $variables['company_name'] ?: 'Zap Zone',
                 $attachments
             );
         } else {
@@ -217,8 +213,9 @@ class InvitationService
     {
         $hostName = $variables['host_first_name'] ?? 'Someone';
         $packageName = $variables['package_name'] ?? 'Party';
+        $companyName = $variables['company_name'] ?: 'Zap Zone';
 
-        return "Party Invitation from {$hostName} - {$packageName}";
+        return "{$hostName} invited you to {$packageName} - {$companyName}";
     }
 
     /**
@@ -253,7 +250,7 @@ class InvitationService
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="x-apple-disable-message-reformatting">
-    <title>Party Invitation from {$hostName}</title>
+    <title>{$hostName} invited you to a party</title>
 </head>
 <body style="margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; line-height: 1.5; color: #374151; background-color: #f3f4f6;">
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f3f4f6; padding: 40px 20px;">
@@ -263,8 +260,8 @@ class InvitationService
                     <!-- Header -->
                     <tr>
                         <td style="text-align: center; background-color: #1e3a5f; padding: 28px 32px; border-radius: 8px 8px 0 0;">
-                            <h1 style="margin: 0 0 6px 0; padding: 0; font-size: 24px; font-weight: 700; color: #ffffff;">You're Invited</h1>
-                            <p style="margin: 0; padding: 0; font-size: 14px; color: #cbd5e1;">{$hostName} has invited you to a party</p>
+                            <h1 style="margin: 0 0 6px 0; padding: 0; font-size: 24px; font-weight: 700; color: #ffffff;">You're Invited to a Party!</h1>
+                            <p style="margin: 0; padding: 0; font-size: 14px; color: #cbd5e1;">{$hostName} would love for you to join the fun</p>
                         </td>
                     </tr>
 
