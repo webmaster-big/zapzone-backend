@@ -24,7 +24,17 @@
                                 <tr>
                                     <td align="center">
                             <![endif]-->
-                            <p style="margin: 0 0 8px 0; padding: 0; font-size: 18px; font-weight: 700; color: #ffffff;">{{ $companyName }}</p>
+                            @if($booking->location && $booking->location->company && $booking->location->company->logo_path)
+                                @php
+                                    $logoUrl = $booking->location->company->logo_path;
+                                    if (!str_starts_with($logoUrl, 'http://') && !str_starts_with($logoUrl, 'https://') && !str_starts_with($logoUrl, 'data:')) {
+                                        $logoUrl = 'https://zapzone-backend-yt1lm2w5.on-forge.com/storage/' . $logoUrl;
+                                    }
+                                @endphp
+                                <img src="{{ $logoUrl }}" alt="{{ $booking->location->company->name }}" style="max-height: 50px; max-width: 180px; margin-bottom: 12px;" />
+                            @elseif($booking->location && $booking->location->company)
+                                <p style="margin: 0 0 8px 0; padding: 0; font-size: 18px; font-weight: 700; color: #ffffff;">{{ $booking->location->company->name }}</p>
+                            @endif
                             <h1 style="margin: 0 0 8px 0; padding: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.01em; color: #ffffff;">Party Invitation</h1>
                             <p style="margin: 0; padding: 0; font-size: 14px; opacity: 0.9; color: #ffffff;">Reference: {{ $booking->reference_number }}</p>
                             <!--[if mso]>
