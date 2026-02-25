@@ -32,12 +32,25 @@ class PartyInvitation extends Mailable
      */
     public function build()
     {
-        $companyName = $this->variables['company_name'] ?: 'Zap Zone';
         $packageName = $this->formatPackageName($this->variables['package_name'] ?? 'Party');
 
-        $this->subject("Party Invitation - {$companyName}")
+        // Get company through booking -> location -> company (same chain as shareable-token)
+        $company = $this->booking->location?->company;
+
+        // Compute logo URL (same logic as shareable-token template)
+        $logoUrl = null;
+        if ($company && $company->logo_path) {
+            $logoUrl = $company->logo_path;
+            if (!str_starts_with($logoUrl, 'http://') && !str_starts_with($logoUrl, 'https://') && !str_starts_with($logoUrl, 'data:')) {
+                $logoUrl = 'https://zapzone-backend-yt1lm2w5.on-forge.com/storage/' . $logoUrl;
+            }
+        }
+
+        $this->subject('Event Invitation - Zap Zone')
             ->view('emails.party-invitation')
             ->with([
+                'company' => $company,
+                'logoUrl' => $logoUrl,
                 'guestName' => $this->variables['guest_first_name'],
                 'hostName' => $this->variables['host_name'],
                 'packageName' => $packageName,
@@ -47,8 +60,7 @@ class PartyInvitation extends Mailable
                 'locationAddress' => $this->variables['location_address'],
                 'locationPhone' => $this->variables['location_phone'],
                 'rsvpUrl' => $this->variables['rsvp_url'],
-                'companyName' => $companyName,
-                'currentYear' => $this->variables['current_year'],
+                'companyName' => $company?->company_name ?: 'Zap Zone',
                 'guestOfHonor' => $this->variables['guest_of_honor_name'],
                 'guestOfHonorAge' => $this->variables['guest_of_honor_age'],
             ]);

@@ -97,16 +97,12 @@ class InvitationService
             $emailBody = $mailable->render();
             $subject = $mailable->subject;
 
-            // No file attachments, skip CID image embedding.
-            // Logo stays as <img src="https://..."> - Gmail loads it from URL directly.
+            // Send exactly like ShareableTokenController: 4 args, 'Zap Zone' from name
             $this->gmailService->sendEmail(
                 $invitation->guest_email,
                 $subject,
                 $emailBody,
-                $variables['company_name'] ?: 'Zap Zone',
-                [],    // no attachments
-                [],    // no extra headers
-                true   // skip CID embedding - logo stays as URL
+                'Zap Zone'
             );
         } else {
             // Fallback to Laravel Mail - attach files manually
