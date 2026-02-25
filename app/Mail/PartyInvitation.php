@@ -33,10 +33,9 @@ class PartyInvitation extends Mailable
     public function build()
     {
         $companyName = $this->variables['company_name'] ?: 'Zap Zone';
-        $hostFirst = $this->variables['host_first_name'] ?? 'Someone';
         $packageName = $this->formatPackageName($this->variables['package_name'] ?? 'Party');
 
-        $this->subject("{$hostFirst} invited you to {$packageName} - {$companyName}")
+        $this->subject("Party Invitation - {$companyName}")
             ->view('emails.party-invitation')
             ->with([
                 'guestName' => $this->variables['guest_first_name'],
