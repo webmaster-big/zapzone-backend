@@ -90,7 +90,7 @@ class PartyInvitation extends Mailable
                 return null;
             }
 
-            // Relative path — read from storage
+            // Relative path — read from local storage first
             $storagePath = storage_path('app/public/' . $logoPath);
             if (file_exists($storagePath)) {
                 $imageData = file_get_contents($storagePath);
@@ -101,6 +101,19 @@ class PartyInvitation extends Mailable
             // Try via Storage facade
             if (\Illuminate\Support\Facades\Storage::disk('public')->exists($logoPath)) {
                 $imageData = \Illuminate\Support\Facades\Storage::disk('public')->get($logoPath);
+                $finfo = new \finfo(FILEINFO_MIME_TYPE);
+                $mimeType = $finfo->buffer($imageData);
+                return 'data:' . $mimeType . ';base64,' . base64_encode($imageData);
+            }
+
+            // Fallback: fetch from production storage URL
+            $publicUrl = 'https://zapzone-backend-yt1lm2w5.on-forge.com/storage/' . $logoPath;
+            $context = stream_context_create([
+                'http' => ['timeout' => 10, 'user_agent' => 'Mozilla/5.0'],
+                'ssl' => ['verify_peer' => false, 'verify_peer_name' => false],
+            ]);
+            $imageData = @file_get_contents($publicUrl, false, $context);
+            if ($imageData) {
                 $finfo = new \finfo(FILEINFO_MIME_TYPE);
                 $mimeType = $finfo->buffer($imageData);
                 return 'data:' . $mimeType . ';base64,' . base64_encode($imageData);
