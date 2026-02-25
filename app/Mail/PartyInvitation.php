@@ -28,17 +28,22 @@ class PartyInvitation extends Mailable
     }
 
     /**
-     * Build the message — same pattern as BookingConfirmation.
-     * Pass $booking directly so template uses same logo/company chain.
+     * Build the message.
+     * Logo is embedded as base64 data URI so it displays in the email body
+     * regardless of spam status (no external URL fetch, no CID attachment).
      */
     public function build()
     {
         $packageName = $this->formatPackageName($this->variables['package_name'] ?? 'Party');
 
+        // Build logo data URI from company logo_path
+        $logoDataUri = $this->buildLogoDataUri();
+
         $this->subject('Event Invitation - Zap Zone')
             ->view('emails.party-invitation')
             ->with([
                 'booking' => $this->booking,
+                'logoDataUri' => $logoDataUri,
                 'guestName' => $this->variables['guest_first_name'],
                 'hostName' => $this->variables['host_name'],
                 'packageName' => $packageName,
@@ -53,6 +58,61 @@ class PartyInvitation extends Mailable
             ]);
 
         return $this;
+    }
+
+    /**
+     * Read the company logo file and return as base64 data URI.
+     * This embeds the image directly in the HTML — no external URL, no CID.
+     */
+    protected function buildLogoDataUri(): ?string
+    {
+        try {
+            $company = $this->booking->location?->company;
+            if (!$company || !$company->logo_path) {
+                return null;
+            }
+
+            $logoPath = $company->logo_path;
+
+            // If already a data URI, use as-is
+            if (str_starts_with($logoPath, 'data:')) {
+                return $logoPath;
+            }
+
+            // If it's a full URL, download it
+            if (str_starts_with($logoPath, 'http://') || str_starts_with($logoPath, 'https://')) {
+                $imageData = @file_get_contents($logoPath);
+                if ($imageData) {
+                    $finfo = new \finfo(FILEINFO_MIME_TYPE);
+                    $mimeType = $finfo->buffer($imageData);
+                    return 'data:' . $mimeType . ';base64,' . base64_encode($imageData);
+                }
+                return null;
+            }
+
+            // Relative path — read from storage
+            $storagePath = storage_path('app/public/' . $logoPath);
+            if (file_exists($storagePath)) {
+                $imageData = file_get_contents($storagePath);
+                $mimeType = mime_content_type($storagePath);
+                return 'data:' . $mimeType . ';base64,' . base64_encode($imageData);
+            }
+
+            // Try via Storage facade
+            if (\Illuminate\Support\Facades\Storage::disk('public')->exists($logoPath)) {
+                $imageData = \Illuminate\Support\Facades\Storage::disk('public')->get($logoPath);
+                $finfo = new \finfo(FILEINFO_MIME_TYPE);
+                $mimeType = $finfo->buffer($imageData);
+                return 'data:' . $mimeType . ';base64,' . base64_encode($imageData);
+            }
+
+            return null;
+        } catch (\Exception $e) {
+            \Illuminate\Support\Facades\Log::warning('Failed to build logo data URI', [
+                'error' => $e->getMessage(),
+            ]);
+            return null;
+        }
     }
 
     /**
