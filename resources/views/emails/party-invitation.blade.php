@@ -24,9 +24,7 @@
                                 <tr>
                                     <td align="center">
                             <![endif]-->
-                            @if(isset($logoDataUri) && $logoDataUri)
-                                <img src="{{ $logoDataUri }}" alt="{{ $booking->location->company->company_name }}" style="max-height: 50px; max-width: 180px; margin-bottom: 12px;" />
-                            @elseif($booking->location && $booking->location->company)
+                            @if($booking->location && $booking->location->company)
                                 <p style="margin: 0 0 8px 0; padding: 0; font-size: 18px; font-weight: 700; color: #ffffff;">{{ $booking->location->company->company_name }}</p>
                             @endif
                             <h1 style="margin: 0 0 8px 0; padding: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.01em; color: #ffffff;">Event Invitation</h1>
@@ -44,7 +42,7 @@
                         <td style="background-color: #ffffff; padding: 32px; border-radius: 0 0 8px 8px; border: 1px solid #e5e7eb; border-top: none;">
                             <p style="margin: 0 0 16px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #4b5563;">Dear {{ $guestName }},</p>
 
-                            <p style="margin: 0 0 16px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #4b5563;">{{ $hostName }} has invited you to a <strong>{{ $packageName }}</strong> event. We would love for you to join us for a fun celebration!</p>
+                            <p style="margin: 0 0 16px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #4b5563;"><strong>{{ $hostName }}</strong> has invited you to a <strong>{{ $packageName }}</strong> event. We would love for you to join us for a fun celebration!</p>
 
                             @if($guestOfHonor)
                             <p style="margin: 0 0 16px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #4b5563;">

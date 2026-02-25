@@ -36,14 +36,10 @@ class PartyInvitation extends Mailable
     {
         $packageName = $this->formatPackageName($this->variables['package_name'] ?? 'Party');
 
-        // Build logo data URI from company logo_path
-        $logoDataUri = $this->buildLogoDataUri();
-
         $this->subject('Event Invitation - Zap Zone')
             ->view('emails.party-invitation')
             ->with([
                 'booking' => $this->booking,
-                'logoDataUri' => $logoDataUri,
                 'guestName' => $this->variables['guest_first_name'],
                 'hostName' => $this->variables['host_name'],
                 'packageName' => $packageName,
