@@ -31,9 +31,9 @@
                                         $logoUrl = 'https://zapzone-backend-yt1lm2w5.on-forge.com/storage/' . $logoUrl;
                                     }
                                 @endphp
-                                <img src="{{ $logoUrl }}" alt="{{ $booking->location->company->name }}" style="max-height: 50px; max-width: 180px; margin-bottom: 12px;" />
+                                <img src="{{ $logoUrl }}" alt="{{ $booking->location->company->company_name }}" style="max-height: 50px; max-width: 180px; margin-bottom: 12px;" />
                             @elseif($booking->location && $booking->location->company)
-                                <p style="margin: 0 0 8px 0; padding: 0; font-size: 18px; font-weight: 700; color: #ffffff;">{{ $booking->location->company->name }}</p>
+                                <p style="margin: 0 0 8px 0; padding: 0; font-size: 18px; font-weight: 700; color: #ffffff;">{{ $booking->location->company->company_name }}</p>
                             @endif
                             <h1 style="margin: 0 0 8px 0; padding: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.01em; color: #ffffff;">Booking Confirmation</h1>
                             <p style="margin: 0; padding: 0; font-size: 14px; opacity: 0.9; color: #ffffff;">Reference: {{ $booking->reference_number }}</p>
@@ -379,7 +379,7 @@
                                                 at <a href="tel:{{ $booking->location->phone }}" style="color: #1e40af; text-decoration: none;">{{ $booking->location->phone }}</a>
                                             @endif.
                                         </p>
-                                        <p style="margin: 4px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #9ca3af;">Thank you for choosing {{ $booking->location && $booking->location->company ? $booking->location->company->name : 'us' }}!</p>
+                                        <p style="margin: 4px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #9ca3af;">Thank you for choosing {{ $booking->location && $booking->location->company ? $booking->location->company->company_name : 'Zap Zone' }}!</p>
                                     </td>
                                 </tr>
                             </table>

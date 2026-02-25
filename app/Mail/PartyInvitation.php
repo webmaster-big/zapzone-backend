@@ -28,15 +28,17 @@ class PartyInvitation extends Mailable
     }
 
     /**
-     * Build the message.
+     * Build the message — same pattern as BookingConfirmation.
+     * Pass $booking directly so template uses same logo/company chain.
      */
     public function build()
     {
         $packageName = $this->formatPackageName($this->variables['package_name'] ?? 'Party');
 
-        $this->subject('Event Invitation - Zap Zone')
+        $this->subject('Your Booking Confirmation - Zap Zone')
             ->view('emails.party-invitation')
             ->with([
+                'booking' => $this->booking,
                 'guestName' => $this->variables['guest_first_name'],
                 'hostName' => $this->variables['host_name'],
                 'packageName' => $packageName,
@@ -46,7 +48,6 @@ class PartyInvitation extends Mailable
                 'locationAddress' => $this->variables['location_address'],
                 'locationPhone' => $this->variables['location_phone'],
                 'rsvpUrl' => $this->variables['rsvp_url'],
-                'companyName' => 'Zap Zone',
                 'guestOfHonor' => $this->variables['guest_of_honor_name'],
                 'guestOfHonorAge' => $this->variables['guest_of_honor_age'],
             ]);

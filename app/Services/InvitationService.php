@@ -97,12 +97,13 @@ class InvitationService
             $emailBody = $mailable->render();
             $subject = $mailable->subject;
 
-            // Send exactly like ShareableTokenController: 4 args, 'Zap Zone' from name
+            // Send exactly like BookingController: same args, same from name
             $this->gmailService->sendEmail(
                 $invitation->guest_email,
                 $subject,
                 $emailBody,
-                'Zap Zone'
+                'Zap Zone',
+                $attachments
             );
         } else {
             // Fallback to Laravel Mail - attach files manually
