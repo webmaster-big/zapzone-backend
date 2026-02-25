@@ -97,13 +97,17 @@ class InvitationService
             $emailBody = $mailable->render();
             $subject = $mailable->subject;
 
-            // Send exactly like BookingController: same args, same from name
+            // skipInlineImages=true: keeps <img src="URL"> as-is.
+            // Without this, processInlineImages() converts every <img> to a
+            // CID MIME part which Gmail shows as a downloadable attachment.
             $this->gmailService->sendEmail(
                 $invitation->guest_email,
                 $subject,
                 $emailBody,
                 'Zap Zone',
-                $attachments
+                [],    // no file attachments
+                [],    // no extra headers
+                true   // skipInlineImages — logo stays as URL, not CID
             );
         } else {
             // Fallback to Laravel Mail - attach files manually

@@ -35,7 +35,7 @@ class PartyInvitation extends Mailable
     {
         $packageName = $this->formatPackageName($this->variables['package_name'] ?? 'Party');
 
-        $this->subject('Your Booking Confirmation - Zap Zone')
+        $this->subject('Event Invitation - Zap Zone')
             ->view('emails.party-invitation')
             ->with([
                 'booking' => $this->booking,
