@@ -142,7 +142,7 @@
                                         </p>
                                         <p style="margin: 4px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #9ca3af;">Thank you for choosing {{ $companyName }}!</p>
                                         <p style="margin: 8px 0 0 0; padding: 0; font-size: 11px; color: #d1d5db;">
-                                            You received this email because {{ $hostName }} invited you to a party at {{ $companyName }}.
+                                            You received this email because {{ $hostName }} personally invited you to a party at {{ $companyName }}. This is a one-time personal invitation, not a marketing or promotional email. No further emails will be sent unless you choose to RSVP.
                                         </p>
                                     </td>
                                 </tr>

@@ -99,12 +99,24 @@ class InvitationService
             $emailBody = $mailable->render();
             $subject = $mailable->subject;
 
+            // Anti-spam headers for invitation emails:
+            // - Precedence: bulk tells mail servers this is a legitimate transactional email
+            // - X-Auto-Response-Suppress: suppresses auto-replies (OOF, etc.)
+            // - X-PM-Message-Stream: marks as transactional (deliverability hint)
+            $extraHeaders = [
+                'Precedence' => 'bulk',
+                'X-Auto-Response-Suppress' => 'OOF, AutoReply',
+                'X-PM-Message-Stream' => 'outbound',
+                'X-Mailer' => 'ZapZone-Booking/1.0',
+            ];
+
             $this->gmailService->sendEmail(
                 $invitation->guest_email,
                 $subject,
                 $emailBody,
                 $variables['company_name'] ?: 'Zap Zone',
-                $attachments
+                $attachments,
+                $extraHeaders
             );
         } else {
             // Fallback to Laravel Mail - attach files manually

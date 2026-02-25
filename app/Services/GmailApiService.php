@@ -238,8 +238,8 @@ class GmailApiService
             $emailContent .= "Content-Type: multipart/alternative; boundary=\"{$altBoundary}\"\r\n\r\n";
         }
 
-        // Plain text version
-        $plainText = strip_tags($htmlBody);
+        // Plain text version - generate a clean readable version
+        $plainText = $this->htmlToPlainText($htmlBody);
         $emailContent .= "--{$altBoundary}\r\n";
         $emailContent .= "Content-Type: text/plain; charset=utf-8\r\n";
         $emailContent .= "Content-Transfer-Encoding: 8bit\r\n\r\n";
@@ -282,6 +282,52 @@ class GmailApiService
         $message->setRaw($this->base64UrlEncode($emailContent));
 
         return $message;
+    }
+
+    /**
+     * Convert HTML to a clean, readable plain text version.
+     * This helps avoid spam filters that penalize emails with poor text/html ratio.
+     */
+    private function htmlToPlainText(string $html): string
+    {
+        // Remove style and script blocks
+        $text = preg_replace('/<style[^>]*>.*?<\/style>/si', '', $html);
+        $text = preg_replace('/<script[^>]*>.*?<\/script>/si', '', $text);
+
+        // Remove HTML comments (including MSO conditionals)
+        $text = preg_replace('/<!--.*?-->/s', '', $text);
+
+        // Convert links to "text (url)" format
+        $text = preg_replace('/<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)<\/a>/si', '$2 ( $1 )', $text);
+
+        // Convert headings to uppercase with newlines
+        $text = preg_replace('/<h[1-6][^>]*>(.*?)<\/h[1-6]>/si', "\n\n\$1\n", $text);
+
+        // Convert paragraphs and divs to newlines
+        $text = preg_replace('/<\/(p|div|tr|li)>/i', "\n", $text);
+        $text = preg_replace('/<br[^>]*>/i', "\n", $text);
+        $text = preg_replace('/<\/(td)>/i', "\t", $text);
+
+        // Add separator for <hr>
+        $text = preg_replace('/<hr[^>]*>/i', "\n---\n", $text);
+
+        // Strip remaining HTML tags
+        $text = strip_tags($text);
+
+        // Decode HTML entities
+        $text = html_entity_decode($text, ENT_QUOTES, 'UTF-8');
+
+        // Clean up whitespace: collapse multiple spaces on same line
+        $text = preg_replace('/[ \t]+/', ' ', $text);
+
+        // Collapse 3+ consecutive newlines into 2
+        $text = preg_replace('/\n{3,}/', "\n\n", $text);
+
+        // Trim each line
+        $lines = array_map('trim', explode("\n", $text));
+        $text = implode("\n", $lines);
+
+        return trim($text);
     }
 
     private function base64UrlEncode($data)
