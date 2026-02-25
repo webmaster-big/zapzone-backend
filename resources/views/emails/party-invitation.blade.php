@@ -11,11 +11,7 @@
                 <table width="100%" border="0" cellpadding="0" cellspacing="0" style="max-width: 480px; background-color: #ffffff; padding: 32px; border-radius: 8px; border: 1px solid #e5e7eb;">
                     <tr>
                         <td>
-                            @if(isset($logoUrl) && $logoUrl)
-                                <img src="{{ $logoUrl }}" alt="{{ $companyName }}" style="max-height: 50px; max-width: 180px; margin-bottom: 16px;" />
-                            @endif
-
-                            <h2 style="color: #111827; font-size: 20px; font-weight: 600; margin: 0 0 16px 0; letter-spacing: -0.01em; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;">You're Invited!</h2>
+                            <h2 style="color: #111827; font-size: 20px; font-weight: 600; margin: 0 0 16px 0; letter-spacing: -0.01em; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;">{{ $companyName }} - Event Invitation</h2>
 
                             <p style="font-size: 14px; line-height: 1.6; margin: 0 0 16px 0; color: #4b5563; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;">
                                 Hi {{ $guestName }}, {{ $hostName }} has invited you to a <strong>{{ $packageName }}</strong> event at {{ $companyName }}.
