@@ -173,12 +173,13 @@ class AnalyticsController extends Controller
 
     /**
      * Get key metrics summary
+     * Uses booking_date for bookings and scheduled_date/purchase_date for attractions
      */
     private function getKeyMetrics($locationId, $startDate, $endDate)
     {
-        // Get bookings data
+        // Get bookings data - filter by booking_date (actual event date, not creation date)
         $bookings = Booking::where('location_id', $locationId)
-            ->whereBetween('created_at', [$startDate, $endDate])
+            ->whereBetween('booking_date', [$startDate->toDateString(), $endDate->toDateString()])
             ->whereNotIn('status', ['cancelled'])
             ->get();
 
@@ -186,10 +187,10 @@ class AnalyticsController extends Controller
         $totalBookings = $bookings->count();
         $totalParticipants = $bookings->sum('participants');
 
-        // Get attraction purchases data
+        // Get attraction purchases data - filter by scheduled_date (fallback to purchase_date)
         $attractionPurchases = AttractionPurchase::byLocation($locationId)
-            ->whereBetween('created_at', [$startDate, $endDate])
-            ->whereNotIn('status', ['cancelled'])
+            ->whereRaw('COALESCE(scheduled_date, purchase_date) BETWEEN ? AND ?', [$startDate->toDateString(), $endDate->toDateString()])
+            ->whereNotIn('status', ['cancelled', 'refunded'])
             ->get();
 
         $totalAttractionRevenue = $attractionPurchases->sum('amount_paid');
@@ -214,16 +215,16 @@ class AnalyticsController extends Controller
         // Calculate previous period for comparison
         $periodDays = $endDate->diffInDays($startDate);
         $prevStartDate = $startDate->copy()->subDays($periodDays);
-        $prevEndDate = $startDate->copy();
+        $prevEndDate = $startDate->copy()->subDay();
 
         $prevBookings = Booking::where('location_id', $locationId)
-            ->whereBetween('created_at', [$prevStartDate, $prevEndDate])
+            ->whereBetween('booking_date', [$prevStartDate->toDateString(), $prevEndDate->toDateString()])
             ->whereNotIn('status', ['cancelled'])
             ->get();
 
         $prevAttractionPurchases = AttractionPurchase::byLocation($locationId)
-            ->whereBetween('created_at', [$prevStartDate, $prevEndDate])
-            ->whereNotIn('status', ['cancelled'])
+            ->whereRaw('COALESCE(scheduled_date, purchase_date) BETWEEN ? AND ?', [$prevStartDate->toDateString(), $prevEndDate->toDateString()])
+            ->whereNotIn('status', ['cancelled', 'refunded'])
             ->get();
 
         $prevTotalRevenue = $prevBookings->sum('amount_paid') + $prevAttractionPurchases->sum('amount_paid');
@@ -266,28 +267,30 @@ class AnalyticsController extends Controller
             ],
             'active_packages' => [
                 'value' => $activePackages,
+                'total' => $totalPackages,
                 'info' => $packageStatus,
             ],
             'active_attractions' => [
                 'value' => $activeAttractions,
+                'total' => $totalAttractions,
                 'info' => $attractionStatus,
             ],
         ];
     }
 
     /**
-     * Get hourly revenue pattern (last 24 hours or average for period)
+     * Get hourly revenue pattern based on actual booking_time / scheduled_time
      */
     private function getHourlyRevenue($locationId, $startDate, $endDate)
     {
         $hourlyData = [];
 
-        // Get bookings grouped by hour
+        // Get bookings grouped by actual booking hour (not creation time)
         $bookingsByHour = Booking::where('location_id', $locationId)
-            ->whereBetween('created_at', [$startDate, $endDate])
+            ->whereBetween('booking_date', [$startDate->toDateString(), $endDate->toDateString()])
             ->whereNotIn('status', ['cancelled'])
             ->select(
-                DB::raw('HOUR(created_at) as hour'),
+                DB::raw('HOUR(booking_time) as hour'),
                 DB::raw('SUM(amount_paid) as revenue'),
                 DB::raw('COUNT(*) as bookings')
             )
@@ -295,12 +298,13 @@ class AnalyticsController extends Controller
             ->get()
             ->keyBy('hour');
 
-        // Get attraction purchases grouped by hour
+        // Get attraction purchases grouped by scheduled_time
         $attractionsByHour = AttractionPurchase::byLocation($locationId)
-            ->whereBetween('created_at', [$startDate, $endDate])
-            ->whereNotIn('status', ['cancelled'])
+            ->whereRaw('COALESCE(scheduled_date, purchase_date) BETWEEN ? AND ?', [$startDate->toDateString(), $endDate->toDateString()])
+            ->whereNotIn('status', ['cancelled', 'refunded'])
+            ->whereNotNull('scheduled_time')
             ->select(
-                DB::raw('HOUR(created_at) as hour'),
+                DB::raw('HOUR(scheduled_time) as hour'),
                 DB::raw('SUM(amount_paid) as revenue'),
                 DB::raw('COUNT(*) as purchases')
             )
@@ -316,10 +320,16 @@ class AnalyticsController extends Controller
             $bookingRev = $bookingData ? round($bookingData->revenue, 2) : 0;
             $attractionRev = $attractionData ? round($attractionData->revenue, 2) : 0;
 
+            // Format hour label
+            $period = $hour < 12 ? 'AM' : 'PM';
+            $displayHour = $hour <= 12 ? $hour : $hour - 12;
+
             $hourlyData[] = [
-                'hour' => sprintf('%02d:00', $hour),
+                'hour' => $hour,
+                'label' => "{$displayHour} {$period}",
                 'revenue' => round($bookingRev + $attractionRev, 2),
-                'bookings' => $bookingData ? $bookingData->bookings : 0,
+                'bookings' => $bookingData ? (int) $bookingData->bookings : 0,
+                'attraction_purchases' => $attractionData ? (int) $attractionData->purchases : 0,
             ];
         }
 
@@ -328,44 +338,62 @@ class AnalyticsController extends Controller
 
     /**
      * Get daily revenue within the specified date range
+     * Optimized: uses grouped queries instead of per-day iteration
      */
     private function getDailyRevenue($locationId, $startDate, $endDate)
     {
         $days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-        $dailyData = [];
 
-        // Iterate through each day in the date range
+        // Get all bookings grouped by booking_date in a single query
+        $bookingsByDate = Booking::where('location_id', $locationId)
+            ->whereBetween('booking_date', [$startDate->toDateString(), $endDate->toDateString()])
+            ->whereNotIn('status', ['cancelled'])
+            ->select(
+                'booking_date',
+                DB::raw('SUM(amount_paid) as total_revenue'),
+                DB::raw('SUM(participants) as total_participants'),
+                DB::raw('COUNT(*) as total_bookings')
+            )
+            ->groupBy('booking_date')
+            ->get()
+            ->keyBy(fn($item) => $item->booking_date->toDateString());
+
+        // Get all attraction purchases grouped by visit date in a single query
+        $attractionsByDate = AttractionPurchase::byLocation($locationId)
+            ->whereRaw('COALESCE(scheduled_date, purchase_date) BETWEEN ? AND ?', [$startDate->toDateString(), $endDate->toDateString()])
+            ->whereNotIn('status', ['cancelled', 'refunded'])
+            ->select(
+                DB::raw('COALESCE(scheduled_date, purchase_date) as visit_date'),
+                DB::raw('SUM(amount_paid) as total_revenue'),
+                DB::raw('SUM(quantity) as total_tickets'),
+                DB::raw('COUNT(*) as total_purchases')
+            )
+            ->groupBy('visit_date')
+            ->get()
+            ->keyBy('visit_date');
+
+        $dailyData = [];
         $currentDate = $startDate->copy();
+
         while ($currentDate->lte($endDate)) {
+            $dateStr = $currentDate->toDateString();
             $dayOfWeek = $days[$currentDate->dayOfWeekIso - 1];
 
-            // Get bookings for this day
-            $bookingsRevenue = Booking::where('location_id', $locationId)
-                ->whereDate('created_at', $currentDate)
-                ->whereNotIn('status', ['cancelled'])
-                ->sum('amount_paid');
+            $bookingData = $bookingsByDate->get($dateStr);
+            $attractionData = $attractionsByDate->get($dateStr);
 
-            $bookingsParticipants = Booking::where('location_id', $locationId)
-                ->whereDate('created_at', $currentDate)
-                ->whereNotIn('status', ['cancelled'])
-                ->sum('participants');
-
-            // Get attraction purchases for this day
-            $attractionsRevenue = AttractionPurchase::byLocation($locationId)
-                ->whereDate('created_at', $currentDate)
-                ->whereNotIn('status', ['cancelled'])
-                ->sum('amount_paid');
-
-            $attractionsTickets = AttractionPurchase::byLocation($locationId)
-                ->whereDate('created_at', $currentDate)
-                ->whereNotIn('status', ['cancelled'])
-                ->sum('quantity');
+            $bookingRevenue = $bookingData ? round((float) $bookingData->total_revenue, 2) : 0;
+            $attractionRevenue = $attractionData ? round((float) $attractionData->total_revenue, 2) : 0;
+            $participants = ($bookingData ? (int) $bookingData->total_participants : 0)
+                         + ($attractionData ? (int) $attractionData->total_tickets : 0);
 
             $dailyData[] = [
                 'day' => $dayOfWeek,
-                'date' => $currentDate->toDateString(),
-                'revenue' => round($bookingsRevenue + $attractionsRevenue, 2),
-                'participants' => $bookingsParticipants + $attractionsTickets,
+                'date' => $dateStr,
+                'revenue' => round($bookingRevenue + $attractionRevenue, 2),
+                'bookings' => $bookingData ? (int) $bookingData->total_bookings : 0,
+                'attraction_purchases' => $attractionData ? (int) $attractionData->total_purchases : 0,
+                'participants' => $participants,
             ];
 
             $currentDate->addDay();
@@ -376,6 +404,7 @@ class AnalyticsController extends Controller
 
     /**
      * Get weekly trend within the specified date range
+     * Uses booking_date for bookings, scheduled_date/purchase_date for attractions
      */
     private function getWeeklyTrend($locationId, $startDate, $endDate)
     {
@@ -392,16 +421,16 @@ class AnalyticsController extends Controller
             $effectiveStart = $currentWeekStart->lt($startDate) ? $startDate->copy() : $currentWeekStart->copy();
             $effectiveEnd = $currentWeekEnd->gt($endDate) ? $endDate->copy() : $currentWeekEnd->copy();
 
-            // Bookings for this week
+            // Bookings for this week - use booking_date
             $weekBookings = Booking::where('location_id', $locationId)
-                ->whereBetween('created_at', [$effectiveStart, $effectiveEnd])
+                ->whereBetween('booking_date', [$effectiveStart->toDateString(), $effectiveEnd->toDateString()])
                 ->whereNotIn('status', ['cancelled'])
                 ->get();
 
-            // Attraction purchases for this week
+            // Attraction purchases for this week - use scheduled_date/purchase_date
             $weekAttractions = AttractionPurchase::byLocation($locationId)
-                ->whereBetween('created_at', [$effectiveStart, $effectiveEnd])
-                ->whereNotIn('status', ['cancelled'])
+                ->whereRaw('COALESCE(scheduled_date, purchase_date) BETWEEN ? AND ?', [$effectiveStart->toDateString(), $effectiveEnd->toDateString()])
+                ->whereNotIn('status', ['cancelled', 'refunded'])
                 ->get();
 
             $weeklyData[] = [
@@ -438,7 +467,7 @@ class AnalyticsController extends Controller
 
         // Get aggregated booking stats in a single efficient query
         $bookingStats = Booking::whereIn('package_id', $packageIds)
-            ->whereBetween('created_at', [$startDate, $endDate])
+            ->whereBetween('booking_date', [$startDate->toDateString(), $endDate->toDateString()])
             ->whereNotIn('status', ['cancelled'])
             ->select(
                 'package_id',
@@ -475,6 +504,7 @@ class AnalyticsController extends Controller
 
     /**
      * Get attraction performance (ticket sales)
+     * Uses scheduled_date/purchase_date for date filtering, excludes refunded
      */
     private function getAttractionPerformance($locationId, $startDate, $endDate)
     {
@@ -482,22 +512,39 @@ class AnalyticsController extends Controller
             ->where('is_active', true)
             ->get();
 
-        return $attractions->map(function ($attraction) use ($startDate, $endDate) {
-            $purchases = AttractionPurchase::where('attraction_id', $attraction->id)
-                ->whereBetween('created_at', [$startDate, $endDate])
-                ->whereNotIn('status', ['cancelled'])
-                ->get();
+        if ($attractions->isEmpty()) {
+            return collect([]);
+        }
 
-            $sessions = $purchases->count();
-            $ticketsSold = $purchases->sum('quantity');
-            $revenue = $purchases->sum('amount_paid');
+        $attractionIds = $attractions->pluck('id')->toArray();
 
-            // Calculate utilization as percentage (assuming max_capacity is daily capacity)
-            // This is a simplified calculation - adjust based on actual business logic
-            $daysInPeriod = $endDate->diffInDays($startDate) ?: 1;
-            $maxPossibleSessions = $attraction->max_capacity * $daysInPeriod;
-            $utilization = $maxPossibleSessions > 0
-                ? min(100, round(($ticketsSold / $maxPossibleSessions) * 100, 1))
+        // Get aggregated purchase stats in a single efficient query
+        $purchaseStats = AttractionPurchase::whereIn('attraction_id', $attractionIds)
+            ->whereRaw('COALESCE(scheduled_date, purchase_date) BETWEEN ? AND ?', [$startDate->toDateString(), $endDate->toDateString()])
+            ->whereNotIn('status', ['cancelled', 'refunded'])
+            ->select(
+                'attraction_id',
+                DB::raw('COUNT(*) as purchase_count'),
+                DB::raw('COALESCE(SUM(quantity), 0) as total_tickets'),
+                DB::raw('COALESCE(SUM(amount_paid), 0) as total_revenue')
+            )
+            ->groupBy('attraction_id')
+            ->get()
+            ->keyBy('attraction_id');
+
+        $daysInPeriod = $endDate->diffInDays($startDate) ?: 1;
+
+        return $attractions->map(function ($attraction) use ($purchaseStats, $daysInPeriod) {
+            $stats = $purchaseStats->get($attraction->id);
+
+            $sessions = $stats ? (int) $stats->purchase_count : 0;
+            $ticketsSold = $stats ? (int) $stats->total_tickets : 0;
+            $revenue = $stats ? round((float) $stats->total_revenue, 2) : 0;
+
+            // Calculate utilization: tickets sold vs max_capacity per day over the period
+            $maxPossible = ($attraction->max_capacity ?? 0) * $daysInPeriod;
+            $utilization = $maxPossible > 0
+                ? min(100, round(($ticketsSold / $maxPossible) * 100, 1))
                 : 0;
 
             return [
@@ -506,7 +553,7 @@ class AnalyticsController extends Controller
                 'category' => $attraction->category,
                 'sessions' => $sessions,
                 'tickets_sold' => $ticketsSold,
-                'revenue' => round($revenue, 2),
+                'revenue' => $revenue,
                 'utilization' => $utilization,
                 'price' => round($attraction->price, 2),
                 'max_capacity' => $attraction->max_capacity,
@@ -515,35 +562,73 @@ class AnalyticsController extends Controller
     }
 
     /**
-     * Get time slot performance
+     * Get time slot performance (hourly breakdown)
+     * Uses booking_time for bookings, scheduled_time for attractions
      */
     private function getTimeSlotPerformance($locationId, $startDate, $endDate)
     {
-        $timeSlots = [
-            ['name' => 'Morning (9-12)', 'start' => 9, 'end' => 12],
-            ['name' => 'Afternoon (12-6)', 'start' => 12, 'end' => 18],
-            ['name' => 'Evening (6-9)', 'start' => 18, 'end' => 21],
-        ];
-
         $slotData = [];
 
-        foreach ($timeSlots as $slot) {
-            // Get bookings in this time slot
-            $bookings = Booking::where('location_id', $locationId)
-                ->whereBetween('created_at', [$startDate, $endDate])
-                ->whereNotIn('status', ['cancelled'])
-                ->whereRaw('HOUR(created_at) >= ?', [$slot['start']])
-                ->whereRaw('HOUR(created_at) < ?', [$slot['end']])
-                ->get();
+        // Get bookings grouped by actual booking hour (not creation time)
+        $bookingsByHour = Booking::where('location_id', $locationId)
+            ->whereBetween('booking_date', [$startDate->toDateString(), $endDate->toDateString()])
+            ->whereNotIn('status', ['cancelled'])
+            ->select(
+                DB::raw('HOUR(booking_time) as hour'),
+                DB::raw('COUNT(*) as bookings_count'),
+                DB::raw('SUM(amount_paid) as total_revenue'),
+                DB::raw('SUM(participants) as total_participants')
+            )
+            ->groupBy('hour')
+            ->get()
+            ->keyBy('hour');
 
-            $bookingsCount = $bookings->count();
-            $bookingsRevenue = $bookings->sum('amount_paid');
+        // Get attraction purchases grouped by scheduled_time
+        $attractionsByHour = AttractionPurchase::byLocation($locationId)
+            ->whereRaw('COALESCE(scheduled_date, purchase_date) BETWEEN ? AND ?', [$startDate->toDateString(), $endDate->toDateString()])
+            ->whereNotIn('status', ['cancelled', 'refunded'])
+            ->whereNotNull('scheduled_time')
+            ->select(
+                DB::raw('HOUR(scheduled_time) as hour'),
+                DB::raw('COUNT(*) as purchases_count'),
+                DB::raw('SUM(amount_paid) as total_revenue'),
+                DB::raw('SUM(quantity) as total_tickets')
+            )
+            ->groupBy('hour')
+            ->get()
+            ->keyBy('hour');
+
+        // Generate data for each hour (9 AM to 9 PM)
+        for ($hour = 9; $hour <= 21; $hour++) {
+            $bookingData = $bookingsByHour->get($hour);
+            $attractionData = $attractionsByHour->get($hour);
+
+            $bookingsCount = $bookingData ? (int) $bookingData->bookings_count : 0;
+            $bookingsRevenue = $bookingData ? round((float) $bookingData->total_revenue, 2) : 0;
+            $participants = $bookingData ? (int) $bookingData->total_participants : 0;
+
+            $ticketsSold = $attractionData ? (int) $attractionData->total_tickets : 0;
+            $attractionRevenue = $attractionData ? round((float) $attractionData->total_revenue, 2) : 0;
+
+            $totalRevenue = round($bookingsRevenue + $attractionRevenue, 2);
+            $totalTransactions = $bookingsCount + ($attractionData ? (int) $attractionData->purchases_count : 0);
+
+            // Format hour label (e.g., "9 AM", "12 PM", "5 PM")
+            $period = $hour < 12 ? 'AM' : 'PM';
+            $displayHour = $hour <= 12 ? $hour : $hour - 12;
+            $label = "{$displayHour} {$period}";
 
             $slotData[] = [
-                'slot' => $slot['name'],
+                'hour' => $hour,
+                'label' => $label,
                 'bookings' => $bookingsCount,
-                'revenue' => round($bookingsRevenue, 2),
-                'avg_value' => $bookingsCount > 0 ? round($bookingsRevenue / $bookingsCount, 2) : 0,
+                'tickets_sold' => $ticketsSold,
+                'participants' => $participants,
+                'booking_revenue' => $bookingsRevenue,
+                'attraction_revenue' => $attractionRevenue,
+                'total_revenue' => $totalRevenue,
+                'total_transactions' => $totalTransactions,
+                'avg_value' => $totalTransactions > 0 ? round($totalRevenue / $totalTransactions, 2) : 0,
             ];
         }
 
