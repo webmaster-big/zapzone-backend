@@ -181,6 +181,52 @@ class AttractionPurchaseController extends Controller
             'additional_addons.*.price_at_purchase' => 'nullable|numeric|min:0',
         ]);
 
+        // --- Duplicate purchase prevention ---
+        // 1. If a transaction_id is provided, check for an existing purchase with the same one
+        if (!empty($validated['transaction_id'])) {
+            $existingByTxn = AttractionPurchase::where('transaction_id', $validated['transaction_id'])->first();
+            if ($existingByTxn) {
+                $existingByTxn->load(['attraction', 'customer', 'createdBy', 'addOns']);
+                Log::info('Duplicate attraction purchase prevented (same transaction_id)', [
+                    'transaction_id' => $validated['transaction_id'],
+                    'existing_purchase_id' => $existingByTxn->id,
+                ]);
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Attraction purchase already exists',
+                    'data' => $existingByTxn,
+                ], 200);
+            }
+        }
+
+        // 2. Time-window idempotency: same attraction, customer/guest, quantity within 2 minutes
+        $duplicateQuery = AttractionPurchase::where('attraction_id', $validated['attraction_id'])
+            ->where('quantity', $validated['quantity'])
+            ->where('created_at', '>=', now()->subMinutes(2));
+
+        if (!empty($validated['customer_id'])) {
+            $duplicateQuery->where('customer_id', $validated['customer_id']);
+        } else {
+            $duplicateQuery->where('guest_email', $validated['guest_email'] ?? null);
+        }
+
+        $existingByWindow = $duplicateQuery->first();
+        if ($existingByWindow) {
+            $existingByWindow->load(['attraction', 'customer', 'createdBy', 'addOns']);
+            Log::info('Duplicate attraction purchase prevented (time-window check)', [
+                'existing_purchase_id' => $existingByWindow->id,
+                'attraction_id' => $validated['attraction_id'],
+                'customer_id' => $validated['customer_id'] ?? null,
+                'guest_email' => $validated['guest_email'] ?? null,
+            ]);
+            return response()->json([
+                'success' => true,
+                'message' => 'Attraction purchase already exists',
+                'data' => $existingByWindow,
+            ], 200);
+        }
+        // --- End duplicate prevention ---
+
         // Get attraction to calculate total amount
         $attraction = Attraction::findOrFail($validated['attraction_id']);
 
