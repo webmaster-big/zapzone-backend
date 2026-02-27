@@ -128,11 +128,12 @@ class InvitationService
      */
     protected function sendInvitationSms(BookingInvitation $invitation, Booking $booking): void
     {
-        $hostName = $booking->customer
-            ? trim($booking->customer->first_name . ' ' . $booking->customer->last_name)
-            : ($booking->guest_name ?? 'Your host');
+        $hostName = $booking->guest_of_honor_name
+            ? $booking->guest_of_honor_name
+            : ($booking->customer
+                ? trim($booking->customer->first_name . ' ' . $booking->customer->last_name)
+                : ($booking->guest_name ?? 'Your host'));
 
-        $packageName = $booking->package?->name ?? 'party';
         $bookingDate = $booking->booking_date?->format('F j, Y') ?? '';
         $bookingTime = $booking->booking_time ? $booking->booking_time->format('g:i A') : '';
         $locationName = $booking->location?->name ?? '';
@@ -140,11 +141,11 @@ class InvitationService
 
         $guestFirst = explode(' ', trim($invitation->guest_name ?? ''))[0] ?? 'Hi';
 
-        $message = "{$guestFirst}, you're invited to {$hostName}'s {$packageName} at {$locationName} on {$bookingDate} at {$bookingTime}! RSVP here: {$rsvpUrl}";
+        $message = "Hi {$guestFirst}! You're invited by {$hostName} to a celebration at {$locationName} on {$bookingDate} at {$bookingTime}. Confirm your attendance here: {$rsvpUrl}";
 
         // Truncate if over 320 chars (2 SMS segments)
         if (strlen($message) > 320) {
-            $message = "{$guestFirst}, you're invited to a party at {$locationName} on {$bookingDate}! RSVP: {$rsvpUrl}";
+            $message = "Hi {$guestFirst}! You're invited to a celebration at {$locationName} on {$bookingDate}. Confirm your attendance: {$rsvpUrl}";
         }
 
         $this->smsService->sendSms($invitation->guest_phone, $message);
