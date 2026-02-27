@@ -66,9 +66,10 @@ class PackageAvailabilitySchedule extends Model
      * Get time slots for this schedule based on a given date.
      *
      * @param string $date Date in Y-m-d format
+     * @param int $durationMinutes Package duration in minutes (used to ensure slot end doesn't exceed schedule end)
      * @return array Array of time slots in H:i format
      */
-    public function getTimeSlotsForDate(string $date): array
+    public function getTimeSlotsForDate(string $date, int $durationMinutes = 0): array
     {
         $slots = [];
         $start = strtotime($this->time_slot_start);
@@ -80,8 +81,13 @@ class PackageAvailabilitySchedule extends Model
         }
 
         $interval = $this->time_slot_interval * 60; // Convert to seconds
+        $durationSeconds = $durationMinutes * 60;
 
         for ($time = $start; $time < $end; $time += $interval) {
+            // If duration is provided, ensure the slot end (start + duration) doesn't exceed schedule end
+            if ($durationSeconds > 0 && ($time + $durationSeconds) > $end) {
+                break;
+            }
             $slots[] = date('H:i', $time);
         }
 

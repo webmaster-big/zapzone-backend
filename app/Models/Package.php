@@ -150,10 +150,29 @@ class Package extends Model
         // If we have matching schedules, use the highest priority one
         if ($matchingSchedules->isNotEmpty()) {
             $schedule = $matchingSchedules->first();
-            return $schedule->getTimeSlotsForDate($date);
+
+            // Calculate package duration in minutes to ensure slots don't exceed schedule end
+            $durationMinutes = $this->getDurationInMinutes();
+
+            return $schedule->getTimeSlotsForDate($date, $durationMinutes);
         }
 
         // No schedules found for this date
         return [];
+    }
+
+    /**
+     * Get the package duration in minutes.
+     */
+    public function getDurationInMinutes(): int
+    {
+        $duration = (float) $this->duration;
+        $unit = $this->duration_unit;
+
+        if ($unit === 'hours' || $unit === 'hours and minutes') {
+            return (int) round($duration * 60);
+        }
+
+        return (int) round($duration);
     }
 }
