@@ -355,6 +355,7 @@ class AttractionPurchaseController extends Controller
                             'email' => $contactEmail,
                             'name' => $contactName,
                             'phone' => $contactPhone,
+                            'sms_consent' => $validated['sms_consent'] ?? false,
                         ],
                         source: 'attraction_purchase',
                         tags: ['attraction_purchase', 'customer'],

@@ -147,20 +147,27 @@ class BookingController extends Controller
     // customer booking index based on customer id and guest email
     public function customerBookings(Request $request): JsonResponse
     {
-        // Optimized query - load only necessary fields
+        // Optimized query - load necessary fields for customer details
         $query = Booking::select([
                 'id', 'reference_number', 'customer_id', 'package_id', 'location_id', 'room_id',
-                'created_by', 'guest_name', 'guest_email', 'booking_date', 'booking_time',
-                'participants', 'total_amount', 'amount_paid', 'payment_status', 'status',
-                'guest_of_honor_name', 'created_at'
+                'created_by', 'guest_name', 'guest_email', 'guest_phone',
+                'guest_address', 'guest_city', 'guest_state', 'guest_zip', 'guest_country',
+                'booking_date', 'booking_time',
+                'participants', 'duration', 'duration_unit',
+                'total_amount', 'amount_paid', 'discount_amount',
+                'payment_method', 'payment_status', 'status',
+                'notes', 'special_requests',
+                'guest_of_honor_name', 'guest_of_honor_age', 'guest_of_honor_gender',
+                'transaction_id', 'created_at', 'updated_at'
             ])
             ->with([
-                'package:id,name,price',
+                'customer:id,first_name,last_name,email,phone',
+                'package:id,name,price,duration,duration_unit',
                 'location:id,name',
                 'room:id,name',
                 'creator:id,first_name,last_name',
-                'attractions:id,name',  // BelongsToMany - pivot data loaded automatically
-                'addOns:id,name',       // BelongsToMany - pivot data loaded automatically
+                'attractions:id,name',
+                'addOns:id,name',
             ]);
 
         // filter by search by location, reference number, package name
@@ -292,7 +299,55 @@ class BookingController extends Controller
             'additional_addons.*.addon_id' => 'required|exists:add_ons,id',
             'additional_addons.*.quantity' => 'required|integer|min:1',
             'additional_addons.*.price_at_booking' => 'nullable|numeric|min:0',
+            'sms_consent' => 'nullable|boolean',
         ]);
+
+        // --- Duplicate booking prevention ---
+        // 1. If a transaction_id is provided, check for an existing booking with the same one
+        if (!empty($validated['transaction_id'])) {
+            $existingByTxn = Booking::where('transaction_id', $validated['transaction_id'])->first();
+            if ($existingByTxn) {
+                $existingByTxn->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
+                Log::info('Duplicate booking prevented (same transaction_id)', [
+                    'transaction_id' => $validated['transaction_id'],
+                    'existing_booking_id' => $existingByTxn->id,
+                ]);
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Booking already exists',
+                    'data' => $existingByTxn,
+                ], 200);
+            }
+        }
+
+        // 2. Time-window idempotency: same package, date, time, customer/guest within 2 minutes
+        $duplicateQuery = Booking::where('package_id', $validated['package_id'] ?? null)
+            ->where('booking_date', $validated['booking_date'])
+            ->where('booking_time', $validated['booking_time'])
+            ->where('created_at', '>=', now()->subMinutes(2));
+
+        if (!empty($validated['customer_id'])) {
+            $duplicateQuery->where('customer_id', $validated['customer_id']);
+        } else {
+            $duplicateQuery->where('guest_email', $validated['guest_email'] ?? null);
+        }
+
+        $existingByWindow = $duplicateQuery->first();
+        if ($existingByWindow) {
+            $existingByWindow->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
+            Log::info('Duplicate booking prevented (time-window check)', [
+                'existing_booking_id' => $existingByWindow->id,
+                'package_id' => $validated['package_id'] ?? null,
+                'customer_id' => $validated['customer_id'] ?? null,
+                'guest_email' => $validated['guest_email'] ?? null,
+            ]);
+            return response()->json([
+                'success' => true,
+                'message' => 'Booking already exists',
+                'data' => $existingByWindow,
+            ], 200);
+        }
+        // --- End duplicate booking prevention ---
 
         // Generate unique reference number
         do {
@@ -464,6 +519,7 @@ class BookingController extends Controller
                     'state' => $booking->customer->state,
                     'zip' => $booking->customer->zip,
                     'country' => $booking->customer->country,
+                    'sms_consent' => $validated['sms_consent'] ?? false,
                 ];
             } elseif ($booking->guest_email) {
                 $contactEmail = $booking->guest_email;
@@ -476,6 +532,7 @@ class BookingController extends Controller
                     'state' => $booking->guest_state,
                     'zip' => $booking->guest_zip,
                     'country' => $booking->guest_country,
+                    'sms_consent' => $validated['sms_consent'] ?? false,
                 ];
             }
 

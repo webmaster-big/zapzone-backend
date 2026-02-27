@@ -28,11 +28,13 @@ class Contact extends Model
         'source',
         'notes',
         'status',
+        'sms_consent',
         'created_by',
     ];
 
     protected $casts = [
         'tags' => 'array',
+        'sms_consent' => 'boolean',
     ];
 
     // Relationships
@@ -238,6 +240,11 @@ class Contact extends Model
                 $updateData['country'] = $data['country'];
             }
 
+            // Update sms_consent if provided (always update, user may change preference)
+            if (isset($data['sms_consent'])) {
+                $updateData['sms_consent'] = (bool) $data['sms_consent'];
+            }
+
             // Update location if not set
             if ($locationId && !$contact->location_id) {
                 $updateData['location_id'] = $locationId;
@@ -278,6 +285,7 @@ class Contact extends Model
             'state' => $data['state'] ?? null,
             'zip' => $data['zip'] ?? null,
             'country' => $data['country'] ?? null,
+            'sms_consent' => (bool) ($data['sms_consent'] ?? false),
             'tags' => !empty($tags) ? $tags : null,
             'source' => $source,
             'status' => 'active',

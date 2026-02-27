@@ -126,6 +126,7 @@ class ContactController extends Controller
             'source' => 'nullable|string|max:100',
             'notes' => 'nullable|string|max:1000',
             'status' => 'nullable|in:active,inactive',
+            'sms_consent' => 'nullable|boolean',
         ]);
 
         $validated['created_by'] = auth()->id();
@@ -212,6 +213,7 @@ class ContactController extends Controller
             'source' => 'nullable|string|max:100',
             'notes' => 'nullable|string|max:1000',
             'status' => 'nullable|in:active,inactive',
+            'sms_consent' => 'nullable|boolean',
         ]);
 
         $contact->update($validated);
