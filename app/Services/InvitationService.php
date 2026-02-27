@@ -141,11 +141,11 @@ class InvitationService
 
         $guestFirst = explode(' ', trim($invitation->guest_name ?? ''))[0] ?? 'Hi';
 
-        $message = "Hi {$guestFirst}! You're invited by {$hostName} to a celebration at {$locationName} on {$bookingDate} at {$bookingTime}. Confirm your attendance here: {$rsvpUrl}";
+        $message = "Hi {$guestFirst}! You're invited by {$hostName} to a celebration at Zap Zone {$locationName} on {$bookingDate} at {$bookingTime}. Confirm your attendance here: {$rsvpUrl}";
 
         // Truncate if over 320 chars (2 SMS segments)
         if (strlen($message) > 320) {
-            $message = "Hi {$guestFirst}! You're invited to a celebration at {$locationName} on {$bookingDate}. Confirm your attendance: {$rsvpUrl}";
+            $message = "Hi {$guestFirst}! You're invited to a celebration at Zap Zone {$locationName} on {$bookingDate}. Confirm your attendance: {$rsvpUrl}";
         }
 
         $this->smsService->sendSms($invitation->guest_phone, $message);
