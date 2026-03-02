@@ -39,7 +39,7 @@ class BookingController extends Controller
                     'id', 'reference_number', 'customer_id', 'package_id', 'location_id', 'room_id',
                     'created_by', 'guest_name', 'guest_email', 'guest_phone', 'booking_date', 'booking_time',
                     'participants', 'duration', 'duration_unit', 'total_amount', 'amount_paid',
-                    'discount_amount', 'payment_method', 'payment_status', 'status', 'notes',
+                    'discount_amount', 'applied_fees', 'payment_method', 'payment_status', 'status', 'notes',
                     'guest_of_honor_name', 'guest_of_honor_age', 'created_at', 'updated_at'
                 ])
                 ->with([
@@ -274,6 +274,10 @@ class BookingController extends Controller
             'total_amount' => 'required|numeric|min:0',
             'amount_paid' => 'numeric|min:0',
             'discount_amount' => 'nullable|numeric|min:0',
+            'applied_fees' => 'nullable|array',
+            'applied_fees.*.fee_name' => 'required_with:applied_fees|string|max:255',
+            'applied_fees.*.fee_amount' => 'required_with:applied_fees|numeric|min:0',
+            'applied_fees.*.fee_application_type' => ['required_with:applied_fees', Rule::in(['additive', 'inclusive'])],
             'payment_method' => ['nullable', Rule::in(['card', 'in-store', 'paylater', 'authorize.net'])],
             'payment_status' => ['sometimes', Rule::in(['paid', 'partial', 'pending'])],
             'status' => ['sometimes', Rule::in(['pending', 'confirmed', 'checked-in', 'completed', 'cancelled'])],
@@ -1020,6 +1024,10 @@ class BookingController extends Controller
             'total_amount' => 'sometimes|numeric|min:0',
             'amount_paid' => 'sometimes|numeric|min:0',
             'discount_amount' => 'sometimes|nullable|numeric|min:0',
+            'applied_fees' => 'sometimes|nullable|array',
+            'applied_fees.*.fee_name' => 'required_with:applied_fees|string|max:255',
+            'applied_fees.*.fee_amount' => 'required_with:applied_fees|numeric|min:0',
+            'applied_fees.*.fee_application_type' => ['required_with:applied_fees', Rule::in(['additive', 'inclusive'])],
             'payment_method' => ['sometimes', 'nullable', Rule::in(['card', 'cash', 'paylater', 'authorize.net'])],
             'payment_status' => ['sometimes', Rule::in(['paid', 'partial', 'pending'])],
             'status' => ['sometimes', Rule::in(['pending', 'confirmed', 'checked-in', 'completed', 'cancelled'])],
@@ -1043,7 +1051,7 @@ class BookingController extends Controller
         // Capture original values before update for activity logging
         $originalValues = $booking->only([
             'status', 'payment_status', 'total_amount', 'amount_paid', 'discount_amount',
-            'booking_date', 'booking_time', 'participants', 'duration', 'duration_unit',
+            'applied_fees', 'booking_date', 'booking_time', 'participants', 'duration', 'duration_unit',
             'room_id', 'package_id', 'notes', 'internal_notes', 'special_requests',
             'guest_of_honor_name', 'guest_of_honor_age', 'guest_of_honor_gender'
         ]);
