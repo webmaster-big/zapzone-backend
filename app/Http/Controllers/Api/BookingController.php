@@ -1734,12 +1734,11 @@ class BookingController extends Controller
         $booking = Booking::findOrFail($id);
 
         $validated = $request->validate([
-            'internal_notes' => 'required|string',
+            'internal_notes' => 'nullable|string',
         ]);
 
-        $booking->update([
-            'internal_notes' => $validated['internal_notes'],
-        ]);
+        $booking->internal_notes = $validated['internal_notes'] ?? null;
+        $booking->save();
 
         // Log internal notes update
         ActivityLog::log(
@@ -1756,7 +1755,10 @@ class BookingController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Internal notes updated successfully',
-            'data' => $booking,
+            'data' => [
+                'id' => $booking->id,
+                'internal_notes' => $booking->internal_notes,
+            ],
         ]);
     }
 
