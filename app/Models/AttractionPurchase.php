@@ -42,6 +42,7 @@ class AttractionPurchase extends Model
         'guest_country',
         'quantity',
         'total_amount',
+        'applied_fees',
         'amount_paid',
         'payment_method',
         'status',
@@ -57,6 +58,7 @@ class AttractionPurchase extends Model
         'scheduled_date' => 'date',
         'scheduled_time' => 'datetime:H:i',
         'total_amount' => 'decimal:2',
+        'applied_fees' => 'array',
         'amount_paid' => 'decimal:2',
     ];
 
