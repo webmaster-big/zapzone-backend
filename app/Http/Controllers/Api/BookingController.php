@@ -2493,7 +2493,20 @@ class BookingController extends Controller
         $booking = Booking::onlyTrashed()->findOrFail($id);
 
         $booking->restore();
-        $booking->load(['customer', 'package', 'location', 'room', 'creator']);
+        $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
+
+        // Re-sync to Google Calendar if connected
+        try {
+            $gcalService = new GoogleCalendarService($booking->location_id);
+            if ($gcalService->isConnected() && !$booking->google_calendar_event_id) {
+                $gcalService->createEventFromBooking($booking);
+            }
+        } catch (\Exception $e) {
+            Log::warning('Google Calendar event creation failed on restore', [
+                'booking_id' => $booking->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
 
         // Log restore activity
         $currentUser = auth()->user();
@@ -2533,6 +2546,19 @@ class BookingController extends Controller
         $referenceNumber = $booking->reference_number;
         $bookingId = $booking->id;
         $locationId = $booking->location_id;
+
+        // Remove from Google Calendar before permanently deleting
+        try {
+            $gcalService = new GoogleCalendarService($booking->location_id);
+            if ($gcalService->isConnected() && $booking->google_calendar_event_id) {
+                $gcalService->deleteEvent($booking);
+            }
+        } catch (\Exception $e) {
+            Log::warning('Google Calendar event removal failed on force delete', [
+                'booking_id' => $booking->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
 
         $booking->forceDelete();
 

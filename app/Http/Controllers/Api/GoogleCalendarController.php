@@ -464,4 +464,68 @@ class GoogleCalendarController extends Controller
                 : 'Failed to remove calendar event',
         ]);
     }
+
+    /**
+     * Full resync: Delete all existing Google Calendar events and re-create them.
+     * Use this to eliminate duplicates and ensure all events are fresh.
+     */
+    public function resyncBookings(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'location_id' => 'required|integer|exists:locations,id',
+            'from_date' => 'required|date|date_format:Y-m-d',
+        ]);
+
+        $locationId = (int) $validated['location_id'];
+        $service = $this->resolveService($locationId);
+
+        if (!$service->isConnected()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Google Calendar is not connected for this location. Please connect first.',
+            ], 400);
+        }
+
+        try {
+            $fromDate = new \DateTime($validated['from_date']);
+            $results = $service->resyncAllBookings($fromDate);
+
+            // Log the resync
+            $currentUser = auth()->user();
+            ActivityLog::log(
+                action: 'Google Calendar Resync',
+                category: 'update',
+                description: "Full resync of Google Calendar from {$validated['from_date']} for location ID: {$locationId}: {$results['deleted']} deleted, {$results['created']} created, {$results['failed']} failed",
+                userId: auth()->id() ?? null,
+                entityType: 'google_calendar',
+                metadata: [
+                    'location_id' => $locationId,
+                    'resynced_by' => [
+                        'user_id' => auth()->id(),
+                        'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                        'email' => $currentUser?->email,
+                    ],
+                    'from_date' => $validated['from_date'],
+                    'results' => $results,
+                    'resynced_at' => now()->toIso8601String(),
+                ]
+            );
+
+            return response()->json([
+                'success' => true,
+                'message' => "Resync completed: {$results['deleted']} events deleted, {$results['created']} events created, {$results['skipped']} skipped, {$results['failed']} failed",
+                'data' => $results,
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Google Calendar resync failed', [
+                'location_id' => $locationId,
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Resync failed: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
 }

@@ -591,10 +591,21 @@ class GoogleCalendarService
         $timePart = \Carbon\Carbon::parse($booking->booking_time)->format('H:i:s'); // 'H:i:s'
         $startDateTime = $datePart . 'T' . $timePart;
 
-        // Calculate end time based on duration (cast to int to avoid string type errors)
-        $durationMinutes = $booking->duration_unit === 'hours'
-            ? (int) $booking->duration * 60
-            : (int) $booking->duration;
+        // Calculate end time based on duration
+        // Both 'hours' and 'hours and minutes' store duration as decimal hours (e.g., 2.5 = 2h 30m)
+        // 'minutes' stores duration as minutes directly
+        $duration = (float) $booking->duration;
+        $unit = $booking->duration_unit;
+
+        if ($unit === 'hours' || $unit === 'hours and minutes') {
+            $durationMinutes = (int) round($duration * 60);
+        } else {
+            // 'minutes' or any other unit - treat as minutes
+            $durationMinutes = (int) round($duration);
+        }
+
+        // Ensure minimum duration of 15 minutes to avoid nearly invisible calendar events
+        $durationMinutes = max($durationMinutes, 15);
 
         // Parse without timezone — we just need to calculate end time
         $startCarbon = \Carbon\Carbon::parse($startDateTime);
@@ -631,17 +642,19 @@ class GoogleCalendarService
         $event->setEnd($end);
 
         // Set color based on status
+        // Google Calendar color IDs: https://developers.google.com/calendar/api/v3/reference/colors
         $colorMap = [
             'pending' => '5',    // Banana (yellow)
+            'booked' => '10',    // Basil (green) - same as confirmed
             'confirmed' => '10', // Basil (green)
             'checked-in' => '7', // Peacock (blue)
             'completed' => '2',  // Sage (light green)
             'cancelled' => '11', // Tomato (red)
         ];
 
-        if (isset($colorMap[$booking->status])) {
-            $event->setColorId($colorMap[$booking->status]);
-        }
+        // Default to green if status not in map (to avoid purple default)
+        $colorId = $colorMap[$booking->status] ?? '10';
+        $event->setColorId($colorId);
 
         // Add reminder
         $reminders = new \Google\Service\Calendar\EventReminders();
@@ -694,5 +707,129 @@ class GoogleCalendarService
         if ($this->settings) {
             $this->settings->update(['calendar_id' => $calendarId]);
         }
+    }
+
+    /**
+     * Full resync: Delete all existing Google Calendar events for this location,
+     * clear event IDs from bookings, and re-create events from a given date.
+     * This eliminates duplicates and ensures all events are fresh.
+     *
+     * @param \DateTime $fromDate Only resync bookings from this date onwards
+     * @return array Results with deleted, created, skipped, and failed counts
+     */
+    public function resyncAllBookings(\DateTime $fromDate): array
+    {
+        if (!$this->isConnected()) {
+            throw new \Exception('Google Calendar is not connected');
+        }
+
+        $results = [
+            'deleted' => 0,
+            'created' => 0,
+            'skipped' => 0,
+            'failed' => 0,
+            'errors' => [],
+        ];
+
+        $calendarId = $this->settings->calendar_id ?? 'primary';
+
+        // Step 1: Find all bookings that have a synced Google Calendar event for this location
+        $query = Booking::whereNotNull('google_calendar_event_id');
+        if ($this->locationId) {
+            $query->where('location_id', $this->locationId);
+        }
+
+        $bookingsWithEvents = $query->get();
+
+        // Delete all existing events from Google Calendar
+        foreach ($bookingsWithEvents as $booking) {
+            try {
+                $this->getCalendarService()->events->delete($calendarId, $booking->google_calendar_event_id);
+                $results['deleted']++;
+            } catch (\Google\Service\Exception $e) {
+                // Event may already be deleted externally (404/410), that's fine
+                if ($e->getCode() !== 404 && $e->getCode() !== 410) {
+                    Log::warning('Failed to delete Google Calendar event during resync', [
+                        'booking_id' => $booking->id,
+                        'event_id' => $booking->google_calendar_event_id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            } catch (\Exception $e) {
+                Log::warning('Failed to delete Google Calendar event during resync', [
+                    'booking_id' => $booking->id,
+                    'event_id' => $booking->google_calendar_event_id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
+            // Clear the event ID regardless of delete success
+            $booking->update(['google_calendar_event_id' => null]);
+
+            // Small delay to avoid rate limiting
+            usleep(50000); // 50ms
+        }
+
+        Log::info('Resync cleanup completed', [
+            'location_id' => $this->locationId,
+            'deleted' => $results['deleted'],
+            'total_with_events' => $bookingsWithEvents->count(),
+        ]);
+
+        // Step 2: Re-create events for all active bookings from the given date
+        $bookingsToSync = Booking::with(['package', 'location', 'customer', 'room', 'attractions', 'addOns'])
+            ->where('booking_date', '>=', $fromDate->format('Y-m-d'))
+            ->whereNotIn('status', ['cancelled'])
+            ->whereNull('google_calendar_event_id');
+
+        if ($this->locationId) {
+            $bookingsToSync->where('location_id', $this->locationId);
+        }
+
+        $bookings = $bookingsToSync->orderBy('booking_date')
+            ->orderBy('booking_time')
+            ->get();
+
+        Log::info('Starting resync event creation', [
+            'from_date' => $fromDate->format('Y-m-d'),
+            'bookings_to_create' => $bookings->count(),
+        ]);
+
+        foreach ($bookings as $booking) {
+            try {
+                $eventId = $this->createEventFromBooking($booking);
+
+                if ($eventId) {
+                    $results['created']++;
+                } else {
+                    $results['skipped']++;
+                }
+            } catch (\Exception $e) {
+                $results['failed']++;
+                $results['errors'][] = [
+                    'booking_id' => $booking->id,
+                    'reference' => $booking->reference_number,
+                    'error' => $e->getMessage(),
+                ];
+
+                Log::error('Failed to create event during resync', [
+                    'booking_id' => $booking->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
+            // Small delay to avoid rate limiting
+            usleep(100000); // 100ms
+        }
+
+        // Update last synced timestamp
+        $this->settings->update([
+            'last_synced_at' => now(),
+            'sync_from_date' => $fromDate->format('Y-m-d'),
+        ]);
+
+        Log::info('Resync completed', $results);
+
+        return $results;
     }
 }

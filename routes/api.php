@@ -508,6 +508,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/calendars', [GoogleCalendarController::class, 'getCalendars']);
         Route::put('/calendar', [GoogleCalendarController::class, 'updateCalendar']);
         Route::post('/sync', [GoogleCalendarController::class, 'syncBookings']);
+        Route::post('/resync', [GoogleCalendarController::class, 'resyncBookings']); // Full resync - deletes all and recreates
         Route::post('/sync/{bookingId}', [GoogleCalendarController::class, 'syncSingleBooking']);
         Route::delete('/bookings/{bookingId}/event', [GoogleCalendarController::class, 'removeBookingEvent']);
     });
