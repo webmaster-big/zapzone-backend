@@ -188,6 +188,8 @@ Route::get('rsvp/{token}', [RsvpController::class, 'show']);
 Route::post('rsvp/{token}', [RsvpController::class, 'store']);
 
 // Public Events
+Route::get('events', [EventController::class, 'index']);
+Route::get('events/{event}', [EventController::class, 'show']);
 Route::get('events/location/{locationId}', [EventController::class, 'getByLocation']);
 Route::get('events/{event}/available-dates', [EventController::class, 'getAvailableDates']);
 Route::get('events/{event}/available-time-slots/{date}', [EventController::class, 'getAvailableTimeSlots']);
