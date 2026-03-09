@@ -307,24 +307,7 @@ class BookingController extends Controller
         ]);
 
         // --- Duplicate booking prevention ---
-        // 1. If a transaction_id is provided, check for an existing booking with the same one
-        if (!empty($validated['transaction_id'])) {
-            $existingByTxn = Booking::where('transaction_id', $validated['transaction_id'])->first();
-            if ($existingByTxn) {
-                $existingByTxn->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
-                Log::info('Duplicate booking prevented (same transaction_id)', [
-                    'transaction_id' => $validated['transaction_id'],
-                    'existing_booking_id' => $existingByTxn->id,
-                ]);
-                return response()->json([
-                    'success' => true,
-                    'message' => 'Booking already exists',
-                    'data' => $existingByTxn,
-                ], 200);
-            }
-        }
-
-        // 2. Time-window idempotency: same package, date, time, customer/guest within 2 minutes
+        // Time-window idempotency: same package, date, time, customer/guest within 2 minutes
         $duplicateQuery = Booking::where('package_id', $validated['package_id'] ?? null)
             ->where('booking_date', $validated['booking_date'])
             ->where('booking_time', $validated['booking_time'])

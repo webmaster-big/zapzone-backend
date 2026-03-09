@@ -102,8 +102,8 @@ class EventPurchaseController extends Controller
                 return response()->json(['message' => 'Selected time slot is not available'], 422);
             }
 
-            // --- Duplicate purchase prevention (time-window idempotency) ---
-            // Same event, date, time, quantity, and customer/guest within 2 minutes
+            // --- Duplicate purchase prevention ---
+            // Time-window idempotency: same event, date, time, customer/guest, quantity within 2 minutes
             $duplicateQuery = EventPurchase::where('event_id', $validated['event_id'])
                 ->where('purchase_date', $validated['purchase_date'])
                 ->where('purchase_time', $validated['purchase_time'])
@@ -116,16 +116,16 @@ class EventPurchaseController extends Controller
                 $duplicateQuery->where('guest_email', $validated['guest_email'] ?? null);
             }
 
-            $existing = $duplicateQuery->first();
-            if ($existing) {
-                $existing->load(['event.location.company', 'customer', 'location:id,name', 'addOns']);
-                Log::info('Duplicate event purchase prevented (time-window)', [
-                    'existing_id' => $existing->id,
+            $existingByWindow = $duplicateQuery->first();
+            if ($existingByWindow) {
+                $existingByWindow->load(['event', 'customer', 'location:id,name', 'addOns']);
+                Log::info('Duplicate event purchase prevented (time-window check)', [
+                    'existing_purchase_id' => $existingByWindow->id,
                     'event_id' => $validated['event_id'],
                     'customer_id' => $validated['customer_id'] ?? null,
                     'guest_email' => $validated['guest_email'] ?? null,
                 ]);
-                return response()->json($existing, 200);
+                return response()->json($existingByWindow, 200);
             }
             // --- End duplicate prevention ---
 

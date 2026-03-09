@@ -166,6 +166,7 @@ class AttractionPurchaseController extends Controller
 
             'quantity' => 'required|integer|min:1',
             'amount_paid' => 'nullable|numeric|min:0',
+            'total_amount' => 'required|numeric|min:0',
             'applied_fees' => 'nullable|array',
             'applied_fees.*.fee_name' => 'required_with:applied_fees|string|max:255',
             'applied_fees.*.fee_amount' => 'required_with:applied_fees|numeric|min:0',
@@ -186,24 +187,7 @@ class AttractionPurchaseController extends Controller
         ]);
 
         // --- Duplicate purchase prevention ---
-        // 1. If a transaction_id is provided, check for an existing purchase with the same one
-        if (!empty($validated['transaction_id'])) {
-            $existingByTxn = AttractionPurchase::where('transaction_id', $validated['transaction_id'])->first();
-            if ($existingByTxn) {
-                $existingByTxn->load(['attraction', 'customer', 'createdBy', 'addOns']);
-                Log::info('Duplicate attraction purchase prevented (same transaction_id)', [
-                    'transaction_id' => $validated['transaction_id'],
-                    'existing_purchase_id' => $existingByTxn->id,
-                ]);
-                return response()->json([
-                    'success' => true,
-                    'message' => 'Attraction purchase already exists',
-                    'data' => $existingByTxn,
-                ], 200);
-            }
-        }
-
-        // 2. Time-window idempotency: same attraction, customer/guest, quantity within 2 minutes
+        // Time-window idempotency: same attraction, customer/guest, quantity within 2 minutes
         $duplicateQuery = AttractionPurchase::where('attraction_id', $validated['attraction_id'])
             ->where('quantity', $validated['quantity'])
             ->where('created_at', '>=', now()->subMinutes(2));
@@ -231,16 +215,9 @@ class AttractionPurchaseController extends Controller
         }
         // --- End duplicate prevention ---
 
-        // Get attraction to calculate total amount
-        $attraction = Attraction::findOrFail($validated['attraction_id']);
-
-        // Calculate total amount based on pricing type
-        $totalAmount = $attraction->price * $validated['quantity'];
-
-        $validated['total_amount'] = $totalAmount;
         // Determine initial status based on payment
         $amountPaid = $validated['amount_paid'] ?? 0;
-        $validated['status'] = ($amountPaid >= $totalAmount) ? AttractionPurchase::STATUS_CONFIRMED : AttractionPurchase::STATUS_PENDING;
+        $validated['status'] = ($amountPaid >= $validated['total_amount']) ? AttractionPurchase::STATUS_CONFIRMED : AttractionPurchase::STATUS_PENDING;
         $validated['created_by'] = auth()->id() ?? null;
 
         $purchase = AttractionPurchase::create($validated);
