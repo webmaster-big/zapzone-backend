@@ -392,9 +392,6 @@
                 <div style="font-size: 8pt; font-weight: 600; color: #a0aec0; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">Terms & Conditions</div>
                 <table style="border: none; border-collapse: collapse; width: 100%;">
                     <tr>
-                        <td style="width: 20px; vertical-align: middle; padding: 0;">
-                            <div style="width: 14px; height: 14px; background: #38a169; border-radius: 2px;"></div>
-                        </td>
                         <td style="vertical-align: middle; padding: 0; padding-left: 6px; font-size: 9pt; color: #276749;">
                             Terms and Conditions accepted on {{ $payment->created_at->format('F j, Y \a\t g:i A') }}
                         </td>
