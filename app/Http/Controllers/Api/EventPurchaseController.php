@@ -102,6 +102,33 @@ class EventPurchaseController extends Controller
                 return response()->json(['message' => 'Selected time slot is not available'], 422);
             }
 
+            // --- Duplicate purchase prevention (time-window idempotency) ---
+            // Same event, date, time, quantity, and customer/guest within 2 minutes
+            $duplicateQuery = EventPurchase::where('event_id', $validated['event_id'])
+                ->where('purchase_date', $validated['purchase_date'])
+                ->where('purchase_time', $validated['purchase_time'])
+                ->where('quantity', $validated['quantity'])
+                ->where('created_at', '>=', now()->subMinutes(2));
+
+            if (!empty($validated['customer_id'])) {
+                $duplicateQuery->where('customer_id', $validated['customer_id']);
+            } else {
+                $duplicateQuery->where('guest_email', $validated['guest_email'] ?? null);
+            }
+
+            $existing = $duplicateQuery->first();
+            if ($existing) {
+                $existing->load(['event.location.company', 'customer', 'location:id,name', 'addOns']);
+                Log::info('Duplicate event purchase prevented (time-window)', [
+                    'existing_id' => $existing->id,
+                    'event_id' => $validated['event_id'],
+                    'customer_id' => $validated['customer_id'] ?? null,
+                    'guest_email' => $validated['guest_email'] ?? null,
+                ]);
+                return response()->json($existing, 200);
+            }
+            // --- End duplicate prevention ---
+
             // Generate reference number
             $validated['reference_number'] = 'EVT-' . strtoupper(Str::random(8));
 
