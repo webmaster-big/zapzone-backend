@@ -185,6 +185,85 @@ class EventController extends Controller
     }
 
     /**
+     * Get public events grouped by name with location-based purchase links.
+     * Groups events by name and shows all locations where they're available.
+     * Only active events are shown.
+     */
+    public function eventsGroupedByName(Request $request): JsonResponse
+    {
+        $search = $request->get('search', null);
+
+        $groupedEvents = [];
+
+        $query = Event::with(['location', 'addOns'])
+            ->select(['id', 'name', 'description', 'image', 'date_type', 'start_date', 'end_date',
+                'time_start', 'time_end', 'interval_minutes', 'max_bookings_per_slot',
+                'price', 'features', 'location_id', 'is_active'])
+            ->where('is_active', true);
+
+        if ($search) {
+            $query->where(function ($q) use ($search) {
+                $q->where('name', 'like', "%{$search}%")
+                  ->orWhere('description', 'like', "%{$search}%");
+            });
+        }
+
+        $query->orderBy('id')->chunk(100, function ($events) use (&$groupedEvents) {
+            foreach ($events as $event) {
+                $eventName = $event->name;
+
+                if (!isset($groupedEvents[$eventName])) {
+                    $groupedEvents[$eventName] = [
+                        'name' => $event->name,
+                        'description' => $event->description,
+                        'image' => $event->image,
+                        'date_type' => $event->date_type,
+                        'start_date' => $event->start_date,
+                        'end_date' => $event->end_date,
+                        'time_start' => $event->time_start,
+                        'time_end' => $event->time_end,
+                        'interval_minutes' => $event->interval_minutes,
+                        'max_bookings_per_slot' => $event->max_bookings_per_slot,
+                        'price' => $event->price,
+                        'features' => $event->features,
+                        'locations' => [],
+                        'purchase_links' => [],
+                    ];
+                }
+
+                $locationSlug = str_replace(' ', '', $event->location->name);
+
+                $groupedEvents[$eventName]['locations'][] = [
+                    'location_id' => $event->location->id,
+                    'location_name' => $event->location->name,
+                    'location_slug' => $locationSlug,
+                    'event_id' => $event->id,
+                    'address' => $event->location->address,
+                    'city' => $event->location->city,
+                    'state' => $event->location->state,
+                    'phone' => $event->location->phone,
+                    'add_ons' => $event->addOns,
+                ];
+
+                $groupedEvents[$eventName]['purchase_links'][] = [
+                    'location' => $event->location->name,
+                    'url' => "/book/event/{$locationSlug}/{$event->id}",
+                    'event_id' => $event->id,
+                    'location_id' => $event->location->id,
+                ];
+            }
+        });
+
+        $result = array_values($groupedEvents);
+
+        return response()->json([
+            'success' => true,
+            'data' => $result,
+            'total' => count($result),
+        ]);
+    }
+
+    /**
      * Get events by location (public).
      */
     public function getByLocation(int $locationId): JsonResponse

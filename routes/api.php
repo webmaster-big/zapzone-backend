@@ -188,6 +188,7 @@ Route::get('rsvp/{token}', [RsvpController::class, 'show']);
 Route::post('rsvp/{token}', [RsvpController::class, 'store']);
 
 // Public Events
+Route::get('events/grouped-by-name', [EventController::class, 'eventsGroupedByName']);
 Route::get('events', [EventController::class, 'index']);
 Route::get('events/{event}', [EventController::class, 'show']);
 Route::get('events/location/{locationId}', [EventController::class, 'getByLocation']);
