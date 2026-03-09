@@ -511,8 +511,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/{emailNotification}/logs/{logId}/resend', [EmailNotificationController::class, 'resendLog']);
     });
 
-    // Event routes
-    Route::apiResource('events', EventController::class);
+    // Event routes (index + show are public; store, update, destroy, toggle-status require auth)
+    Route::apiResource('events', EventController::class)->except(['index', 'show', 'store']);
     Route::patch('events/{event}/toggle-status', [EventController::class, 'toggleStatus']);
 
     // Event Purchase routes
