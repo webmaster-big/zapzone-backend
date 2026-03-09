@@ -18,6 +18,8 @@ use App\Http\Controllers\Api\DayOffController;
 use App\Http\Controllers\Api\EmailCampaignController;
 use App\Http\Controllers\Api\EmailNotificationController;
 use App\Http\Controllers\Api\EmailTemplateController;
+use App\Http\Controllers\Api\EventController;
+use App\Http\Controllers\Api\EventPurchaseController;
 use App\Http\Controllers\Api\FeeSupportController;
 use App\Http\Controllers\Api\GiftCardController;
 use App\Http\Controllers\Api\GlobalNoteController;
@@ -184,6 +186,13 @@ Route::post('contacts/deactivate', [ContactController::class, 'deactivate']);
 // Public RSVP routes (no auth required - guests access via unique token)
 Route::get('rsvp/{token}', [RsvpController::class, 'show']);
 Route::post('rsvp/{token}', [RsvpController::class, 'store']);
+
+// Public Events
+Route::get('events/location/{locationId}', [EventController::class, 'getByLocation']);
+Route::get('events/{event}/available-dates', [EventController::class, 'getAvailableDates']);
+Route::get('events/{event}/available-time-slots/{date}', [EventController::class, 'getAvailableTimeSlots']);
+Route::post('event-purchases', [EventPurchaseController::class, 'store']);
+Route::get('event-purchases/customer', [EventPurchaseController::class, 'customerPurchases']);
 
 // Public Day Off
 Route::get('day-offs/location/{locationId}', [DayOffController::class, 'getByLocation']);
@@ -499,6 +508,15 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/{emailNotification}/logs', [EmailNotificationController::class, 'getLogs']);
         Route::post('/{emailNotification}/logs/{logId}/resend', [EmailNotificationController::class, 'resendLog']);
     });
+
+    // Event routes
+    Route::apiResource('events', EventController::class);
+    Route::patch('events/{event}/toggle-status', [EventController::class, 'toggleStatus']);
+
+    // Event Purchase routes
+    Route::apiResource('event-purchases', EventPurchaseController::class)->except(['store']);
+    Route::patch('event-purchases/{eventPurchase}/cancel', [EventPurchaseController::class, 'cancel']);
+    Route::patch('event-purchases/{eventPurchase}/status', [EventPurchaseController::class, 'updateStatus']);
 
     // Google Calendar routes
     Route::prefix('google-calendar')->group(function () {
