@@ -309,20 +309,81 @@ class EventPurchaseController extends Controller
     }
 
     /**
-     * Get purchases for a customer.
+     * Get purchases for a customer by customer_id or guest_email.
      */
     public function customerPurchases(Request $request): JsonResponse
     {
-        $request->validate([
-            'customer_id' => 'required|exists:customers,id',
+        $query = EventPurchase::select([
+                'id', 'reference_number', 'event_id', 'customer_id', 'location_id',
+                'guest_name', 'guest_email', 'guest_phone',
+                'purchase_date', 'purchase_time',
+                'quantity', 'total_amount', 'amount_paid', 'discount_amount',
+                'payment_method', 'payment_status', 'status',
+                'transaction_id', 'notes', 'special_requests',
+                'created_at', 'updated_at'
+            ])
+            ->with([
+                'event:id,name,description,image,start_date,end_date,time_start,time_end,price',
+                'customer:id,first_name,last_name,email,phone',
+                'location:id,name',
+                'addOns:id,name',
+            ]);
+
+        // Filter by customer_id
+        if ($request->has('customer_id')) {
+            $query->where('customer_id', $request->customer_id);
+        }
+
+        // Filter by guest_email (matches guest_email or customer email)
+        if ($request->has('guest_email')) {
+            $guestEmail = $request->guest_email;
+            $query->where(function ($q) use ($guestEmail) {
+                $q->where('guest_email', $guestEmail)
+                  ->orWhereHas('customer', function ($customerQuery) use ($guestEmail) {
+                      $customerQuery->where('email', $guestEmail);
+                  });
+            });
+        }
+
+        // Search by reference number, event name, or location name
+        if ($request->has('search')) {
+            $search = $request->search;
+            $query->where(function ($q) use ($search) {
+                $q->where('reference_number', 'like', "%{$search}%")
+                  ->orWhereHas('event', function ($eventQuery) use ($search) {
+                      $eventQuery->where('name', 'like', "%{$search}%");
+                  })
+                  ->orWhereHas('location', function ($locationQuery) use ($search) {
+                      $locationQuery->where('name', 'like', "%{$search}%");
+                  });
+            });
+        }
+
+        // Sort
+        $sortBy = $request->get('sort_by', 'purchase_date');
+        $sortOrder = $request->get('sort_order', 'desc');
+
+        if (in_array($sortBy, ['purchase_date', 'purchase_time', 'total_amount', 'status', 'created_at'])) {
+            $query->orderBy($sortBy, $sortOrder);
+        }
+
+        $perPage = min($request->get('per_page', 15), 100);
+        $purchases = $query->paginate($perPage);
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'purchases' => $purchases->items(),
+                'pagination' => [
+                    'current_page' => $purchases->currentPage(),
+                    'last_page' => $purchases->lastPage(),
+                    'per_page' => $purchases->perPage(),
+                    'total' => $purchases->total(),
+                    'from' => $purchases->firstItem(),
+                    'to' => $purchases->lastItem(),
+                ],
+            ],
         ]);
-
-        $purchases = EventPurchase::with(['event:id,name,start_date,end_date,image', 'location:id,name', 'addOns'])
-            ->byCustomer($request->customer_id)
-            ->orderBy('purchase_date', 'desc')
-            ->get();
-
-        return response()->json($purchases);
     }
 
     /**
