@@ -390,10 +390,16 @@
             @if($payment->terms_accepted)
             <div style="margin-bottom: {{ $payment->signature_image ? '12px' : '0' }};">
                 <div style="font-size: 8pt; font-weight: 600; color: #a0aec0; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">Terms & Conditions</div>
-                <div style="font-size: 9pt; color: #276749; display: flex; align-items: center;">
-                    <span style="display: inline-block; width: 14px; height: 14px; background: #c6f6d5; border: 1px solid #38a169; border-radius: 2px; text-align: center; line-height: 14px; font-size: 10px; color: #276749; margin-right: 6px;">&#10003;</span>
-                    Terms and Conditions accepted on {{ $payment->created_at->format('F j, Y \a\t g:i A') }}
-                </div>
+                <table style="border: none; border-collapse: collapse; width: 100%;">
+                    <tr>
+                        <td style="width: 20px; vertical-align: middle; padding: 0;">
+                            <div style="width: 14px; height: 14px; background: #38a169; border-radius: 2px;"></div>
+                        </td>
+                        <td style="vertical-align: middle; padding: 0; padding-left: 6px; font-size: 9pt; color: #276749;">
+                            Terms and Conditions accepted on {{ $payment->created_at->format('F j, Y \a\t g:i A') }}
+                        </td>
+                    </tr>
+                </table>
             </div>
             @endif
 
