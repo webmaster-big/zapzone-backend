@@ -2419,7 +2419,7 @@ class PaymentController extends Controller
             if ($payment->payable_type === Payment::TYPE_BOOKING) {
                 $payment->payable = Booking::with(['package', 'customer', 'room', 'location', 'addOns', 'attractions'])->find($payment->payable_id);
             } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE) {
-                $payment->payable = AttractionPurchase::with(['attraction', 'customer', 'location'])->find($payment->payable_id);
+                $payment->payable = AttractionPurchase::with(['attraction.location', 'customer'])->find($payment->payable_id);
             }
         }
 
@@ -2504,7 +2504,15 @@ class PaymentController extends Controller
                 $index++;
 
                 $payable = $payment->payable;
-                $paymentLocation = $payment->location ?? $location;
+                $paymentLocation = $payment->location;
+                if (!$paymentLocation && $payable) {
+                    if ($payment->payable_type === Payment::TYPE_BOOKING) {
+                        $paymentLocation = $payable->location ?? null;
+                    } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE) {
+                        $paymentLocation = $payable->attraction->location ?? null;
+                    }
+                }
+                $paymentLocation = $paymentLocation ?? $location;
                 $paymentCompany = null;
                 $paymentCompanyName = $companyName;
 

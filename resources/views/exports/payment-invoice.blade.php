@@ -384,6 +384,44 @@
         </div>
         @endif
 
+        {{-- Signature & Terms Section --}}
+        @if($payment->terms_accepted || $payment->signature_image)
+        <div style="margin-top: 20px; padding: 15px 18px; border: 1px solid #e2e8f0; border-radius: 4px;">
+            @if($payment->terms_accepted)
+            <div style="margin-bottom: {{ $payment->signature_image ? '12px' : '0' }};">
+                <div style="font-size: 8pt; font-weight: 600; color: #a0aec0; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">Terms & Conditions</div>
+                <div style="font-size: 9pt; color: #276749; display: flex; align-items: center;">
+                    <span style="display: inline-block; width: 14px; height: 14px; background: #c6f6d5; border: 1px solid #38a169; border-radius: 2px; text-align: center; line-height: 14px; font-size: 10px; color: #276749; margin-right: 6px;">&#10003;</span>
+                    Terms and Conditions accepted on {{ $payment->created_at->timezone($timezone)->format('F j, Y \a\t g:i A') }}
+                </div>
+            </div>
+            @endif
+
+            @if($payment->signature_image)
+            <div>
+                <div style="font-size: 8pt; font-weight: 600; color: #a0aec0; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;">Customer Signature</div>
+                @php
+                    $signaturePath = storage_path('app/public/' . $payment->signature_image);
+                    $signatureBase64 = null;
+                    if (file_exists($signaturePath)) {
+                        $sigContent = file_get_contents($signaturePath);
+                        $sigMime = mime_content_type($signaturePath);
+                        $signatureBase64 = 'data:' . $sigMime . ';base64,' . base64_encode($sigContent);
+                    }
+                @endphp
+                @if($signatureBase64)
+                <div style="background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 4px; padding: 10px; text-align: center;">
+                    <img src="{{ $signatureBase64 }}" alt="Customer Signature" style="max-height: 60px; max-width: 200px;" />
+                </div>
+                @else
+                <div style="font-size: 8pt; color: #718096; font-style: italic;">Signature on file</div>
+                @endif
+                <div style="font-size: 7pt; color: #a0aec0; margin-top: 4px;">Signed {{ $payment->created_at->timezone($timezone)->format('M j, Y g:i A') }}</div>
+            </div>
+            @endif
+        </div>
+        @endif
+
         <div class="footer">
             <div class="footer-thanks">Thank you for your business</div>
             <div class="footer-meta">{{ $companyName ?? 'ZapZone' }} · {{ now()->timezone($timezone)->format('M j, Y') }}</div>

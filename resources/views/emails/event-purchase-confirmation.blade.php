@@ -374,6 +374,20 @@
                             </table>
                             @endif
 
+                            <!-- Create Account CTA for Guests -->
+                            @if(!$purchase->customer_id)
+                            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background: linear-gradient(135deg, #eff6ff 0%, #f0fdf4 100%); border-radius: 8px; border: 1px solid #93c5fd; margin: 24px 0;">
+                                <tr>
+                                    <td style="padding: 24px; text-align: center;">
+                                        <p style="margin: 0 0 8px 0; padding: 0; font-size: 18px; font-weight: 700; color: #1e40af;">Want to manage your purchases?</p>
+                                        <p style="margin: 0 0 16px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #4b5563;">Create a free account to view your purchase history, and track your tickets.</p>
+                                        <a href="{{ config('app.frontend_url') }}/register?email={{ urlencode($purchase->guest_email ?? '') }}" style="display: inline-block; padding: 14px 32px; background-color: #2563eb; color: #ffffff; text-decoration: none; border-radius: 8px; font-size: 15px; font-weight: 600;">Create Your Account</a>
+                                        <p style="margin: 12px 0 0 0; padding: 0; font-size: 12px; color: #9ca3af;">It only takes a minute!</p>
+                                    </td>
+                                </tr>
+                            </table>
+                            @endif
+
                             <!-- Footer -->
                             <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top: 24px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
                                 <tr>
