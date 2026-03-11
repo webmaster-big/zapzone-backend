@@ -16,6 +16,7 @@ class Payment extends Model
      */
     public const TYPE_BOOKING = 'booking';
     public const TYPE_ATTRACTION_PURCHASE = 'attraction_purchase';
+    public const TYPE_EVENT_PURCHASE = 'event_purchase';
 
     protected $fillable = [
         'payable_id',
@@ -45,7 +46,7 @@ class Payment extends Model
     // Relationships
 
     /**
-     * Get the parent payable model (Booking or AttractionPurchase).
+     * Get the parent payable model (Booking, AttractionPurchase, or EventPurchase).
      */
     public function payable(): MorphTo
     {
@@ -69,6 +70,15 @@ class Payment extends Model
     {
         return $this->belongsTo(AttractionPurchase::class, 'payable_id')
             ->where(fn($q) => $this->payable_type === self::TYPE_ATTRACTION_PURCHASE);
+    }
+
+    /**
+     * Get the event purchase if payable_type is 'event_purchase'.
+     */
+    public function eventPurchase(): BelongsTo
+    {
+        return $this->belongsTo(EventPurchase::class, 'payable_id')
+            ->where(fn($q) => $this->payable_type === self::TYPE_EVENT_PURCHASE);
     }
 
     public function customer(): BelongsTo
@@ -107,6 +117,11 @@ class Payment extends Model
         return $query->where('payable_type', self::TYPE_ATTRACTION_PURCHASE);
     }
 
+    public function scopeForEventPurchases($query)
+    {
+        return $query->where('payable_type', self::TYPE_EVENT_PURCHASE);
+    }
+
     public function scopeByPayableType($query, $type)
     {
         return $query->where('payable_type', $type);
@@ -131,6 +146,14 @@ class Payment extends Model
     }
 
     /**
+     * Check if this payment is for an event purchase.
+     */
+    public function isForEventPurchase(): bool
+    {
+        return $this->payable_type === self::TYPE_EVENT_PURCHASE;
+    }
+
+    /**
      * Get the payable entity details.
      */
     public function getPayableDetails()
@@ -139,6 +162,8 @@ class Payment extends Model
             return Booking::withTrashed()->find($this->payable_id);
         } elseif ($this->isForAttractionPurchase()) {
             return AttractionPurchase::withTrashed()->find($this->payable_id);
+        } elseif ($this->isForEventPurchase()) {
+            return EventPurchase::withTrashed()->find($this->payable_id);
         }
         return null;
     }

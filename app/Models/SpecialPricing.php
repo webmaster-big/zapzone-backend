@@ -54,6 +54,7 @@ class SpecialPricing extends Model
 
     const ENTITY_PACKAGE = 'package';
     const ENTITY_ATTRACTION = 'attraction';
+    const ENTITY_EVENT = 'event';
     const ENTITY_ALL = 'all';
 
     // Day of week constants (for recurrence_value when recurrence_type is 'weekly')
@@ -113,6 +114,11 @@ class SpecialPricing extends Model
     public function scopeForAttractions($query)
     {
         return $query->whereIn('entity_type', [self::ENTITY_ATTRACTION, self::ENTITY_ALL]);
+    }
+
+    public function scopeForEvents($query)
+    {
+        return $query->whereIn('entity_type', [self::ENTITY_EVENT, self::ENTITY_ALL]);
     }
 
     public function scopeOneTime($query)
@@ -332,6 +338,8 @@ class SpecialPricing extends Model
         // Filter by entity type
         if ($entityType === self::ENTITY_PACKAGE) {
             $query->forPackages();
+        } elseif ($entityType === self::ENTITY_EVENT) {
+            $query->forEvents();
         } else {
             $query->forAttractions();
         }

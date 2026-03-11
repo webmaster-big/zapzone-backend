@@ -19,6 +19,7 @@ class Attraction extends Model
         'price',
         'pricing_type',
         'max_capacity',
+        'display_capacity_to_customers',
         'category',
         'unit',
         'duration',
@@ -38,6 +39,7 @@ class Attraction extends Model
         'availability' => 'array',
         'image' => 'array',
         'is_active' => 'boolean',
+        'display_capacity_to_customers' => 'boolean',
         'add_ons_order' => 'array',
     ];
 

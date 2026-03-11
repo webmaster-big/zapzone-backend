@@ -37,6 +37,7 @@ class FeeSupport extends Model
 
     const ENTITY_PACKAGE = 'package';
     const ENTITY_ATTRACTION = 'attraction';
+    const ENTITY_EVENT = 'event';
 
     // Relationships
     public function company(): BelongsTo
@@ -73,6 +74,11 @@ class FeeSupport extends Model
     public function scopeForAttractions($query)
     {
         return $query->where('entity_type', self::ENTITY_ATTRACTION);
+    }
+
+    public function scopeForEvents($query)
+    {
+        return $query->where('entity_type', self::ENTITY_EVENT);
     }
 
     /**

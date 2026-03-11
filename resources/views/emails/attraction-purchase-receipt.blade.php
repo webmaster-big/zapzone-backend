@@ -536,7 +536,7 @@
                                 <tr>
                                     <td style="padding: 24px; text-align: center;">
                                         <p style="margin: 0 0 8px 0; padding: 0; font-size: 18px; font-weight: 700; color: #1e40af;">Want to manage your purchases?</p>
-                                        <p style="margin: 0 0 16px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #4b5563;">Create a free account to view your purchase history, track your tickets, and get exclusive offers.</p>
+                                        <p style="margin: 0 0 16px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #4b5563;">Create a free account to view your purchase history, and track your tickets.</p>
                                         <a href="{{ config('app.frontend_url') }}/register?email={{ urlencode($purchase->guest_email ?? '') }}" style="display: inline-block; padding: 14px 32px; background-color: #2563eb; color: #ffffff; text-decoration: none; border-radius: 8px; font-size: 15px; font-weight: 600;">Create Your Account</a>
                                         <p style="margin: 12px 0 0 0; padding: 0; font-size: 12px; color: #9ca3af;">It only takes a minute!</p>
                                     </td>

@@ -51,6 +51,8 @@ class SpecialPricingController extends Controller
                     $query->forPackages();
                 } elseif ($entityType === 'attraction') {
                     $query->forAttractions();
+                } elseif ($entityType === 'event') {
+                    $query->forEvents();
                 }
             }
 
@@ -147,7 +149,7 @@ class SpecialPricingController extends Controller
             'end_date' => 'nullable|date|after_or_equal:start_date',
             'time_start' => 'nullable|date_format:H:i',
             'time_end' => 'nullable|date_format:H:i|after:time_start',
-            'entity_type' => 'required|in:package,attraction,all',
+            'entity_type' => 'required|in:package,attraction,event,all',
             'entity_ids' => 'nullable|array',
             'entity_ids.*' => 'integer',
             'priority' => 'nullable|integer|min:0',
@@ -251,7 +253,7 @@ class SpecialPricingController extends Controller
             'end_date' => 'sometimes|nullable|date',
             'time_start' => 'sometimes|nullable|date_format:H:i',
             'time_end' => 'sometimes|nullable|date_format:H:i',
-            'entity_type' => 'sometimes|in:package,attraction,all',
+            'entity_type' => 'sometimes|in:package,attraction,event,all',
             'entity_ids' => 'sometimes|nullable|array',
             'entity_ids.*' => 'integer',
             'priority' => 'sometimes|integer|min:0',
@@ -404,7 +406,7 @@ class SpecialPricingController extends Controller
     public function getForEntity(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'entity_type' => 'required|in:package,attraction',
+            'entity_type' => 'required|in:package,attraction,event',
             'entity_id' => 'required|integer',
             'base_price' => 'required|numeric|min:0',
             'date' => 'nullable|date',
@@ -438,7 +440,7 @@ class SpecialPricingController extends Controller
         $validated = $request->validate([
             'date' => 'required|date',
             'location_id' => 'nullable|integer|exists:locations,id',
-            'entity_type' => 'nullable|in:package,attraction,all',
+            'entity_type' => 'nullable|in:package,attraction,event,all',
         ]);
 
         $date = Carbon::parse($validated['date']);
@@ -455,6 +457,8 @@ class SpecialPricingController extends Controller
             $query->forPackages();
         } elseif ($entityType === 'attraction') {
             $query->forAttractions();
+        } elseif ($entityType === 'event') {
+            $query->forEvents();
         }
 
         $specialPricings = $query->get()->filter(function ($pricing) use ($date) {
@@ -492,7 +496,7 @@ class SpecialPricingController extends Controller
         $validated = $request->validate([
             'location_id' => 'nullable|integer|exists:locations,id',
             'days' => 'nullable|integer|min:1|max:365',
-            'entity_type' => 'nullable|in:package,attraction,all',
+            'entity_type' => 'nullable|in:package,attraction,event,all',
         ]);
 
         $locationId = $validated['location_id'] ?? null;
@@ -509,6 +513,8 @@ class SpecialPricingController extends Controller
             $query->forPackages();
         } elseif ($entityType === 'attraction') {
             $query->forAttractions();
+        } elseif ($entityType === 'event') {
+            $query->forEvents();
         }
 
         $specialPricings = $query->get();

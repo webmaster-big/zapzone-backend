@@ -51,6 +51,8 @@ class AttractionPurchase extends Model
         'scheduled_date',
         'scheduled_time',
         'notes',
+        'checked_in_at',
+        'checked_in_by',
     ];
 
     protected $casts = [
@@ -60,6 +62,7 @@ class AttractionPurchase extends Model
         'total_amount' => 'decimal:2',
         'applied_fees' => 'array',
         'amount_paid' => 'decimal:2',
+        'checked_in_at' => 'datetime',
     ];
 
     /**
@@ -108,6 +111,11 @@ class AttractionPurchase extends Model
     public function createdBy()
     {
         return $this->belongsTo(User::class, 'created_by');
+    }
+
+    public function checkedInByUser()
+    {
+        return $this->belongsTo(User::class, 'checked_in_by');
     }
 
     /**

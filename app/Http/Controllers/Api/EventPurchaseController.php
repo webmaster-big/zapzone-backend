@@ -4,14 +4,20 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Mail\EventPurchaseConfirmation;
+use App\Models\ActivityLog;
+use App\Models\Contact;
+use App\Models\CustomerNotification;
 use App\Models\EventPurchase;
 use App\Models\Event;
+use App\Models\Notification;
+use App\Services\EmailNotificationService;
 use App\Services\GmailApiService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 
 class EventPurchaseController extends Controller
 {
@@ -71,6 +77,10 @@ class EventPurchaseController extends Controller
                 'purchase_time' => 'required|date_format:H:i',
                 'quantity' => 'required|integer|min:1',
                 'total_amount' => 'nullable|numeric|min:0',
+                'applied_fees' => 'nullable|array',
+                'applied_fees.*.fee_name' => 'required_with:applied_fees|string|max:255',
+                'applied_fees.*.fee_amount' => 'required_with:applied_fees|numeric|min:0',
+                'applied_fees.*.fee_application_type' => ['required_with:applied_fees', Rule::in(['additive', 'inclusive'])],
                 'amount_paid' => 'nullable|numeric|min:0',
                 'discount_amount' => 'nullable|numeric|min:0',
                 'payment_method' => 'nullable|in:card,in-store,paylater,authorize.net',
@@ -79,6 +89,7 @@ class EventPurchaseController extends Controller
                 'notes' => 'nullable|string',
                 'special_requests' => 'nullable|string',
                 'send_email' => 'nullable|boolean',
+                'sms_consent' => 'nullable|boolean',
                 'add_ons' => 'nullable|array',
                 'add_ons.*.add_on_id' => 'required_with:add_ons|exists:add_ons,id',
                 'add_ons.*.quantity' => 'required_with:add_ons|integer|min:1',
@@ -132,10 +143,11 @@ class EventPurchaseController extends Controller
             // Generate reference number
             $validated['reference_number'] = 'EVT-' . strtoupper(Str::random(8));
 
-            // Extract add_ons and send_email before creating purchase
+            // Extract add_ons, send_email, and sms_consent before creating purchase
             $addOns = $validated['add_ons'] ?? [];
             $sendEmail = $validated['send_email'] ?? true;
-            unset($validated['add_ons'], $validated['send_email']);
+            $smsConsent = $validated['sms_consent'] ?? false;
+            unset($validated['add_ons'], $validated['send_email'], $validated['sms_consent']);
 
             $purchase = EventPurchase::create($validated);
 
@@ -150,6 +162,116 @@ class EventPurchaseController extends Controller
             }
 
             $purchase->load(['event.location.company', 'customer', 'location:id,name', 'addOns']);
+
+            // Create notification for customer
+            if ($purchase->customer_id) {
+                CustomerNotification::create([
+                    'customer_id' => $purchase->customer_id,
+                    'location_id' => $purchase->location_id,
+                    'type' => 'payment',
+                    'priority' => 'medium',
+                    'title' => 'Event Purchase Confirmed',
+                    'message' => "Your purchase of {$purchase->quantity} ticket(s) for {$purchase->event->name} has been confirmed. Total: $" . number_format($purchase->total_amount, 2),
+                    'status' => 'unread',
+                    'action_url' => "/events/purchases/{$purchase->id}",
+                    'action_text' => 'View Purchase',
+                    'metadata' => [
+                        'purchase_id' => $purchase->id,
+                        'event_id' => $purchase->event_id,
+                        'quantity' => $purchase->quantity,
+                        'total_amount' => $purchase->total_amount,
+                    ],
+                ]);
+            }
+
+            // Create notification for location staff
+            $customerName = $purchase->customer ? "{$purchase->customer->first_name} {$purchase->customer->last_name}" : $purchase->guest_name;
+            $formattedDate = \Carbon\Carbon::parse($purchase->purchase_date)->format('m-d');
+            $formattedTime = \Carbon\Carbon::parse($purchase->purchase_time)->format('g:i A');
+            Notification::create([
+                'location_id' => $purchase->location_id,
+                'type' => 'payment',
+                'priority' => 'medium',
+                'user_id' => auth()->id(),
+                'title' => 'New Event Purchase',
+                'message' => "{$customerName} — {$purchase->quantity}x {$purchase->event->name} on {$formattedDate} at {$formattedTime} • $" . number_format($purchase->total_amount, 2),
+                'status' => 'unread',
+                'action_url' => "/events/purchases/{$purchase->id}",
+                'action_text' => 'View Purchase',
+                'metadata' => [
+                    'purchase_id' => $purchase->id,
+                    'event_id' => $purchase->event_id,
+                    'customer_id' => $purchase->customer_id,
+                    'quantity' => $purchase->quantity,
+                    'total_amount' => $purchase->total_amount,
+                ],
+            ]);
+
+            // Log event purchase activity
+            if (auth()->id()) {
+                ActivityLog::log(
+                    action: 'Event Purchase Created',
+                    category: 'create',
+                    description: "Event purchase: {$purchase->quantity} x {$purchase->event->name} by {$customerName}",
+                    userId: auth()->id(),
+                    locationId: $purchase->location_id,
+                    entityType: 'event_purchase',
+                    entityId: $purchase->id,
+                    metadata: [
+                        'created_by' => [
+                            'user_id' => auth()->id(),
+                            'email' => auth()->user()?->email,
+                        ],
+                        'created_at' => now()->toIso8601String(),
+                        'purchase_details' => [
+                            'purchase_id' => $purchase->id,
+                            'event_id' => $purchase->event_id,
+                            'event_name' => $purchase->event->name,
+                            'quantity' => $purchase->quantity,
+                            'total_amount' => $purchase->total_amount,
+                            'amount_paid' => $purchase->amount_paid,
+                            'payment_method' => $purchase->payment_method,
+                            'status' => $purchase->status,
+                        ],
+                        'customer_details' => [
+                            'customer_id' => $purchase->customer_id,
+                            'name' => $customerName,
+                            'email' => $purchase->customer?->email ?? $purchase->guest_email,
+                            'phone' => $purchase->customer?->phone ?? $purchase->guest_phone,
+                        ],
+                    ]
+                );
+            }
+
+            // Create or update contact from event purchase
+            try {
+                $contactEmail = $purchase->customer?->email ?? $purchase->guest_email;
+                $contactName = $purchase->customer
+                    ? trim($purchase->customer->first_name . ' ' . $purchase->customer->last_name)
+                    : $purchase->guest_name;
+                $contactPhone = $purchase->customer?->phone ?? $purchase->guest_phone;
+
+                if ($contactEmail && $purchase->location && $purchase->location->company_id) {
+                    Contact::createOrUpdateFromSource(
+                        companyId: $purchase->location->company_id,
+                        data: [
+                            'email' => $contactEmail,
+                            'name' => $contactName,
+                            'phone' => $contactPhone,
+                            'sms_consent' => $smsConsent,
+                        ],
+                        source: 'event_purchase',
+                        tags: ['event_purchase', 'customer'],
+                        locationId: $purchase->location_id,
+                        createdBy: auth()->id()
+                    );
+                }
+            } catch (\Exception $e) {
+                Log::warning('Failed to create contact from event purchase', [
+                    'purchase_id' => $purchase->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
 
             // Send confirmation email
             if ($sendEmail) {

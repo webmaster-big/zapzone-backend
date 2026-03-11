@@ -568,6 +568,18 @@ class EmailNotificationService
             $customerName = $payable->customer
                 ? trim($payable->customer->first_name . ' ' . $payable->customer->last_name)
                 : ($payable->guest_name ?? 'Guest');
+        } elseif ($payable instanceof \App\Models\AttractionPurchase) {
+            $location = $payable->location ?? $payable->attraction?->location;
+            $company = $location?->company;
+            $customerName = $payable->customer
+                ? trim($payable->customer->first_name . ' ' . $payable->customer->last_name)
+                : ($payable->guest_name ?? 'Guest');
+        } elseif ($payable instanceof \App\Models\EventPurchase) {
+            $location = $payable->location;
+            $company = $location?->company;
+            $customerName = $payable->customer
+                ? trim($payable->customer->first_name . ' ' . $payable->customer->last_name)
+                : ($payable->guest_name ?? 'Guest');
         }
 
         return array_merge($this->buildCommonVariables($location, $company), [

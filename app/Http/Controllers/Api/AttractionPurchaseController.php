@@ -1044,11 +1044,17 @@ public function verify(Request $request, int $id): JsonResponse
  * Check-in a purchase ticket (mark as used/completed)
  * PATCH /api/attraction-purchases/{id}/check-in
  */
-public function checkIn(int $id): JsonResponse
+public function checkIn(Request $request, int $id): JsonResponse
 {
     try {
         $purchase = AttractionPurchase::with(['attraction', 'customer'])
             ->findOrFail($id);
+
+        // Get staff user for auditing
+        $authUser = null;
+        if ($request->has('user_id')) {
+            $authUser = User::find($request->user_id);
+        }
 
         // Validate ticket status
         if ($purchase->status === AttractionPurchase::STATUS_CHECKED_IN) {
@@ -1085,10 +1091,43 @@ public function checkIn(int $id): JsonResponse
 
         // Mark as checked-in (only confirmed tickets can be checked in)
         $purchase->status = AttractionPurchase::STATUS_CHECKED_IN;
+        $purchase->checked_in_at = now();
+        $purchase->checked_in_by = $authUser ? $authUser->id : null;
         $purchase->save();
 
         // Reload with relationships
         $purchase->load(['attraction', 'customer']);
+
+        // Get customer name for logging
+        $customerName = $purchase->customer
+            ? ($purchase->customer->first_name . ' ' . $purchase->customer->last_name)
+            : ($purchase->guest_name ?? 'Guest');
+
+        // Get location_id from attraction
+        $locationId = $purchase->attraction ? $purchase->attraction->location_id : null;
+
+        // Log check-in activity
+        ActivityLog::log(
+            action: 'Attraction Purchase Checked In',
+            category: 'check-in',
+            description: "Attraction purchase #{$purchase->id} checked in for {$customerName}",
+            userId: $authUser ? $authUser->id : null,
+            locationId: $locationId,
+            entityType: 'attraction_purchase',
+            entityId: $purchase->id,
+            metadata: [
+                'purchase_id' => $purchase->id,
+                'customer_name' => $customerName,
+                'checked_in_at' => now()->toIso8601String(),
+                'checked_in_by' => $authUser ? ($authUser->name ?? $authUser->email) : 'System',
+                'attraction' => $purchase->attraction ? [
+                    'id' => $purchase->attraction->id,
+                    'name' => $purchase->attraction->name,
+                ] : null,
+                'quantity' => $purchase->quantity,
+                'total_amount' => $purchase->total_amount,
+            ]
+        );
 
         return response()->json([
             'success' => true,
@@ -1104,6 +1143,8 @@ public function checkIn(int $id): JsonResponse
                 'total_amount' => $purchase->total_amount,
                 'payment_method' => $purchase->payment_method,
                 'status' => $purchase->status, // Now 'checked-in'
+                'checked_in_at' => $purchase->checked_in_at,
+                'checked_in_by' => $purchase->checked_in_by,
                 'purchase_date' => $purchase->purchase_date,
                 'notes' => $purchase->notes,
                 'created_at' => $purchase->created_at,

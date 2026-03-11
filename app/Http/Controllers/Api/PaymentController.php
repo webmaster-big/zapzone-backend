@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Payment;
 use App\Models\Booking;
 use App\Models\AttractionPurchase;
+use App\Models\EventPurchase;
 use App\Models\Location;
 use App\Models\Company;
 use App\Models\Package;
@@ -36,7 +37,7 @@ class PaymentController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
-        $query = Payment::with(['customer', 'location', 'booking', 'attractionPurchase']);
+        $query = Payment::with(['customer', 'location', 'booking', 'attractionPurchase', 'eventPurchase']);
 
         // Filter by payable_id (the ID of the booking or attraction purchase)
         if ($request->has('payable_id')) {
@@ -58,6 +59,12 @@ class PaymentController extends Controller
         if ($request->has('attraction_purchase_id')) {
             $query->where('payable_id', $request->attraction_purchase_id)
                   ->where('payable_type', Payment::TYPE_ATTRACTION_PURCHASE);
+        }
+
+        // Filter by event_purchase_id
+        if ($request->has('event_purchase_id')) {
+            $query->where('payable_id', $request->event_purchase_id)
+                  ->where('payable_type', Payment::TYPE_EVENT_PURCHASE);
         }
 
         if ($request->has('customer_id')) {
@@ -93,10 +100,11 @@ class PaymentController extends Controller
     {
         $validated = $request->validate([
             'payable_id' => 'nullable|integer',
-            'payable_type' => ['nullable', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE])],
+            'payable_type' => ['nullable', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE, Payment::TYPE_EVENT_PURCHASE])],
             // Backward compatibility: support booking_id (will be converted to payable_id/payable_type)
             'booking_id' => 'nullable|exists:bookings,id',
             'attraction_purchase_id' => 'nullable|exists:attraction_purchases,id',
+            'event_purchase_id' => 'nullable|exists:event_purchases,id',
             'customer_id' => 'nullable|exists:customers,id',
             'amount' => 'required|numeric|min:0.01',
             'currency' => 'string|size:3',
@@ -121,6 +129,13 @@ class PaymentController extends Controller
             $validated['payable_id'] = $validated['attraction_purchase_id'];
             $validated['payable_type'] = Payment::TYPE_ATTRACTION_PURCHASE;
             unset($validated['attraction_purchase_id']);
+        }
+
+        // Handle event_purchase_id
+        if (isset($validated['event_purchase_id']) && !isset($validated['payable_id'])) {
+            $validated['payable_id'] = $validated['event_purchase_id'];
+            $validated['payable_type'] = Payment::TYPE_EVENT_PURCHASE;
+            unset($validated['event_purchase_id']);
         }
 
         $validated['transaction_id'] = 'TXN' . now()->format('YmdHis') . strtoupper(Str::random(6));
@@ -259,7 +274,7 @@ class PaymentController extends Controller
 
         $validated = $request->validate([
             'payable_id' => 'required|integer',
-            'payable_type' => ['required', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE])],
+            'payable_type' => ['required', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE, Payment::TYPE_EVENT_PURCHASE])],
         ]);
 
         // Verify the target entity exists
@@ -277,6 +292,14 @@ class PaymentController extends Controller
                 return response()->json([
                     'success' => false,
                     'message' => 'Attraction purchase not found',
+                ], 404);
+            }
+        } elseif ($validated['payable_type'] === Payment::TYPE_EVENT_PURCHASE) {
+            $payable = EventPurchase::find($validated['payable_id']);
+            if (!$payable) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Event purchase not found',
                 ], 404);
             }
         }
@@ -313,6 +336,8 @@ class PaymentController extends Controller
 
             if ($previousPayableType === Payment::TYPE_BOOKING) {
                 $previousPayable = Booking::withTrashed()->find($previousPayableId);
+            } elseif ($previousPayableType === Payment::TYPE_EVENT_PURCHASE) {
+                $previousPayable = EventPurchase::withTrashed()->find($previousPayableId);
             } else {
                 $previousPayable = AttractionPurchase::withTrashed()->find($previousPayableId);
             }
@@ -649,6 +674,17 @@ class PaymentController extends Controller
                                 }
                             }
                         }
+                    } elseif ($payment->payable_type === Payment::TYPE_EVENT_PURCHASE && $payment->payable_id) {
+                        $payable = EventPurchase::withTrashed()->find($payment->payable_id);
+                        if ($payable) {
+                            $newAmountPaid = max(0, $payable->amount_paid - $refundAmount);
+                            $payable->update([
+                                'amount_paid' => $newAmountPaid,
+                                'payment_status' => $newAmountPaid <= 0 ? 'refunded' : 'partial',
+                                'status' => $isCancelled ? 'cancelled' : $payable->status,
+                                'cancelled_at' => $isCancelled ? now() : $payable->cancelled_at,
+                            ]);
+                        }
                     }
 
                     return response()->json([
@@ -975,6 +1011,17 @@ class PaymentController extends Controller
                     }
                 }
             }
+        } elseif ($payment->payable_type === Payment::TYPE_EVENT_PURCHASE && $payment->payable_id) {
+            $payable = EventPurchase::withTrashed()->find($payment->payable_id);
+            if ($payable) {
+                $newAmountPaid = max(0, $payable->amount_paid - $refundAmount);
+                $payable->update([
+                    'amount_paid' => $newAmountPaid,
+                    'payment_status' => $newAmountPaid <= 0 ? 'refunded' : 'partial',
+                    'status' => $isCancelled ? 'cancelled' : $payable->status,
+                    'cancelled_at' => $isCancelled ? now() : $payable->cancelled_at,
+                ]);
+            }
         }
 
         return response()->json([
@@ -1221,6 +1268,17 @@ class PaymentController extends Controller
                                 }
                             }
                         }
+                    } elseif ($payment->payable_type === Payment::TYPE_EVENT_PURCHASE && $payment->payable_id) {
+                        $payable = EventPurchase::withTrashed()->find($payment->payable_id);
+                        if ($payable) {
+                            $newAmountPaid = max(0, $payable->amount_paid - $voidAmount);
+                            $payable->update([
+                                'amount_paid' => $newAmountPaid,
+                                'payment_status' => 'refunded',
+                                'status' => 'cancelled',
+                                'cancelled_at' => now(),
+                            ]);
+                        }
                     }
 
                     return response()->json([
@@ -1339,9 +1397,9 @@ class PaymentController extends Controller
             'customer.country' => 'nullable|string|max:60',
             'signature_image' => 'nullable|string',
             'terms_accepted' => 'nullable|boolean',
-            // Payable linking - link payment to booking or attraction purchase
+            // Payable linking - link payment to booking, attraction purchase, or event purchase
             'payable_id' => 'nullable|integer',
-            'payable_type' => ['nullable', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE])],
+            'payable_type' => ['nullable', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE, Payment::TYPE_EVENT_PURCHASE])],
             // Email confirmation - send booking/purchase confirmation email after successful payment
             'send_email' => 'nullable|boolean',
             'qr_code' => 'nullable|string', // Base64 encoded QR code for email attachment
@@ -1585,6 +1643,21 @@ class PaymentController extends Controller
                                     'status' => $totalPaid >= $payable->total_amount ? AttractionPurchase::STATUS_CONFIRMED : AttractionPurchase::STATUS_PENDING,
                                 ]);
                             }
+                        } elseif ($payment->payable_type === Payment::TYPE_EVENT_PURCHASE) {
+                            $payable = EventPurchase::withTrashed()->find($payment->payable_id);
+                            if ($payable) {
+                                $totalPaid = Payment::where('payable_id', $payable->id)
+                                    ->where('payable_type', Payment::TYPE_EVENT_PURCHASE)
+                                    ->where('status', 'completed')
+                                    ->sum('amount');
+                                $payable->update([
+                                    'amount_paid' => $totalPaid,
+                                    'payment_method' => 'authorize.net',
+                                    'transaction_id' => $transactionId,
+                                    'payment_status' => $totalPaid >= $payable->total_amount ? 'paid' : 'partial',
+                                    'status' => $totalPaid >= $payable->total_amount ? 'confirmed' : $payable->status,
+                                ]);
+                            }
                         }
                     }
 
@@ -1779,6 +1852,21 @@ class PaymentController extends Controller
                                         ]);
                                     }
                                 }
+                            } elseif ($payment->payable_type === Payment::TYPE_EVENT_PURCHASE) {
+                                // Event purchase email confirmation
+                                $eventPurchase = $payable;
+                                $eventPurchase->load(['event', 'customer', 'location']);
+
+                                $recipientEmail = $eventPurchase->customer
+                                    ? $eventPurchase->customer->email
+                                    : $eventPurchase->guest_email;
+
+                                if ($recipientEmail) {
+                                    Log::info('Event purchase payment completed from charge()', [
+                                        'event_purchase_id' => $eventPurchase->id,
+                                        'email' => $recipientEmail,
+                                    ]);
+                                }
                             }
                         } catch (\Exception $e) {
                             $emailError = $e->getMessage();
@@ -1907,6 +1995,8 @@ class PaymentController extends Controller
                 $payable->load(['package', 'customer']);
             } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE) {
                 $payable->load(['attraction', 'customer']);
+            } elseif ($payment->payable_type === Payment::TYPE_EVENT_PURCHASE) {
+                $payable->load(['event', 'customer', 'location']);
             }
         }
 
@@ -1964,6 +2054,8 @@ class PaymentController extends Controller
                 $payable->load(['package', 'customer', 'room', 'location', 'addOns', 'attractions']);
             } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE) {
                 $payable->load(['attraction', 'customer', 'location']);
+            } elseif ($payment->payable_type === Payment::TYPE_EVENT_PURCHASE) {
+                $payable->load(['event', 'customer', 'location', 'addOns']);
             }
         }
 
@@ -2012,7 +2104,7 @@ class PaymentController extends Controller
             'location_id' => 'nullable|exists:locations,id',
             'status' => ['nullable', Rule::in(['pending', 'completed', 'failed', 'refunded', 'voided'])],
             'method' => ['nullable', Rule::in(['card', 'cash', 'authorize.net', 'in-store'])],
-            'payable_type' => ['nullable', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE])],
+            'payable_type' => ['nullable', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE, Payment::TYPE_EVENT_PURCHASE])],
             'customer_id' => 'nullable|exists:customers,id',
             'start_date' => 'nullable|date',
             'end_date' => 'nullable|date|after_or_equal:start_date',
@@ -2070,6 +2162,8 @@ class PaymentController extends Controller
                 $payment->payable = Booking::withTrashed()->with('package')->find($payment->payable_id);
             } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE) {
                 $payment->payable = AttractionPurchase::withTrashed()->with('attraction')->find($payment->payable_id);
+            } elseif ($payment->payable_type === Payment::TYPE_EVENT_PURCHASE) {
+                $payment->payable = EventPurchase::withTrashed()->with('event')->find($payment->payable_id);
             }
         }
 
@@ -2190,6 +2284,8 @@ class PaymentController extends Controller
                     $payable->load(['package', 'customer', 'room', 'location', 'addOns', 'attractions']);
                 } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE) {
                     $payable->load(['attraction', 'customer', 'location']);
+                } elseif ($payment->payable_type === Payment::TYPE_EVENT_PURCHASE) {
+                    $payable->load(['event', 'customer', 'location', 'addOns']);
                 }
             }
 
@@ -2311,7 +2407,7 @@ class PaymentController extends Controller
         $request->validate([
             'payment_ids' => 'nullable|array',
             'payment_ids.*' => 'exists:payments,id',
-            'payable_type' => ['nullable', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE])],
+            'payable_type' => ['nullable', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE, Payment::TYPE_EVENT_PURCHASE])],
             'date' => 'nullable|date',
             'start_date' => 'nullable|date',
             'end_date' => 'nullable|date|after_or_equal:start_date',
@@ -2420,6 +2516,8 @@ class PaymentController extends Controller
                 $payment->payable = Booking::with(['package', 'customer', 'room', 'location', 'addOns', 'attractions'])->find($payment->payable_id);
             } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE) {
                 $payment->payable = AttractionPurchase::with(['attraction.location', 'customer'])->find($payment->payable_id);
+            } elseif ($payment->payable_type === Payment::TYPE_EVENT_PURCHASE) {
+                $payment->payable = EventPurchase::with(['event', 'customer', 'location', 'addOns'])->find($payment->payable_id);
             }
         }
 
@@ -2460,6 +2558,8 @@ class PaymentController extends Controller
                 'booking_amount' => $payments->where('payable_type', Payment::TYPE_BOOKING)->sum('amount'),
                 'attraction_count' => $payments->where('payable_type', Payment::TYPE_ATTRACTION_PURCHASE)->count(),
                 'attraction_amount' => $payments->where('payable_type', Payment::TYPE_ATTRACTION_PURCHASE)->sum('amount'),
+                'event_purchase_count' => $payments->where('payable_type', Payment::TYPE_EVENT_PURCHASE)->count(),
+                'event_purchase_amount' => $payments->where('payable_type', Payment::TYPE_EVENT_PURCHASE)->sum('amount'),
             ];
 
             // Build filters display
@@ -2510,6 +2610,8 @@ class PaymentController extends Controller
                         $paymentLocation = $payable->location ?? null;
                     } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE) {
                         $paymentLocation = $payable->attraction->location ?? null;
+                    } elseif ($payment->payable_type === Payment::TYPE_EVENT_PURCHASE) {
+                        $paymentLocation = $payable->location ?? null;
                     }
                 }
                 $paymentLocation = $paymentLocation ?? $location;
@@ -2577,9 +2679,13 @@ class PaymentController extends Controller
         $title = 'Payment Invoices';
 
         if ($request->has('payable_type')) {
-            $title = $request->payable_type === Payment::TYPE_BOOKING
-                ? 'Package Booking Invoices'
-                : 'Attraction Purchase Invoices';
+            if ($request->payable_type === Payment::TYPE_BOOKING) {
+                $title = 'Package Booking Invoices';
+            } elseif ($request->payable_type === Payment::TYPE_ATTRACTION_PURCHASE) {
+                $title = 'Attraction Purchase Invoices';
+            } elseif ($request->payable_type === Payment::TYPE_EVENT_PURCHASE) {
+                $title = 'Event Purchase Invoices';
+            }
         }
 
         if ($dateRange) {

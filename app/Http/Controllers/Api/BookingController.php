@@ -1302,6 +1302,7 @@ class BookingController extends Controller
         $booking = Booking::where('reference_number', $validated['reference_number'])->first();
 
         // Role-based filtering
+        $authUser = null;
         if ($request->has('user_id')) {
             $authUser = User::where('id', $request->user_id)->first();
             if ($authUser->role !== "company_admin" && $booking->location_id !== $authUser->location_id) {
@@ -1323,6 +1324,7 @@ class BookingController extends Controller
         $booking->update([
             'status' => 'checked-in',
             'checked_in_at' => now(),
+            'checked_in_by' => $authUser ? $authUser->id : null,
         ]);
 
         PackageTimeSlot::where('booking_id', $booking->id)->update([
@@ -1330,6 +1332,31 @@ class BookingController extends Controller
         ]);
 
         $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
+
+        // Log check-in activity
+        $customerName = $booking->customer
+            ? ($booking->customer->first_name . ' ' . $booking->customer->last_name)
+            : ($booking->guest_name ?? 'Guest');
+
+        ActivityLog::log(
+            action: 'Booking Checked In',
+            category: 'check-in',
+            description: "Booking {$booking->reference_number} checked in for {$customerName}",
+            userId: $authUser ? $authUser->id : null,
+            locationId: $booking->location_id,
+            entityType: 'booking',
+            entityId: $booking->id,
+            metadata: [
+                'reference_number' => $booking->reference_number,
+                'customer_name' => $customerName,
+                'checked_in_at' => now()->toIso8601String(),
+                'checked_in_by' => $authUser ? ($authUser->name ?? $authUser->email) : 'System',
+                'package' => $booking->package ? [
+                    'id' => $booking->package->id,
+                    'name' => $booking->package->name,
+                ] : null,
+            ]
+        );
 
         // Sync to Google Calendar
         try {

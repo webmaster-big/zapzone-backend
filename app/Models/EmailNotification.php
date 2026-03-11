@@ -242,6 +242,10 @@ class EmailNotification extends Model
         // Get location from payable entity
         if ($payment->payable_type === 'App\\Models\\Booking') {
             $locationId = $payment->payable?->location_id;
+        } elseif ($payment->payable_type === 'App\\Models\\AttractionPurchase') {
+            $locationId = $payment->payable?->location_id ?? $payment->payable?->attraction?->location_id;
+        } elseif ($payment->payable_type === 'App\\Models\\EventPurchase') {
+            $locationId = $payment->payable?->location_id;
         }
 
         return self::active()

@@ -342,6 +342,111 @@
                 <div class="payment-amount">${{ number_format($payment->amount, 2) }}</div>
             </div>
 
+        @elseif($payable && $payment->payable_type === 'event_purchase')
+            {{-- EVENT PURCHASE INVOICE --}}
+
+            <div class="event-banner">
+                <div class="event-title">{{ $payable->event->name ?? 'Event Ticket' }}</div>
+                <div class="event-details">
+                    @if($payable->purchase_date)Date: {{ $payable->purchase_date->format('l, F j, Y') }}@if($payable->purchase_time) at {{ \Carbon\Carbon::parse($payable->purchase_time)->format('g:i A') }}@endif @endif
+                </div>
+                <div class="event-meta">
+                    Qty: {{ $payable->quantity ?? 1 }} · Status: {{ ucfirst($payable->status ?? 'confirmed') }} · Ref: {{ $payable->reference_number ?? 'N/A' }}
+                </div>
+            </div>
+
+            <div class="row">
+                <div class="col">
+                    <div class="info-block">
+                        <div class="info-title">Customer</div>
+                        <div class="info-content">
+                            <div class="info-line"><strong>{{ $customer ? $customer->first_name . ' ' . $customer->last_name : ($payable->guest_name ?? 'Guest') }}</strong></div>
+                            @if($customer && $customer->phone)<div class="info-line">{{ $customer->phone }}</div>@elseif($payable->guest_phone)<div class="info-line">{{ $payable->guest_phone }}</div>@endif
+                            @if($customer && $customer->email)<div class="info-line info-muted">{{ $customer->email }}</div>@elseif($payable->guest_email)<div class="info-line info-muted">{{ $payable->guest_email }}</div>@endif
+                        </div>
+                    </div>
+                </div>
+                <div class="col">
+                    <div class="info-block">
+                        <div class="info-title">Transaction</div>
+                        <div class="info-content">
+                            <div class="info-line">{{ $payment->transaction_id }}</div>
+                            <div class="info-line info-muted">{{ ucfirst($payment->method) }} · {{ $payment->created_at->format('M j, Y') }}</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width: 50%;">Description</th>
+                        <th style="width: 15%;" class="right">Qty</th>
+                        <th style="width: 17%;" class="right">Price</th>
+                        <th style="width: 18%;" class="right">Amount</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>
+                            {{ $payable->event->name ?? 'Event Ticket' }}
+                            <div class="item-desc">{{ $payable->purchase_date ? $payable->purchase_date->format('M j, Y') : '' }}</div>
+                        </td>
+                        <td class="right">{{ $payable->quantity ?? 1 }}</td>
+                        <td class="right">${{ number_format(($payable->total_amount - ($payable->discount_amount ?? 0)) / max($payable->quantity ?? 1, 1), 2) }}</td>
+                        <td class="right">${{ number_format($payable->total_amount - ($payable->discount_amount ?? 0), 2) }}</td>
+                    </tr>
+                    @if($payable->addOns && $payable->addOns->count() > 0)
+                        @foreach($payable->addOns as $addOn)
+                        <tr>
+                            <td>{{ $addOn->name }}</td>
+                            <td class="right">{{ $addOn->pivot->quantity ?? 1 }}</td>
+                            <td class="right">${{ number_format($addOn->pivot->price_at_purchase ?? $addOn->price, 2) }}</td>
+                            <td class="right">${{ number_format(($addOn->pivot->price_at_purchase ?? $addOn->price) * ($addOn->pivot->quantity ?? 1), 2) }}</td>
+                        </tr>
+                        @endforeach
+                    @endif
+                </tbody>
+            </table>
+
+            <div class="totals">
+                <div class="totals-spacer"></div>
+                <div class="totals-box">
+                    <div class="total-line">
+                        <span class="total-label">Subtotal</span>
+                        <span class="total-value">${{ number_format($payable->total_amount + ($payable->discount_amount ?? 0), 2) }}</span>
+                    </div>
+                    @if($payable->discount_amount > 0)
+                    <div class="total-line">
+                        <span class="total-label">Discount</span>
+                        <span class="total-value">−${{ number_format($payable->discount_amount, 2) }}</span>
+                    </div>
+                    @endif
+                    <div class="total-line total-main">
+                        <span class="total-label">Total</span>
+                        <span class="total-value">${{ number_format($payable->total_amount, 2) }}</span>
+                    </div>
+                    <div class="total-line">
+                        <span class="total-label">Paid</span>
+                        <span class="total-value total-paid">${{ number_format($payment->amount, 2) }}</span>
+                    </div>
+                    @php $balance = $payable->total_amount - ($payable->amount_paid ?? $payment->amount); @endphp
+                    @if($balance > 0)
+                    <div class="total-line">
+                        <span class="total-label">Balance Due</span>
+                        <span class="total-value total-balance">${{ number_format($balance, 2) }}</span>
+                    </div>
+                    @endif
+                </div>
+            </div>
+
+            @if($payable->special_requests)
+            <div class="notes">
+                <div class="notes-title">Special Requests</div>
+                <div class="notes-content">{{ $payable->special_requests }}</div>
+            </div>
+            @endif
+
         @else
             {{-- GENERIC PAYMENT --}}
 

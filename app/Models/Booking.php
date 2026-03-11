@@ -55,6 +55,7 @@ class Booking extends Model
         'guest_of_honor_age',
         'guest_of_honor_gender',
         'checked_in_at',
+        'checked_in_by',
         'completed_at',
         'cancelled_at',
         'google_calendar_event_id',
@@ -100,6 +101,11 @@ class Booking extends Model
     public function creator(): BelongsTo
     {
         return $this->belongsTo(User::class, 'created_by');
+    }
+
+    public function checkedInByUser(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'checked_in_by');
     }
 
     public function giftCard(): BelongsTo

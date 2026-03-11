@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Database\Eloquent\Relations\MorphMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 class EventPurchase extends Model
@@ -24,6 +25,7 @@ class EventPurchase extends Model
         'purchase_time',
         'quantity',
         'total_amount',
+        'applied_fees',
         'amount_paid',
         'discount_amount',
         'payment_method',
@@ -41,6 +43,7 @@ class EventPurchase extends Model
         'purchase_date' => 'date',
         'purchase_time' => 'datetime:H:i',
         'total_amount' => 'decimal:2',
+        'applied_fees' => 'array',
         'amount_paid' => 'decimal:2',
         'discount_amount' => 'decimal:2',
         'checked_in_at' => 'datetime',
@@ -69,6 +72,11 @@ class EventPurchase extends Model
         return $this->belongsToMany(AddOn::class, 'event_purchase_add_ons', 'event_purchase_id', 'add_on_id')
             ->withPivot('quantity', 'price_at_purchase')
             ->withTimestamps();
+    }
+
+    public function payments(): MorphMany
+    {
+        return $this->morphMany(Payment::class, 'payable');
     }
 
     // Scopes
