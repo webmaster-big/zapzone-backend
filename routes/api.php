@@ -158,6 +158,7 @@ Route::delete('bookings/{booking}', [BookingController::class, 'destroy']);
 // Public attraction purchase creation
 Route::post('attraction-purchases', [AttractionPurchaseController::class, 'store']);
 Route::post('attraction-purchases/{attractionPurchase}/qrcode', [AttractionPurchaseController::class, 'storeQrCode']);
+Route::get('attraction-purchases/customer', [AttractionPurchaseController::class, 'customerPurchases']);
 Route::delete('attraction-purchases/{attractionPurchase}', [AttractionPurchaseController::class, 'destroy']);
 
 // Locations Route

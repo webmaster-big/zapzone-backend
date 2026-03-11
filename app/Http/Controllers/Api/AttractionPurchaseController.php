@@ -145,6 +145,84 @@ class AttractionPurchaseController extends Controller
         }
     }
 
+    /**
+     * Customer-facing: list attraction purchases by guest email or customer ID.
+     */
+    public function customerPurchases(Request $request): JsonResponse
+    {
+        $query = AttractionPurchase::select([
+                'id', 'attraction_id', 'customer_id', 'created_by',
+                'guest_name', 'guest_email', 'guest_phone',
+                'guest_address', 'guest_city', 'guest_state', 'guest_zip', 'guest_country',
+                'quantity', 'total_amount', 'amount_paid',
+                'payment_method', 'status',
+                'transaction_id', 'purchase_date', 'scheduled_date', 'scheduled_time',
+                'notes', 'checked_in_at',
+                'created_at', 'updated_at'
+            ])
+            ->with([
+                'attraction:id,name,price,pricing_type,category,duration,duration_unit,image,location_id',
+                'attraction.location:id,name',
+                'customer:id,first_name,last_name,email,phone',
+                'addOns:id,name',
+            ]);
+
+        // Filter by guest_email (matches guest_email or customer email)
+        if ($request->has('guest_email')) {
+            $guestEmail = $request->guest_email;
+            $query->where(function ($q) use ($guestEmail) {
+                $q->where('guest_email', $guestEmail)
+                  ->orWhereHas('customer', function ($customerQuery) use ($guestEmail) {
+                      $customerQuery->where('email', $guestEmail);
+                  });
+            });
+        }
+
+        // Filter by customer_id
+        if ($request->has('customer_id')) {
+            $query->where('customer_id', $request->customer_id);
+        }
+
+        // Search by attraction name or location name
+        if ($request->has('search')) {
+            $search = $request->search;
+            $query->where(function ($q) use ($search) {
+                $q->whereHas('attraction', function ($attractionQuery) use ($search) {
+                    $attractionQuery->where('name', 'like', "%{$search}%");
+                })
+                ->orWhereHas('attraction.location', function ($locationQuery) use ($search) {
+                    $locationQuery->where('name', 'like', "%{$search}%");
+                });
+            });
+        }
+
+        // Sort
+        $sortBy = $request->get('sort_by', 'purchase_date');
+        $sortOrder = $request->get('sort_order', 'desc');
+
+        if (in_array($sortBy, ['purchase_date', 'total_amount', 'status', 'created_at'])) {
+            $query->orderBy($sortBy, $sortOrder);
+        }
+
+        $perPage = min($request->get('per_page', 15), 100);
+        $purchases = $query->paginate($perPage);
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'purchases' => $purchases->items(),
+                'pagination' => [
+                    'current_page' => $purchases->currentPage(),
+                    'last_page' => $purchases->lastPage(),
+                    'per_page' => $purchases->perPage(),
+                    'total' => $purchases->total(),
+                    'from' => $purchases->firstItem(),
+                    'to' => $purchases->lastItem(),
+                ],
+            ],
+        ]);
+    }
+
  /**
      * Store a newly created attraction purchase.
      */
