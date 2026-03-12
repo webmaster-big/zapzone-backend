@@ -5,8 +5,10 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Booking;
 use App\Models\AttractionPurchase;
+use App\Models\EventPurchase;
 use App\Models\Package;
 use App\Models\Attraction;
+use App\Models\Event;
 use App\Models\Location;
 use App\Models\Company;
 use Illuminate\Http\Request;
@@ -96,6 +98,7 @@ class AnalyticsController extends Controller
             'daily_performance' => $this->getCompanyDailyPerformance($locationIdList, $startDate, $endDate),
             'booking_status' => $this->getBookingStatus($locationIdList, $startDate, $endDate),
             'top_attractions' => $this->getTopAttractions($locationIdList, $startDate, $endDate),
+            'top_events' => $this->getTopEvents($locationIdList, $startDate, $endDate),
         ];
 
         return response()->json($analytics);
@@ -151,6 +154,7 @@ class AnalyticsController extends Controller
             'weekly_trend' => $this->getWeeklyTrend($locationId, $startDate, $endDate),
             'package_performance' => $this->getPackagePerformance($locationId, $startDate, $endDate),
             'attraction_performance' => $this->getAttractionPerformance($locationId, $startDate, $endDate),
+            'event_performance' => $this->getEventPerformance($locationId, $startDate, $endDate),
             'time_slot_performance' => $this->getTimeSlotPerformance($locationId, $startDate, $endDate),
         ];
 
@@ -196,8 +200,17 @@ class AnalyticsController extends Controller
         $totalAttractionRevenue = $attractionPurchases->sum('amount_paid');
         $totalTicketsSold = $attractionPurchases->sum('quantity');
 
+        // Get event purchases data - filter by purchase_date
+        $eventPurchases = EventPurchase::where('location_id', $locationId)
+            ->whereBetween('purchase_date', [$startDate->toDateString(), $endDate->toDateString()])
+            ->whereNotIn('status', ['cancelled', 'refunded'])
+            ->get();
+
+        $totalEventRevenue = $eventPurchases->sum('amount_paid');
+        $totalEventTicketsSold = $eventPurchases->sum('quantity');
+
         // Combined totals
-        $totalRevenue = $totalBookingRevenue + $totalAttractionRevenue;
+        $totalRevenue = $totalBookingRevenue + $totalAttractionRevenue + $totalEventRevenue;
 
         // Active counts
         $activePackages = Package::where('location_id', $locationId)
@@ -211,6 +224,12 @@ class AnalyticsController extends Controller
             ->count();
 
         $totalAttractions = Attraction::where('location_id', $locationId)->count();
+
+        $activeEvents = Event::where('location_id', $locationId)
+            ->where('is_active', true)
+            ->count();
+
+        $totalEvents = Event::where('location_id', $locationId)->count();
 
         // Calculate previous period for comparison
         $periodDays = $endDate->diffInDays($startDate);
@@ -227,9 +246,15 @@ class AnalyticsController extends Controller
             ->whereNotIn('status', ['cancelled', 'refunded'])
             ->get();
 
-        $prevTotalRevenue = $prevBookings->sum('amount_paid') + $prevAttractionPurchases->sum('amount_paid');
+        $prevEventPurchases = EventPurchase::where('location_id', $locationId)
+            ->whereBetween('purchase_date', [$prevStartDate->toDateString(), $prevEndDate->toDateString()])
+            ->whereNotIn('status', ['cancelled', 'refunded'])
+            ->get();
+
+        $prevTotalRevenue = $prevBookings->sum('amount_paid') + $prevAttractionPurchases->sum('amount_paid') + $prevEventPurchases->sum('amount_paid');
         $prevTotalBookings = $prevBookings->count();
         $prevTotalTickets = $prevAttractionPurchases->sum('quantity');
+        $prevTotalEventTickets = $prevEventPurchases->sum('quantity');
         $prevTotalParticipants = $prevBookings->sum('participants');
 
         // Determine operational status messages
@@ -240,6 +265,10 @@ class AnalyticsController extends Controller
         $attractionStatus = $activeAttractions === $totalAttractions ? 'All operational' :
                             ($activeAttractions === 0 ? 'None operational' :
                             ($totalAttractions - $activeAttractions) . ' inactive');
+
+        $eventStatus = $activeEvents === $totalEvents ? 'All operational' :
+                       ($activeEvents === 0 ? 'None operational' :
+                       ($totalEvents - $activeEvents) . ' inactive');
 
         return [
             'location_revenue' => [
@@ -257,13 +286,18 @@ class AnalyticsController extends Controller
                 'change' => $this->calculatePercentageChange($totalTicketsSold, $prevTotalTickets),
                 'trend' => $totalTicketsSold >= $prevTotalTickets ? 'up' : 'down',
             ],
+            'event_ticket_sales' => [
+                'value' => $totalEventTicketsSold,
+                'change' => $this->calculatePercentageChange($totalEventTicketsSold, $prevTotalEventTickets),
+                'trend' => $totalEventTicketsSold >= $prevTotalEventTickets ? 'up' : 'down',
+            ],
             'total_visitors' => [
-                'value' => $totalParticipants + $totalTicketsSold,
+                'value' => $totalParticipants + $totalTicketsSold + $totalEventTicketsSold,
                 'change' => $this->calculatePercentageChange(
-                    $totalParticipants + $totalTicketsSold,
-                    $prevTotalParticipants + $prevTotalTickets
+                    $totalParticipants + $totalTicketsSold + $totalEventTicketsSold,
+                    $prevTotalParticipants + $prevTotalTickets + $prevTotalEventTickets
                 ),
-                'trend' => ($totalParticipants + $totalTicketsSold) >= ($prevTotalParticipants + $prevTotalTickets) ? 'up' : 'down',
+                'trend' => ($totalParticipants + $totalTicketsSold + $totalEventTicketsSold) >= ($prevTotalParticipants + $prevTotalTickets + $prevTotalEventTickets) ? 'up' : 'down',
             ],
             'active_packages' => [
                 'value' => $activePackages,
@@ -274,6 +308,11 @@ class AnalyticsController extends Controller
                 'value' => $activeAttractions,
                 'total' => $totalAttractions,
                 'info' => $attractionStatus,
+            ],
+            'active_events' => [
+                'value' => $activeEvents,
+                'total' => $totalEvents,
+                'info' => $eventStatus,
             ],
         ];
     }
@@ -312,13 +351,29 @@ class AnalyticsController extends Controller
             ->get()
             ->keyBy('hour');
 
+        // Get event purchases grouped by purchase_time
+        $eventsByHour = EventPurchase::where('location_id', $locationId)
+            ->whereBetween('purchase_date', [$startDate->toDateString(), $endDate->toDateString()])
+            ->whereNotIn('status', ['cancelled', 'refunded'])
+            ->whereNotNull('purchase_time')
+            ->select(
+                DB::raw('HOUR(purchase_time) as hour'),
+                DB::raw('SUM(amount_paid) as revenue'),
+                DB::raw('COUNT(*) as purchases')
+            )
+            ->groupBy('hour')
+            ->get()
+            ->keyBy('hour');
+
         // Generate data for each hour (9 AM to 9 PM)
         for ($hour = 9; $hour <= 21; $hour++) {
             $bookingData = $bookingsByHour->get($hour);
             $attractionData = $attractionsByHour->get($hour);
+            $eventData = $eventsByHour->get($hour);
 
             $bookingRev = $bookingData ? round($bookingData->revenue, 2) : 0;
             $attractionRev = $attractionData ? round($attractionData->revenue, 2) : 0;
+            $eventRev = $eventData ? round($eventData->revenue, 2) : 0;
 
             // Format hour label
             $period = $hour < 12 ? 'AM' : 'PM';
@@ -327,9 +382,10 @@ class AnalyticsController extends Controller
             $hourlyData[] = [
                 'hour' => $hour,
                 'label' => "{$displayHour} {$period}",
-                'revenue' => round($bookingRev + $attractionRev, 2),
+                'revenue' => round($bookingRev + $attractionRev + $eventRev, 2),
                 'bookings' => $bookingData ? (int) $bookingData->bookings : 0,
                 'attraction_purchases' => $attractionData ? (int) $attractionData->purchases : 0,
+                'event_purchases' => $eventData ? (int) $eventData->purchases : 0,
             ];
         }
 
@@ -372,6 +428,20 @@ class AnalyticsController extends Controller
             ->get()
             ->keyBy('visit_date');
 
+        // Get all event purchases grouped by purchase_date in a single query
+        $eventsByDate = EventPurchase::where('location_id', $locationId)
+            ->whereBetween('purchase_date', [$startDate->toDateString(), $endDate->toDateString()])
+            ->whereNotIn('status', ['cancelled', 'refunded'])
+            ->select(
+                'purchase_date',
+                DB::raw('SUM(amount_paid) as total_revenue'),
+                DB::raw('SUM(quantity) as total_tickets'),
+                DB::raw('COUNT(*) as total_purchases')
+            )
+            ->groupBy('purchase_date')
+            ->get()
+            ->keyBy(fn($item) => $item->purchase_date->toDateString());
+
         $dailyData = [];
         $currentDate = $startDate->copy();
 
@@ -381,18 +451,22 @@ class AnalyticsController extends Controller
 
             $bookingData = $bookingsByDate->get($dateStr);
             $attractionData = $attractionsByDate->get($dateStr);
+            $eventData = $eventsByDate->get($dateStr);
 
             $bookingRevenue = $bookingData ? round((float) $bookingData->total_revenue, 2) : 0;
             $attractionRevenue = $attractionData ? round((float) $attractionData->total_revenue, 2) : 0;
+            $eventRevenue = $eventData ? round((float) $eventData->total_revenue, 2) : 0;
             $participants = ($bookingData ? (int) $bookingData->total_participants : 0)
-                         + ($attractionData ? (int) $attractionData->total_tickets : 0);
+                         + ($attractionData ? (int) $attractionData->total_tickets : 0)
+                         + ($eventData ? (int) $eventData->total_tickets : 0);
 
             $dailyData[] = [
                 'day' => $dayOfWeek,
                 'date' => $dateStr,
-                'revenue' => round($bookingRevenue + $attractionRevenue, 2),
+                'revenue' => round($bookingRevenue + $attractionRevenue + $eventRevenue, 2),
                 'bookings' => $bookingData ? (int) $bookingData->total_bookings : 0,
                 'attraction_purchases' => $attractionData ? (int) $attractionData->total_purchases : 0,
+                'event_purchases' => $eventData ? (int) $eventData->total_purchases : 0,
                 'participants' => $participants,
             ];
 
@@ -433,13 +507,20 @@ class AnalyticsController extends Controller
                 ->whereNotIn('status', ['cancelled', 'refunded'])
                 ->get();
 
+            // Event purchases for this week - use purchase_date
+            $weekEvents = EventPurchase::where('location_id', $locationId)
+                ->whereBetween('purchase_date', [$effectiveStart->toDateString(), $effectiveEnd->toDateString()])
+                ->whereNotIn('status', ['cancelled', 'refunded'])
+                ->get();
+
             $weeklyData[] = [
                 'week' => 'Week ' . $weekNumber,
                 'week_start' => $effectiveStart->toDateString(),
                 'week_end' => $effectiveEnd->toDateString(),
-                'revenue' => round($weekBookings->sum('amount_paid') + $weekAttractions->sum('amount_paid'), 2),
+                'revenue' => round($weekBookings->sum('amount_paid') + $weekAttractions->sum('amount_paid') + $weekEvents->sum('amount_paid'), 2),
                 'bookings' => $weekBookings->count(),
                 'tickets' => $weekAttractions->sum('quantity'),
+                'event_tickets' => $weekEvents->sum('quantity'),
             ];
 
             $currentWeekStart->addWeek();
@@ -598,10 +679,26 @@ class AnalyticsController extends Controller
             ->get()
             ->keyBy('hour');
 
+        // Get event purchases grouped by purchase_time
+        $eventsByHour = EventPurchase::where('location_id', $locationId)
+            ->whereBetween('purchase_date', [$startDate->toDateString(), $endDate->toDateString()])
+            ->whereNotIn('status', ['cancelled', 'refunded'])
+            ->whereNotNull('purchase_time')
+            ->select(
+                DB::raw('HOUR(purchase_time) as hour'),
+                DB::raw('COUNT(*) as purchases_count'),
+                DB::raw('SUM(amount_paid) as total_revenue'),
+                DB::raw('SUM(quantity) as total_tickets')
+            )
+            ->groupBy('hour')
+            ->get()
+            ->keyBy('hour');
+
         // Generate data for each hour (9 AM to 9 PM)
         for ($hour = 9; $hour <= 21; $hour++) {
             $bookingData = $bookingsByHour->get($hour);
             $attractionData = $attractionsByHour->get($hour);
+            $eventData = $eventsByHour->get($hour);
 
             $bookingsCount = $bookingData ? (int) $bookingData->bookings_count : 0;
             $bookingsRevenue = $bookingData ? round((float) $bookingData->total_revenue, 2) : 0;
@@ -610,8 +707,11 @@ class AnalyticsController extends Controller
             $ticketsSold = $attractionData ? (int) $attractionData->total_tickets : 0;
             $attractionRevenue = $attractionData ? round((float) $attractionData->total_revenue, 2) : 0;
 
-            $totalRevenue = round($bookingsRevenue + $attractionRevenue, 2);
-            $totalTransactions = $bookingsCount + ($attractionData ? (int) $attractionData->purchases_count : 0);
+            $eventTicketsSold = $eventData ? (int) $eventData->total_tickets : 0;
+            $eventRevenue = $eventData ? round((float) $eventData->total_revenue, 2) : 0;
+
+            $totalRevenue = round($bookingsRevenue + $attractionRevenue + $eventRevenue, 2);
+            $totalTransactions = $bookingsCount + ($attractionData ? (int) $attractionData->purchases_count : 0) + ($eventData ? (int) $eventData->purchases_count : 0);
 
             // Format hour label (e.g., "9 AM", "12 PM", "5 PM")
             $period = $hour < 12 ? 'AM' : 'PM';
@@ -623,9 +723,11 @@ class AnalyticsController extends Controller
                 'label' => $label,
                 'bookings' => $bookingsCount,
                 'tickets_sold' => $ticketsSold,
+                'event_tickets_sold' => $eventTicketsSold,
                 'participants' => $participants,
                 'booking_revenue' => $bookingsRevenue,
                 'attraction_revenue' => $attractionRevenue,
+                'event_revenue' => $eventRevenue,
                 'total_revenue' => $totalRevenue,
                 'total_transactions' => $totalTransactions,
                 'avg_value' => $totalTransactions > 0 ? round($totalRevenue / $totalTransactions, 2) : 0,
@@ -676,12 +778,25 @@ class AnalyticsController extends Controller
         $totalAttractionRevenue = $attractionPurchases->sum('amount_paid');
         $totalTicketsSold = $attractionPurchases->sum('quantity');
 
+        // Get event purchases for all locations
+        $eventPurchases = EventPurchase::whereIn('location_id', $locationIds)
+            ->whereBetween('created_at', [$startDate, $endDate])
+            ->whereNotIn('status', ['cancelled', 'refunded'])
+            ->get();
+
+        $totalEventRevenue = $eventPurchases->sum('amount_paid');
+        $totalEventTicketsSold = $eventPurchases->sum('quantity');
+
         // Combined totals
-        $totalRevenue = $totalBookingRevenue + $totalAttractionRevenue;
+        $totalRevenue = $totalBookingRevenue + $totalAttractionRevenue + $totalEventRevenue;
         $totalLocations = count($locationIds);
 
         // Active counts
         $activePackages = Package::whereIn('location_id', $locationIds)
+            ->where('is_active', true)
+            ->count();
+
+        $activeEvents = Event::whereIn('location_id', $locationIds)
             ->where('is_active', true)
             ->count();
 
@@ -702,9 +817,15 @@ class AnalyticsController extends Controller
             ->whereNotIn('status', ['cancelled'])
             ->get();
 
-        $prevTotalRevenue = $prevBookings->sum('amount_paid') + $prevAttractionPurchases->sum('amount_paid');
+        $prevEventPurchases = EventPurchase::whereIn('location_id', $locationIds)
+            ->whereBetween('created_at', [$prevStartDate, $prevEndDate])
+            ->whereNotIn('status', ['cancelled', 'refunded'])
+            ->get();
+
+        $prevTotalRevenue = $prevBookings->sum('amount_paid') + $prevAttractionPurchases->sum('amount_paid') + $prevEventPurchases->sum('amount_paid');
         $prevTotalBookings = $prevBookings->count();
         $prevTotalTickets = $prevAttractionPurchases->sum('quantity');
+        $prevTotalEventTickets = $prevEventPurchases->sum('quantity');
         $prevTotalParticipants = $prevBookings->sum('participants');
 
         // New locations/packages in period
@@ -735,17 +856,29 @@ class AnalyticsController extends Controller
                 'change' => $this->calculatePercentageChange($totalTicketsSold, $prevTotalTickets),
                 'trend' => $totalTicketsSold >= $prevTotalTickets ? 'up' : 'down',
             ],
+            'event_ticket_purchases' => [
+                'value' => $totalEventTicketsSold,
+                'change' => $this->calculatePercentageChange($totalEventTicketsSold, $prevTotalEventTickets),
+                'trend' => $totalEventTicketsSold >= $prevTotalEventTickets ? 'up' : 'down',
+            ],
             'total_participants' => [
-                'value' => $totalParticipants + $totalTicketsSold,
+                'value' => $totalParticipants + $totalTicketsSold + $totalEventTicketsSold,
                 'change' => $this->calculatePercentageChange(
-                    $totalParticipants + $totalTicketsSold,
-                    $prevTotalParticipants + $prevTotalTickets
+                    $totalParticipants + $totalTicketsSold + $totalEventTicketsSold,
+                    $prevTotalParticipants + $prevTotalTickets + $prevTotalEventTickets
                 ),
-                'trend' => ($totalParticipants + $totalTicketsSold) >= ($prevTotalParticipants + $prevTotalTickets) ? 'up' : 'down',
+                'trend' => ($totalParticipants + $totalTicketsSold + $totalEventTicketsSold) >= ($prevTotalParticipants + $prevTotalTickets + $prevTotalEventTickets) ? 'up' : 'down',
             ],
             'active_packages' => [
                 'value' => $activePackages,
                 'info' => $newPackages . ' new packages',
+            ],
+            'active_events' => [
+                'value' => $activeEvents,
+                'info' => Event::whereIn('location_id', $locationIds)
+                    ->where('is_active', true)
+                    ->whereBetween('created_at', [$startDate, $endDate])
+                    ->count() . ' new events',
             ],
         ];
     }
@@ -799,9 +932,14 @@ class AnalyticsController extends Controller
                     ->whereNotIn('status', ['cancelled'])
                     ->sum('amount_paid') ?? 0;
 
+                $eventRevenue = EventPurchase::whereIn('location_id', $locationIds)
+                    ->whereBetween('created_at', [$monthStart, $monthEnd])
+                    ->whereNotIn('status', ['cancelled', 'refunded'])
+                    ->sum('amount_paid') ?? 0;
+
                 $trendData[] = [
                     'month' => $monthStart->format('M y'),
-                    'revenue' => round($bookingsRevenue + $attractionRevenue, 2),
+                    'revenue' => round($bookingsRevenue + $attractionRevenue + $eventRevenue, 2),
                     'bookings' => $bookingsCount,
                 ];
 
@@ -829,9 +967,14 @@ class AnalyticsController extends Controller
                     ->whereNotIn('status', ['cancelled'])
                     ->sum('amount_paid') ?? 0;
 
+                $eventRevenue = EventPurchase::whereIn('location_id', $locationIds)
+                    ->whereDate('created_at', $currentDate)
+                    ->whereNotIn('status', ['cancelled', 'refunded'])
+                    ->sum('amount_paid') ?? 0;
+
                 $trendData[] = [
                     'month' => $currentDate->format('M d'),
-                    'revenue' => round($bookingsRevenue + $attractionRevenue, 2),
+                    'revenue' => round($bookingsRevenue + $attractionRevenue + $eventRevenue, 2),
                     'bookings' => $bookingsCount,
                 ];
 
@@ -872,7 +1015,12 @@ class AnalyticsController extends Controller
                 ->whereNotIn('status', ['cancelled'])
                 ->sum('amount_paid') ?? 0;
 
-            $totalRevenue = $bookingsRevenue + $attractionRevenue;
+            $eventRevenue = EventPurchase::where('location_id', $location->id)
+                ->whereBetween('created_at', [$startDate, $endDate])
+                ->whereNotIn('status', ['cancelled', 'refunded'])
+                ->sum('amount_paid') ?? 0;
+
+            $totalRevenue = $bookingsRevenue + $attractionRevenue + $eventRevenue;
 
             return [
                 'location' => $location->name,
@@ -945,12 +1093,25 @@ class AnalyticsController extends Controller
             ->get()
             ->keyBy('hour');
 
+        $eventsByHour = EventPurchase::whereIn('location_id', $locationIds)
+            ->whereBetween('created_at', [$startDate, $endDate])
+            ->whereNotIn('status', ['cancelled', 'refunded'])
+            ->select(
+                DB::raw('HOUR(created_at) as hour'),
+                DB::raw('COUNT(*) as purchases')
+            )
+            ->groupBy('hour')
+            ->get()
+            ->keyBy('hour');
+
         for ($hour = 9; $hour <= 21; $hour++) {
             $hourData = $bookingsByHour->get($hour);
+            $eventData = $eventsByHour->get($hour);
 
             $hourlyData[] = [
                 'hour' => sprintf('%02d:00', $hour),
                 'bookings' => $hourData ? $hourData->bookings : 0,
+                'event_purchases' => $eventData ? $eventData->purchases : 0,
             ];
         }
 
@@ -994,11 +1155,21 @@ class AnalyticsController extends Controller
                 ->whereNotIn('status', ['cancelled'])
                 ->sum('quantity');
 
+            $eventRevenue = EventPurchase::whereIn('location_id', $locationIds)
+                ->whereDate('created_at', $currentDate)
+                ->whereNotIn('status', ['cancelled', 'refunded'])
+                ->sum('amount_paid');
+
+            $eventTickets = EventPurchase::whereIn('location_id', $locationIds)
+                ->whereDate('created_at', $currentDate)
+                ->whereNotIn('status', ['cancelled', 'refunded'])
+                ->sum('quantity');
+
             $dailyData[] = [
                 'day' => $dayOfWeek,
                 'date' => $currentDate->toDateString(),
-                'revenue' => round($bookingsRevenue + $attractionRevenue, 2),
-                'participants' => $bookingsParticipants + $attractionTickets,
+                'revenue' => round($bookingsRevenue + $attractionRevenue + $eventRevenue, 2),
+                'participants' => $bookingsParticipants + $attractionTickets + $eventTickets,
             ];
 
             $currentDate->addDay();
@@ -1075,6 +1246,83 @@ class AnalyticsController extends Controller
     }
 
     /**
+     * Get top events by ticket sales across all locations
+     */
+    private function getTopEvents($locationIds, $startDate, $endDate)
+    {
+        $events = Event::whereIn('location_id', $locationIds)
+            ->where('is_active', true)
+            ->get();
+
+        $eventData = $events->map(function ($event) use ($startDate, $endDate) {
+            $purchases = EventPurchase::where('event_id', $event->id)
+                ->whereBetween('created_at', [$startDate, $endDate])
+                ->whereNotIn('status', ['cancelled', 'refunded'])
+                ->get();
+
+            return [
+                'id' => $event->id,
+                'name' => $event->name,
+                'tickets_sold' => $purchases->sum('quantity') ?? 0,
+                'revenue' => round($purchases->sum('amount_paid') ?? 0, 2),
+            ];
+        })->filter(function ($item) {
+            return $item['revenue'] > 0 || $item['tickets_sold'] > 0;
+        })->sortByDesc('revenue')->take(10)->values();
+
+        return $eventData;
+    }
+
+    /**
+     * Get event performance (ticket sales per event)
+     * Uses purchase_date for date filtering
+     */
+    private function getEventPerformance($locationId, $startDate, $endDate)
+    {
+        $events = Event::where('location_id', $locationId)
+            ->where('is_active', true)
+            ->get();
+
+        if ($events->isEmpty()) {
+            return collect([]);
+        }
+
+        $eventIds = $events->pluck('id')->toArray();
+
+        // Get aggregated purchase stats in a single efficient query
+        $purchaseStats = EventPurchase::whereIn('event_id', $eventIds)
+            ->whereBetween('purchase_date', [$startDate->toDateString(), $endDate->toDateString()])
+            ->whereNotIn('status', ['cancelled', 'refunded'])
+            ->select(
+                'event_id',
+                DB::raw('COUNT(*) as purchase_count'),
+                DB::raw('COALESCE(SUM(quantity), 0) as total_tickets'),
+                DB::raw('COALESCE(SUM(amount_paid), 0) as total_revenue')
+            )
+            ->groupBy('event_id')
+            ->get()
+            ->keyBy('event_id');
+
+        return $events->map(function ($event) use ($purchaseStats) {
+            $stats = $purchaseStats->get($event->id);
+
+            $purchaseCount = $stats ? (int) $stats->purchase_count : 0;
+            $ticketsSold = $stats ? (int) $stats->total_tickets : 0;
+            $revenue = $stats ? round((float) $stats->total_revenue, 2) : 0;
+
+            return [
+                'id' => $event->id,
+                'name' => $event->name,
+                'date_type' => $event->date_type,
+                'purchases' => $purchaseCount,
+                'tickets_sold' => $ticketsSold,
+                'revenue' => $revenue,
+                'price' => round($event->price, 2),
+            ];
+        })->sortByDesc('revenue')->values();
+    }
+
+    /**
      * Export analytics data
      */
     public function exportAnalytics(Request $request)
@@ -1086,7 +1334,7 @@ class AnalyticsController extends Controller
             'end_date' => 'nullable|date|required_if:date_range,custom|after_or_equal:start_date',
             'format' => 'in:json,csv',
             'sections' => 'array',
-            'sections.*' => 'in:metrics,revenue,packages,attractions,timeslots',
+            'sections.*' => 'in:metrics,revenue,packages,attractions,events,timeslots',
         ]);
 
         // Get the full analytics data
@@ -1112,6 +1360,7 @@ class AnalyticsController extends Controller
                 'revenue' => ['hourly_revenue', 'daily_revenue', 'weekly_trend'],
                 'packages' => 'package_performance',
                 'attractions' => 'attraction_performance',
+                'events' => 'event_performance',
                 'timeslots' => 'time_slot_performance',
             ];
 
@@ -1201,6 +1450,23 @@ class AnalyticsController extends Controller
                     $attraction['tickets_sold'],
                     $attraction['revenue'],
                     $attraction['utilization'],
+                ];
+            }
+            $csv[] = [];
+        }
+
+        // Event Performance
+        if (isset($analytics['event_performance'])) {
+            $csv[] = ['Event Performance'];
+            $csv[] = ['Event', 'Date Type', 'Purchases', 'Tickets Sold', 'Revenue', 'Price'];
+            foreach ($analytics['event_performance'] as $event) {
+                $csv[] = [
+                    $event['name'],
+                    $event['date_type'],
+                    $event['purchases'],
+                    $event['tickets_sold'],
+                    $event['revenue'],
+                    $event['price'],
                 ];
             }
             $csv[] = [];

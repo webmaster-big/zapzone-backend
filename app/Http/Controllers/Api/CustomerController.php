@@ -7,6 +7,7 @@ use App\Models\ActivityLog;
 use App\Models\AttractionPurchase;
 use App\Models\Booking;
 use App\Models\Customer;
+use App\Models\EventPurchase;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -104,8 +105,22 @@ class CustomerController extends Controller
                 'guest_phone' => $record->guest_phone,
             ]);
 
+        // Collect all unique customer identifiers from event purchases
+        $eventPurchaseCustomers = EventPurchase::query()
+            ->when($user && $user->role !== 'company_admin', function ($query) use ($user) {
+                $query->where('location_id', $user->location_id);
+            })
+            ->select('guest_email', 'guest_name', 'guest_phone')
+            ->whereNotNull('guest_email')
+            ->get()
+            ->map(fn($record) => (object)[
+                'guest_email' => $record->guest_email,
+                'guest_name' => $record->guest_name,
+                'guest_phone' => $record->guest_phone,
+            ]);
+
         // Merge all records
-        $allRecords = $bookingCustomers->concat($purchaseCustomers);
+        $allRecords = $bookingCustomers->concat($purchaseCustomers)->concat($eventPurchaseCustomers);
 
         // Build customer list
         $allCustomers = collect();
@@ -210,11 +225,32 @@ class CustomerController extends Controller
                 })
                 ->sum('quantity');
 
+            // Calculate event purchase metrics
+            $totalEventPurchases = EventPurchase::where('guest_email', $customer->email)
+                ->when($user && $user->role !== 'company_admin', function ($query) use ($user) {
+                    $query->where('location_id', $user->location_id);
+                })
+                ->count();
+
+            $totalSpentEventPurchases = EventPurchase::where('guest_email', $customer->email)
+                ->when($user && $user->role !== 'company_admin', function ($query) use ($user) {
+                    $query->where('location_id', $user->location_id);
+                })
+                ->sum('amount_paid');
+
+            $totalEventTicketQuantity = EventPurchase::where('guest_email', $customer->email)
+                ->when($user && $user->role !== 'company_admin', function ($query) use ($user) {
+                    $query->where('location_id', $user->location_id);
+                })
+                ->sum('quantity');
+
             // Add calculated fields to customer object
             $customer->total_bookings = $totalBookings;
-            $customer->total_spent = $totalSpentBookings + $totalSpentPurchases;
+            $customer->total_spent = $totalSpentBookings + $totalSpentPurchases + $totalSpentEventPurchases;
             $customer->total_purchase_tickets = $totalPurchaseTickets;
             $customer->total_ticket_quantity = $totalTicketQuantity;
+            $customer->total_event_purchases = $totalEventPurchases;
+            $customer->total_event_ticket_quantity = (int) $totalEventTicketQuantity;
 
             return $customer;
         });
@@ -444,6 +480,12 @@ class CustomerController extends Controller
                 ->where('created_at', '>=', now()->subDays(30))
                 ->count(),
             'last_visit' => $customer->last_visit,
+            'total_attraction_purchases' => $customer->attractionPurchases()->count(),
+            'total_event_purchases' => $customer->eventPurchases()->count(),
+            'total_event_tickets' => (int) $customer->eventPurchases()->sum('quantity'),
+            'event_purchase_spent' => round((float) $customer->eventPurchases()
+                ->whereNotIn('status', ['cancelled', 'refunded'])
+                ->sum('amount_paid'), 2),
         ];
 
         return response()->json([
@@ -542,19 +584,27 @@ class CustomerController extends Controller
         }
 
         // 1. Key Metrics
-        $totalCustomersQuery = Booking::query()
+        $bookingEmails = Booking::query()
             ->when($locationId, fn($q) => $q->where('location_id', $locationId))
             ->whereNotNull('guest_email')
-            ->distinct('guest_email');
+            ->distinct()
+            ->pluck('guest_email');
 
-        $purchaseCustomersQuery = AttractionPurchase::query()
+        $purchaseEmails = AttractionPurchase::query()
             ->when($locationId, function($q) use ($locationId) {
                 $q->whereHas('attraction', fn($query) => $query->where('location_id', $locationId));
             })
             ->whereNotNull('guest_email')
-            ->distinct('guest_email');
+            ->distinct()
+            ->pluck('guest_email');
 
-        $totalCustomers = $totalCustomersQuery->count() + $purchaseCustomersQuery->count();
+        $eventPurchaseEmails = EventPurchase::query()
+            ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+            ->whereNotNull('guest_email')
+            ->distinct()
+            ->pluck('guest_email');
+
+        $totalCustomers = $bookingEmails->merge($purchaseEmails)->merge($eventPurchaseEmails)->unique()->count();
 
         $activeCustomers = Booking::query()
             ->when($locationId, fn($q) => $q->where('location_id', $locationId))
@@ -579,7 +629,14 @@ class CustomerController extends Controller
             ->when($startDate && !$endDate, fn($q) => $q->where('created_at', '>=', $startDate))
             ->sum('amount_paid');
 
-        $totalRevenueSum = $totalRevenue + $totalPurchaseRevenue;
+        $totalEventPurchaseRevenue = EventPurchase::query()
+            ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+            ->whereNotIn('status', ['cancelled', 'refunded'])
+            ->when($startDate && $endDate, fn($q) => $q->whereBetween('created_at', [$startDate, $endDate]))
+            ->when($startDate && !$endDate, fn($q) => $q->where('created_at', '>=', $startDate))
+            ->sum('amount_paid');
+
+        $totalRevenueSum = $totalRevenue + $totalPurchaseRevenue + $totalEventPurchaseRevenue;
         $avgRevenuePerCustomer = $totalCustomers > 0 ? round($totalRevenueSum / $totalCustomers, 2) : 0;
 
         $newCustomers = Booking::query()
@@ -646,7 +703,13 @@ class CustomerController extends Controller
             ->when($previousPeriodStart && $previousPeriodEnd, fn($q) => $q->whereBetween('created_at', [$previousPeriodStart, $previousPeriodEnd]))
             ->sum('amount_paid');
 
-        $prevTotalRevenueSum = $prevTotalRevenue + $prevPurchaseRevenue;
+        $prevEventPurchaseRevenue = EventPurchase::query()
+            ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+            ->whereNotIn('status', ['cancelled', 'refunded'])
+            ->when($previousPeriodStart && $previousPeriodEnd, fn($q) => $q->whereBetween('created_at', [$previousPeriodStart, $previousPeriodEnd]))
+            ->sum('amount_paid');
+
+        $prevTotalRevenueSum = $prevTotalRevenue + $prevPurchaseRevenue + $prevEventPurchaseRevenue;
 
         // Previous period avg revenue per customer
         $prevAvgRevenuePerCustomer = $prevTotalCustomers > 0 ? round($prevTotalRevenueSum / $prevTotalCustomers, 2) : 0;
@@ -702,7 +765,14 @@ class CustomerController extends Controller
                 ->distinct('guest_email')
                 ->count();
 
-            $totalCount = $bookingCount + $purchaseCount;
+            $eventPurchaseCount = EventPurchase::query()
+                ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+                ->whereBetween('created_at', [$monthStart, $monthEnd])
+                ->whereNotNull('guest_email')
+                ->distinct('guest_email')
+                ->count();
+
+            $totalCount = $bookingCount + $purchaseCount + $eventPurchaseCount;
             $growth = $i < 8 ? ($totalCount - ($customerGrowth[$i-1]['customers'] ?? 0)) : 0;
 
             $customerGrowth[] = [
@@ -730,6 +800,12 @@ class CustomerController extends Controller
                 ->whereBetween('created_at', [$monthStart, $monthEnd])
                 ->sum('amount_paid');
 
+            $eventPurchaseRevenue = EventPurchase::query()
+                ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+                ->whereNotIn('status', ['cancelled', 'refunded'])
+                ->whereBetween('created_at', [$monthStart, $monthEnd])
+                ->sum('amount_paid');
+
             $bookingCount = Booking::query()
                 ->when($locationId, fn($q) => $q->where('location_id', $locationId))
                 ->whereBetween('created_at', [$monthStart, $monthEnd])
@@ -737,7 +813,7 @@ class CustomerController extends Controller
 
             $revenueTrend[] = [
                 'month' => $monthStart->format('M'),
-                'revenue' => round($bookingRevenue + $purchaseRevenue, 2),
+                'revenue' => round($bookingRevenue + $purchaseRevenue + $eventPurchaseRevenue, 2),
                 'bookings' => $bookingCount,
             ];
         }
@@ -826,7 +902,12 @@ class CustomerController extends Controller
                 })
                 ->sum('amount_paid');
 
-            $customerValues[] = $totalSpent + $purchaseSpent;
+            $eventPurchaseSpent = EventPurchase::where('guest_email', $email)
+                ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+                ->whereNotIn('status', ['cancelled', 'refunded'])
+                ->sum('amount_paid');
+
+            $customerValues[] = $totalSpent + $purchaseSpent + $eventPurchaseSpent;
         }
 
         $highValue = count(array_filter($customerValues, fn($v) => $v >= 1000));
@@ -898,6 +979,24 @@ class CustomerController extends Controller
                 'purchases' => $item->purchases,
             ]);
 
+        // 10.5 Top 5 Most Purchased Events by Customer
+        $topEvents = EventPurchase::query()
+            ->with('event')
+            ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+            ->when($startDate && $endDate, fn($q) => $q->whereBetween('created_at', [$startDate, $endDate]))
+            ->when($startDate && !$endDate, fn($q) => $q->where('created_at', '>=', $startDate))
+            ->whereNotNull('guest_email')
+            ->selectRaw('guest_email, guest_name, event_id, COUNT(*) as purchases')
+            ->groupBy('guest_email', 'guest_name', 'event_id')
+            ->orderByDesc('purchases')
+            ->limit(5)
+            ->get()
+            ->map(fn($item) => [
+                'customer' => $item->guest_name,
+                'event' => $item->event->name ?? 'N/A',
+                'purchases' => $item->purchases,
+            ]);
+
         // 11. Top 5 Most Booked Packages by Customer
         $topPackages = Booking::query()
             ->with('package')
@@ -938,6 +1037,11 @@ class CustomerController extends Controller
                 })
                 ->sum('amount_paid');
 
+            $eventPurchaseSpent = EventPurchase::where('guest_email', $customer->guest_email)
+                ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+                ->whereNotIn('status', ['cancelled', 'refunded'])
+                ->sum('amount_paid');
+
             $bookingCount = Booking::where('guest_email', $customer->guest_email)
                 ->when($locationId, fn($q) => $q->where('location_id', $locationId))
                 ->count();
@@ -949,7 +1053,7 @@ class CustomerController extends Controller
                 'name' => $customer->guest_name,
                 'email' => $customer->guest_email,
                 'joinDate' => $customer->join_date,
-                'totalSpent' => round($totalSpent + $purchaseSpent, 2),
+                'totalSpent' => round($totalSpent + $purchaseSpent + $eventPurchaseSpent, 2),
                 'bookings' => $bookingCount,
                 'lastActivity' => $customer->last_activity,
                 'status' => $isActive ? 'active' : 'inactive',
@@ -1015,6 +1119,7 @@ class CustomerController extends Controller
                     'repeatCustomers' => $repeatCustomers,
                 ],
                 'topActivities' => $topActivities,
+                'topEvents' => $topEvents,
                 'topPackages' => $topPackages,
                 'recentCustomers' => $recentCustomers,
             ],
@@ -1034,13 +1139,13 @@ class CustomerController extends Controller
             'end_date' => 'nullable|date|required_if:date_range,custom|after_or_equal:start_date',
             'format' => 'required|in:csv,pdf,receipt',
             'include_sections' => 'nullable|array',
-            'include_sections.*' => 'in:customers,revenue,bookings,activities,packages',
+            'include_sections.*' => 'in:customers,revenue,bookings,activities,packages,events',
         ]);
 
         $userId = $request->get('user_id') ?? auth()->id();
         $user = User::find($userId);
         $format = $validated['format'];
-        $includeSections = $validated['include_sections'] ?? ['customers', 'revenue', 'bookings', 'activities', 'packages'];
+        $includeSections = $validated['include_sections'] ?? ['customers', 'revenue', 'bookings', 'activities', 'packages', 'events'];
 
         // Get date range filter
         $dateRange = $request->get('date_range', '30d');
@@ -1106,7 +1211,15 @@ class CustomerController extends Controller
                 ->distinct()
                 ->pluck('guest_email');
 
-            $allEmails = $bookingEmails->merge($purchaseEmails)->unique();
+            $eventPurchaseEmails = EventPurchase::query()
+                ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+                ->when($startDate && $endDate, fn($q) => $q->whereBetween('created_at', [$startDate, $endDate]))
+                ->when($startDate && !$endDate, fn($q) => $q->where('created_at', '>=', $startDate))
+                ->whereNotNull('guest_email')
+                ->distinct()
+                ->pluck('guest_email');
+
+            $allEmails = $bookingEmails->merge($purchaseEmails)->merge($eventPurchaseEmails)->unique();
 
             $exportData['customers'] = [];
             foreach ($allEmails as $email) {
@@ -1148,6 +1261,19 @@ class CustomerController extends Controller
                     ->when($startDate && !$endDate, fn($q) => $q->where('created_at', '>=', $startDate))
                     ->count();
 
+                $totalEventPurchases = EventPurchase::where('guest_email', $email)
+                    ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+                    ->when($startDate && $endDate, fn($q) => $q->whereBetween('created_at', [$startDate, $endDate]))
+                    ->when($startDate && !$endDate, fn($q) => $q->where('created_at', '>=', $startDate))
+                    ->count();
+
+                $eventPurchaseSpent = EventPurchase::where('guest_email', $email)
+                    ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+                    ->whereNotIn('status', ['cancelled', 'refunded'])
+                    ->when($startDate && $endDate, fn($q) => $q->whereBetween('created_at', [$startDate, $endDate]))
+                    ->when($startDate && !$endDate, fn($q) => $q->where('created_at', '>=', $startDate))
+                    ->sum('amount_paid');
+
                 $customerName = $firstBooking ? $firstBooking->guest_name :
                                ($lastBooking ? $lastBooking->guest_name : 'Unknown');
 
@@ -1156,7 +1282,8 @@ class CustomerController extends Controller
                     'email' => $email,
                     'total_bookings' => $totalBookings,
                     'total_purchases' => $totalPurchases,
-                    'total_spent' => round($totalSpent + $purchaseSpent, 2),
+                    'total_event_purchases' => $totalEventPurchases,
+                    'total_spent' => round($totalSpent + $purchaseSpent + $eventPurchaseSpent, 2),
                     'first_visit' => $firstBooking ? $firstBooking->created_at->format('Y-m-d') : 'N/A',
                     'last_visit' => $lastBooking ? $lastBooking->created_at->format('Y-m-d') : 'N/A',
                 ];
@@ -1182,11 +1309,18 @@ class CustomerController extends Controller
                     ->whereBetween('created_at', [$monthStart, $monthEnd])
                     ->sum('amount_paid');
 
+                $eventPurchaseRevenue = EventPurchase::query()
+                    ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+                    ->whereNotIn('status', ['cancelled', 'refunded'])
+                    ->whereBetween('created_at', [$monthStart, $monthEnd])
+                    ->sum('amount_paid');
+
                 $exportData['revenue_by_month'][] = [
                     'month' => $monthStart->format('M Y'),
                     'bookings_revenue' => round($bookingRevenue, 2),
                     'purchases_revenue' => round($purchaseRevenue, 2),
-                    'total_revenue' => round($bookingRevenue + $purchaseRevenue, 2),
+                    'event_purchases_revenue' => round($eventPurchaseRevenue, 2),
+                    'total_revenue' => round($bookingRevenue + $purchaseRevenue + $eventPurchaseRevenue, 2),
                 ];
             }
         }
@@ -1257,6 +1391,28 @@ class CustomerController extends Controller
                 ->toArray();
         }
 
+        if (in_array('events', $includeSections)) {
+            // Top events
+            $exportData['top_events'] = EventPurchase::query()
+                ->with('event')
+                ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+                ->when($startDate && $endDate, fn($q) => $q->whereBetween('created_at', [$startDate, $endDate]))
+                ->when($startDate && !$endDate, fn($q) => $q->where('created_at', '>=', $startDate))
+                ->whereNotIn('status', ['cancelled', 'refunded'])
+                ->selectRaw('event_id, COUNT(*) as purchase_count, SUM(amount_paid) as total_revenue, SUM(quantity) as total_tickets')
+                ->groupBy('event_id')
+                ->orderByDesc('purchase_count')
+                ->limit(10)
+                ->get()
+                ->map(fn($item) => [
+                    'event' => $item->event->name ?? 'N/A',
+                    'purchases' => $item->purchase_count,
+                    'tickets' => (int) $item->total_tickets,
+                    'revenue' => round($item->total_revenue, 2),
+                ])
+                ->toArray();
+        }
+
         // Generate export based on format
         if ($format === 'csv') {
             return $this->generateCSVExport($exportData, $locationName, $dateRangeDisplay);
@@ -1292,13 +1448,14 @@ class CustomerController extends Controller
             // Customers section
             if (isset($data['customers'])) {
                 fputcsv($file, ['CUSTOMER LIST']);
-                fputcsv($file, ['Name', 'Email', 'Total Bookings', 'Total Purchases', 'Total Spent', 'First Visit', 'Last Visit']);
+                fputcsv($file, ['Name', 'Email', 'Total Bookings', 'Total Purchases', 'Total Event Purchases', 'Total Spent', 'First Visit', 'Last Visit']);
                 foreach ($data['customers'] as $customer) {
                     fputcsv($file, [
                         $customer['name'],
                         $customer['email'],
                         $customer['total_bookings'],
                         $customer['total_purchases'],
+                        $customer['total_event_purchases'] ?? 0,
                         '$' . number_format($customer['total_spent'], 2),
                         $customer['first_visit'],
                         $customer['last_visit'],
@@ -1310,12 +1467,13 @@ class CustomerController extends Controller
             // Revenue by month section
             if (isset($data['revenue_by_month'])) {
                 fputcsv($file, ['REVENUE BY MONTH']);
-                fputcsv($file, ['Month', 'Bookings Revenue', 'Purchases Revenue', 'Total Revenue']);
+                fputcsv($file, ['Month', 'Bookings Revenue', 'Purchases Revenue', 'Event Purchases Revenue', 'Total Revenue']);
                 foreach ($data['revenue_by_month'] as $revenue) {
                     fputcsv($file, [
                         $revenue['month'],
                         '$' . number_format($revenue['bookings_revenue'], 2),
                         '$' . number_format($revenue['purchases_revenue'], 2),
+                        '$' . number_format($revenue['event_purchases_revenue'] ?? 0, 2),
                         '$' . number_format($revenue['total_revenue'], 2),
                     ]);
                 }
@@ -1360,6 +1518,21 @@ class CustomerController extends Controller
                         $package['package'],
                         $package['bookings'],
                         '$' . number_format($package['revenue'], 2),
+                    ]);
+                }
+                fputcsv($file, []);
+            }
+
+            // Top events section
+            if (isset($data['top_events'])) {
+                fputcsv($file, ['TOP EVENTS']);
+                fputcsv($file, ['Event', 'Purchases', 'Tickets', 'Revenue']);
+                foreach ($data['top_events'] as $event) {
+                    fputcsv($file, [
+                        $event['event'],
+                        $event['purchases'],
+                        $event['tickets'],
+                        '$' . number_format($event['revenue'], 2),
                     ]);
                 }
                 fputcsv($file, []);

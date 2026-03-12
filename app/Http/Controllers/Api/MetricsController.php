@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Booking;
 use App\Models\AttractionPurchase;
+use App\Models\EventPurchase;
 use App\Models\Customer;
 use App\Models\Location;
 use App\Models\User;
@@ -85,6 +86,7 @@ class MetricsController extends Controller
         // Build booking query
         $bookingQuery = Booking::query();
         $purchaseQuery = AttractionPurchase::query();
+        $eventPurchaseQuery = EventPurchase::query();
 
         // Apply location filter based on role
         if ($locationId) {
@@ -92,6 +94,7 @@ class MetricsController extends Controller
             $purchaseQuery->whereHas('attraction', function ($q) use ($locationId) {
                 $q->where('location_id', $locationId);
             });
+            $eventPurchaseQuery->where('location_id', $locationId);
         }
 
         // Apply date range filter
@@ -99,9 +102,11 @@ class MetricsController extends Controller
             if ($useDateTime) {
                 $bookingQuery->where('created_at', '>=', $dateFrom);
                 $purchaseQuery->where('created_at', '>=', $dateFrom);
+                $eventPurchaseQuery->where('created_at', '>=', $dateFrom);
             } else {
                 $bookingQuery->whereDate('created_at', '>=', $dateFrom);
                 $purchaseQuery->whereDate('created_at', '>=', $dateFrom);
+                $eventPurchaseQuery->whereDate('created_at', '>=', $dateFrom);
             }
         }
 
@@ -109,9 +114,11 @@ class MetricsController extends Controller
             if ($useDateTime) {
                 $bookingQuery->where('created_at', '<=', $dateTo);
                 $purchaseQuery->where('created_at', '<=', $dateTo);
+                $eventPurchaseQuery->where('created_at', '<=', $dateTo);
             } else {
                 $bookingQuery->whereDate('created_at', '<=', $dateTo);
                 $purchaseQuery->whereDate('created_at', '<=', $dateTo);
+                $eventPurchaseQuery->whereDate('created_at', '<=', $dateTo);
             }
         }
 
@@ -156,12 +163,18 @@ class MetricsController extends Controller
             'status_breakdown' => $allPurchaseStatuses->toArray(),
         ]);
 
+        // Calculate event purchase metrics
+        $totalEventPurchases = (clone $eventPurchaseQuery)->count();
+        $eventPurchaseRevenue = (clone $eventPurchaseQuery)->whereNotIn('status', ['cancelled', 'refunded'])->sum('amount_paid') ?? 0;
+        $totalEventTickets = (clone $eventPurchaseQuery)->whereNotIn('status', ['cancelled', 'refunded'])->sum('quantity') ?? 0;
+
         // Calculate total revenue (using all non-cancelled purchases)
-        $totalRevenue = $bookingRevenue + $allPurchaseRevenue;
+        $totalRevenue = $bookingRevenue + $allPurchaseRevenue + $eventPurchaseRevenue;
 
         Log::info('Total revenue calculated', [
             'booking_revenue' => $bookingRevenue,
             'purchase_revenue' => $allPurchaseRevenue,
+            'event_purchase_revenue' => $eventPurchaseRevenue,
             'total_revenue' => $totalRevenue,
         ]);
 
@@ -206,11 +219,69 @@ class MetricsController extends Controller
                         $q->whereDate('created_at', '<=', $dateTo);
                     }
                 }
+            })->orWhereHas('eventPurchases', function ($q) use ($locationId, $dateFrom, $dateTo, $useDateTime) {
+                if ($locationId) {
+                    $q->where('location_id', $locationId);
+                }
+                if ($dateFrom) {
+                    if ($useDateTime) {
+                        $q->where('created_at', '>=', $dateFrom);
+                    } else {
+                        $q->whereDate('created_at', '>=', $dateFrom);
+                    }
+                }
+                if ($dateTo) {
+                    if ($useDateTime) {
+                        $q->where('created_at', '<=', $dateTo);
+                    } else {
+                        $q->whereDate('created_at', '<=', $dateTo);
+                    }
+                }
             });
         }
         $totalCustomers = $customerQuery->count();
 
         Log::info('Customer count calculated', ['total_customers' => $totalCustomers]);
+
+        // Get recent event purchases (last 5)
+        $recentEventPurchasesQuery = EventPurchase::with(['customer', 'event']);
+        if ($locationId) {
+            $recentEventPurchasesQuery->where('location_id', $locationId);
+        }
+        if ($dateFrom) {
+            if ($useDateTime) {
+                $recentEventPurchasesQuery->where('created_at', '>=', $dateFrom);
+            } else {
+                $recentEventPurchasesQuery->whereDate('created_at', '>=', $dateFrom);
+            }
+        }
+        if ($dateTo) {
+            if ($useDateTime) {
+                $recentEventPurchasesQuery->where('created_at', '<=', $dateTo);
+            } else {
+                $recentEventPurchasesQuery->whereDate('created_at', '<=', $dateTo);
+            }
+        }
+
+        $recentEventPurchases = $recentEventPurchasesQuery
+            ->orderBy('created_at', 'desc')
+            ->limit(5)
+            ->get()
+            ->map(function ($purchase) {
+                return [
+                    'id' => $purchase->id,
+                    'customer_name' => $purchase->customer
+                        ? $purchase->customer->first_name . ' ' . $purchase->customer->last_name
+                        : $purchase->guest_name,
+                    'event_name' => $purchase->event->name ?? null,
+                    'quantity' => $purchase->quantity,
+                    'total_amount' => $purchase->total_amount,
+                    'amount_paid' => $purchase->amount_paid,
+                    'status' => $purchase->status,
+                    'purchase_date' => $purchase->purchase_date,
+                    'created_at' => $purchase->created_at->toIso8601String(),
+                ];
+            });
 
         // Get recent purchases (last 5-10)
         $recentPurchasesQuery = AttractionPurchase::with(['customer', 'attraction.location', 'createdBy']);
@@ -284,8 +355,12 @@ class MetricsController extends Controller
                 'purchaseRevenue' => round($allPurchaseRevenue, 2),
                 'purchaseRevenueCompleted' => round($purchaseRevenue, 2),
                 'totalPurchases' => $totalPurchases,
+                'eventPurchaseRevenue' => round($eventPurchaseRevenue, 2),
+                'totalEventPurchases' => $totalEventPurchases,
+                'totalEventTickets' => (int) $totalEventTickets,
             ],
             'recentPurchases' => $recentPurchases,
+            'recentEventPurchases' => $recentEventPurchases,
         ];
 
         // Add location stats for company_admin
@@ -413,6 +488,7 @@ class MetricsController extends Controller
         // Build booking query
         $bookingQuery = Booking::query();
         $purchaseQuery = AttractionPurchase::query();
+        $eventPurchaseQuery = EventPurchase::query();
 
         // Apply location filter
         if ($locationId) {
@@ -420,6 +496,7 @@ class MetricsController extends Controller
             $purchaseQuery->whereHas('attraction', function ($q) use ($locationId) {
                 $q->where('location_id', $locationId);
             });
+            $eventPurchaseQuery->where('location_id', $locationId);
             Log::info('Applied location filter', ['location_id' => $locationId]);
         }
 
@@ -428,9 +505,11 @@ class MetricsController extends Controller
             if ($useDateTime) {
                 $bookingQuery->where('created_at', '>=', $dateFrom);
                 $purchaseQuery->where('created_at', '>=', $dateFrom);
+                $eventPurchaseQuery->where('created_at', '>=', $dateFrom);
             } else {
                 $bookingQuery->whereDate('created_at', '>=', $dateFrom);
                 $purchaseQuery->whereDate('created_at', '>=', $dateFrom);
+                $eventPurchaseQuery->whereDate('created_at', '>=', $dateFrom);
             }
         }
 
@@ -438,9 +517,11 @@ class MetricsController extends Controller
             if ($useDateTime) {
                 $bookingQuery->where('created_at', '<=', $dateTo);
                 $purchaseQuery->where('created_at', '<=', $dateTo);
+                $eventPurchaseQuery->where('created_at', '<=', $dateTo);
             } else {
                 $bookingQuery->whereDate('created_at', '<=', $dateTo);
                 $purchaseQuery->whereDate('created_at', '<=', $dateTo);
+                $eventPurchaseQuery->whereDate('created_at', '<=', $dateTo);
             }
         }
 
@@ -467,13 +548,20 @@ class MetricsController extends Controller
         // All non-cancelled purchases revenue
         $allPurchaseRevenue = (clone $purchaseQuery)->whereNotIn('status', ['cancelled'])->sum('amount_paid') ?? 0;
 
+        // Calculate event purchase metrics
+        $totalEventPurchases = (clone $eventPurchaseQuery)->count();
+        $eventPurchaseRevenue = (clone $eventPurchaseQuery)->whereNotIn('status', ['cancelled', 'refunded'])->sum('amount_paid') ?? 0;
+        $totalEventTickets = (clone $eventPurchaseQuery)->whereNotIn('status', ['cancelled', 'refunded'])->sum('quantity') ?? 0;
+
         // Calculate total revenue (using all non-cancelled purchases)
-        $totalRevenue = $bookingRevenue + $allPurchaseRevenue;
+        $totalRevenue = $bookingRevenue + $allPurchaseRevenue + $eventPurchaseRevenue;
 
         Log::info('Attendant purchase metrics calculated', [
             'total_purchases' => $totalPurchases,
             'completed_revenue' => $purchaseRevenue,
             'all_non_cancelled_revenue' => $allPurchaseRevenue,
+            'event_purchase_revenue' => $eventPurchaseRevenue,
+            'total_event_purchases' => $totalEventPurchases,
             'total_revenue' => $totalRevenue,
             'status_breakdown' => $allPurchaseStatuses->toArray(),
         ]);
@@ -519,6 +607,24 @@ class MetricsController extends Controller
                         $q->whereDate('created_at', '<=', $dateTo);
                     }
                 }
+            })->orWhereHas('eventPurchases', function ($q) use ($locationId, $dateFrom, $dateTo, $useDateTime) {
+                if ($locationId) {
+                    $q->where('location_id', $locationId);
+                }
+                if ($dateFrom) {
+                    if ($useDateTime) {
+                        $q->where('created_at', '>=', $dateFrom);
+                    } else {
+                        $q->whereDate('created_at', '>=', $dateFrom);
+                    }
+                }
+                if ($dateTo) {
+                    if ($useDateTime) {
+                        $q->where('created_at', '<=', $dateTo);
+                    } else {
+                        $q->whereDate('created_at', '<=', $dateTo);
+                    }
+                }
             });
         }
         $totalCustomers = $customerQuery->count();
@@ -526,9 +632,53 @@ class MetricsController extends Controller
         Log::info('Attendant metrics calculated', [
             'bookings' => $totalBookings,
             'purchases' => $totalPurchases,
+            'event_purchases' => $totalEventPurchases,
             'revenue' => $totalRevenue,
             'customers' => $totalCustomers,
         ]);
+
+        // Get recent event purchases (last 5)
+        $recentEventPurchasesQuery = EventPurchase::with(['customer', 'event']);
+        if ($locationId) {
+            $recentEventPurchasesQuery->where('location_id', $locationId);
+        }
+        if ($dateFrom) {
+            if ($useDateTime) {
+                $recentEventPurchasesQuery->where('created_at', '>=', $dateFrom);
+            } else {
+                $recentEventPurchasesQuery->whereDate('created_at', '>=', $dateFrom);
+            }
+        }
+        if ($dateTo) {
+            if ($useDateTime) {
+                $recentEventPurchasesQuery->where('created_at', '<=', $dateTo);
+            } else {
+                $recentEventPurchasesQuery->whereDate('created_at', '<=', $dateTo);
+            }
+        }
+
+        $recentEventPurchases = $recentEventPurchasesQuery
+            ->orderBy('created_at', 'desc')
+            ->limit(5)
+            ->get()
+            ->map(function ($purchase) {
+                return [
+                    'id' => $purchase->id,
+                    'customer_name' => $purchase->customer
+                        ? $purchase->customer->first_name . ' ' . $purchase->customer->last_name
+                        : $purchase->guest_name,
+                    'customer_email' => $purchase->customer
+                        ? $purchase->customer->email
+                        : $purchase->guest_email,
+                    'event_name' => $purchase->event->name ?? null,
+                    'quantity' => $purchase->quantity,
+                    'total_amount' => $purchase->total_amount,
+                    'amount_paid' => $purchase->amount_paid,
+                    'status' => $purchase->status,
+                    'purchase_date' => $purchase->purchase_date,
+                    'created_at' => $purchase->created_at->toIso8601String(),
+                ];
+            });
 
         // Get recent purchases (last 5)
         $recentPurchasesQuery = AttractionPurchase::with(['customer', 'attraction.location', 'createdBy']);
@@ -627,6 +777,7 @@ class MetricsController extends Controller
         Log::info('Recent transactions fetched', [
             'purchases_count' => $recentPurchases->count(),
             'bookings_count' => $recentBookings->count(),
+            'event_purchases_count' => $recentEventPurchases->count(),
         ]);
 
         $response = [
@@ -656,8 +807,12 @@ class MetricsController extends Controller
                 'purchaseRevenue' => round($allPurchaseRevenue, 2),
                 'purchaseRevenueCompleted' => round($purchaseRevenue, 2),
                 'totalPurchases' => $totalPurchases,
+                'eventPurchaseRevenue' => round($eventPurchaseRevenue, 2),
+                'totalEventPurchases' => $totalEventPurchases,
+                'totalEventTickets' => (int) $totalEventTickets,
             ],
             'recentPurchases' => $recentPurchases,
+            'recentEventPurchases' => $recentEventPurchases,
             'recentBookings' => $recentBookings,
         ];
 
@@ -764,6 +919,23 @@ class MetricsController extends Controller
                 ->whereIn('status', ['completed', 'pending'])
                 ->sum('amount_paid') ?? 0;
 
+            // Event purchase stats for this location
+            $locationEventPurchaseQuery = EventPurchase::where('location_id', $location->id);
+            if ($dateFrom) {
+                $locationEventPurchaseQuery->whereDate('created_at', '>=', is_string($dateFrom) ? $dateFrom : $dateFrom->toDateString());
+            }
+            if ($dateTo) {
+                $locationEventPurchaseQuery->whereDate('created_at', '<=', is_string($dateTo) ? $dateTo : $dateTo->toDateString());
+            }
+
+            $locationEventPurchases = (clone $locationEventPurchaseQuery)->count();
+            $locationEventPurchaseRevenue = (clone $locationEventPurchaseQuery)
+                ->whereNotIn('status', ['cancelled', 'refunded'])
+                ->sum('amount_paid') ?? 0;
+            $locationEventTickets = (clone $locationEventPurchaseQuery)
+                ->whereNotIn('status', ['cancelled', 'refunded'])
+                ->sum('quantity') ?? 0;
+
             // Calculate utilization (simplified: based on bookings vs capacity)
             $daysInRange = 1;
             if ($dateFrom && $dateTo) {
@@ -781,9 +953,14 @@ class MetricsController extends Controller
                 'name' => $location->name,
                 'bookings' => $locationBookings,
                 'purchases' => $locationPurchases,
-                'revenue' => round($locationBookingRevenue + $locationPurchaseRevenue, 2),
+                'eventPurchases' => $locationEventPurchases,
+                'eventTickets' => (int) $locationEventTickets,
+                'revenue' => round($locationBookingRevenue + $locationPurchaseRevenue + $locationEventPurchaseRevenue, 2),
                 'participants' => $locationParticipants,
                 'utilization' => $utilization,
+                'bookingRevenue' => round($locationBookingRevenue, 2),
+                'purchaseRevenue' => round($locationPurchaseRevenue, 2),
+                'eventPurchaseRevenue' => round($locationEventPurchaseRevenue, 2),
             ];
 
             Log::info("Location stats for {$location->name}", [

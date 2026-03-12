@@ -57,6 +57,11 @@ class Customer extends Model
         return $this->hasMany(AttractionPurchase::class);
     }
 
+    public function eventPurchases(): HasMany
+    {
+        return $this->hasMany(EventPurchase::class);
+    }
+
     public function giftCards(): BelongsToMany
     {
         return $this->belongsToMany(GiftCard::class, 'customer_gift_cards');
