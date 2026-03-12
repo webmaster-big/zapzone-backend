@@ -103,24 +103,25 @@ class AttractionController extends Controller
         $search = $request->get('search', null);
         $date = $request->get('date') ? Carbon::parse($request->get('date')) : Carbon::today();
 
+        // Exclude 'image' from SELECT to avoid MySQL sort buffer overflow on large columns
+        $query = Attraction::with(['location', 'packages', 'addOns'])
+            ->select(['id', 'name', 'description', 'price', 'pricing_type', 'category', 'max_capacity', 'display_capacity_to_customers', 'duration', 'duration_unit', 'rating', 'min_age', 'availability', 'display_order', 'location_id', 'is_active'])
+            ->where('is_active', true);
+
         if ($search) {
-            $attractions = Attraction::with(['location', 'packages', 'addOns'])
-                ->where('is_active', true)
-                ->where(function ($query) use ($search) {
-                    $query->where('name', 'like', "%{$search}%")
-                          ->orWhere('description', 'like', "%{$search}%");
-                })
-                ->orderBy('display_order', 'asc')
-                ->orderBy('name')
-                ->get();
-        } else {
-            // Get all active attractions with their locations
-            $attractions = Attraction::with(['location', 'packages', 'addOns'])
-                ->where('is_active', true)
-                ->orderBy('display_order', 'asc')
-                ->orderBy('name')
-                ->get();
+            $query->where(function ($q) use ($search) {
+                $q->where('name', 'like', "%{$search}%")
+                  ->orWhere('description', 'like', "%{$search}%");
+            });
         }
+
+        $attractions = $query->orderBy('display_order', 'asc')
+            ->orderBy('name')
+            ->get();
+
+        // Fetch images separately (no ORDER BY = no sort buffer issue)
+        $attractionImages = Attraction::whereIn('id', $attractions->pluck('id'))
+            ->pluck('image', 'id');
 
         // Group attractions by name
         $groupedAttractions = [];
@@ -149,7 +150,7 @@ class AttractionController extends Controller
                     'display_capacity_to_customers' => $attraction->display_capacity_to_customers,
                     'duration' => $attraction->duration,
                     'duration_unit' => $attraction->duration_unit,
-                    'image' => $attraction->image,
+                    'image' => $attractionImages[$attraction->id] ?? null,
                     'rating' => $attraction->rating,
                     'min_age' => $attraction->min_age,
                     'availability' => $attraction->availability,

@@ -109,12 +109,12 @@ class PackageController extends Controller
         $search = $request->get('search', null);
         $date = $request->get('date') ? Carbon::parse($request->get('date')) : Carbon::today();
 
-        // Use chunk to reduce memory usage and avoid MySQL sort buffer errors
         $groupedPackages = [];
 
         // SoftDeletes trait automatically excludes deleted packages
+        // Exclude 'image' from SELECT to avoid MySQL sort buffer overflow on large columns
         $query = Package::with(['location', 'availabilitySchedules'])
-            ->select(['id', 'name', 'description', 'price', 'category', 'min_participants', 'max_participants', 'duration', 'image', 'location_id', 'is_active', 'display_order', 'package_type', 'duration_unit', 'price_per_additional'])
+            ->select(['id', 'name', 'description', 'price', 'category', 'min_participants', 'max_participants', 'duration', 'location_id', 'is_active', 'display_order', 'package_type', 'duration_unit', 'price_per_additional'])
             ->where('is_active', true);
 
         if ($search) {
@@ -124,67 +124,70 @@ class PackageController extends Controller
             });
         }
 
-        // Process in chunks to avoid memory issues
-        $query->orderBy('display_order', 'asc')->orderBy('id')->chunk(100, function ($packages) use (&$groupedPackages, $date) {
-            foreach ($packages as $package) {
-                $packageName = $package->name;
+        $packages = $query->orderBy('display_order', 'asc')->orderBy('id')->get();
 
-                // Get special pricing for this package on the requested date
-                $priceBreakdown = SpecialPricing::getFullPriceBreakdown(
-                    'package',
-                    $package->id,
-                    (float) $package->price,
-                    $date,
-                    $package->location_id
-                );
+        // Fetch images separately (no ORDER BY = no sort buffer issue)
+        $packageImages = Package::whereIn('id', $packages->pluck('id'))
+            ->pluck('image', 'id');
 
-                if (!isset($groupedPackages[$packageName])) {
-                    // Initialize the group with the first package's data
-                    $groupedPackages[$packageName] = [
-                        'name' => $package->name,
-                        'description' => $package->description,
-                        'price' => $package->price,
-                        'category' => $package->category,
-                        'max_guests' => $package->max_participants,
-                        'duration' => $package->duration,
-                        'duration_unit' => $package->duration_unit,
-                        'image' => $package->image,
-                        'locations' => [],
-                        'booking_links' => [],
-                        'package_type' => $package->package_type,
-                        'min_participants' => $package->min_participants,
-                        'price_per_additional' => $package->price_per_additional,
-                        'availability_schedules' => $package->availabilitySchedules,
-                        'display_order' => $package->display_order,
-                        'special_pricing' => $priceBreakdown,
-                    ];
-                }
+        foreach ($packages as $package) {
+            $packageName = $package->name;
 
-                // Add this location's information
-                $locationSlug = str_replace(' ', '', $package->location->name);
+            // Get special pricing for this package on the requested date
+            $priceBreakdown = SpecialPricing::getFullPriceBreakdown(
+                'package',
+                $package->id,
+                (float) $package->price,
+                $date,
+                $package->location_id
+            );
 
-                $groupedPackages[$packageName]['locations'][] = [
-                    'location_id' => $package->location->id,
-                    'location_name' => $package->location->name,
-                    'location_slug' => $locationSlug,
-                    'package_id' => $package->id,
-                    'address' => $package->location->address,
-                    'city' => $package->location->city,
-                    'state' => $package->location->state,
-                    'phone' => $package->location->phone,
+            if (!isset($groupedPackages[$packageName])) {
+                // Initialize the group with the first package's data
+                $groupedPackages[$packageName] = [
+                    'name' => $package->name,
+                    'description' => $package->description,
+                    'price' => $package->price,
+                    'category' => $package->category,
+                    'max_guests' => $package->max_participants,
+                    'duration' => $package->duration,
+                    'duration_unit' => $package->duration_unit,
+                    'image' => $packageImages[$package->id] ?? null,
+                    'locations' => [],
+                    'booking_links' => [],
+                    'package_type' => $package->package_type,
+                    'min_participants' => $package->min_participants,
+                    'price_per_additional' => $package->price_per_additional,
                     'availability_schedules' => $package->availabilitySchedules,
+                    'display_order' => $package->display_order,
                     'special_pricing' => $priceBreakdown,
                 ];
-
-                // Create booking link for this location
-                $groupedPackages[$packageName]['booking_links'][] = [
-                    'location' => $package->location->name,
-                    'url' => "/book/package/{$locationSlug}/{$package->id}",
-                    'package_id' => $package->id,
-                    'location_id' => $package->location->id,
-                ];
             }
-        });
+
+            // Add this location's information
+            $locationSlug = str_replace(' ', '', $package->location->name);
+
+            $groupedPackages[$packageName]['locations'][] = [
+                'location_id' => $package->location->id,
+                'location_name' => $package->location->name,
+                'location_slug' => $locationSlug,
+                'package_id' => $package->id,
+                'address' => $package->location->address,
+                'city' => $package->location->city,
+                'state' => $package->location->state,
+                'phone' => $package->location->phone,
+                'availability_schedules' => $package->availabilitySchedules,
+                'special_pricing' => $priceBreakdown,
+            ];
+
+            // Create booking link for this location
+            $groupedPackages[$packageName]['booking_links'][] = [
+                'location' => $package->location->name,
+                'url' => "/book/package/{$locationSlug}/{$package->id}",
+                'package_id' => $package->id,
+                'location_id' => $package->location->id,
+            ];
+        }
 
         // Convert to indexed array
         $result = array_values($groupedPackages);
