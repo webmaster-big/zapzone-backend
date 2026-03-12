@@ -393,12 +393,41 @@ class EventPurchaseController extends Controller
      */
     public function destroy(EventPurchase $eventPurchase): JsonResponse
     {
-        try {
-            $eventPurchase->delete();
-            return response()->json(['message' => 'Event purchase deleted successfully']);
-        } catch (\Exception $e) {
-            return response()->json(['message' => 'Failed to delete event purchase', 'error' => $e->getMessage()], 500);
-        }
+        $eventName = $eventPurchase->event->name ?? 'Unknown';
+        $purchaseId = $eventPurchase->id;
+        $locationId = $eventPurchase->event->location_id ?? null;
+
+        $eventPurchase->delete();
+
+        // Log event purchase deletion activity
+        $currentUser = auth()->user();
+        ActivityLog::log(
+            action: 'Event Purchase Deleted',
+            category: 'delete',
+            description: "Event purchase deleted: {$eventName}" . ($currentUser ? " by {$currentUser->first_name} {$currentUser->last_name}" : ''),
+            userId: auth()->id(),
+            locationId: $locationId,
+            entityType: 'event_purchase',
+            entityId: $purchaseId,
+            metadata: [
+                'deleted_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+                'deleted_at' => now()->toIso8601String(),
+                'purchase_details' => [
+                    'purchase_id' => $purchaseId,
+                    'event_name' => $eventName,
+                    'location_id' => $locationId,
+                ],
+            ]
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Event purchase deleted successfully',
+        ]);
     }
 
     /**

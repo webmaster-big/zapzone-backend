@@ -197,6 +197,7 @@ Route::get('events/{event}/available-dates', [EventController::class, 'getAvaila
 Route::get('events/{event}/available-time-slots/{date}', [EventController::class, 'getAvailableTimeSlots']);
 Route::post('event-purchases', [EventPurchaseController::class, 'store']);
 Route::get('event-purchases/customer', [EventPurchaseController::class, 'customerPurchases']);
+Route::delete('event-purchases/{eventPurchase}', [EventPurchaseController::class, 'destroy']);
 
 // Public Day Off
 Route::get('day-offs/location/{locationId}', [DayOffController::class, 'getByLocation']);
