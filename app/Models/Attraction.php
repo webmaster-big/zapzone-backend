@@ -30,6 +30,7 @@ class Attraction extends Model
         'min_age',
         'is_active',
         'add_ons_order',
+        'display_order',
     ];
 
     protected $casts = [
@@ -41,6 +42,7 @@ class Attraction extends Model
         'is_active' => 'boolean',
         'display_capacity_to_customers' => 'boolean',
         'add_ons_order' => 'array',
+        'display_order' => 'integer',
     ];
 
     // Relationships

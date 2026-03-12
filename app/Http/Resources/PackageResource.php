@@ -31,6 +31,7 @@ class PackageResource extends JsonResource
             'price_per_additional_1hr' => $this->price_per_additional_1hr,
             'image' => $this->image,
             'is_active' => $this->is_active,
+            'display_order' => $this->display_order,
             'has_guest_of_honor' => $this->has_guest_of_honor,
             'add_ons_order' => $this->add_ons_order,
             'customer_notes' => $this->customer_notes,

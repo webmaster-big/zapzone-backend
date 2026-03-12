@@ -59,6 +59,7 @@ class StorePackageRequest extends FormRequest
             'room_ids.*' => 'exists:rooms,id',
             'partial_payment_percentage' => 'nullable|integer|min:0|max:100',
             'partial_payment_fixed' => 'nullable|numeric|min:0|regex:/^\d+(\.\d{1,2})?$/',
+            'display_order' => 'nullable|integer|min:0',
         ];
     }
 

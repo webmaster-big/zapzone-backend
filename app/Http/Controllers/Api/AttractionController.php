@@ -6,11 +6,13 @@ use App\Http\Controllers\Controller;
 use App\Models\ActivityLog;
 use App\Models\Attraction;
 use App\Models\AttractionAddOn;
+use App\Models\SpecialPricing;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Validation\Rule;
 use Illuminate\Support\Facades\Log;
+use Carbon\Carbon;
 // please fix can't store images of the file
 class AttractionController extends Controller
 {
@@ -68,7 +70,7 @@ class AttractionController extends Controller
         $sortBy = $request->get('sort_by', 'name');
         $sortOrder = $request->get('sort_order', 'asc');
 
-        if (in_array($sortBy, ['name', 'price', 'rating', 'category', 'created_at'])) {
+        if (in_array($sortBy, ['name', 'price', 'rating', 'category', 'created_at', 'display_order'])) {
             $query->orderBy($sortBy, $sortOrder);
         }
 
@@ -99,6 +101,7 @@ class AttractionController extends Controller
     {
         // search query
         $search = $request->get('search', null);
+        $date = $request->get('date') ? Carbon::parse($request->get('date')) : Carbon::today();
 
         if ($search) {
             $attractions = Attraction::with(['location', 'packages', 'addOns'])
@@ -107,12 +110,14 @@ class AttractionController extends Controller
                     $query->where('name', 'like', "%{$search}%")
                           ->orWhere('description', 'like', "%{$search}%");
                 })
+                ->orderBy('display_order', 'asc')
                 ->orderBy('name')
                 ->get();
         } else {
             // Get all active attractions with their locations
             $attractions = Attraction::with(['location', 'packages', 'addOns'])
                 ->where('is_active', true)
+                ->orderBy('display_order', 'asc')
                 ->orderBy('name')
                 ->get();
         }
@@ -122,6 +127,15 @@ class AttractionController extends Controller
 
         foreach ($attractions as $attraction) {
             $attractionName = $attraction->name;
+
+            // Get special pricing for this attraction on the requested date
+            $priceBreakdown = SpecialPricing::getFullPriceBreakdown(
+                'attraction',
+                $attraction->id,
+                (float) $attraction->price,
+                $date,
+                $attraction->location_id
+            );
 
             if (!isset($groupedAttractions[$attractionName])) {
                 // Initialize the group with the first attraction's data
@@ -139,6 +153,8 @@ class AttractionController extends Controller
                     'rating' => $attraction->rating,
                     'min_age' => $attraction->min_age,
                     'availability' => $attraction->availability,
+                    'display_order' => $attraction->display_order,
+                    'special_pricing' => $priceBreakdown,
                     'locations' => [],
                     'purchase_links' => [],
                 ];
@@ -156,6 +172,7 @@ class AttractionController extends Controller
                 'city' => $attraction->location->city,
                 'state' => $attraction->location->state,
                 'phone' => $attraction->location->phone,
+                'special_pricing' => $priceBreakdown,
             ];
 
             // Create purchase link for this location
@@ -209,6 +226,7 @@ class AttractionController extends Controller
             'addon_ids' => 'nullable|array',
             'addon_ids.*' => 'exists:add_ons,id',
             'add_ons_order' => 'nullable|array',
+            'display_order' => 'nullable|integer|min:0',
         ]);
 
         $validated['pricing_type'] = $validated['pricing_type'] ?? 'per_person';
@@ -314,6 +332,7 @@ class AttractionController extends Controller
             'addon_ids' => 'sometimes|array',
             'addon_ids.*' => 'exists:add_ons,id',
             'add_ons_order' => 'nullable|array',
+            'display_order' => 'nullable|integer|min:0',
         ]);
 
         $validated['pricing_type'] = $validated['pricing_type'] ?? 'per_person';
@@ -452,6 +471,7 @@ class AttractionController extends Controller
         $attractions = Attraction::with(['packages', 'addOns'])
             ->byLocation($locationId)
             ->active()
+            ->orderBy('display_order', 'asc')
             ->orderBy('name')
             ->get();
 
@@ -469,6 +489,7 @@ class AttractionController extends Controller
         $attractions = Attraction::with(['location', 'packages', 'addOns'])
             ->byCategory($category)
             ->active()
+            ->orderBy('display_order', 'asc')
             ->orderBy('name')
             ->get();
 
@@ -837,6 +858,29 @@ class AttractionController extends Controller
             'success' => true,
             'message' => "{$deletedCount} attractions deleted successfully",
             'data' => ['deleted_count' => $deletedCount],
+        ]);
+    }
+
+    /**
+     * Reorder attractions (for drag-and-drop).
+     * Accepts an array of { id, display_order } objects.
+     */
+    public function reorder(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'items' => 'required|array|min:1',
+            'items.*.id' => 'required|integer|exists:attractions,id',
+            'items.*.display_order' => 'required|integer|min:0',
+        ]);
+
+        foreach ($validated['items'] as $item) {
+            Attraction::where('id', $item['id'])
+                ->update(['display_order' => $item['display_order']]);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Attractions reordered successfully',
         ]);
     }
 }

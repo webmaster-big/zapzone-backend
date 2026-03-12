@@ -280,6 +280,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('packages/bulk-import', [PackageController::class, 'bulkImport']);
     Route::get('packages/category/{category}', [PackageController::class, 'getByCategory']);
     Route::patch('packages/{package}/toggle-status', [PackageController::class, 'toggleIsActiveStatus']);
+    Route::post('packages/reorder', [PackageController::class, 'reorder']);
     Route::post('packages/{package}/attractions/attach', [PackageController::class, 'attachAttractions']);
     Route::post('packages/{package}/attractions/detach', [PackageController::class, 'detachAttractions']);
     Route::post('packages/{package}/addons/attach', [PackageController::class, 'attachAddOns']);
@@ -300,6 +301,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('attractions/{attraction}/deactivate', [AttractionController::class, 'deactivate']);
     Route::get('attractions/{attraction}/statistics', [AttractionController::class, 'statistics']);
     Route::post('attractions/bulk-delete', [AttractionController::class, 'bulkDelete']);
+    Route::post('attractions/reorder', [AttractionController::class, 'reorder']);
 
     // Attraction Purchase routes - static GET routes MUST be before apiResource
     Route::get('attraction-purchases/trashed', [AttractionPurchaseController::class, 'trashed']);

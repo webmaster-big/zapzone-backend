@@ -15,7 +15,9 @@ use App\Models\PackageAttraction;
 use App\Models\PackageGiftCard;
 use App\Models\PackagePromo;
 use App\Models\PackageRoom;
+use App\Models\SpecialPricing;
 use App\Models\User;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 
@@ -68,7 +70,7 @@ class PackageController extends Controller
         $sortBy = $request->get('sort_by', 'id');
         $sortOrder = $request->get('sort_order', 'desc');
 
-        if (in_array($sortBy, ['id', 'name', 'price', 'created_at', 'category'])) {
+        if (in_array($sortBy, ['id', 'name', 'price', 'created_at', 'category', 'display_order'])) {
             $query->orderBy($sortBy, $sortOrder);
         } else {
             $query->orderBy('id', 'desc');
@@ -105,13 +107,14 @@ class PackageController extends Controller
     {
         // search
         $search = $request->get('search', null);
+        $date = $request->get('date') ? Carbon::parse($request->get('date')) : Carbon::today();
 
         // Use chunk to reduce memory usage and avoid MySQL sort buffer errors
         $groupedPackages = [];
 
         // SoftDeletes trait automatically excludes deleted packages
         $query = Package::with(['location', 'availabilitySchedules'])
-            ->select(['id', 'name', 'description', 'price', 'category', 'min_participants', 'max_participants', 'duration', 'image', 'location_id', 'is_active', 'package_type', 'duration_unit', 'price_per_additional'])
+            ->select(['id', 'name', 'description', 'price', 'category', 'min_participants', 'max_participants', 'duration', 'image', 'location_id', 'is_active', 'display_order', 'package_type', 'duration_unit', 'price_per_additional'])
             ->where('is_active', true);
 
         if ($search) {
@@ -122,9 +125,18 @@ class PackageController extends Controller
         }
 
         // Process in chunks to avoid memory issues
-        $query->orderBy('id')->chunk(100, function ($packages) use (&$groupedPackages) {
+        $query->orderBy('display_order', 'asc')->orderBy('id')->chunk(100, function ($packages) use (&$groupedPackages, $date) {
             foreach ($packages as $package) {
                 $packageName = $package->name;
+
+                // Get special pricing for this package on the requested date
+                $priceBreakdown = SpecialPricing::getFullPriceBreakdown(
+                    'package',
+                    $package->id,
+                    (float) $package->price,
+                    $date,
+                    $package->location_id
+                );
 
                 if (!isset($groupedPackages[$packageName])) {
                     // Initialize the group with the first package's data
@@ -143,6 +155,8 @@ class PackageController extends Controller
                         'min_participants' => $package->min_participants,
                         'price_per_additional' => $package->price_per_additional,
                         'availability_schedules' => $package->availabilitySchedules,
+                        'display_order' => $package->display_order,
+                        'special_pricing' => $priceBreakdown,
                     ];
                 }
 
@@ -159,6 +173,7 @@ class PackageController extends Controller
                     'state' => $package->location->state,
                     'phone' => $package->location->phone,
                     'availability_schedules' => $package->availabilitySchedules,
+                    'special_pricing' => $priceBreakdown,
                 ];
 
                 // Create booking link for this location
@@ -659,6 +674,7 @@ class PackageController extends Controller
         $packages = Package::with(['attractions', 'addOns', 'rooms'])
             ->byLocation($locationId)
             ->active()
+            ->orderBy('display_order', 'asc')
             ->orderBy('name')
             ->get();
 
@@ -1541,6 +1557,29 @@ class PackageController extends Controller
                 'min_booking_notice_hours' => $minBookingNoticeHours,
                 'package_ids' => $packageIds,
             ],
+        ]);
+    }
+
+    /**
+     * Reorder packages (for drag-and-drop).
+     * Accepts an array of { id, display_order } objects.
+     */
+    public function reorder(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'items' => 'required|array|min:1',
+            'items.*.id' => 'required|integer|exists:packages,id',
+            'items.*.display_order' => 'required|integer|min:0',
+        ]);
+
+        foreach ($validated['items'] as $item) {
+            Package::where('id', $item['id'])
+                ->update(['display_order' => $item['display_order']]);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Packages reordered successfully',
         ]);
     }
 }
