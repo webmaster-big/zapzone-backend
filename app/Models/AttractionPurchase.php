@@ -43,6 +43,8 @@ class AttractionPurchase extends Model
         'quantity',
         'total_amount',
         'applied_fees',
+        'discount_amount',
+        'applied_discounts',
         'amount_paid',
         'payment_method',
         'status',
@@ -61,6 +63,8 @@ class AttractionPurchase extends Model
         'scheduled_time' => 'datetime:H:i',
         'total_amount' => 'decimal:2',
         'applied_fees' => 'array',
+        'discount_amount' => 'decimal:2',
+        'applied_discounts' => 'array',
         'amount_paid' => 'decimal:2',
         'checked_in_at' => 'datetime',
     ];
