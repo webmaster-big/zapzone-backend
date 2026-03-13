@@ -517,7 +517,7 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     // Event routes (index + show are public; store, update, destroy, toggle-status require auth)
-    Route::apiResource('events', EventController::class)->except(['index', 'show', 'store']);
+    Route::apiResource('events', EventController::class)->except(['index', 'show']);
     Route::patch('events/{event}/toggle-status', [EventController::class, 'toggleStatus']);
 
     // Event Purchase routes

@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Event;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 
 class EventController extends Controller
 {
@@ -65,6 +66,11 @@ class EventController extends Controller
                 $validated['end_date'] = null;
             }
 
+            // Handle image upload (base64)
+            if (isset($validated['image']) && !empty($validated['image'])) {
+                $validated['image'] = $this->handleImageUpload($validated['image']);
+            }
+
             $addOnIds = $validated['add_on_ids'] ?? [];
             unset($validated['add_on_ids']);
 
@@ -121,6 +127,18 @@ class EventController extends Controller
             $dateType = $validated['date_type'] ?? $event->date_type;
             if ($dateType === 'one_time') {
                 $validated['end_date'] = null;
+            }
+
+            // Handle image upload (base64)
+            if (isset($validated['image']) && !empty($validated['image'])) {
+                // Delete old image if it exists
+                if ($event->image) {
+                    $oldImagePath = storage_path('app/public/' . $event->image);
+                    if (file_exists($oldImagePath)) {
+                        unlink($oldImagePath);
+                    }
+                }
+                $validated['image'] = $this->handleImageUpload($validated['image']);
             }
 
             $addOnIds = $validated['add_on_ids'] ?? null;
@@ -274,5 +292,48 @@ class EventController extends Controller
             ->get();
 
         return response()->json($events);
+    }
+
+    /**
+     * Handle image upload - supports base64 or existing file path.
+     */
+    private function handleImageUpload(string $image): string
+    {
+        if (strpos($image, 'data:image') === 0) {
+            preg_match('/data:image\/(\w+);base64,/', $image, $matches);
+
+            if (empty($matches)) {
+                Log::error('Invalid base64 image format for event');
+                throw new \Exception('Invalid image format');
+            }
+
+            $imageType = $matches[1] ?? 'png';
+            $base64Data = substr($image, strpos($image, ',') + 1);
+            $imageData = base64_decode($base64Data, true);
+
+            if ($imageData === false) {
+                Log::error('Failed to decode base64 event image data');
+                throw new \Exception('Failed to decode image data');
+            }
+
+            $filename = uniqid() . '.' . $imageType;
+            $path = 'images/events';
+            $fullPath = storage_path('app/public/' . $path);
+
+            if (!file_exists($fullPath)) {
+                mkdir($fullPath, 0755, true);
+            }
+
+            $bytesWritten = file_put_contents($fullPath . '/' . $filename, $imageData);
+
+            if ($bytesWritten === false) {
+                Log::error('Failed to write event image file');
+                throw new \Exception('Failed to save image file');
+            }
+
+            return $path . '/' . $filename;
+        }
+
+        return $image;
     }
 }
