@@ -253,7 +253,7 @@ class AccountingAnalyticsController extends Controller
                 'fee_amount' => round($itemTotals['fee_amount'], 2),
                 'discount_amount' => round($itemTotals['discount_amount'], 2),
                 'tax_amount' => round($itemTotals['tax_amount'], 2),
-                'amount_due' => round($itemTotals['amount_due'], 2),
+                'total_billed' => round($itemTotals['total_billed'], 2),
                 'grand_total' => round($itemTotals['grand_total'], 2),
                 'balance_due' => round($itemTotals['balance_due'], 2),
             ];
@@ -347,7 +347,7 @@ class AccountingAnalyticsController extends Controller
                 'fee_amount' => round($itemTotals['fee_amount'], 2),
                 'discount_amount' => round($itemTotals['discount_amount'], 2),
                 'tax_amount' => round($itemTotals['tax_amount'], 2),
-                'amount_due' => round($itemTotals['amount_due'], 2),
+                'total_billed' => round($itemTotals['total_billed'], 2),
                 'grand_total' => round($itemTotals['grand_total'], 2),
                 'balance_due' => round($itemTotals['balance_due'], 2),
             ];
@@ -434,7 +434,7 @@ class AccountingAnalyticsController extends Controller
                 'fee_amount' => round($itemTotals['fee_amount'], 2),
                 'discount_amount' => round($itemTotals['discount_amount'], 2),
                 'tax_amount' => round($itemTotals['tax_amount'], 2),
-                'amount_due' => round($itemTotals['amount_due'], 2),
+                'total_billed' => round($itemTotals['total_billed'], 2),
                 'grand_total' => round($itemTotals['grand_total'], 2),
                 'balance_due' => round($itemTotals['balance_due'], 2),
             ];
@@ -595,7 +595,7 @@ class AccountingAnalyticsController extends Controller
                 'fee_amount' => 0,
                 'discount_amount' => 0,
                 'tax_amount' => 0,
-                'amount_due' => round($addOnData['gross_sales'], 2),
+                'total_billed' => round($addOnData['gross_sales'], 2),
                 'grand_total' => round($addOnData['gross_sales'], 2),
                 'balance_due' => 0,
             ];
@@ -617,7 +617,7 @@ class AccountingAnalyticsController extends Controller
                 'fee_amount' => 0,
                 'discount_amount' => 0,
                 'tax_amount' => 0,
-                'amount_due' => round($categoryTotals['gross_sales'], 2),
+                'total_billed' => round($categoryTotals['gross_sales'], 2),
                 'grand_total' => round($categoryTotals['gross_sales'], 2),
                 'balance_due' => 0,
             ],
@@ -638,7 +638,7 @@ class AccountingAnalyticsController extends Controller
             'fee_amount' => 0,
             'discount_amount' => 0,
             'tax_amount' => 0,
-            'amount_due' => 0,
+            'total_billed' => 0,
             'grand_total' => 0,
             'balance_due' => 0,
         ];
@@ -699,7 +699,7 @@ class AccountingAnalyticsController extends Controller
             $totals['fee_amount'] += $feeAmount;
             $totals['discount_amount'] += $discountAmount;
             $totals['tax_amount'] += $taxAmount;
-            $totals['amount_due'] += $totalAmount;
+            $totals['total_billed'] += $totalAmount;
             $totals['grand_total'] += $amountPaid;
             $totals['balance_due'] += ($totalAmount - $amountPaid);
         }
@@ -751,7 +751,7 @@ class AccountingAnalyticsController extends Controller
             $totals['fee_amount'] += $feeAmount;
             $totals['discount_amount'] += $discountAmount;
             $totals['tax_amount'] += $taxAmount;
-            $totals['amount_due'] += $totalAmount;
+            $totals['total_billed'] += $totalAmount;
             $totals['grand_total'] += $amountPaid;
             $totals['balance_due'] += ($totalAmount - $amountPaid);
         }
@@ -807,7 +807,7 @@ class AccountingAnalyticsController extends Controller
         $categoryTotals['fee_amount'] += $itemTotals['fee_amount'];
         $categoryTotals['discount_amount'] += $itemTotals['discount_amount'];
         $categoryTotals['tax_amount'] += $itemTotals['tax_amount'];
-        $categoryTotals['amount_due'] += $itemTotals['amount_due'];
+        $categoryTotals['total_billed'] += $itemTotals['total_billed'];
         $categoryTotals['grand_total'] += $itemTotals['grand_total'];
         $categoryTotals['balance_due'] += $itemTotals['balance_due'];
     }
@@ -827,7 +827,7 @@ class AccountingAnalyticsController extends Controller
             'fee_amount' => round($totals['fee_amount'], 2),
             'discount_amount' => round($totals['discount_amount'], 2),
             'tax_amount' => round($totals['tax_amount'], 2),
-            'amount_due' => round($totals['amount_due'], 2),
+            'total_billed' => round($totals['total_billed'], 2),
             'grand_total' => round($totals['grand_total'], 2),
             'balance_due' => round($totals['balance_due'], 2),
         ];
@@ -851,7 +851,7 @@ class AccountingAnalyticsController extends Controller
             $totals['fee_amount'] += $summary['fee_amount'];
             $totals['discount_amount'] += $summary['discount_amount'];
             $totals['tax_amount'] += $summary['tax_amount'];
-            $totals['amount_due'] += $summary['amount_due'];
+            $totals['total_billed'] += $summary['total_billed'];
             $totals['grand_total'] += $summary['grand_total'];
             $totals['balance_due'] += $summary['balance_due'];
         }
@@ -908,7 +908,7 @@ class AccountingAnalyticsController extends Controller
                 $rangeTotals['fee_amount'] += $summary['fee_amount'];
                 $rangeTotals['discount_amount'] += $summary['discount_amount'];
                 $rangeTotals['tax_amount'] += $summary['tax_amount'];
-                $rangeTotals['amount_due'] += $summary['amount_due'];
+                $rangeTotals['total_billed'] += $summary['total_billed'];
                 $rangeTotals['grand_total'] += $summary['grand_total'];
                 $rangeTotals['balance_due'] += $summary['balance_due'];
             }
@@ -1018,7 +1018,7 @@ class AccountingAnalyticsController extends Controller
             fputcsv($file, ['Net Sales', '$' . number_format($reportData['summary']['net_sales'], 2)]);
             fputcsv($file, ['Fees', '$' . number_format($reportData['summary']['fee_amount'], 2)]);
             fputcsv($file, ['Tax', '$' . number_format($reportData['summary']['tax_amount'], 2)]);
-            fputcsv($file, ['Amount Due', '$' . number_format($reportData['summary']['amount_due'], 2)]);
+            fputcsv($file, ['Amount Due', '$' . number_format($reportData['summary']['total_billed'], 2)]);
             fputcsv($file, ['Amount Collected', '$' . number_format($reportData['summary']['grand_total'], 2)]);
             fputcsv($file, ['Balance Due', '$' . number_format($reportData['summary']['balance_due'], 2)]);
             fputcsv($file, []);
@@ -1038,7 +1038,7 @@ class AccountingAnalyticsController extends Controller
                         '$' . number_format($item['net_sales'], 2),
                         '$' . number_format($item['fee_amount'], 2),
                         '$' . number_format($item['tax_amount'], 2),
-                        '$' . number_format($item['amount_due'], 2),
+                        '$' . number_format($item['total_billed'], 2),
                         '$' . number_format($item['grand_total'], 2),
                         '$' . number_format($item['balance_due'], 2),
                     ]);
@@ -1054,7 +1054,7 @@ class AccountingAnalyticsController extends Controller
                     '$' . number_format($category['summary']['net_sales'], 2),
                     '$' . number_format($category['summary']['fee_amount'], 2),
                     '$' . number_format($category['summary']['tax_amount'], 2),
-                    '$' . number_format($category['summary']['amount_due'], 2),
+                    '$' . number_format($category['summary']['total_billed'], 2),
                     '$' . number_format($category['summary']['grand_total'], 2),
                     '$' . number_format($category['summary']['balance_due'], 2),
                 ]);
