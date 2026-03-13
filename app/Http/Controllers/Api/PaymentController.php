@@ -1622,8 +1622,8 @@ class PaymentController extends Controller
                                 try {
                                     $gcalService = new GoogleCalendarService($payable->location_id);
                                     if ($gcalService->isConnected()) {
-                                        $payable->load(['customer', 'package', 'location', 'room']);
-                                        $gcalService->createEventFromBooking($payable);
+                                        $payable->load(['customer', 'package', 'location', 'room', 'attractions', 'addOns']);
+                                        $gcalService->updateEventFromBooking($payable);
                                     }
                                 } catch (\Exception $e) {
                                     Log::warning('Google Calendar sync failed on charge', ['booking_id' => $payable->id, 'error' => $e->getMessage()]);

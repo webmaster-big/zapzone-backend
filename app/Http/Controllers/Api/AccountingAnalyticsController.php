@@ -42,8 +42,10 @@ class AccountingAnalyticsController extends Controller
     {
         $request->validate([
             'location_id' => 'required|exists:locations,id',
-            'date' => 'required|date',
-            'compare_date' => 'nullable|date',
+            'start_date' => 'required|date',
+            'end_date' => 'nullable|date|after_or_equal:start_date',
+            'compare_start_date' => 'nullable|date',
+            'compare_end_date' => 'nullable|date|after_or_equal:compare_start_date',
             'view_mode' => ['nullable', Rule::in(['booked_on', 'booked_for'])],
             // Note: payment_status only exists on Bookings and EventPurchases, not AttractionPurchases
             'payment_status' => ['nullable', Rule::in(['paid', 'partial', 'pending', 'all'])],
@@ -52,10 +54,16 @@ class AccountingAnalyticsController extends Controller
         ]);
 
         $locationId = $request->location_id;
-        $primaryDate = Carbon::parse($request->date)->startOfDay();
-        $compareDate = $request->filled('compare_date')
-            ? Carbon::parse($request->compare_date)->startOfDay()
+        $startDate = Carbon::parse($request->start_date)->startOfDay();
+        $endDate = $request->filled('end_date')
+            ? Carbon::parse($request->end_date)->startOfDay()
+            : $startDate->copy();
+        $compareStartDate = $request->filled('compare_start_date')
+            ? Carbon::parse($request->compare_start_date)->startOfDay()
             : null;
+        $compareEndDate = $request->filled('compare_end_date')
+            ? Carbon::parse($request->compare_end_date)->startOfDay()
+            : $compareStartDate?->copy();
 
         // Default to 'booked_for' (shows events scheduled for this date)
         $viewMode = $request->get('view_mode', 'booked_for');
@@ -74,13 +82,13 @@ class AccountingAnalyticsController extends Controller
                 'category_filter' => $categoryFilter,
             ];
 
-            // Get primary date data
-            $primaryData = $this->buildReportData($locationId, $primaryDate, $viewMode, $filters);
+            // Get primary date range data
+            $primaryData = $this->buildReportData($locationId, $startDate, $endDate, $viewMode, $filters);
 
             // Get comparison data if requested
             $comparisonData = null;
-            if ($compareDate) {
-                $comparisonData = $this->buildReportData($locationId, $compareDate, $viewMode, $filters);
+            if ($compareStartDate) {
+                $comparisonData = $this->buildReportData($locationId, $compareStartDate, $compareEndDate, $viewMode, $filters);
             }
 
             return response()->json([
@@ -92,8 +100,10 @@ class AccountingAnalyticsController extends Controller
                         'company_name' => $location->company?->name,
                         'timezone' => $location->timezone ?? 'UTC',
                     ],
-                    'primary_date' => $primaryDate->toDateString(),
-                    'compare_date' => $compareDate?->toDateString(),
+                    'start_date' => $startDate->toDateString(),
+                    'end_date' => $endDate->toDateString(),
+                    'compare_start_date' => $compareStartDate?->toDateString(),
+                    'compare_end_date' => $compareEndDate?->toDateString(),
                     'view_mode' => $viewMode,
                     'view_mode_label' => $viewMode === 'booked_on' ? 'Created On' : 'Booked For',
                     'filters_applied' => $filters,
@@ -107,7 +117,8 @@ class AccountingAnalyticsController extends Controller
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
                 'location_id' => $locationId,
-                'date' => $primaryDate->toDateString(),
+                'start_date' => $startDate->toDateString(),
+                'end_date' => $endDate->toDateString(),
             ]);
 
             return response()->json([
@@ -119,20 +130,21 @@ class AccountingAnalyticsController extends Controller
     }
 
     /**
-     * Build comprehensive report data for a specific date.
+     * Build comprehensive report data for a date range.
      *
      * @param int $locationId
-     * @param Carbon $date
+     * @param Carbon $startDate
+     * @param Carbon $endDate
      * @param string $viewMode 'booked_on' or 'booked_for'
      * @param array $filters Additional filter options
      * @return array
      */
-    private function buildReportData(int $locationId, Carbon $date, string $viewMode, array $filters = []): array
+    private function buildReportData(int $locationId, Carbon $startDate, Carbon $endDate, string $viewMode, array $filters = []): array
     {
         // Get categorized data using memory-efficient queries
-        $partiesData = $this->getPartiesData($locationId, $date, $viewMode, $filters);
-        $attractionsData = $this->getAttractionsData($locationId, $date, $viewMode, $filters);
-        $eventsData = $this->getEventsData($locationId, $date, $viewMode, $filters);
+        $partiesData = $this->getPartiesData($locationId, $startDate, $endDate, $viewMode, $filters);
+        $attractionsData = $this->getAttractionsData($locationId, $startDate, $endDate, $viewMode, $filters);
+        $eventsData = $this->getEventsData($locationId, $startDate, $endDate, $viewMode, $filters);
 
         // Build categories array
         $categories = [
@@ -144,7 +156,7 @@ class AccountingAnalyticsController extends Controller
         // Add-ons breakdown is separate (they're already counted in parent totals)
         // This provides visibility into what add-ons were sold
         if ($filters['include_addons_breakdown'] ?? true) {
-            $addOnsData = $this->getAddOnsData($locationId, $date, $viewMode, $filters);
+            $addOnsData = $this->getAddOnsData($locationId, $startDate, $endDate, $viewMode, $filters);
             $categories[] = $addOnsData;
         }
 
@@ -165,12 +177,13 @@ class AccountingAnalyticsController extends Controller
      * Uses memory-efficient chunking for large datasets.
      *
      * @param int $locationId
-     * @param Carbon $date
+     * @param Carbon $startDate
+     * @param Carbon $endDate
      * @param string $viewMode
      * @param array $filters
      * @return array
      */
-    private function getPartiesData(int $locationId, Carbon $date, string $viewMode, array $filters = []): array
+    private function getPartiesData(int $locationId, Carbon $startDate, Carbon $endDate, string $viewMode, array $filters = []): array
     {
         $query = Booking::with(['package:id,name,category'])
             ->where('location_id', $locationId)
@@ -178,9 +191,11 @@ class AccountingAnalyticsController extends Controller
 
         // Apply date filter based on view mode
         if ($viewMode === 'booked_on') {
-            $query->whereDate('created_at', $date->toDateString());
+            $query->whereDate('created_at', '>=', $startDate->toDateString())
+                  ->whereDate('created_at', '<=', $endDate->toDateString());
         } else {
-            $query->whereDate('booking_date', $date->toDateString());
+            $query->whereDate('booking_date', '>=', $startDate->toDateString())
+                  ->whereDate('booking_date', '<=', $endDate->toDateString());
         }
 
         // Apply payment status filter
@@ -261,12 +276,13 @@ class AccountingAnalyticsController extends Controller
      * Get attractions (ticket purchases) data grouped by attraction category.
      *
      * @param int $locationId
-     * @param Carbon $date
+     * @param Carbon $startDate
+     * @param Carbon $endDate
      * @param string $viewMode
      * @param array $filters
      * @return array
      */
-    private function getAttractionsData(int $locationId, Carbon $date, string $viewMode, array $filters = []): array
+    private function getAttractionsData(int $locationId, Carbon $startDate, Carbon $endDate, string $viewMode, array $filters = []): array
     {
         $query = AttractionPurchase::with(['attraction:id,name,category'])
             ->byLocation($locationId)
@@ -274,10 +290,11 @@ class AccountingAnalyticsController extends Controller
 
         // Apply date filter based on view mode
         if ($viewMode === 'booked_on') {
-            $query->whereDate('created_at', $date->toDateString());
+            $query->whereDate('created_at', '>=', $startDate->toDateString())
+                  ->whereDate('created_at', '<=', $endDate->toDateString());
         } else {
             // For booked_for, use scheduled_date if available, otherwise purchase_date
-            $query->whereRaw('DATE(COALESCE(scheduled_date, purchase_date)) = ?', [$date->toDateString()]);
+            $query->whereRaw('DATE(COALESCE(scheduled_date, purchase_date)) BETWEEN ? AND ?', [$startDate->toDateString(), $endDate->toDateString()]);
         }
 
         // Apply category filter if specified
@@ -350,12 +367,13 @@ class AccountingAnalyticsController extends Controller
      * Get events data grouped by event name.
      *
      * @param int $locationId
-     * @param Carbon $date
+     * @param Carbon $startDate
+     * @param Carbon $endDate
      * @param string $viewMode
      * @param array $filters
      * @return array
      */
-    private function getEventsData(int $locationId, Carbon $date, string $viewMode, array $filters = []): array
+    private function getEventsData(int $locationId, Carbon $startDate, Carbon $endDate, string $viewMode, array $filters = []): array
     {
         $query = EventPurchase::with(['event:id,name'])
             ->where('location_id', $locationId)
@@ -363,9 +381,11 @@ class AccountingAnalyticsController extends Controller
 
         // Apply date filter based on view mode
         if ($viewMode === 'booked_on') {
-            $query->whereDate('created_at', $date->toDateString());
+            $query->whereDate('created_at', '>=', $startDate->toDateString())
+                  ->whereDate('created_at', '<=', $endDate->toDateString());
         } else {
-            $query->whereDate('purchase_date', $date->toDateString());
+            $query->whereDate('purchase_date', '>=', $startDate->toDateString())
+                  ->whereDate('purchase_date', '<=', $endDate->toDateString());
         }
 
         // Apply payment status filter (EventPurchase has payment_status field)
@@ -431,12 +451,13 @@ class AccountingAnalyticsController extends Controller
      * This section provides VISIBILITY into add-on sales, not additional revenue counting.
      *
      * @param int $locationId
-     * @param Carbon $date
+     * @param Carbon $startDate
+     * @param Carbon $endDate
      * @param string $viewMode
      * @param array $filters
      * @return array
      */
-    private function getAddOnsData(int $locationId, Carbon $date, string $viewMode, array $filters = []): array
+    private function getAddOnsData(int $locationId, Carbon $startDate, Carbon $endDate, string $viewMode, array $filters = []): array
     {
         $addOnsSummary = [];
 
@@ -447,10 +468,12 @@ class AccountingAnalyticsController extends Controller
             ->where('bookings.location_id', $locationId)
             ->whereNotIn('bookings.status', ['cancelled'])
             ->whereNull('bookings.deleted_at')
-            ->when($viewMode === 'booked_on', function ($q) use ($date) {
-                $q->whereDate('bookings.created_at', $date->toDateString());
-            }, function ($q) use ($date) {
-                $q->whereDate('bookings.booking_date', $date->toDateString());
+            ->when($viewMode === 'booked_on', function ($q) use ($startDate, $endDate) {
+                $q->whereDate('bookings.created_at', '>=', $startDate->toDateString())
+                  ->whereDate('bookings.created_at', '<=', $endDate->toDateString());
+            }, function ($q) use ($startDate, $endDate) {
+                $q->whereDate('bookings.booking_date', '>=', $startDate->toDateString())
+                  ->whereDate('bookings.booking_date', '<=', $endDate->toDateString());
             })
             ->select(
                 'add_ons.id',
@@ -483,11 +506,12 @@ class AccountingAnalyticsController extends Controller
             ->whereNull('attraction_purchases.deleted_at');
 
         if ($viewMode === 'booked_on') {
-            $attractionAddOnsQuery->whereDate('attraction_purchases.created_at', $date->toDateString());
+            $attractionAddOnsQuery->whereDate('attraction_purchases.created_at', '>=', $startDate->toDateString())
+                ->whereDate('attraction_purchases.created_at', '<=', $endDate->toDateString());
         } else {
             $attractionAddOnsQuery->whereRaw(
-                'DATE(COALESCE(attraction_purchases.scheduled_date, attraction_purchases.purchase_date)) = ?',
-                [$date->toDateString()]
+                'DATE(COALESCE(attraction_purchases.scheduled_date, attraction_purchases.purchase_date)) BETWEEN ? AND ?',
+                [$startDate->toDateString(), $endDate->toDateString()]
             );
         }
 
@@ -520,10 +544,12 @@ class AccountingAnalyticsController extends Controller
             ->where('event_purchases.location_id', $locationId)
             ->whereNotIn('event_purchases.status', ['cancelled', 'refunded'])
             ->whereNull('event_purchases.deleted_at')
-            ->when($viewMode === 'booked_on', function ($q) use ($date) {
-                $q->whereDate('event_purchases.created_at', $date->toDateString());
-            }, function ($q) use ($date) {
-                $q->whereDate('event_purchases.purchase_date', $date->toDateString());
+            ->when($viewMode === 'booked_on', function ($q) use ($startDate, $endDate) {
+                $q->whereDate('event_purchases.created_at', '>=', $startDate->toDateString())
+                  ->whereDate('event_purchases.created_at', '<=', $endDate->toDateString());
+            }, function ($q) use ($startDate, $endDate) {
+                $q->whereDate('event_purchases.purchase_date', '>=', $startDate->toDateString())
+                  ->whereDate('event_purchases.purchase_date', '<=', $endDate->toDateString());
             })
             ->select(
                 'add_ons.id',
@@ -837,7 +863,7 @@ class AccountingAnalyticsController extends Controller
             $currentDate = $startDate->copy();
 
             while ($currentDate->lte($endDate)) {
-                $dayReport = $this->buildReportData($locationId, $currentDate, $viewMode);
+                $dayReport = $this->buildReportData($locationId, $currentDate, $currentDate, $viewMode);
 
                 $dailyData[] = [
                     'date' => $currentDate->toDateString(),
@@ -904,25 +930,30 @@ class AccountingAnalyticsController extends Controller
     {
         $request->validate([
             'location_id' => 'required|exists:locations,id',
-            'date' => 'required|date',
+            'start_date' => 'required|date',
+            'end_date' => 'nullable|date|after_or_equal:start_date',
             'view_mode' => ['nullable', Rule::in(['booked_on', 'booked_for'])],
             'format' => ['required', Rule::in(['json', 'csv'])],
         ]);
 
         $locationId = $request->location_id;
-        $date = Carbon::parse($request->date)->startOfDay();
+        $startDate = Carbon::parse($request->start_date)->startOfDay();
+        $endDate = $request->filled('end_date')
+            ? Carbon::parse($request->end_date)->startOfDay()
+            : $startDate->copy();
         $viewMode = $request->get('view_mode', 'booked_for');
         $format = $request->format;
 
         $location = Location::findOrFail($locationId);
-        $reportData = $this->buildReportData($locationId, $date, $viewMode);
+        $reportData = $this->buildReportData($locationId, $startDate, $endDate, $viewMode);
 
         if ($format === 'json') {
             return response()->json([
                 'success' => true,
                 'data' => [
                     'location' => $location->name,
-                    'date' => $date->toDateString(),
+                    'start_date' => $startDate->toDateString(),
+                    'end_date' => $endDate->toDateString(),
                     'view_mode' => $viewMode,
                     'report' => $reportData,
                 ],
@@ -930,20 +961,24 @@ class AccountingAnalyticsController extends Controller
         }
 
         // CSV export
-        $filename = 'accounting_report_' . $location->name . '_' . $date->format('Y-m-d') . '.csv';
+        $dateLabel = $startDate->eq($endDate)
+            ? $startDate->format('Y-m-d')
+            : $startDate->format('Y-m-d') . '_to_' . $endDate->format('Y-m-d');
+        $filename = 'accounting_report_' . $location->name . '_' . $dateLabel . '.csv';
 
         $headers = [
             'Content-Type' => 'text/csv',
             'Content-Disposition' => 'attachment; filename="' . $filename . '"',
         ];
 
-        $callback = function () use ($reportData, $location, $date, $viewMode) {
+        $callback = function () use ($reportData, $location, $startDate, $endDate, $viewMode) {
             $file = fopen('php://output', 'w');
 
             // Header info
             fputcsv($file, ['Accounting Report']);
             fputcsv($file, ['Location:', $location->name]);
-            fputcsv($file, ['Date:', $date->toDateString()]);
+            fputcsv($file, ['Start Date:', $startDate->toDateString()]);
+            fputcsv($file, ['End Date:', $endDate->toDateString()]);
             fputcsv($file, ['View Mode:', $viewMode === 'booked_on' ? 'Created On' : 'Booked For']);
             fputcsv($file, ['Generated:', now()->format('Y-m-d H:i:s')]);
             fputcsv($file, []);

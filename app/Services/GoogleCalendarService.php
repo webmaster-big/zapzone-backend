@@ -253,7 +253,8 @@ class GoogleCalendarService
         $calendarId = $this->settings->calendar_id ?? 'primary';
 
         // Find all bookings that have a synced Google Calendar event for this location
-        $query = Booking::whereNotNull('google_calendar_event_id');
+        // Include soft-deleted bookings so their orphaned calendar events get cleaned up too
+        $query = Booking::withTrashed()->whereNotNull('google_calendar_event_id');
         if ($this->locationId) {
             $query->where('location_id', $this->locationId);
         }
@@ -296,6 +297,7 @@ class GoogleCalendarService
 
     /**
      * Create a Google Calendar event from a booking.
+     * If the booking already has a synced event, update it instead (prevents duplicates).
      */
     public function createEventFromBooking(Booking $booking): ?string
     {
@@ -304,6 +306,15 @@ class GoogleCalendarService
                 'booking_id' => $booking->id,
             ]);
             return null;
+        }
+
+        // Guard: if booking already has a Google Calendar event, update instead of creating a duplicate
+        if ($booking->google_calendar_event_id) {
+            Log::info('Booking already has Google Calendar event, updating instead of creating duplicate', [
+                'booking_id' => $booking->id,
+                'existing_event_id' => $booking->google_calendar_event_id,
+            ]);
+            return $this->updateEventFromBooking($booking);
         }
 
         try {
@@ -734,7 +745,8 @@ class GoogleCalendarService
         $calendarId = $this->settings->calendar_id ?? 'primary';
 
         // Step 1: Find all bookings that have a synced Google Calendar event for this location
-        $query = Booking::whereNotNull('google_calendar_event_id');
+        // Include soft-deleted bookings so their orphaned calendar events get cleaned up too
+        $query = Booking::withTrashed()->whereNotNull('google_calendar_event_id');
         if ($this->locationId) {
             $query->where('location_id', $this->locationId);
         }
