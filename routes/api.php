@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Api\AccountingAnalyticsController;
 use App\Http\Controllers\Api\ActivityLogController;
 use App\Http\Controllers\Api\AddOnController;
 use App\Http\Controllers\Api\AnalyticsController;
@@ -235,6 +236,11 @@ Route::middleware('auth:sanctum')->group(function () {
     // Location Manager Analytics
     Route::get('analytics/location', [AnalyticsController::class, 'getLocationAnalytics']);
     Route::post('analytics/location/export', [AnalyticsController::class, 'exportAnalytics']);
+
+    // Accounting Analytics (detailed sales breakdown for accounting)
+    Route::get('accounting-analytics/report', [AccountingAnalyticsController::class, 'getReport']);
+    Route::get('accounting-analytics/summary-trend', [AccountingAnalyticsController::class, 'getSummaryTrend']);
+    Route::get('accounting-analytics/export', [AccountingAnalyticsController::class, 'exportReport']);
 
     // Company routes
     Route::apiResource('companies', CompanyController::class);
