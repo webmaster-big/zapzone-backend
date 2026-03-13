@@ -744,48 +744,51 @@ class GoogleCalendarService
 
         $calendarId = $this->settings->calendar_id ?? 'primary';
 
-        // Step 1: Find all bookings that have a synced Google Calendar event for this location
-        // Include soft-deleted bookings so their orphaned calendar events get cleaned up too
-        $query = Booking::withTrashed()->whereNotNull('google_calendar_event_id');
-        if ($this->locationId) {
-            $query->where('location_id', $this->locationId);
-        }
-
-        $bookingsWithEvents = $query->get();
-
-        // Delete all existing events from Google Calendar
-        foreach ($bookingsWithEvents as $booking) {
-            try {
-                $this->getCalendarService()->events->delete($calendarId, $booking->google_calendar_event_id);
-                $results['deleted']++;
-            } catch (\Google\Service\Exception $e) {
-                // Event may already be deleted externally (404/410), that's fine
-                if ($e->getCode() !== 404 && $e->getCode() !== 410) {
-                    Log::warning('Failed to delete Google Calendar event during resync', [
-                        'booking_id' => $booking->id,
-                        'event_id' => $booking->google_calendar_event_id,
-                        'error' => $e->getMessage(),
-                    ]);
+        // Step 1a: Delete ALL events directly from Google Calendar via API
+        // This catches orphaned events that no booking points to anymore
+        try {
+            $pageToken = null;
+            do {
+                $params = ['maxResults' => 250];
+                if ($pageToken) {
+                    $params['pageToken'] = $pageToken;
                 }
-            } catch (\Exception $e) {
-                Log::warning('Failed to delete Google Calendar event during resync', [
-                    'booking_id' => $booking->id,
-                    'event_id' => $booking->google_calendar_event_id,
-                    'error' => $e->getMessage(),
-                ]);
-            }
 
-            // Clear the event ID regardless of delete success
-            $booking->update(['google_calendar_event_id' => null]);
+                $eventList = $this->getCalendarService()->events->listEvents($calendarId, $params);
 
-            // Small delay to avoid rate limiting
-            usleep(50000); // 50ms
+                foreach ($eventList->getItems() as $event) {
+                    try {
+                        $this->getCalendarService()->events->delete($calendarId, $event->getId());
+                        $results['deleted']++;
+                    } catch (\Google\Service\Exception $e) {
+                        if ($e->getCode() !== 404 && $e->getCode() !== 410) {
+                            Log::warning('Failed to delete Google Calendar event during resync', [
+                                'event_id' => $event->getId(),
+                                'error' => $e->getMessage(),
+                            ]);
+                        }
+                    }
+                    usleep(50000); // 50ms delay to avoid rate limiting
+                }
+
+                $pageToken = $eventList->getNextPageToken();
+            } while ($pageToken);
+        } catch (\Exception $e) {
+            Log::error('Failed to list/delete Google Calendar events during resync', [
+                'error' => $e->getMessage(),
+            ]);
         }
+
+        // Step 1b: Clear google_calendar_event_id on all bookings for this location
+        $clearQuery = Booking::withTrashed()->whereNotNull('google_calendar_event_id');
+        if ($this->locationId) {
+            $clearQuery->where('location_id', $this->locationId);
+        }
+        $clearQuery->update(['google_calendar_event_id' => null]);
 
         Log::info('Resync cleanup completed', [
             'location_id' => $this->locationId,
             'deleted' => $results['deleted'],
-            'total_with_events' => $bookingsWithEvents->count(),
         ]);
 
         // Step 2: Re-create events for all active bookings from the given date
