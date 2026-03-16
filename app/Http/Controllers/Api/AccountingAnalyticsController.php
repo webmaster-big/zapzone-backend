@@ -468,6 +468,7 @@ class AccountingAnalyticsController extends Controller
         $addOnsSummary = [];
 
         // Collect add-ons from bookings using efficient join query
+        // collected_revenue: only sum revenue from bookings that are fully paid (amount_paid >= total_amount)
         $bookingAddOns = DB::table('booking_add_ons')
             ->join('bookings', 'booking_add_ons.booking_id', '=', 'bookings.id')
             ->join('add_ons', 'booking_add_ons.add_on_id', '=', 'add_ons.id')
@@ -485,7 +486,8 @@ class AccountingAnalyticsController extends Controller
                 'add_ons.id',
                 'add_ons.name',
                 DB::raw('SUM(booking_add_ons.quantity) as total_quantity'),
-                DB::raw('SUM(booking_add_ons.quantity * booking_add_ons.price_at_booking) as total_revenue')
+                DB::raw('SUM(booking_add_ons.quantity * booking_add_ons.price_at_booking) as total_revenue'),
+                DB::raw('SUM(CASE WHEN bookings.amount_paid >= bookings.total_amount THEN booking_add_ons.quantity * booking_add_ons.price_at_booking ELSE 0 END) as collected_revenue')
             )
             ->groupBy('add_ons.id', 'add_ons.name')
             ->get();
@@ -496,13 +498,16 @@ class AccountingAnalyticsController extends Controller
                     'name' => $addOn->name,
                     'quantity' => 0,
                     'gross_sales' => 0,
+                    'collected' => 0,
                 ];
             }
             $addOnsSummary[$addOn->id]['quantity'] += (int) $addOn->total_quantity;
             $addOnsSummary[$addOn->id]['gross_sales'] += (float) $addOn->total_revenue;
+            $addOnsSummary[$addOn->id]['collected'] += (float) $addOn->collected_revenue;
         }
 
         // Collect add-ons from attraction purchases
+        // collected_revenue: only sum revenue from purchases that are fully paid
         $attractionAddOnsQuery = DB::table('attraction_purchase_add_ons')
             ->join('attraction_purchases', 'attraction_purchase_add_ons.attraction_purchase_id', '=', 'attraction_purchases.id')
             ->join('attractions', 'attraction_purchases.attraction_id', '=', 'attractions.id')
@@ -526,7 +531,8 @@ class AccountingAnalyticsController extends Controller
                 'add_ons.id',
                 'add_ons.name',
                 DB::raw('SUM(attraction_purchase_add_ons.quantity) as total_quantity'),
-                DB::raw('SUM(attraction_purchase_add_ons.quantity * attraction_purchase_add_ons.price_at_purchase) as total_revenue')
+                DB::raw('SUM(attraction_purchase_add_ons.quantity * attraction_purchase_add_ons.price_at_purchase) as total_revenue'),
+                DB::raw('SUM(CASE WHEN attraction_purchases.amount_paid >= attraction_purchases.total_amount THEN attraction_purchase_add_ons.quantity * attraction_purchase_add_ons.price_at_purchase ELSE 0 END) as collected_revenue')
             )
             ->groupBy('add_ons.id', 'add_ons.name')
             ->get();
@@ -537,13 +543,16 @@ class AccountingAnalyticsController extends Controller
                     'name' => $addOn->name,
                     'quantity' => 0,
                     'gross_sales' => 0,
+                    'collected' => 0,
                 ];
             }
             $addOnsSummary[$addOn->id]['quantity'] += (int) $addOn->total_quantity;
             $addOnsSummary[$addOn->id]['gross_sales'] += (float) $addOn->total_revenue;
+            $addOnsSummary[$addOn->id]['collected'] += (float) $addOn->collected_revenue;
         }
 
         // Collect add-ons from event purchases
+        // collected_revenue: only sum revenue from purchases that are fully paid
         $eventAddOns = DB::table('event_purchase_add_ons')
             ->join('event_purchases', 'event_purchase_add_ons.event_purchase_id', '=', 'event_purchases.id')
             ->join('add_ons', 'event_purchase_add_ons.add_on_id', '=', 'add_ons.id')
@@ -561,7 +570,8 @@ class AccountingAnalyticsController extends Controller
                 'add_ons.id',
                 'add_ons.name',
                 DB::raw('SUM(event_purchase_add_ons.quantity) as total_quantity'),
-                DB::raw('SUM(event_purchase_add_ons.quantity * event_purchase_add_ons.price_at_purchase) as total_revenue')
+                DB::raw('SUM(event_purchase_add_ons.quantity * event_purchase_add_ons.price_at_purchase) as total_revenue'),
+                DB::raw('SUM(CASE WHEN event_purchases.amount_paid >= event_purchases.total_amount THEN event_purchase_add_ons.quantity * event_purchase_add_ons.price_at_purchase ELSE 0 END) as collected_revenue')
             )
             ->groupBy('add_ons.id', 'add_ons.name')
             ->get();
@@ -572,10 +582,12 @@ class AccountingAnalyticsController extends Controller
                     'name' => $addOn->name,
                     'quantity' => 0,
                     'gross_sales' => 0,
+                    'collected' => 0,
                 ];
             }
             $addOnsSummary[$addOn->id]['quantity'] += (int) $addOn->total_quantity;
             $addOnsSummary[$addOn->id]['gross_sales'] += (float) $addOn->total_revenue;
+            $addOnsSummary[$addOn->id]['collected'] += (float) $addOn->collected_revenue;
         }
 
         // Format items
@@ -583,25 +595,30 @@ class AccountingAnalyticsController extends Controller
         $categoryTotals = [
             'quantity' => 0,
             'gross_sales' => 0,
+            'collected' => 0,
         ];
 
         foreach ($addOnsSummary as $addOnData) {
+            $collected = $addOnData['collected'];
+            $grossSales = $addOnData['gross_sales'];
+
             $items[] = [
                 'name' => $addOnData['name'],
                 'sub_category' => 'Add-ons',
                 'quantity_sold' => $addOnData['quantity'],
-                'gross_sales' => round($addOnData['gross_sales'], 2),
-                'net_sales' => round($addOnData['gross_sales'], 2),
+                'gross_sales' => round($grossSales, 2),
+                'net_sales' => round($grossSales, 2),
                 'fee_amount' => 0,
                 'discount_amount' => 0,
                 'tax_amount' => 0,
-                'total_billed' => round($addOnData['gross_sales'], 2),
-                'grand_total' => round($addOnData['gross_sales'], 2),
-                'balance_due' => 0,
+                'total_billed' => round($grossSales, 2),
+                'grand_total' => round($collected, 2),
+                'balance_due' => round($grossSales - $collected, 2),
             ];
 
             $categoryTotals['quantity'] += $addOnData['quantity'];
-            $categoryTotals['gross_sales'] += $addOnData['gross_sales'];
+            $categoryTotals['gross_sales'] += $grossSales;
+            $categoryTotals['collected'] += $collected;
         }
 
         usort($items, fn($a, $b) => strcmp($a['name'], $b['name']));
@@ -618,8 +635,8 @@ class AccountingAnalyticsController extends Controller
                 'discount_amount' => 0,
                 'tax_amount' => 0,
                 'total_billed' => round($categoryTotals['gross_sales'], 2),
-                'grand_total' => round($categoryTotals['gross_sales'], 2),
-                'balance_due' => 0,
+                'grand_total' => round($categoryTotals['collected'], 2),
+                'balance_due' => round($categoryTotals['gross_sales'] - $categoryTotals['collected'], 2),
             ],
         ];
     }
