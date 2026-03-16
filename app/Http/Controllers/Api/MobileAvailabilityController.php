@@ -108,14 +108,12 @@ class MobileAvailabilityController extends Controller
             ->filter(fn($sp) => $sp->isActiveOnDate(Carbon::parse($date)));
 
         // Get active packages for this location with their schedules
-        // Only select the columns needed for the response to avoid MySQL sort buffer exhaustion
+        // Sort in PHP instead of MySQL to avoid sort buffer OOM on TEXT/JSON columns
         $packages = Package::with(['availabilitySchedules' => function ($q) {
                 $q->where('is_active', true);
             }])
             ->byLocation($locationId)
             ->active()
-            ->orderBy('display_order', 'asc')
-            ->orderBy('name')
             ->get([
                 'id', 'name', 'description', 'category', 'package_type',
                 'price', 'price_per_additional', 'min_participants', 'max_participants',
@@ -123,13 +121,13 @@ class MobileAvailabilityController extends Controller
                 'has_guest_of_honor', 'customer_notes', 'display_order',
             ]);
 
-        // Filter packages that have a matching schedule for the requested date
+        // Filter packages that have a matching schedule for the requested date, then sort in PHP
         $filteredPackages = $packages->filter(function ($package) use ($date) {
             $matchingSchedules = $package->availabilitySchedules->filter(function ($schedule) use ($date) {
                 return $schedule->matchesDate($date);
             });
             return $matchingSchedules->isNotEmpty();
-        });
+        })->sortBy([['display_order', 'asc'], ['name', 'asc']]);
 
         $result = $filteredPackages->values()->map(function ($package) use ($date, $specialPricings) {
             // Get time slots count for quick preview
