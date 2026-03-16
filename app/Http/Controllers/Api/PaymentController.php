@@ -138,6 +138,32 @@ class PaymentController extends Controller
             unset($validated['event_purchase_id']);
         }
 
+        // --- Duplicate payment prevention ---
+        // Prevent duplicate payments for the same entity within a 2-minute window
+        if (!empty($validated['payable_id']) && !empty($validated['payable_type'])) {
+            $existingPayment = Payment::where('payable_id', $validated['payable_id'])
+                ->where('payable_type', $validated['payable_type'])
+                ->where('amount', $validated['amount'])
+                ->where('status', 'completed')
+                ->where('created_at', '>=', now()->subMinutes(2))
+                ->first();
+
+            if ($existingPayment) {
+                Log::info('Duplicate payment prevented (time-window check)', [
+                    'existing_payment_id' => $existingPayment->id,
+                    'payable_id' => $validated['payable_id'],
+                    'payable_type' => $validated['payable_type'],
+                    'amount' => $validated['amount'],
+                ]);
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Payment already exists',
+                    'data' => $existingPayment->load(['customer', 'location']),
+                ], 200);
+            }
+        }
+        // --- End duplicate payment prevention ---
+
         $validated['transaction_id'] = 'TXN' . now()->format('YmdHis') . strtoupper(Str::random(6));
 
         // Handle signature image upload (base64)
@@ -151,6 +177,47 @@ class PaymentController extends Controller
 
         $payment = Payment::create($validated);
         $payment->load(['customer', 'location']);
+
+        // Sync amount_paid on the linked entity (match charge() behavior)
+        if ($payment->payable_id && $payment->payable_type && $payment->status === 'completed') {
+            if ($payment->payable_type === Payment::TYPE_BOOKING) {
+                $payable = Booking::find($payment->payable_id);
+                if ($payable) {
+                    $totalPaid = Payment::where('payable_id', $payable->id)
+                        ->where('payable_type', Payment::TYPE_BOOKING)
+                        ->where('status', 'completed')
+                        ->sum('amount');
+                    $payable->update([
+                        'amount_paid' => $totalPaid,
+                        'payment_status' => $totalPaid >= $payable->total_amount ? 'paid' : 'partial',
+                    ]);
+                }
+            } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE) {
+                $payable = AttractionPurchase::find($payment->payable_id);
+                if ($payable) {
+                    $totalPaid = Payment::where('payable_id', $payable->id)
+                        ->where('payable_type', Payment::TYPE_ATTRACTION_PURCHASE)
+                        ->where('status', 'completed')
+                        ->sum('amount');
+                    $payable->update([
+                        'amount_paid' => $totalPaid,
+                        'status' => $totalPaid >= $payable->total_amount ? AttractionPurchase::STATUS_CONFIRMED : AttractionPurchase::STATUS_PENDING,
+                    ]);
+                }
+            } elseif ($payment->payable_type === Payment::TYPE_EVENT_PURCHASE) {
+                $payable = EventPurchase::find($payment->payable_id);
+                if ($payable) {
+                    $totalPaid = Payment::where('payable_id', $payable->id)
+                        ->where('payable_type', Payment::TYPE_EVENT_PURCHASE)
+                        ->where('status', 'completed')
+                        ->sum('amount');
+                    $payable->update([
+                        'amount_paid' => $totalPaid,
+                        'payment_status' => $totalPaid >= $payable->total_amount ? 'paid' : 'partial',
+                    ]);
+                }
+            }
+        }
 
         // Create notification for customer if payment is completed
         if ($payment->customer_id && $payment->status === 'completed') {
@@ -1406,6 +1473,34 @@ class PaymentController extends Controller
         ]);
 
         try {
+            // --- Duplicate payment prevention ---
+            // Prevent duplicate card charges for the same entity within a 2-minute window
+            if ($request->payable_id && $request->payable_type) {
+                $existingPayment = Payment::where('payable_id', $request->payable_id)
+                    ->where('payable_type', $request->payable_type)
+                    ->where('amount', $request->amount)
+                    ->where('status', 'completed')
+                    ->where('created_at', '>=', now()->subMinutes(2))
+                    ->first();
+
+                if ($existingPayment) {
+                    Log::info('Duplicate card charge prevented (time-window check)', [
+                        'existing_payment_id' => $existingPayment->id,
+                        'payable_id' => $request->payable_id,
+                        'payable_type' => $request->payable_type,
+                        'amount' => $request->amount,
+                    ]);
+                    return response()->json([
+                        'success' => true,
+                        'message' => 'Payment already processed',
+                        'transaction_id' => $existingPayment->transaction_id,
+                        'payment' => $existingPayment,
+                        'email_sent' => false,
+                    ], 200);
+                }
+            }
+            // --- End duplicate payment prevention ---
+
             // 1. Get Authorize.Net account for the location
             $account = AuthorizeNetAccount::where('location_id', $request->location_id)
                 ->where('is_active', true)
