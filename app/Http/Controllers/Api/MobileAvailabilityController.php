@@ -67,7 +67,7 @@ class MobileAvailabilityController extends Controller
         }
 
         // Use location timezone for default date
-        $timezone = $location->timezone ?? 'America/Chicago';
+        $timezone = $this->normalizeTimezone($location->timezone ?? 'America/Chicago');
         $date = $request->get('date', Carbon::now($timezone)->format('Y-m-d'));
 
         // Validate date format
@@ -203,7 +203,7 @@ class MobileAvailabilityController extends Controller
         }
 
         $location = $package->location;
-        $timezone = $location->timezone ?? 'America/Chicago';
+        $timezone = $this->normalizeTimezone($location->timezone ?? 'America/Chicago');
         $date = $request->get('date', Carbon::now($timezone)->format('Y-m-d'));
 
         // Validate date format
@@ -339,7 +339,7 @@ class MobileAvailabilityController extends Controller
             ], 404);
         }
 
-        $timezone = $package->location->timezone ?? 'America/Chicago';
+        $timezone = $this->normalizeTimezone($package->location->timezone ?? 'America/Chicago');
         $from = $request->get('from', Carbon::now($timezone)->format('Y-m-d'));
         $days = min((int) $request->get('days', 30), 90); // Cap at 90 days
 
@@ -695,5 +695,41 @@ class MobileAvailabilityController extends Controller
         }
 
         return (int) round($duration);
+    }
+
+    /**
+     * Normalize a timezone string to IANA format.
+     * Handles Windows-style timezone names (e.g. "Eastern Standard Time" → "America/New_York").
+     * Falls back to America/Chicago if the timezone is unrecognized.
+     */
+    private function normalizeTimezone(string $timezone): string
+    {
+        static $windowsToIana = [
+            'Eastern Standard Time'  => 'America/New_York',
+            'Eastern Daylight Time'  => 'America/New_York',
+            'Central Standard Time'  => 'America/Chicago',
+            'Central Daylight Time'  => 'America/Chicago',
+            'Mountain Standard Time' => 'America/Denver',
+            'Mountain Daylight Time' => 'America/Denver',
+            'Pacific Standard Time'  => 'America/Los_Angeles',
+            'Pacific Daylight Time'  => 'America/Los_Angeles',
+            'Alaska Standard Time'   => 'America/Anchorage',
+            'Hawaii Standard Time'   => 'Pacific/Honolulu',
+            'Atlantic Standard Time' => 'America/Halifax',
+            'Arizona Standard Time'  => 'America/Phoenix',
+            'Indiana Standard Time'  => 'America/Indiana/Indianapolis',
+        ];
+
+        if (isset($windowsToIana[$timezone])) {
+            return $windowsToIana[$timezone];
+        }
+
+        // Validate it's a real IANA timezone; fall back to America/Chicago if not
+        try {
+            new \DateTimeZone($timezone);
+            return $timezone;
+        } catch (\Exception $e) {
+            return 'America/Chicago';
+        }
     }
 }
