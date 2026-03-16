@@ -36,6 +36,7 @@ use App\Http\Controllers\Api\RoomController;
 use App\Http\Controllers\Api\RsvpController;
 use App\Http\Controllers\Api\SpecialPricingController;
 use App\Http\Controllers\Api\ShareableTokenController;
+use App\Http\Controllers\Api\MobileAvailabilityController;
 use App\Http\Controllers\Api\StreamController;
 use App\Http\Controllers\Api\StripeController;
 use App\Http\Controllers\Api\UserController;
@@ -213,6 +214,14 @@ Route::get('fee-supports/for-entity', [FeeSupportController::class, 'getForEntit
 
 // Google Calendar OAuth callback (must be public - Google redirects here)
 Route::get('google-calendar/callback', [GoogleCalendarController::class, 'handleCallback']);
+
+// Mobile App - Public Availability APIs (no authentication required)
+Route::prefix('mobile')->group(function () {
+    Route::get('locations', [MobileAvailabilityController::class, 'getLocations']);
+    Route::get('locations/{locationId}/packages', [MobileAvailabilityController::class, 'getPackagesByLocationAndDate']);
+    Route::get('packages/{packageId}/availability', [MobileAvailabilityController::class, 'getPackageAvailability']);
+    Route::get('packages/{packageId}/available-dates', [MobileAvailabilityController::class, 'getPackageAvailableDates']);
+});
 
 
 // Protected routes (require authentication)
