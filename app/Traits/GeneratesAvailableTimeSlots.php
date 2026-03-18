@@ -139,6 +139,11 @@ trait GeneratesAvailableTimeSlots
 
         // Check each room for availability
         foreach ($package->rooms as $room) {
+            // Skip rooms marked as unavailable
+            if (!$room->is_available) {
+                continue;
+            }
+
             // Check for room-specific day off blocks
             $isRoomBlocked = DayOff::isTimeSlotBlockedForRoom(
                 $package->location_id,
@@ -203,6 +208,11 @@ trait GeneratesAvailableTimeSlots
 
         $count = 0;
         foreach ($package->rooms as $room) {
+            // Skip rooms marked as unavailable
+            if (!$room->is_available) {
+                continue;
+            }
+
             // Check for room-specific day off blocks
             $isRoomBlocked = DayOff::isTimeSlotBlockedForRoom(
                 $package->location_id,
