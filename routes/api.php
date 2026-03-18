@@ -220,7 +220,6 @@ Route::prefix('mobile')->group(function () {
     Route::get('locations', [MobileAvailabilityController::class, 'getLocations']);
     Route::get('locations/{locationId}/packages', [MobileAvailabilityController::class, 'getPackagesByLocationAndDate']);
     Route::get('packages/{packageId}/availability', [MobileAvailabilityController::class, 'getPackageAvailability']);
-    Route::get('packages/{packageId}/available-dates', [MobileAvailabilityController::class, 'getPackageAvailableDates']);
 });
 
 

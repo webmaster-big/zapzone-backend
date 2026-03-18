@@ -8,10 +8,8 @@ use App\Models\Location;
 use App\Models\Package;
 use App\Models\PackageTimeSlot;
 use App\Models\Room;
-use App\Models\SpecialPricing;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Log;
 use Carbon\Carbon;
 
 class MobileAvailabilityController extends Controller
@@ -81,92 +79,54 @@ class MobileAvailabilityController extends Controller
         // Check if the entire location has a full day-off on this date
         $locationClosed = DayOff::isDateBlocked($locationId, $date);
 
-        // Get day offs for this location and date (for frontend display)
-        $dayOffs = DayOff::where('location_id', $locationId)
-            ->whereDate('date', $date)
-            ->get()
-            ->map(function ($dayOff) {
-                return [
-                    'id' => $dayOff->id,
-                    'date' => $dayOff->date->format('Y-m-d'),
-                    'time_start' => $dayOff->time_start,
-                    'time_end' => $dayOff->time_end,
-                    'reason' => $dayOff->reason,
-                    'is_full_day' => $dayOff->isFullDay(),
-                    'is_location_wide' => $dayOff->isLocationWide(),
-                    'package_ids' => $dayOff->package_ids,
-                    'room_ids' => $dayOff->room_ids,
-                ];
-            });
-
-        // Get special pricings active on this date for this location
-        $specialPricings = SpecialPricing::active()
-            ->byLocation($locationId)
-            ->forPackages()
-            ->withinDateRange(Carbon::parse($date))
-            ->get()
-            ->filter(fn($sp) => $sp->isActiveOnDate(Carbon::parse($date)));
+        if ($locationClosed) {
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'location' => [
+                        'id' => $location->id,
+                        'name' => $location->name,
+                        'timezone' => $timezone,
+                        'is_closed' => true,
+                    ],
+                    'date' => $date,
+                    'packages' => [],
+                ],
+            ]);
+        }
 
         // Get active packages for this location with their schedules
-        // Sort in PHP instead of MySQL to avoid sort buffer OOM on TEXT/JSON columns
         $packages = Package::with(['availabilitySchedules' => function ($q) {
                 $q->where('is_active', true);
             }])
             ->byLocation($locationId)
             ->active()
             ->get([
-                'id', 'name', 'description', 'category', 'package_type',
-                'price', 'price_per_additional', 'min_participants', 'max_participants',
-                'duration', 'duration_unit', 'image', 'features',
-                'has_guest_of_honor', 'customer_notes', 'display_order',
+                'id', 'name', 'description', 'category',
+                'price', 'min_participants', 'max_participants',
+                'duration', 'duration_unit', 'image', 'display_order',
             ]);
 
-        // Filter packages that have a matching schedule for the requested date, then sort in PHP
+        // Filter packages that have a matching schedule for the requested date
         $filteredPackages = $packages->filter(function ($package) use ($date) {
-            $matchingSchedules = $package->availabilitySchedules->filter(function ($schedule) use ($date) {
-                return $schedule->matchesDate($date);
-            });
-            return $matchingSchedules->isNotEmpty();
+            return $package->availabilitySchedules->contains(fn($s) => $s->matchesDate($date));
         })->sortBy([['display_order', 'asc'], ['name', 'asc']]);
 
-        $result = $filteredPackages->values()->map(function ($package) use ($date, $specialPricings) {
-            // Get time slots count for quick preview
+        $result = $filteredPackages->values()->map(function ($package) use ($date) {
             $timeSlots = $package->getTimeSlotsForDate($date);
-
-            // Find applicable special pricings for this package
-            $applicablePricings = $specialPricings
-                ->filter(fn($sp) => $sp->appliesToEntity($package->id, SpecialPricing::ENTITY_PACKAGE))
-                ->values()
-                ->map(fn($sp) => [
-                    'id' => $sp->id,
-                    'name' => $sp->name,
-                    'description' => $sp->description,
-                    'discount_amount' => $sp->discount_amount,
-                    'discount_type' => $sp->discount_type,
-                    'discounted_price' => number_format((float) $package->price - $sp->calculateDiscount((float) $package->price), 2, '.', ''),
-                    'time_start' => $sp->time_start,
-                    'time_end' => $sp->time_end,
-                ]);
 
             return [
                 'id' => $package->id,
                 'name' => $package->name,
                 'description' => $package->description,
                 'category' => $package->category,
-                'package_type' => $package->package_type,
                 'price' => $package->price,
-                'price_per_additional' => $package->price_per_additional,
                 'min_participants' => $package->min_participants,
                 'max_participants' => $package->max_participants,
                 'duration' => $package->duration,
                 'duration_unit' => $package->duration_unit,
                 'image' => $package->image,
-                'features' => $package->features,
-                'has_guest_of_honor' => $package->has_guest_of_honor,
-                'customer_notes' => $package->customer_notes,
                 'total_slots' => count($timeSlots),
-                'schedule_info' => $this->getScheduleSummary($package, $date),
-                'special_pricings' => $applicablePricings,
             ];
         });
 
@@ -177,10 +137,9 @@ class MobileAvailabilityController extends Controller
                     'id' => $location->id,
                     'name' => $location->name,
                     'timezone' => $timezone,
-                    'is_closed' => $locationClosed,
+                    'is_closed' => false,
                 ],
                 'date' => $date,
-                'day_offs' => $dayOffs->values(),
                 'packages' => $result,
             ],
         ]);
@@ -194,10 +153,7 @@ class MobileAvailabilityController extends Controller
      */
     public function getPackageAvailability(Request $request, int $packageId): JsonResponse
     {
-        $package = Package::with(['rooms', 'location', 'availabilitySchedules' => function ($q) {
-            $q->where('is_active', true);
-        }])->find($packageId);
-
+        $package = Package::with(['rooms', 'location'])->find($packageId);
 
         if (!$package) {
             return response()->json([
@@ -218,144 +174,22 @@ class MobileAvailabilityController extends Controller
             ], 422);
         }
 
-        // Check if this package has a day-off block
         $locationId = $package->location_id;
-        $isPackageBlocked = $this->isPackageFullyBlocked($locationId, $packageId, $date);
+        $isBlocked = $this->isPackageFullyBlocked($locationId, $packageId, $date);
 
-        // Get the available time slots with room info
         $availableSlots = [];
-        if (!$isPackageBlocked && $package->rooms->isNotEmpty()) {
+        if (!$isBlocked && $package->rooms->isNotEmpty()) {
             $availableSlots = $this->generateAvailableSlotsWithRooms($package, $date);
         }
 
-        // Get the schedule that matches this date for display
-        $matchingSchedule = $package->availabilitySchedules
-            ->filter(fn($s) => $s->matchesDate($date))
-            ->sortByDesc('priority')
-            ->first();
-
-        // Get available dates for the next N days (for date picker in modal)
-        $availableDates = $this->getAvailableDatesForPackage($package, $date, 30);
-
-        // Get day offs for this date that affect this package
-        $dayOffs = DayOff::where('location_id', $locationId)
-            ->whereDate('date', $date)
-            ->forPackage($packageId)
-            ->get()
-            ->filter(fn($d) => $d->appliesToPackage($packageId))
-            ->values()
-            ->map(function ($dayOff) {
-                return [
-                    'id' => $dayOff->id,
-                    'date' => $dayOff->date->format('Y-m-d'),
-                    'time_start' => $dayOff->time_start,
-                    'time_end' => $dayOff->time_end,
-                    'reason' => $dayOff->reason,
-                    'is_full_day' => $dayOff->isFullDay(),
-                    'is_location_wide' => $dayOff->isLocationWide(),
-                ];
-            });
-
-        // Get special pricings for this package on this date
-        $specialPricings = SpecialPricing::active()
-            ->byLocation($locationId)
-            ->forPackages()
-            ->withinDateRange(Carbon::parse($date))
-            ->get()
-            ->filter(function ($sp) use ($package, $date) {
-                return $sp->isActiveOnDate(Carbon::parse($date))
-                    && $sp->appliesToEntity($package->id, SpecialPricing::ENTITY_PACKAGE);
-            })
-            ->values()
-            ->map(function ($sp) use ($package) {
-                return [
-                    'id' => $sp->id,
-                    'name' => $sp->name,
-                    'description' => $sp->description,
-                    'discount_amount' => $sp->discount_amount,
-                    'discount_type' => $sp->discount_type,
-                    'discounted_price' => number_format((float) $package->price - $sp->calculateDiscount((float) $package->price), 2, '.', ''),
-                    'time_start' => $sp->time_start,
-                    'time_end' => $sp->time_end,
-                ];
-            });
-
         return response()->json([
             'success' => true,
             'data' => [
-                'package' => [
-                    'id' => $package->id,
-                    'name' => $package->name,
-                    'description' => $package->description,
-                    'category' => $package->category,
-                    'package_type' => $package->package_type,
-                    'price' => $package->price,
-                    'price_per_additional' => $package->price_per_additional,
-                    'min_participants' => $package->min_participants,
-                    'max_participants' => $package->max_participants,
-                    'duration' => $package->duration,
-                    'duration_unit' => $package->duration_unit,
-                    'image' => $package->image,
-                    'features' => $package->features,
-                    'has_guest_of_honor' => $package->has_guest_of_honor,
-                    'customer_notes' => $package->customer_notes,
-                    'total_rooms' => $package->rooms->count(),
-                ],
-                'location' => [
-                    'id' => $location->id,
-                    'name' => $location->name,
-                    'timezone' => $timezone,
-                ],
+                'package_name' => $package->name,
+                'location_name' => $location->name,
                 'date' => $date,
-                'is_blocked' => $isPackageBlocked,
-                'day_offs' => $dayOffs,
-                'special_pricings' => $specialPricings,
-                'schedule' => $matchingSchedule ? [
-                    'availability_type' => $matchingSchedule->availability_type,
-                    'day_configuration' => $matchingSchedule->day_configuration,
-                    'time_slot_start' => $matchingSchedule->time_slot_start,
-                    'time_slot_end' => $matchingSchedule->time_slot_end,
-                    'time_slot_interval' => $matchingSchedule->time_slot_interval,
-                ] : null,
+                'is_blocked' => $isBlocked,
                 'available_slots' => $availableSlots,
-                'total_available_slots' => count($availableSlots),
-                'available_dates' => $availableDates,
-            ],
-        ]);
-    }
-
-    /**
-     * GET /api/mobile/packages/{packageId}/available-dates?from=2026-03-17&days=60
-     *
-     * Returns dates that have availability for a package within a range.
-     * Useful for the date picker to highlight/enable only available dates.
-     */
-    public function getPackageAvailableDates(Request $request, int $packageId): JsonResponse
-    {
-        $package = Package::with(['availabilitySchedules' => function ($q) {
-            $q->where('is_active', true);
-        }, 'location'])->find($packageId);
-
-        if (!$package) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Package not found',
-            ], 404);
-        }
-
-        $timezone = $this->normalizeTimezone($package->location->timezone ?? 'America/Chicago');
-        $from = $request->get('from', Carbon::now($timezone)->format('Y-m-d'));
-        $days = min((int) $request->get('days', 30), 90); // Cap at 90 days
-
-        $availableDates = $this->getAvailableDatesForPackage($package, $from, $days);
-
-        return response()->json([
-            'success' => true,
-            'data' => [
-                'package_id' => $package->id,
-                'from' => $from,
-                'days' => $days,
-                'available_dates' => $availableDates,
             ],
         ]);
     }
@@ -385,60 +219,6 @@ class MobileAvailabilityController extends Controller
         }
 
         return false;
-    }
-
-    /**
-     * Get a human-readable summary of the schedule for a package on a date.
-     */
-    private function getScheduleSummary(Package $package, string $date): ?array
-    {
-        $matchingSchedule = $package->availabilitySchedules
-            ->filter(fn($s) => $s->matchesDate($date))
-            ->sortByDesc('priority')
-            ->first();
-
-        if (!$matchingSchedule) {
-            return null;
-        }
-
-        return [
-            'availability_type' => $matchingSchedule->availability_type,
-            'day_configuration' => $matchingSchedule->day_configuration,
-            'time_slot_start' => $matchingSchedule->time_slot_start,
-            'time_slot_end' => $matchingSchedule->time_slot_end,
-            'time_slot_interval' => $matchingSchedule->time_slot_interval,
-        ];
-    }
-
-    /**
-     * Get available dates for a package within a date range.
-     * Returns an array of dates (Y-m-d) that have at least one matching schedule
-     * and are not fully blocked by day offs.
-     */
-    private function getAvailableDatesForPackage(Package $package, string $fromDate, int $days): array
-    {
-        $dates = [];
-        $startDate = Carbon::parse($fromDate);
-
-        for ($i = 0; $i < $days; $i++) {
-            $checkDate = $startDate->copy()->addDays($i);
-            $dateStr = $checkDate->format('Y-m-d');
-
-            // Check if any schedule matches this date
-            $hasSchedule = $package->availabilitySchedules
-                ->contains(fn($s) => $s->matchesDate($dateStr));
-
-            if (!$hasSchedule) {
-                continue;
-            }
-
-            // Check if the package is not fully blocked
-            if (!$this->isPackageFullyBlocked($package->location_id, $package->id, $dateStr)) {
-                $dates[] = $dateStr;
-            }
-        }
-
-        return $dates;
     }
 
     /**
