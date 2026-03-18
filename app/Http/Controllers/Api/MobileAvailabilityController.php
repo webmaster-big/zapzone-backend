@@ -95,16 +95,20 @@ class MobileAvailabilityController extends Controller
             ]);
         }
 
-        // Get active packages for this location with their schedules
-        $packages = Package::with(['availabilitySchedules' => function ($q) {
-                $q->where('is_active', true);
-            }])
+        // Get active packages for this location with their schedules and rooms
+        $packages = Package::with([
+                'availabilitySchedules' => function ($q) {
+                    $q->where('is_active', true);
+                },
+                'rooms',
+            ])
             ->byLocation($locationId)
             ->active()
             ->get([
                 'id', 'name', 'description', 'category',
                 'price', 'min_participants', 'max_participants',
                 'duration', 'duration_unit', 'image', 'display_order',
+                'location_id',
             ]);
 
         // Filter packages that have a matching schedule for the requested date
@@ -113,7 +117,12 @@ class MobileAvailabilityController extends Controller
         })->sortBy([['display_order', 'asc'], ['name', 'asc']]);
 
         $result = $filteredPackages->values()->map(function ($package) use ($date) {
-            $timeSlots = $package->getTimeSlotsForDate($date);
+            // Use the same availability logic as PackageTimeSlotController
+            $isBlocked = $this->isPackageFullyBlocked($package->location_id, $package->id, $date);
+            $availableSlots = [];
+            if (!$isBlocked && $package->rooms->isNotEmpty()) {
+                $availableSlots = $this->generateAvailableSlotsWithRooms($package, $date);
+            }
 
             return [
                 'id' => $package->id,
@@ -126,7 +135,7 @@ class MobileAvailabilityController extends Controller
                 'duration' => $package->duration,
                 'duration_unit' => $package->duration_unit,
                 'image' => $package->image,
-                'total_slots' => count($timeSlots),
+                'total_slots' => count($availableSlots),
             ];
         });
 
