@@ -125,7 +125,7 @@ class EventPurchaseController extends Controller
                 ->where('purchase_date', $validated['purchase_date'])
                 ->where('purchase_time', $validated['purchase_time'])
                 ->where('quantity', $validated['quantity'])
-                ->where('created_at', '>=', now()->subMinutes(2));
+                ->where('created_at', '>=', now()->subMinutes(8));
 
             if (!empty($validated['customer_id'])) {
                 $duplicateQuery->where('customer_id', $validated['customer_id']);

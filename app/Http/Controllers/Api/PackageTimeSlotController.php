@@ -4,15 +4,12 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\ActivityLog;
-use App\Models\DayOff;
 use App\Models\PackageTimeSlot;
 use App\Models\Package;
-use App\Models\Room;
 use App\Traits\GeneratesAvailableTimeSlots;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Log;
-use Carbon\Carbon;
 
 class PackageTimeSlotController extends Controller
 {

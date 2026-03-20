@@ -317,7 +317,7 @@ class BookingController extends Controller
         $duplicateQuery = Booking::where('package_id', $validated['package_id'] ?? null)
             ->where('booking_date', $validated['booking_date'])
             ->where('booking_time', $validated['booking_time'])
-            ->where('created_at', '>=', now()->subMinutes(2));
+            ->where('created_at', '>=', now()->subMinutes(10));
 
         if (!empty($validated['customer_id'])) {
             $duplicateQuery->where('customer_id', $validated['customer_id']);
