@@ -275,7 +275,7 @@ class AttractionPurchaseController extends Controller
         // Time-window idempotency: same attraction, customer/guest, quantity within 8 minutes
         $duplicateQuery = AttractionPurchase::where('attraction_id', $validated['attraction_id'])
             ->where('quantity', $validated['quantity'])
-            ->where('created_at', '>=', now()->subMinutes(8));
+            ->where('created_at', '>=', now()->subMinutes(10));
 
         if (!empty($validated['customer_id'])) {
             $duplicateQuery->where('customer_id', $validated['customer_id']);
