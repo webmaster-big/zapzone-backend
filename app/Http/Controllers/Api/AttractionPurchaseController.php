@@ -300,9 +300,17 @@ class AttractionPurchaseController extends Controller
         }
         // --- End duplicate prevention ---
 
-        // Determine initial status based on payment
-        $amountPaid = $validated['amount_paid'] ?? 0;
-        $validated['status'] = ($amountPaid >= $validated['total_amount']) ? AttractionPurchase::STATUS_CONFIRMED : AttractionPurchase::STATUS_PENDING;
+        // For card/authorize.net payments (public flow), set status to 'paylater' and amount_paid to 0
+        // Payment will be confirmed via the charge endpoint after successful payment processing
+        $paymentMethod = $validated['payment_method'] ?? null;
+        if (in_array($paymentMethod, ['card', 'authorize.net'])) {
+            $validated['status'] = AttractionPurchase::STATUS_PAYLATER;
+            $validated['amount_paid'] = 0;
+        } else {
+            // Determine initial status based on payment for non-card methods
+            $amountPaid = $validated['amount_paid'] ?? 0;
+            $validated['status'] = ($amountPaid >= $validated['total_amount']) ? AttractionPurchase::STATUS_CONFIRMED : AttractionPurchase::STATUS_PENDING;
+        }
         $validated['created_by'] = auth()->id() ?? null;
 
         $purchase = AttractionPurchase::create($validated);
@@ -763,28 +771,30 @@ class AttractionPurchaseController extends Controller
     {
         $attractionPurchase = AttractionPurchase::findOrFail($id);
 
-        $user = User::findOrFail(auth()->id());
+        $deletedBy = auth()->id();
+        $user = $deletedBy ? User::find($deletedBy) : null;
 
-        $attractionName = $attractionPurchase->attraction->name;
+        $attractionName = $attractionPurchase->attraction->name ?? 'Unknown';
         $purchaseId = $attractionPurchase->id;
         $locationId = $attractionPurchase->attraction->location_id ?? null;
 
         $attractionPurchase->delete();
 
         // Log attraction purchase deletion activity
+        $deletedByName = $user ? $user->first_name . ' ' . $user->last_name : 'System/Public';
         ActivityLog::log(
             action: 'Attraction Purchase Deleted',
             category: 'delete',
-            description: "Attraction purchase deleted: {$attractionName} by {$user->first_name} {$user->last_name}",
-            userId: auth()->id(),
+            description: "Attraction purchase deleted: {$attractionName} by {$deletedByName}",
+            userId: $deletedBy,
             locationId: $locationId,
             entityType: 'attraction_purchase',
             entityId: $purchaseId,
             metadata: [
                 'deleted_by' => [
-                    'user_id' => auth()->id(),
-                    'name' => $user->first_name . ' ' . $user->last_name,
-                    'email' => $user->email,
+                    'user_id' => $deletedBy,
+                    'name' => $deletedByName,
+                    'email' => $user?->email,
                 ],
                 'deleted_at' => now()->toIso8601String(),
                 'purchase_details' => [

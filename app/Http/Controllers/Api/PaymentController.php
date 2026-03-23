@@ -2000,6 +2000,9 @@ class PaymentController extends Controller
                         'response_code' => $tresponse->getResponseCode(),
                     ]);
 
+                    // Reset amount_paid to 0 on linked entity since payment failed
+                    $this->resetPayableOnFailure($request->payable_id, $request->payable_type);
+
                     return response()->json([
                         'success' => false,
                         'message' => $errorMessage,
@@ -2037,6 +2040,9 @@ class PaymentController extends Controller
                     'suggestion' => $errorCode === 'E00007' ? 'Check if credentials match environment. Run test-connection endpoint.' : null,
                 ]);
 
+                // Reset amount_paid to 0 on linked entity since payment failed
+                $this->resetPayableOnFailure($request->payable_id, $request->payable_type);
+
                 return response()->json([
                     'success' => false,
                     'message' => $errorMessage,
@@ -2052,6 +2058,9 @@ class PaymentController extends Controller
                 'location_id' => $request->location_id,
             ]);
 
+            // Reset amount_paid to 0 on linked entity since payment failed
+            $this->resetPayableOnFailure($request->payable_id, $request->payable_type);
+
             return response()->json([
                 'success' => false,
                 'message' => 'Payment configuration error. Please contact support.',
@@ -2064,10 +2073,54 @@ class PaymentController extends Controller
                 'trace' => $e->getTraceAsString(),
             ]);
 
+            // Reset amount_paid to 0 on linked entity since payment failed
+            $this->resetPayableOnFailure($request->payable_id, $request->payable_type);
+
             return response()->json([
                 'success' => false,
                 'message' => 'Payment processing failed: ' . $e->getMessage()
             ], 500);
+        }
+    }
+
+    /**
+     * Reset amount_paid to 0 on linked booking/purchase when payment fails.
+     * This ensures entities created with 'paylater' status don't retain stale amount_paid values.
+     */
+    private function resetPayableOnFailure(?int $payableId, ?string $payableType): void
+    {
+        if (!$payableId || !$payableType) {
+            return;
+        }
+
+        try {
+            if ($payableType === Payment::TYPE_BOOKING) {
+                $payable = Booking::find($payableId);
+                if ($payable) {
+                    $payable->update(['amount_paid' => 0, 'payment_status' => 'pending']);
+                }
+            } elseif ($payableType === Payment::TYPE_ATTRACTION_PURCHASE) {
+                $payable = AttractionPurchase::find($payableId);
+                if ($payable) {
+                    $payable->update(['amount_paid' => 0]);
+                }
+            } elseif ($payableType === Payment::TYPE_EVENT_PURCHASE) {
+                $payable = EventPurchase::find($payableId);
+                if ($payable) {
+                    $payable->update(['amount_paid' => 0, 'payment_status' => 'pending']);
+                }
+            }
+
+            Log::info('Reset amount_paid on payable after payment failure', [
+                'payable_id' => $payableId,
+                'payable_type' => $payableType,
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Failed to reset payable after payment failure', [
+                'payable_id' => $payableId,
+                'payable_type' => $payableType,
+                'error' => $e->getMessage(),
+            ]);
         }
     }
 

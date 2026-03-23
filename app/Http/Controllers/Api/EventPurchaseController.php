@@ -155,6 +155,15 @@ class EventPurchaseController extends Controller
             $smsConsent = $validated['sms_consent'] ?? false;
             unset($validated['add_ons'], $validated['send_email'], $validated['sms_consent']);
 
+            // For card/authorize.net payments (public flow), set status to 'paylater' and amount_paid to 0
+            // Payment will be confirmed via the charge endpoint after successful payment processing
+            $paymentMethod = $validated['payment_method'] ?? null;
+            if (in_array($paymentMethod, ['card', 'authorize.net'])) {
+                $validated['status'] = 'paylater';
+                $validated['amount_paid'] = 0;
+                $validated['payment_status'] = 'pending';
+            }
+
             $purchase = EventPurchase::create($validated);
 
             // Attach add-ons
@@ -340,7 +349,7 @@ class EventPurchaseController extends Controller
                 'applied_discounts.*.special_pricing_id' => 'nullable|integer',
                 'payment_method' => 'nullable|in:card,in-store,paylater,authorize.net',
                 'payment_status' => 'in:paid,partial,pending',
-                'status' => 'in:pending,confirmed,checked-in,completed,cancelled',
+                'status' => 'in:pending,paylater,confirmed,checked-in,completed,cancelled',
                 'notes' => 'nullable|string',
                 'special_requests' => 'nullable|string',
                 'add_ons' => 'nullable|array',
@@ -453,7 +462,7 @@ class EventPurchaseController extends Controller
     public function updateStatus(Request $request, EventPurchase $eventPurchase): JsonResponse
     {
         $validated = $request->validate([
-            'status' => 'required|in:pending,confirmed,checked-in,completed,cancelled',
+            'status' => 'required|in:pending,paylater,confirmed,checked-in,completed,cancelled',
         ]);
 
         $updates = ['status' => $validated['status']];

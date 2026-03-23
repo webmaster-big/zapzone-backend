@@ -286,7 +286,7 @@ class BookingController extends Controller
             'applied_discounts.*.special_pricing_id' => 'nullable|integer',
             'payment_method' => ['nullable', Rule::in(['card', 'in-store', 'paylater', 'authorize.net'])],
             'payment_status' => ['sometimes', Rule::in(['paid', 'partial', 'pending'])],
-            'status' => ['sometimes', Rule::in(['pending', 'confirmed', 'checked-in', 'completed', 'cancelled'])],
+            'status' => ['sometimes', Rule::in(['pending', 'paylater', 'confirmed', 'checked-in', 'completed', 'cancelled'])],
             'notes' => 'nullable|string',
             'internal_notes' => 'nullable|string',
             'send_notification' => 'nullable|boolean',
@@ -346,6 +346,15 @@ class BookingController extends Controller
         do {
             $validated['reference_number'] = 'BK' . now()->format('Ymd') . strtoupper(Str::random(6));
         } while (Booking::where('reference_number', $validated['reference_number'])->exists());
+
+        // For card/authorize.net payments (public flow), set status to 'paylater' and amount_paid to 0
+        // Payment will be confirmed via the charge endpoint after successful payment processing
+        $paymentMethod = $validated['payment_method'] ?? null;
+        if (in_array($paymentMethod, ['card', 'authorize.net']) && !isset($validated['status'])) {
+            $validated['status'] = 'paylater';
+            $validated['amount_paid'] = 0;
+            $validated['payment_status'] = 'pending';
+        }
 
         // Set payment status based on amount paid
         if (!isset($validated['payment_status'])) {
@@ -1025,7 +1034,7 @@ class BookingController extends Controller
             'applied_discounts.*.special_pricing_id' => 'nullable|integer',
             'payment_method' => ['sometimes', 'nullable', Rule::in(['card', 'cash', 'paylater', 'authorize.net'])],
             'payment_status' => ['sometimes', Rule::in(['paid', 'partial', 'pending'])],
-            'status' => ['sometimes', Rule::in(['pending', 'confirmed', 'checked-in', 'completed', 'cancelled'])],
+            'status' => ['sometimes', Rule::in(['pending', 'paylater', 'confirmed', 'checked-in', 'completed', 'cancelled'])],
             'notes' => 'sometimes|nullable|string',
             'internal_notes' => 'sometimes|nullable|string',
             'send_notification' => 'sometimes|nullable|boolean',
@@ -1430,7 +1439,7 @@ class BookingController extends Controller
     public function updateStatus(Request $request, Booking $booking): JsonResponse
     {
         $validated = $request->validate([
-            'status' => ['required', Rule::in(['pending', 'confirmed', 'checked-in', 'completed', 'cancelled'])],
+            'status' => ['required', Rule::in(['pending', 'paylater', 'confirmed', 'checked-in', 'completed', 'cancelled'])],
         ]);
 
         $previousStatus = $booking->status;
@@ -1872,7 +1881,7 @@ class BookingController extends Controller
 
         // deleted by whom?
         $deletedBy = auth()->id();
-        $user = User::findOrFail($deletedBy);
+        $user = $deletedBy ? User::find($deletedBy) : null;
 
         // Remove from Google Calendar before deleting
         try {
@@ -1887,11 +1896,12 @@ class BookingController extends Controller
         $booking->delete();
 
         // Log deletion
+        $deletedByName = $user ? "{$user->first_name} {$user->last_name}" : 'System/Public';
         ActivityLog::log(
             action: 'Booking Deleted',
             category: 'delete',
-            description: "Booking {$booking->reference_number} deleted by {$user->first_name} {$user->last_name}",
-            userId: auth()->id(),
+            description: "Booking {$booking->reference_number} deleted by {$deletedByName}",
+            userId: $deletedBy,
             locationId: $booking->location_id,
             entityType: 'booking',
             entityId: $booking->id,
