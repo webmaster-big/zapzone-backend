@@ -121,12 +121,12 @@ class EventPurchaseController extends Controller
             }
 
             // --- Duplicate purchase prevention ---
-            // Time-window idempotency: same event, date, time, customer/guest, quantity within 2 minutes
+            // Check for any existing pending purchase with same key fields (no time window)
             $duplicateQuery = EventPurchase::where('event_id', $validated['event_id'])
                 ->where('purchase_date', $validated['purchase_date'])
                 ->where('purchase_time', $validated['purchase_time'])
                 ->where('quantity', $validated['quantity'])
-                ->where('created_at', '>=', now()->subMinutes(10));
+                ->where('status', 'pending');
 
             if (!empty($validated['customer_id'])) {
                 $duplicateQuery->where('customer_id', $validated['customer_id']);
@@ -134,16 +134,16 @@ class EventPurchaseController extends Controller
                 $duplicateQuery->where('guest_email', $validated['guest_email'] ?? null);
             }
 
-            $existingByWindow = $duplicateQuery->first();
-            if ($existingByWindow) {
-                $existingByWindow->load(['event', 'customer', 'location:id,name', 'addOns']);
-                Log::info('Duplicate event purchase prevented (time-window check)', [
-                    'existing_purchase_id' => $existingByWindow->id,
+            $existingPending = $duplicateQuery->first();
+            if ($existingPending) {
+                $existingPending->load(['event', 'customer', 'location:id,name', 'addOns']);
+                Log::info('Duplicate event purchase prevented (existing pending found)', [
+                    'existing_purchase_id' => $existingPending->id,
                     'event_id' => $validated['event_id'],
                     'customer_id' => $validated['customer_id'] ?? null,
                     'guest_email' => $validated['guest_email'] ?? null,
                 ]);
-                return response()->json($existingByWindow, 200);
+                return response()->json($existingPending, 200);
             }
             // --- End duplicate prevention ---
 
@@ -408,43 +408,82 @@ class EventPurchaseController extends Controller
     /**
      * Delete an event purchase (soft delete).
      */
-    public function destroy(EventPurchase $eventPurchase): JsonResponse
+    public function destroy($id): JsonResponse
     {
-        $eventName = $eventPurchase->event->name ?? 'Unknown';
-        $purchaseId = $eventPurchase->id;
-        $locationId = $eventPurchase->event->location_id ?? null;
+        Log::info('Event purchase delete request received', ['id' => $id, 'ip' => request()->ip()]);
 
-        $eventPurchase->delete();
+        try {
+            $eventPurchase = EventPurchase::find($id);
 
-        // Log event purchase deletion activity
-        $currentUser = auth()->user();
-        ActivityLog::log(
-            action: 'Event Purchase Deleted',
-            category: 'delete',
-            description: "Event purchase deleted: {$eventName}" . ($currentUser ? " by {$currentUser->first_name} {$currentUser->last_name}" : ''),
-            userId: auth()->id(),
-            locationId: $locationId,
-            entityType: 'event_purchase',
-            entityId: $purchaseId,
-            metadata: [
-                'deleted_by' => [
-                    'user_id' => auth()->id(),
-                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
-                    'email' => $currentUser?->email,
-                ],
-                'deleted_at' => now()->toIso8601String(),
-                'purchase_details' => [
-                    'purchase_id' => $purchaseId,
-                    'event_name' => $eventName,
-                    'location_id' => $locationId,
-                ],
-            ]
-        );
+            if (!$eventPurchase) {
+                Log::warning('Event purchase delete failed: not found', ['id' => $id]);
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Event purchase not found',
+                ], 404);
+            }
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Event purchase deleted successfully',
-        ]);
+            // Safely get auth user ID (Customer model lacks getAuthIdentifier)
+            $userId = null;
+            $user = null;
+            try {
+                $authUser = auth()->user();
+                if ($authUser instanceof \App\Models\User) {
+                    $userId = $authUser->id;
+                    $user = $authUser;
+                }
+            } catch (\Exception $e) {
+                Log::info('Auth resolution skipped on event purchase delete', ['error' => $e->getMessage()]);
+            }
+
+            $deletedByName = $user ? "{$user->first_name} {$user->last_name}" : 'system/public';
+            $eventName = $eventPurchase->event->name ?? 'Unknown';
+            $purchaseId = $eventPurchase->id;
+            $locationId = $eventPurchase->event->location_id ?? null;
+
+            $eventPurchase->delete();
+
+            // Log event purchase deletion activity
+            ActivityLog::log(
+                action: 'Event Purchase Deleted',
+                category: 'delete',
+                description: "Event purchase deleted: {$eventName} by {$deletedByName}",
+                userId: $userId,
+                locationId: $locationId,
+                entityType: 'event_purchase',
+                entityId: $purchaseId,
+                metadata: [
+                    'deleted_by' => [
+                        'user_id' => $userId,
+                        'name' => $deletedByName,
+                        'email' => $user?->email,
+                    ],
+                    'deleted_at' => now()->toIso8601String(),
+                    'purchase_details' => [
+                        'purchase_id' => $purchaseId,
+                        'event_name' => $eventName,
+                        'location_id' => $locationId,
+                    ],
+                ]
+            );
+
+            Log::info('Event purchase deleted successfully', ['id' => $purchaseId, 'event' => $eventName]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Event purchase deleted successfully',
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Event purchase delete failed with exception', [
+                'id' => $id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to delete event purchase: ' . $e->getMessage(),
+            ], 500);
+        }
     }
 
     /**

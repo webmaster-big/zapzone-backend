@@ -272,10 +272,10 @@ class AttractionPurchaseController extends Controller
         ]);
 
         // --- Duplicate purchase prevention ---
-        // Time-window idempotency: same attraction, customer/guest, quantity within 8 minutes
+        // Check for any existing pending purchase with same key fields (no time window)
         $duplicateQuery = AttractionPurchase::where('attraction_id', $validated['attraction_id'])
             ->where('quantity', $validated['quantity'])
-            ->where('created_at', '>=', now()->subMinutes(10));
+            ->where('status', AttractionPurchase::STATUS_PENDING);
 
         if (!empty($validated['customer_id'])) {
             $duplicateQuery->where('customer_id', $validated['customer_id']);
@@ -283,11 +283,11 @@ class AttractionPurchaseController extends Controller
             $duplicateQuery->where('guest_email', $validated['guest_email'] ?? null);
         }
 
-        $existingByWindow = $duplicateQuery->first();
-        if ($existingByWindow) {
-            $existingByWindow->load(['attraction', 'customer', 'createdBy', 'addOns']);
-            Log::info('Duplicate attraction purchase prevented (time-window check)', [
-                'existing_purchase_id' => $existingByWindow->id,
+        $existingPending = $duplicateQuery->first();
+        if ($existingPending) {
+            $existingPending->load(['attraction', 'customer', 'createdBy', 'addOns']);
+            Log::info('Duplicate attraction purchase prevented (existing pending found)', [
+                'existing_purchase_id' => $existingPending->id,
                 'attraction_id' => $validated['attraction_id'],
                 'customer_id' => $validated['customer_id'] ?? null,
                 'guest_email' => $validated['guest_email'] ?? null,
@@ -295,7 +295,7 @@ class AttractionPurchaseController extends Controller
             return response()->json([
                 'success' => true,
                 'message' => 'Attraction purchase already exists',
-                'data' => $existingByWindow,
+                'data' => $existingPending,
             ], 200);
         }
         // --- End duplicate prevention ---
@@ -768,47 +768,80 @@ class AttractionPurchaseController extends Controller
      */
     public function destroy($id): JsonResponse
     {
-        $attractionPurchase = AttractionPurchase::findOrFail($id);
+        Log::info('Attraction purchase delete request received', ['id' => $id, 'ip' => request()->ip()]);
 
-        // auth may not be available for public delete calls
-        $userId = auth()->id();
-        $user = $userId ? User::find($userId) : null;
-        $deletedByName = $user ? "{$user->first_name} {$user->last_name}" : 'system/public';
+        try {
+            $attractionPurchase = AttractionPurchase::find($id);
 
-        $attractionName = $attractionPurchase->attraction->name;
-        $purchaseId = $attractionPurchase->id;
-        $locationId = $attractionPurchase->attraction->location_id ?? null;
+            if (!$attractionPurchase) {
+                Log::warning('Attraction purchase delete failed: not found', ['id' => $id]);
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Attraction purchase not found',
+                ], 404);
+            }
 
-        $attractionPurchase->delete();
+            // Safely get auth user ID (Customer model lacks getAuthIdentifier)
+            $userId = null;
+            $user = null;
+            try {
+                $authUser = auth()->user();
+                if ($authUser instanceof User) {
+                    $userId = $authUser->id;
+                    $user = $authUser;
+                }
+            } catch (\Exception $e) {
+                Log::info('Auth resolution skipped on attraction purchase delete', ['error' => $e->getMessage()]);
+            }
 
-        // Log attraction purchase deletion activity
-        ActivityLog::log(
-            action: 'Attraction Purchase Deleted',
-            category: 'delete',
-            description: "Attraction purchase deleted: {$attractionName} by {$deletedByName}",
-            userId: $userId,
-            locationId: $locationId,
-            entityType: 'attraction_purchase',
-            entityId: $purchaseId,
-            metadata: [
-                'deleted_by' => [
-                    'user_id' => $userId,
-                    'name' => $deletedByName,
-                    'email' => $user?->email,
-                ],
-                'deleted_at' => now()->toIso8601String(),
-                'purchase_details' => [
-                    'purchase_id' => $purchaseId,
-                    'attraction_name' => $attractionName,
-                    'location_id' => $locationId,
-                ],
-            ]
-        );
+            $deletedByName = $user ? "{$user->first_name} {$user->last_name}" : 'system/public';
+            $attractionName = $attractionPurchase->attraction->name ?? 'Unknown';
+            $purchaseId = $attractionPurchase->id;
+            $locationId = $attractionPurchase->attraction->location_id ?? null;
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Attraction purchase deleted successfully',
-        ]);
+            $attractionPurchase->delete();
+
+            // Log attraction purchase deletion activity
+            ActivityLog::log(
+                action: 'Attraction Purchase Deleted',
+                category: 'delete',
+                description: "Attraction purchase deleted: {$attractionName} by {$deletedByName}",
+                userId: $userId,
+                locationId: $locationId,
+                entityType: 'attraction_purchase',
+                entityId: $purchaseId,
+                metadata: [
+                    'deleted_by' => [
+                        'user_id' => $userId,
+                        'name' => $deletedByName,
+                        'email' => $user?->email,
+                    ],
+                    'deleted_at' => now()->toIso8601String(),
+                    'purchase_details' => [
+                        'purchase_id' => $purchaseId,
+                        'attraction_name' => $attractionName,
+                        'location_id' => $locationId,
+                    ],
+                ]
+            );
+
+            Log::info('Attraction purchase deleted successfully', ['id' => $purchaseId, 'attraction' => $attractionName]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Attraction purchase deleted successfully',
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Attraction purchase delete failed with exception', [
+                'id' => $id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to delete attraction purchase: ' . $e->getMessage(),
+            ], 500);
+        }
     }
 
     // update status, amount paid, payment method

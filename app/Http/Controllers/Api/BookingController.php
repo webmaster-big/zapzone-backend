@@ -313,11 +313,11 @@ class BookingController extends Controller
         ]);
 
         // --- Duplicate booking prevention ---
-        // Time-window idempotency: same package, date, time, customer/guest within 2 minutes
+        // Check for any existing pending booking with same key fields (no time window)
         $duplicateQuery = Booking::where('package_id', $validated['package_id'] ?? null)
             ->where('booking_date', $validated['booking_date'])
             ->where('booking_time', $validated['booking_time'])
-            ->where('created_at', '>=', now()->subMinutes(15));
+            ->where('status', 'pending');
 
         if (!empty($validated['customer_id'])) {
             $duplicateQuery->where('customer_id', $validated['customer_id']);
@@ -325,11 +325,11 @@ class BookingController extends Controller
             $duplicateQuery->where('guest_email', $validated['guest_email'] ?? null);
         }
 
-        $existingByWindow = $duplicateQuery->first();
-        if ($existingByWindow) {
-            $existingByWindow->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
-            Log::info('Duplicate booking prevented (time-window check)', [
-                'existing_booking_id' => $existingByWindow->id,
+        $existingPending = $duplicateQuery->first();
+        if ($existingPending) {
+            $existingPending->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
+            Log::info('Duplicate booking prevented (existing pending found)', [
+                'existing_booking_id' => $existingPending->id,
                 'package_id' => $validated['package_id'] ?? null,
                 'customer_id' => $validated['customer_id'] ?? null,
                 'guest_email' => $validated['guest_email'] ?? null,
@@ -337,7 +337,7 @@ class BookingController extends Controller
             return response()->json([
                 'success' => true,
                 'message' => 'Booking already exists',
-                'data' => $existingByWindow,
+                'data' => $existingPending,
             ], 200);
         }
         // --- End duplicate booking prevention ---
@@ -1877,43 +1877,81 @@ class BookingController extends Controller
         }
     }
 
-    // detroy method
+    // destroy method
     public function destroy($id): JsonResponse
     {
-        $booking = Booking::findOrFail($id);
+        Log::info('Booking delete request received', ['id' => $id, 'ip' => request()->ip()]);
 
-        // deleted by whom? (auth may not be available for public delete calls)
-        $deletedBy = auth()->id();
-        $user = $deletedBy ? User::find($deletedBy) : null;
-
-        // Remove from Google Calendar before deleting
         try {
-            $gcalService = new GoogleCalendarService($booking->location_id);
-            if ($gcalService->isConnected() && $booking->google_calendar_event_id) {
-                $gcalService->deleteEvent($booking);
+            $booking = Booking::find($id);
+
+            if (!$booking) {
+                Log::warning('Booking delete failed: not found', ['id' => $id]);
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Booking not found',
+                ], 404);
             }
+
+            // Safely get auth user ID (Customer model lacks getAuthIdentifier)
+            $deletedBy = null;
+            $user = null;
+            try {
+                $authUser = auth()->user();
+                if ($authUser instanceof User) {
+                    $deletedBy = $authUser->id;
+                    $user = $authUser;
+                }
+            } catch (\Exception $e) {
+                Log::info('Auth resolution skipped on booking delete', ['error' => $e->getMessage()]);
+            }
+
+            // Remove from Google Calendar before deleting
+            try {
+                $gcalService = new GoogleCalendarService($booking->location_id);
+                if ($gcalService->isConnected() && $booking->google_calendar_event_id) {
+                    $gcalService->deleteEvent($booking);
+                }
+            } catch (\Exception $e) {
+                Log::warning('Google Calendar event removal failed on delete', ['booking_id' => $booking->id, 'error' => $e->getMessage()]);
+            }
+
+            $refNumber = $booking->reference_number;
+            $locationId = $booking->location_id;
+            $bookingId = $booking->id;
+
+            $booking->delete();
+
+            // Log deletion
+            $deletedByName = $user ? "{$user->first_name} {$user->last_name}" : 'system/public';
+            ActivityLog::log(
+                action: 'Booking Deleted',
+                category: 'delete',
+                description: "Booking {$refNumber} deleted by {$deletedByName}",
+                userId: $deletedBy,
+                locationId: $locationId,
+                entityType: 'booking',
+                entityId: $bookingId,
+                metadata: ['reference_number' => $refNumber]
+            );
+
+            Log::info('Booking deleted successfully', ['id' => $bookingId, 'reference_number' => $refNumber]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Booking deleted successfully',
+            ]);
         } catch (\Exception $e) {
-            Log::warning('Google Calendar event removal failed on delete', ['booking_id' => $booking->id, 'error' => $e->getMessage()]);
+            Log::error('Booking delete failed with exception', [
+                'id' => $id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to delete booking: ' . $e->getMessage(),
+            ], 500);
         }
-
-        $booking->delete();
-
-        // Log deletion
-        $deletedByName = $user ? "{$user->first_name} {$user->last_name}" : 'system/public';
-        ActivityLog::log(
-            action: 'Booking Deleted',
-            category: 'delete',
-            description: "Booking {$booking->reference_number} deleted by {$deletedByName}",
-            userId: $deletedBy,
-            locationId: $booking->location_id,
-            entityType: 'booking',
-            entityId: $booking->id,
-            metadata: ['reference_number' => $booking->reference_number]
-        );
-        return response()->json([
-            'success' => true,
-            'message' => 'Booking deleted successfully',
-        ]);
     }
 
     /**
