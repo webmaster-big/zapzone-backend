@@ -1920,7 +1920,22 @@ class BookingController extends Controller
             $locationId = $booking->location_id;
             $bookingId = $booking->id;
 
-            $booking->delete();
+            $deleted = $booking->delete();
+
+            // Verify the delete actually persisted
+            $verify = Booking::withTrashed()->find($bookingId);
+            Log::info('Booking delete verification', [
+                'id' => $bookingId,
+                'delete_returned' => $deleted,
+                'deleted_at' => $verify?->deleted_at,
+                'trashed' => $verify?->trashed(),
+            ]);
+
+            if (!$deleted || !$verify?->trashed()) {
+                // Force the soft delete via direct query
+                Log::warning('Booking soft delete did not persist, forcing via query', ['id' => $bookingId]);
+                Booking::where('id', $bookingId)->update(['deleted_at' => now()]);
+            }
 
             // Log deletion
             $deletedByName = $user ? "{$user->first_name} {$user->last_name}" : 'system/public';

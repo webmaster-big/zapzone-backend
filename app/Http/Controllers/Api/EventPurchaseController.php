@@ -441,7 +441,22 @@ class EventPurchaseController extends Controller
             $purchaseId = $eventPurchase->id;
             $locationId = $eventPurchase->event->location_id ?? null;
 
-            $eventPurchase->delete();
+            $deleted = $eventPurchase->delete();
+
+            // Verify the delete actually persisted
+            $verify = EventPurchase::withTrashed()->find($purchaseId);
+            Log::info('Event purchase delete verification', [
+                'id' => $purchaseId,
+                'delete_returned' => $deleted,
+                'deleted_at' => $verify?->deleted_at,
+                'trashed' => $verify?->trashed(),
+            ]);
+
+            if (!$deleted || !$verify?->trashed()) {
+                // Force the soft delete via direct query
+                Log::warning('Event purchase soft delete did not persist, forcing via query', ['id' => $purchaseId]);
+                EventPurchase::where('id', $purchaseId)->update(['deleted_at' => now()]);
+            }
 
             // Log event purchase deletion activity
             ActivityLog::log(

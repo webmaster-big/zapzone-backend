@@ -799,7 +799,22 @@ class AttractionPurchaseController extends Controller
             $purchaseId = $attractionPurchase->id;
             $locationId = $attractionPurchase->attraction->location_id ?? null;
 
-            $attractionPurchase->delete();
+            $deleted = $attractionPurchase->delete();
+
+            // Verify the delete actually persisted
+            $verify = AttractionPurchase::withTrashed()->find($purchaseId);
+            Log::info('Attraction purchase delete verification', [
+                'id' => $purchaseId,
+                'delete_returned' => $deleted,
+                'deleted_at' => $verify?->deleted_at,
+                'trashed' => $verify?->trashed(),
+            ]);
+
+            if (!$deleted || !$verify?->trashed()) {
+                // Force the soft delete via direct query
+                Log::warning('Attraction purchase soft delete did not persist, forcing via query', ['id' => $purchaseId]);
+                AttractionPurchase::where('id', $purchaseId)->update(['deleted_at' => now()]);
+            }
 
             // Log attraction purchase deletion activity
             ActivityLog::log(
