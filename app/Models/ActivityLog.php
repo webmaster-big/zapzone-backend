@@ -94,7 +94,7 @@ class ActivityLog extends Model
         ?array $metadata = null
     ): self {
         return self::create([
-            'user_id' => $userId ?? auth()->id(),
+            'user_id' => $userId ?? auth()->user()?->getKey(),
             'location_id' => $locationId,
             'action' => $action,
             'category' => $category,
