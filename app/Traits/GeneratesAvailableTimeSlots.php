@@ -409,14 +409,6 @@ trait GeneratesAvailableTimeSlots
 
             // Check if booking starts at EXACTLY the same time (primary conflict)
             if ($bookingStart->eq($existingStart)) {
-                Log::info('Area group stagger conflict - same start time', [
-                    'room_id' => $roomId,
-                    'area_group' => $room->area_group,
-                    'date' => $date,
-                    'new_booking_start' => $bookingStart->format('H:i'),
-                    'existing_booking_start' => $existingStart->format('H:i'),
-                    'existing_room_id' => $slot->room_id,
-                ]);
                 return true;
             }
 
@@ -424,15 +416,6 @@ trait GeneratesAvailableTimeSlots
             $intervalEnd = (clone $existingStart)->addMinutes($bookingInterval);
 
             if ($bookingStart->gt($existingStart) && $bookingStart->lt($intervalEnd)) {
-                Log::info('Area group stagger conflict - within interval after existing', [
-                    'room_id' => $roomId,
-                    'area_group' => $room->area_group,
-                    'date' => $date,
-                    'new_booking_start' => $bookingStart->format('H:i'),
-                    'existing_booking_start' => $existingStart->format('H:i'),
-                    'existing_room_id' => $slot->room_id,
-                    'booking_interval' => $bookingInterval,
-                ]);
                 return true;
             }
 
@@ -440,15 +423,6 @@ trait GeneratesAvailableTimeSlots
             $newIntervalEnd = (clone $bookingStart)->addMinutes($bookingInterval);
 
             if ($existingStart->gt($bookingStart) && $existingStart->lt($newIntervalEnd)) {
-                Log::info('Area group stagger conflict - existing within interval of new', [
-                    'room_id' => $roomId,
-                    'area_group' => $room->area_group,
-                    'date' => $date,
-                    'new_booking_start' => $bookingStart->format('H:i'),
-                    'existing_booking_start' => $existingStart->format('H:i'),
-                    'existing_room_id' => $slot->room_id,
-                    'booking_interval' => $bookingInterval,
-                ]);
                 return true;
             }
         }
