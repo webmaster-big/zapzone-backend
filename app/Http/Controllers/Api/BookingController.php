@@ -285,8 +285,8 @@ class BookingController extends Controller
             'applied_discounts.*.original_price' => 'required_with:applied_discounts|numeric|min:0',
             'applied_discounts.*.special_pricing_id' => 'nullable|integer',
             'payment_method' => ['nullable', Rule::in(['card', 'in-store', 'paylater', 'authorize.net'])],
-            'payment_status' => ['sometimes', Rule::in(['paid', 'partial', 'pending'])],
-            'status' => ['sometimes', Rule::in(['pending', 'confirmed', 'checked-in', 'completed', 'cancelled'])],
+            // Note: status and payment_status are NOT accepted from frontend on create
+            // They are always forced to 'pending' below — only the charge endpoint can confirm
             'notes' => 'nullable|string',
             'internal_notes' => 'nullable|string',
             'send_notification' => 'nullable|boolean',
@@ -347,15 +347,9 @@ class BookingController extends Controller
             $validated['reference_number'] = 'BK' . now()->format('Ymd') . strtoupper(Str::random(6));
         } while (Booking::where('reference_number', $validated['reference_number'])->exists());
 
-        // Set payment status based on amount paid
-        if (!isset($validated['payment_status'])) {
-            $validated['payment_status'] = ($validated['amount_paid'] ?? 0) >= $validated['total_amount'] ? 'paid' : 'partial';
-        }
-
-        // Default status to pending (payment will confirm it via charge endpoint)
-        if (!isset($validated['status'])) {
-            $validated['status'] = 'pending';
-        }
+        // Always start as pending — only charge endpoint can confirm
+        $validated['payment_status'] = 'pending';
+        $validated['status'] = 'pending';
 
         // Default payment method to paylater when not specified
         if (!isset($validated['payment_method'])) {

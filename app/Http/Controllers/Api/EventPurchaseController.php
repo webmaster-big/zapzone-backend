@@ -90,8 +90,8 @@ class EventPurchaseController extends Controller
                 'amount_paid' => 'nullable|numeric|min:0',
                 'discount_amount' => 'nullable|numeric|min:0',
                 'payment_method' => 'nullable|in:card,in-store,paylater,authorize.net',
-                'payment_status' => 'sometimes|in:paid,partial,pending',
-                'status' => 'sometimes|in:pending,confirmed,checked-in,completed,cancelled',
+                // Note: status and payment_status are NOT accepted from frontend on create
+                // They are always forced to 'pending' below — only the charge endpoint can confirm
                 'transaction_id' => 'nullable|string|max:255',
                 'notes' => 'nullable|string',
                 'special_requests' => 'nullable|string',
@@ -150,10 +150,9 @@ class EventPurchaseController extends Controller
             // Generate reference number
             $validated['reference_number'] = 'EVT-' . strtoupper(Str::random(8));
 
-            // Default status to pending (payment will confirm it via charge endpoint)
-            if (!isset($validated['status'])) {
-                $validated['status'] = 'pending';
-            }
+            // Always start as pending — only charge endpoint can confirm
+            $validated['status'] = 'pending';
+            $validated['payment_status'] = 'pending';
 
             // Default payment method to paylater when not specified
             if (!isset($validated['payment_method'])) {
