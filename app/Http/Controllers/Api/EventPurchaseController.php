@@ -650,4 +650,68 @@ class EventPurchaseController extends Controller
             'email' => $recipientEmail,
         ]);
     }
+
+    /**
+     * Force delete a pending event purchase (public - for payment error cleanup).
+     */
+    public function publicForceDelete($id): JsonResponse
+    {
+        Log::info('Event purchase public force delete request', ['id' => $id, 'ip' => request()->ip()]);
+
+        try {
+            $eventPurchase = EventPurchase::find($id);
+
+            if (!$eventPurchase) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Event purchase not found',
+                ], 404);
+            }
+
+            if ($eventPurchase->status !== 'pending') {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Only pending event purchases can be force deleted',
+                ], 403);
+            }
+
+            $eventName = $eventPurchase->event->name ?? 'Unknown';
+            $purchaseId = $eventPurchase->id;
+            $locationId = $eventPurchase->event->location_id ?? null;
+
+            $eventPurchase->forceDelete();
+
+            ActivityLog::log(
+                action: 'Event Purchase Force Deleted (Payment Error)',
+                category: 'delete',
+                description: "Pending event purchase force deleted: {$eventName}",
+                userId: null,
+                locationId: $locationId,
+                entityType: 'event_purchase',
+                entityId: $purchaseId,
+                metadata: [
+                    'reason' => 'payment_error_cleanup',
+                    'event_name' => $eventName,
+                    'deleted_at' => now()->toIso8601String(),
+                ]
+            );
+
+            Log::info('Event purchase force deleted successfully', ['id' => $purchaseId, 'event' => $eventName]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Event purchase permanently deleted',
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Event purchase public force delete failed', [
+                'id' => $id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to force delete event purchase: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
 }

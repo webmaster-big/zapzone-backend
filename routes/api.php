@@ -156,12 +156,14 @@ Route::post('payments/charge', [PaymentController::class, 'charge']);
 Route::post('bookings', [BookingController::class, 'store']);
 Route::post('bookings/{booking}/qrcode', [BookingController::class, 'storeQrCode']);
 Route::delete('bookings/{booking}', [BookingController::class, 'destroy']);
+Route::delete('bookings/{id}/force-delete', [BookingController::class, 'publicForceDelete']);
 
 // Public attraction purchase creation
 Route::post('attraction-purchases', [AttractionPurchaseController::class, 'store']);
 Route::post('attraction-purchases/{attractionPurchase}/qrcode', [AttractionPurchaseController::class, 'storeQrCode']);
 Route::get('attraction-purchases/customer', [AttractionPurchaseController::class, 'customerPurchases']);
 Route::delete('attraction-purchases/{attractionPurchase}', [AttractionPurchaseController::class, 'destroy']);
+Route::delete('attraction-purchases/{id}/force-delete', [AttractionPurchaseController::class, 'publicForceDelete']);
 
 // Locations Route
 Route::get('locations', [LocationController::class, 'index']);
@@ -200,6 +202,7 @@ Route::get('events/{event}/available-time-slots/{date}', [EventController::class
 Route::post('event-purchases', [EventPurchaseController::class, 'store']);
 Route::get('event-purchases/customer', [EventPurchaseController::class, 'customerPurchases']);
 Route::delete('event-purchases/{eventPurchase}', [EventPurchaseController::class, 'destroy']);
+Route::delete('event-purchases/{id}/force-delete', [EventPurchaseController::class, 'publicForceDelete']);
 
 // Public Day Off
 Route::get('day-offs/location/{locationId}', [DayOffController::class, 'getByLocation']);

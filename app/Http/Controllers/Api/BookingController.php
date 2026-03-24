@@ -2722,5 +2722,69 @@ class BookingController extends Controller
         ]);
     }
 
+    /**
+     * Force delete a pending booking (public - for payment error cleanup).
+     */
+    public function publicForceDelete($id): JsonResponse
+    {
+        Log::info('Booking public force delete request', ['id' => $id, 'ip' => request()->ip()]);
+
+        try {
+            $booking = Booking::find($id);
+
+            if (!$booking) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Booking not found',
+                ], 404);
+            }
+
+            if ($booking->status !== 'pending') {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Only pending bookings can be force deleted',
+                ], 403);
+            }
+
+            $referenceNumber = $booking->reference_number;
+            $bookingId = $booking->id;
+            $locationId = $booking->location_id;
+
+            $booking->forceDelete();
+
+            ActivityLog::log(
+                action: 'Booking Force Deleted (Payment Error)',
+                category: 'delete',
+                description: "Pending booking {$referenceNumber} force deleted due to payment error",
+                userId: null,
+                locationId: $locationId,
+                entityType: 'booking',
+                entityId: $bookingId,
+                metadata: [
+                    'reason' => 'payment_error_cleanup',
+                    'reference_number' => $referenceNumber,
+                    'deleted_at' => now()->toIso8601String(),
+                ]
+            );
+
+            Log::info('Booking force deleted successfully', ['id' => $bookingId, 'reference' => $referenceNumber]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Booking permanently deleted',
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Booking public force delete failed', [
+                'id' => $id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to force delete booking: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
 }
 

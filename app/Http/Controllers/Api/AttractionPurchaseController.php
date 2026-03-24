@@ -1577,6 +1577,70 @@ public function checkIn(Request $request, int $id): JsonResponse
         ]);
     }
 
+    /**
+     * Force delete a pending attraction purchase (public - for payment error cleanup).
+     */
+    public function publicForceDelete($id): JsonResponse
+    {
+        Log::info('Attraction purchase public force delete request', ['id' => $id, 'ip' => request()->ip()]);
+
+        try {
+            $attractionPurchase = AttractionPurchase::find($id);
+
+            if (!$attractionPurchase) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Attraction purchase not found',
+                ], 404);
+            }
+
+            if ($attractionPurchase->status !== AttractionPurchase::STATUS_PENDING) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Only pending attraction purchases can be force deleted',
+                ], 403);
+            }
+
+            $attractionName = $attractionPurchase->attraction->name ?? 'Unknown';
+            $purchaseId = $attractionPurchase->id;
+            $locationId = $attractionPurchase->attraction->location_id ?? null;
+
+            $attractionPurchase->forceDelete();
+
+            ActivityLog::log(
+                action: 'Attraction Purchase Force Deleted (Payment Error)',
+                category: 'delete',
+                description: "Pending attraction purchase force deleted: {$attractionName}",
+                userId: null,
+                locationId: $locationId,
+                entityType: 'attraction_purchase',
+                entityId: $purchaseId,
+                metadata: [
+                    'reason' => 'payment_error_cleanup',
+                    'attraction_name' => $attractionName,
+                    'deleted_at' => now()->toIso8601String(),
+                ]
+            );
+
+            Log::info('Attraction purchase force deleted successfully', ['id' => $purchaseId, 'attraction' => $attractionName]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Attraction purchase permanently deleted',
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Attraction purchase public force delete failed', [
+                'id' => $id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to force delete attraction purchase: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
 }
 
 
