@@ -15,7 +15,6 @@ class AttractionPurchase extends Model
      * Status constants
      */
     public const STATUS_PENDING = 'pending';
-    public const STATUS_PAYLATER = 'paylater';
     public const STATUS_CONFIRMED = 'confirmed';
     public const STATUS_CHECKED_IN = 'checked-in';
     public const STATUS_CANCELLED = 'cancelled';
@@ -23,7 +22,6 @@ class AttractionPurchase extends Model
 
     public const STATUSES = [
         self::STATUS_PENDING,
-        self::STATUS_PAYLATER,
         self::STATUS_CONFIRMED,
         self::STATUS_CHECKED_IN,
         self::STATUS_CANCELLED,

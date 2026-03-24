@@ -300,17 +300,14 @@ class AttractionPurchaseController extends Controller
         }
         // --- End duplicate prevention ---
 
-        // For card/authorize.net payments (public flow), set status to 'paylater' and amount_paid to 0
-        // Payment will be confirmed via the charge endpoint after successful payment processing
-        $paymentMethod = $validated['payment_method'] ?? null;
-        if (in_array($paymentMethod, ['card', 'authorize.net'])) {
-            $validated['status'] = AttractionPurchase::STATUS_PAYLATER;
-            $validated['amount_paid'] = 0;
-        } else {
-            // Determine initial status based on payment for non-card methods
-            $amountPaid = $validated['amount_paid'] ?? 0;
-            $validated['status'] = ($amountPaid >= $validated['total_amount']) ? AttractionPurchase::STATUS_CONFIRMED : AttractionPurchase::STATUS_PENDING;
+        // Always start as pending — status will be updated to confirmed after successful payment via charge endpoint
+        $validated['status'] = AttractionPurchase::STATUS_PENDING;
+
+        // Default payment method to paylater when not specified
+        if (!isset($validated['payment_method'])) {
+            $validated['payment_method'] = 'paylater';
         }
+
         $validated['created_by'] = auth()->id() ?? null;
 
         $purchase = AttractionPurchase::create($validated);
@@ -329,8 +326,9 @@ class AttractionPurchaseController extends Controller
 
         $purchase->load(['attraction', 'customer', 'createdBy', 'addOns']);
 
-        // Create notification for customer
-        if ($purchase->customer_id) {
+        // Create notification for customer (only when purchase is confirmed, e.g. onsite purchases)
+        // For online purchases (pending → charge → confirmed), notifications are sent from PaymentController::charge
+        if ($purchase->customer_id && $purchase->status !== AttractionPurchase::STATUS_PENDING) {
             CustomerNotification::create([
                 'customer_id' => $purchase->customer_id,
                 'location_id' => $purchase->attraction->location_id ?? null,
@@ -447,9 +445,10 @@ class AttractionPurchaseController extends Controller
         }
 
         // Send automated email notifications based on configured notification rules
-        // Only send if send_email is not explicitly false
+        // Only send if purchase is confirmed (onsite) and send_email is not explicitly false
+        // For online purchases (pending → charge → confirmed), emails are sent from PaymentController::charge
         $sendEmail = $validated['send_email'] ?? true;
-        if ($sendEmail) {
+        if ($sendEmail && $purchase->status !== AttractionPurchase::STATUS_PENDING) {
             try {
                 $emailNotificationService = new EmailNotificationService();
                 $emailNotificationService->processPurchaseCreated($purchase);
@@ -771,28 +770,29 @@ class AttractionPurchaseController extends Controller
     {
         $attractionPurchase = AttractionPurchase::findOrFail($id);
 
-        $deletedBy = auth()->id();
-        $user = $deletedBy ? User::find($deletedBy) : null;
+        // auth may not be available for public delete calls
+        $userId = auth()->id();
+        $user = $userId ? User::find($userId) : null;
+        $deletedByName = $user ? "{$user->first_name} {$user->last_name}" : 'system/public';
 
-        $attractionName = $attractionPurchase->attraction->name ?? 'Unknown';
+        $attractionName = $attractionPurchase->attraction->name;
         $purchaseId = $attractionPurchase->id;
         $locationId = $attractionPurchase->attraction->location_id ?? null;
 
         $attractionPurchase->delete();
 
         // Log attraction purchase deletion activity
-        $deletedByName = $user ? $user->first_name . ' ' . $user->last_name : 'System/Public';
         ActivityLog::log(
             action: 'Attraction Purchase Deleted',
             category: 'delete',
             description: "Attraction purchase deleted: {$attractionName} by {$deletedByName}",
-            userId: $deletedBy,
+            userId: $userId,
             locationId: $locationId,
             entityType: 'attraction_purchase',
             entityId: $purchaseId,
             metadata: [
                 'deleted_by' => [
-                    'user_id' => $deletedBy,
+                    'user_id' => $userId,
                     'name' => $deletedByName,
                     'email' => $user?->email,
                 ],

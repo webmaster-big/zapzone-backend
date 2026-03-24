@@ -14,6 +14,7 @@ use App\Models\AuthorizeNetAccount;
 use App\Models\ActivityLog;
 use App\Models\CustomerNotification;
 use App\Models\Notification;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Str;
@@ -26,6 +27,8 @@ use App\Mail\BookingCancellation;
 use App\Mail\AttractionPurchaseCancellation;
 use App\Mail\BookingConfirmation;
 use App\Mail\AttractionPurchaseReceipt;
+use App\Mail\StaffBookingNotification;
+use App\Mail\EventPurchaseConfirmation;
 use App\Services\GmailApiService;
 use App\Services\EmailNotificationService;
 use App\Services\GoogleCalendarService;
@@ -1735,7 +1738,7 @@ class PaymentController extends Controller
                                     'amount_paid' => $totalPaid,
                                     'payment_method' => 'authorize.net',
                                     'transaction_id' => $transactionId,
-                                    'status' => $totalPaid >= $payable->total_amount ? AttractionPurchase::STATUS_CONFIRMED : AttractionPurchase::STATUS_PENDING,
+                                    'status' => AttractionPurchase::STATUS_CONFIRMED,
                                 ]);
                             }
                         } elseif ($payment->payable_type === Payment::TYPE_EVENT_PURCHASE) {
@@ -1750,7 +1753,7 @@ class PaymentController extends Controller
                                     'payment_method' => 'authorize.net',
                                     'transaction_id' => $transactionId,
                                     'payment_status' => $totalPaid >= $payable->total_amount ? 'paid' : 'partial',
-                                    'status' => $totalPaid >= $payable->total_amount ? 'confirmed' : $payable->status,
+                                    'status' => 'confirmed',
                                 ]);
                             }
                         }
@@ -1950,14 +1953,33 @@ class PaymentController extends Controller
                             } elseif ($payment->payable_type === Payment::TYPE_EVENT_PURCHASE) {
                                 // Event purchase email confirmation
                                 $eventPurchase = $payable;
-                                $eventPurchase->load(['event', 'customer', 'location']);
+                                $eventPurchase->loadMissing(['event.location.company', 'customer', 'location', 'addOns']);
 
                                 $recipientEmail = $eventPurchase->customer
                                     ? $eventPurchase->customer->email
                                     : $eventPurchase->guest_email;
 
                                 if ($recipientEmail) {
-                                    Log::info('Event purchase payment completed from charge()', [
+                                    $useGmailApi = config('gmail.enabled', false) &&
+                                        (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
+
+                                    $mailable = new EventPurchaseConfirmation($eventPurchase);
+                                    $emailBody = $mailable->render();
+                                    $subject = 'Event Purchase Confirmation - ' . $eventPurchase->reference_number;
+
+                                    if ($useGmailApi) {
+                                        $gmailService = new GmailApiService();
+                                        $gmailService->sendEmail($recipientEmail, $subject, $emailBody);
+                                    } else {
+                                        Mail::send([], [], function ($message) use ($recipientEmail, $subject, $emailBody) {
+                                            $message->to($recipientEmail)
+                                                ->subject($subject)
+                                                ->html($emailBody);
+                                        });
+                                    }
+
+                                    $emailSent = true;
+                                    Log::info('Event purchase confirmation email sent from charge()', [
                                         'event_purchase_id' => $eventPurchase->id,
                                         'email' => $recipientEmail,
                                     ]);
@@ -1966,6 +1988,143 @@ class PaymentController extends Controller
                         } catch (\Exception $e) {
                             $emailError = $e->getMessage();
                             Log::error('Failed to send confirmation email from charge()', [
+                                'payment_id' => $payment->id,
+                                'payable_type' => $payment->payable_type,
+                                'payable_id' => $payment->payable_id,
+                                'error' => $e->getMessage(),
+                            ]);
+                        }
+                    }
+
+                    // Send staff email notifications after successful payment
+                    // This replaces the store-time staff emails for online (authorize.net) purchases
+                    if ($payable) {
+                        try {
+                            if ($payment->payable_type === Payment::TYPE_BOOKING) {
+                                $booking = $payable;
+                                $booking->loadMissing(['customer', 'package', 'location.company', 'room', 'creator', 'attractions', 'addOns']);
+
+                                // Send staff email notification
+                                $staffUsers = User::where('location_id', $booking->location_id)
+                                    ->whereNotNull('email')
+                                    ->get();
+
+                                if ($booking->location && $booking->location->company_id) {
+                                    $companyAdmins = User::where('company_id', $booking->location->company_id)
+                                        ->where('role', 'company_admin')
+                                        ->whereNotNull('email')
+                                        ->get();
+                                    $staffUsers = $staffUsers->merge($companyAdmins)->unique('email');
+                                }
+
+                                $useGmailApi = config('gmail.enabled', false) &&
+                                    (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
+
+                                foreach ($staffUsers as $staffUser) {
+                                    try {
+                                        $recipientName = $staffUser->first_name ?? $staffUser->name ?? 'Team Member';
+                                        if ($useGmailApi) {
+                                            $gmailService = new GmailApiService();
+                                            $mailable = new StaffBookingNotification($booking, $recipientName);
+                                            $mailable->build();
+                                            $emailBody = $mailable->render();
+                                            $gmailService->sendEmail(
+                                                $staffUser->email,
+                                                "New Booking Alert - {$booking->reference_number}",
+                                                $emailBody,
+                                                $booking->location->company->name ?? 'ZapZone'
+                                            );
+                                        } else {
+                                            Mail::to($staffUser->email)->send(new StaffBookingNotification($booking, $recipientName));
+                                        }
+                                        Log::info('Staff booking notification sent from charge()', [
+                                            'booking_id' => $booking->id,
+                                            'staff_email' => $staffUser->email,
+                                        ]);
+                                    } catch (\Exception $e) {
+                                        Log::warning('Failed to send staff booking notification from charge()', [
+                                            'booking_id' => $booking->id,
+                                            'staff_email' => $staffUser->email,
+                                            'error' => $e->getMessage(),
+                                        ]);
+                                    }
+                                }
+
+                                // Create customer notification (for in-app notifications)
+                                if ($booking->customer_id) {
+                                    CustomerNotification::create([
+                                        'customer_id' => $booking->customer_id,
+                                        'location_id' => $booking->location_id,
+                                        'type' => 'booking',
+                                        'priority' => 'high',
+                                        'title' => 'Booking Confirmed',
+                                        'message' => "Your booking {$booking->reference_number} has been confirmed for {$booking->booking_date} at {$booking->booking_time}.",
+                                        'status' => 'unread',
+                                        'action_url' => "/bookings/{$booking->id}",
+                                        'action_text' => 'View Booking',
+                                        'metadata' => [
+                                            'booking_id' => $booking->id,
+                                            'reference_number' => $booking->reference_number,
+                                            'booking_date' => $booking->booking_date,
+                                            'booking_time' => $booking->booking_time,
+                                        ],
+                                    ]);
+                                }
+                            } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE) {
+                                $purchase = $payable;
+                                $purchase->loadMissing(['attraction.location', 'customer', 'createdBy', 'addOns']);
+
+                                // Send automated email notifications via EmailNotificationService
+                                $emailNotificationService = new EmailNotificationService();
+                                $emailNotificationService->processPurchaseCreated($purchase);
+
+                                // Create customer notification
+                                if ($purchase->customer_id) {
+                                    CustomerNotification::create([
+                                        'customer_id' => $purchase->customer_id,
+                                        'location_id' => $purchase->attraction->location_id ?? null,
+                                        'type' => 'payment',
+                                        'priority' => 'medium',
+                                        'title' => 'Attraction Purchase Confirmed',
+                                        'message' => "Your purchase of {$purchase->quantity} x {$purchase->attraction->name} has been confirmed. Total: $" . number_format($purchase->total_amount, 2),
+                                        'status' => 'unread',
+                                        'action_url' => "/attractions/purchases/{$purchase->id}",
+                                        'action_text' => 'View Purchase',
+                                        'metadata' => [
+                                            'purchase_id' => $purchase->id,
+                                            'attraction_id' => $purchase->attraction_id,
+                                            'quantity' => $purchase->quantity,
+                                            'total_amount' => $purchase->total_amount,
+                                        ],
+                                    ]);
+                                }
+                            } elseif ($payment->payable_type === Payment::TYPE_EVENT_PURCHASE) {
+                                $eventPurchase = $payable;
+                                $eventPurchase->loadMissing(['event', 'customer', 'location']);
+
+                                // Create customer notification
+                                if ($eventPurchase->customer_id) {
+                                    CustomerNotification::create([
+                                        'customer_id' => $eventPurchase->customer_id,
+                                        'location_id' => $eventPurchase->location_id,
+                                        'type' => 'payment',
+                                        'priority' => 'medium',
+                                        'title' => 'Event Purchase Confirmed',
+                                        'message' => "Your purchase of {$eventPurchase->quantity} ticket(s) for {$eventPurchase->event->name} has been confirmed. Total: $" . number_format($eventPurchase->total_amount, 2),
+                                        'status' => 'unread',
+                                        'action_url' => "/events/purchases/{$eventPurchase->id}",
+                                        'action_text' => 'View Purchase',
+                                        'metadata' => [
+                                            'purchase_id' => $eventPurchase->id,
+                                            'event_id' => $eventPurchase->event_id,
+                                            'quantity' => $eventPurchase->quantity,
+                                            'total_amount' => $eventPurchase->total_amount,
+                                        ],
+                                    ]);
+                                }
+                            }
+                        } catch (\Exception $e) {
+                            Log::warning('Failed to send staff notifications from charge()', [
                                 'payment_id' => $payment->id,
                                 'payable_type' => $payment->payable_type,
                                 'payable_id' => $payment->payable_id,
@@ -2000,8 +2159,8 @@ class PaymentController extends Controller
                         'response_code' => $tresponse->getResponseCode(),
                     ]);
 
-                    // Reset amount_paid to 0 on linked entity since payment failed
-                    $this->resetPayableOnFailure($request->payable_id, $request->payable_type);
+                    // Reset amount_paid to 0 on the linked entity when payment fails
+                    $this->resetAmountPaidOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
 
                     return response()->json([
                         'success' => false,
@@ -2040,8 +2199,8 @@ class PaymentController extends Controller
                     'suggestion' => $errorCode === 'E00007' ? 'Check if credentials match environment. Run test-connection endpoint.' : null,
                 ]);
 
-                // Reset amount_paid to 0 on linked entity since payment failed
-                $this->resetPayableOnFailure($request->payable_id, $request->payable_type);
+                // Reset amount_paid to 0 on the linked entity when payment fails
+                $this->resetAmountPaidOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
 
                 return response()->json([
                     'success' => false,
@@ -2058,8 +2217,8 @@ class PaymentController extends Controller
                 'location_id' => $request->location_id,
             ]);
 
-            // Reset amount_paid to 0 on linked entity since payment failed
-            $this->resetPayableOnFailure($request->payable_id, $request->payable_type);
+            // Reset amount_paid to 0 on the linked entity when payment fails
+            $this->resetAmountPaidOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
 
             return response()->json([
                 'success' => false,
@@ -2073,8 +2232,8 @@ class PaymentController extends Controller
                 'trace' => $e->getTraceAsString(),
             ]);
 
-            // Reset amount_paid to 0 on linked entity since payment failed
-            $this->resetPayableOnFailure($request->payable_id, $request->payable_type);
+            // Reset amount_paid to 0 on the linked entity when payment fails
+            $this->resetAmountPaidOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
 
             return response()->json([
                 'success' => false,
@@ -2084,10 +2243,9 @@ class PaymentController extends Controller
     }
 
     /**
-     * Reset amount_paid to 0 on linked booking/purchase when payment fails.
-     * This ensures entities created with 'paylater' status don't retain stale amount_paid values.
+     * Reset amount_paid to 0 on related entity when payment fails.
      */
-    private function resetPayableOnFailure(?int $payableId, ?string $payableType): void
+    private function resetAmountPaidOnFailure(?int $payableId, ?string $payableType): void
     {
         if (!$payableId || !$payableType) {
             return;
@@ -2098,25 +2256,23 @@ class PaymentController extends Controller
                 $payable = Booking::find($payableId);
                 if ($payable) {
                     $payable->update(['amount_paid' => 0, 'payment_status' => 'pending']);
+                    Log::info('Reset amount_paid on booking after payment failure', ['booking_id' => $payableId]);
                 }
             } elseif ($payableType === Payment::TYPE_ATTRACTION_PURCHASE) {
                 $payable = AttractionPurchase::find($payableId);
                 if ($payable) {
                     $payable->update(['amount_paid' => 0]);
+                    Log::info('Reset amount_paid on attraction purchase after payment failure', ['purchase_id' => $payableId]);
                 }
             } elseif ($payableType === Payment::TYPE_EVENT_PURCHASE) {
                 $payable = EventPurchase::find($payableId);
                 if ($payable) {
                     $payable->update(['amount_paid' => 0, 'payment_status' => 'pending']);
+                    Log::info('Reset amount_paid on event purchase after payment failure', ['purchase_id' => $payableId]);
                 }
             }
-
-            Log::info('Reset amount_paid on payable after payment failure', [
-                'payable_id' => $payableId,
-                'payable_type' => $payableType,
-            ]);
         } catch (\Exception $e) {
-            Log::error('Failed to reset payable after payment failure', [
+            Log::error('Failed to reset amount_paid on payment failure', [
                 'payable_id' => $payableId,
                 'payable_type' => $payableType,
                 'error' => $e->getMessage(),
