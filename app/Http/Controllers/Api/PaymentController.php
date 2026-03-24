@@ -1510,6 +1510,8 @@ class PaymentController extends Controller
                 ->first();
 
             if (!$account) {
+                $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
+
                 return response()->json([
                     'success' => false,
                     'message' => 'No active Authorize.Net account found for this location'
@@ -1672,6 +1674,8 @@ class PaymentController extends Controller
                             'amount' => $request->amount,
                             'environment' => $account->environment,
                         ]);
+
+                        $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
 
                         return response()->json([
                             'success' => false,
@@ -2159,8 +2163,8 @@ class PaymentController extends Controller
                         'response_code' => $tresponse->getResponseCode(),
                     ]);
 
-                    // Reset amount_paid to 0 on the linked entity when payment fails
-                    $this->resetAmountPaidOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
+                    // Force delete the pending entity when payment fails
+                    $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
 
                     return response()->json([
                         'success' => false,
@@ -2199,8 +2203,8 @@ class PaymentController extends Controller
                     'suggestion' => $errorCode === 'E00007' ? 'Check if credentials match environment. Run test-connection endpoint.' : null,
                 ]);
 
-                // Reset amount_paid to 0 on the linked entity when payment fails
-                $this->resetAmountPaidOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
+                // Force delete the pending entity when payment fails
+                $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
 
                 return response()->json([
                     'success' => false,
@@ -2217,8 +2221,8 @@ class PaymentController extends Controller
                 'location_id' => $request->location_id,
             ]);
 
-            // Reset amount_paid to 0 on the linked entity when payment fails
-            $this->resetAmountPaidOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
+            // Force delete the pending entity when payment fails
+            $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
 
             return response()->json([
                 'success' => false,
@@ -2232,8 +2236,8 @@ class PaymentController extends Controller
                 'trace' => $e->getTraceAsString(),
             ]);
 
-            // Reset amount_paid to 0 on the linked entity when payment fails
-            $this->resetAmountPaidOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
+            // Force delete the pending entity when payment fails
+            $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
 
             return response()->json([
                 'success' => false,
@@ -2243,9 +2247,11 @@ class PaymentController extends Controller
     }
 
     /**
-     * Reset amount_paid to 0 on related entity when payment fails.
+     * Force delete the related pending entity when payment fails.
+     * Only deletes entities that are still in 'pending' status to avoid
+     * accidentally removing confirmed records.
      */
-    private function resetAmountPaidOnFailure(?int $payableId, ?string $payableType): void
+    private function forceDeletePayableOnFailure(?int $payableId, ?string $payableType): void
     {
         if (!$payableId || !$payableType) {
             return;
@@ -2254,25 +2260,25 @@ class PaymentController extends Controller
         try {
             if ($payableType === Payment::TYPE_BOOKING) {
                 $payable = Booking::find($payableId);
-                if ($payable) {
-                    $payable->update(['amount_paid' => 0, 'payment_status' => 'pending']);
-                    Log::info('Reset amount_paid on booking after payment failure', ['booking_id' => $payableId]);
+                if ($payable && $payable->status === 'pending') {
+                    $payable->forceDelete();
+                    Log::info('Force deleted pending booking after payment failure', ['booking_id' => $payableId]);
                 }
             } elseif ($payableType === Payment::TYPE_ATTRACTION_PURCHASE) {
                 $payable = AttractionPurchase::find($payableId);
-                if ($payable) {
-                    $payable->update(['amount_paid' => 0]);
-                    Log::info('Reset amount_paid on attraction purchase after payment failure', ['purchase_id' => $payableId]);
+                if ($payable && $payable->status === AttractionPurchase::STATUS_PENDING) {
+                    $payable->forceDelete();
+                    Log::info('Force deleted pending attraction purchase after payment failure', ['purchase_id' => $payableId]);
                 }
             } elseif ($payableType === Payment::TYPE_EVENT_PURCHASE) {
                 $payable = EventPurchase::find($payableId);
-                if ($payable) {
-                    $payable->update(['amount_paid' => 0, 'payment_status' => 'pending']);
-                    Log::info('Reset amount_paid on event purchase after payment failure', ['purchase_id' => $payableId]);
+                if ($payable && $payable->status === 'pending') {
+                    $payable->forceDelete();
+                    Log::info('Force deleted pending event purchase after payment failure', ['purchase_id' => $payableId]);
                 }
             }
         } catch (\Exception $e) {
-            Log::error('Failed to reset amount_paid on payment failure', [
+            Log::error('Failed to force delete payable on payment failure', [
                 'payable_id' => $payableId,
                 'payable_type' => $payableType,
                 'error' => $e->getMessage(),
