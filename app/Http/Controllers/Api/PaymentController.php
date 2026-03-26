@@ -2250,7 +2250,7 @@ class PaymentController extends Controller
      * Force delete the related pending entity when payment fails.
      * Only deletes entities that are still in 'pending' status to avoid
      * accidentally removing confirmed records.
-     * Falls back to resetting amount_paid if delete fails.
+     * If force delete fails, falls back to resetting amount_paid to 0.
      */
     private function forceDeletePayableOnFailure(?int $payableId, ?string $payableType): void
     {
@@ -2259,46 +2259,63 @@ class PaymentController extends Controller
         }
 
         try {
+            $payable = null;
+
             if ($payableType === Payment::TYPE_BOOKING) {
                 $payable = Booking::find($payableId);
-                if ($payable && $payable->status === 'pending') {
-                    $payable->forceDelete();
-                    Log::info('Force deleted pending booking after payment failure', ['booking_id' => $payableId]);
-                }
             } elseif ($payableType === Payment::TYPE_ATTRACTION_PURCHASE) {
                 $payable = AttractionPurchase::find($payableId);
-                if ($payable && $payable->status === AttractionPurchase::STATUS_PENDING) {
-                    $payable->forceDelete();
-                    Log::info('Force deleted pending attraction purchase after payment failure', ['purchase_id' => $payableId]);
-                }
             } elseif ($payableType === Payment::TYPE_EVENT_PURCHASE) {
                 $payable = EventPurchase::find($payableId);
-                if ($payable && $payable->status === 'pending') {
-                    $payable->forceDelete();
-                    Log::info('Force deleted pending event purchase after payment failure', ['purchase_id' => $payableId]);
-                }
+            }
+
+            if (!$payable) {
+                return;
+            }
+
+            // Only force delete if still pending
+            $isPending = $payableType === Payment::TYPE_ATTRACTION_PURCHASE
+                ? $payable->status === AttractionPurchase::STATUS_PENDING
+                : $payable->status === 'pending';
+
+            if ($isPending) {
+                $payable->forceDelete();
+                Log::info('Force deleted pending entity after payment failure', [
+                    'payable_type' => $payableType,
+                    'payable_id' => $payableId,
+                ]);
             }
         } catch (\Exception $e) {
-            Log::error('Failed to force delete payable on payment failure, resetting amount_paid instead', [
+            Log::error('Force delete failed, resetting amount_paid to 0 as fallback', [
                 'payable_id' => $payableId,
                 'payable_type' => $payableType,
                 'error' => $e->getMessage(),
             ]);
 
-            // Fallback: reset amount_paid so the record doesn't show fake paid amount
+            // Fallback: reset amount_paid to 0 so the record doesn't show a false paid amount
             try {
+                $fallback = null;
                 if ($payableType === Payment::TYPE_BOOKING) {
-                    Booking::where('id', $payableId)->update(['amount_paid' => 0, 'payment_status' => 'pending']);
+                    $fallback = Booking::find($payableId);
+                    if ($fallback && $fallback->status === 'pending') {
+                        $fallback->update(['amount_paid' => 0, 'payment_status' => 'pending']);
+                    }
                 } elseif ($payableType === Payment::TYPE_ATTRACTION_PURCHASE) {
-                    AttractionPurchase::where('id', $payableId)->update(['amount_paid' => 0]);
+                    $fallback = AttractionPurchase::find($payableId);
+                    if ($fallback && $fallback->status === AttractionPurchase::STATUS_PENDING) {
+                        $fallback->update(['amount_paid' => 0]);
+                    }
                 } elseif ($payableType === Payment::TYPE_EVENT_PURCHASE) {
-                    EventPurchase::where('id', $payableId)->update(['amount_paid' => 0, 'payment_status' => 'pending']);
+                    $fallback = EventPurchase::find($payableId);
+                    if ($fallback && $fallback->status === 'pending') {
+                        $fallback->update(['amount_paid' => 0, 'payment_status' => 'pending']);
+                    }
                 }
-            } catch (\Exception $resetException) {
-                Log::error('Failed to reset amount_paid as fallback', [
+            } catch (\Exception $fallbackError) {
+                Log::error('Fallback amount_paid reset also failed', [
                     'payable_id' => $payableId,
                     'payable_type' => $payableType,
-                    'error' => $resetException->getMessage(),
+                    'error' => $fallbackError->getMessage(),
                 ]);
             }
         }
