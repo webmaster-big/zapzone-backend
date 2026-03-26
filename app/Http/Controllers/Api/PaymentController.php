@@ -2247,10 +2247,9 @@ class PaymentController extends Controller
     }
 
     /**
-     * Force delete the related pending entity when payment fails.
-     * Only deletes entities that are still in 'pending' status to avoid
-     * accidentally removing confirmed records.
-     * If force delete fails, falls back to resetting amount_paid to 0.
+     * Soft delete the related pending entity when payment fails.
+     * Only deletes entities that are still in 'pending' status.
+     * If soft delete fails, falls back to resetting amount_paid to 0.
      */
     private function forceDeletePayableOnFailure(?int $payableId, ?string $payableType): void
     {
@@ -2273,20 +2272,20 @@ class PaymentController extends Controller
                 return;
             }
 
-            // Only force delete if still pending
+            // Only delete if still pending
             $isPending = $payableType === Payment::TYPE_ATTRACTION_PURCHASE
                 ? $payable->status === AttractionPurchase::STATUS_PENDING
                 : $payable->status === 'pending';
 
             if ($isPending) {
-                $payable->forceDelete();
-                Log::info('Force deleted pending entity after payment failure', [
+                $payable->delete();
+                Log::info('Soft deleted pending entity after payment failure', [
                     'payable_type' => $payableType,
                     'payable_id' => $payableId,
                 ]);
             }
         } catch (\Exception $e) {
-            Log::error('Force delete failed, resetting amount_paid to 0 as fallback', [
+            Log::error('Soft delete failed, resetting amount_paid to 0 as fallback', [
                 'payable_id' => $payableId,
                 'payable_type' => $payableType,
                 'error' => $e->getMessage(),
