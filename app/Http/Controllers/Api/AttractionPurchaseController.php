@@ -302,6 +302,7 @@ class AttractionPurchaseController extends Controller
 
         // Always start as pending — status will be updated to confirmed after successful payment via charge endpoint
         $validated['status'] = AttractionPurchase::STATUS_PENDING;
+        $validated['amount_paid'] = 0;
 
         // Default payment method to paylater when not specified
         if (!isset($validated['payment_method'])) {

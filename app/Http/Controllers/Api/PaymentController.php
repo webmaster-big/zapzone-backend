@@ -2250,6 +2250,7 @@ class PaymentController extends Controller
      * Force delete the related pending entity when payment fails.
      * Only deletes entities that are still in 'pending' status to avoid
      * accidentally removing confirmed records.
+     * Falls back to resetting amount_paid if delete fails.
      */
     private function forceDeletePayableOnFailure(?int $payableId, ?string $payableType): void
     {
@@ -2278,11 +2279,28 @@ class PaymentController extends Controller
                 }
             }
         } catch (\Exception $e) {
-            Log::error('Failed to force delete payable on payment failure', [
+            Log::error('Failed to force delete payable on payment failure, resetting amount_paid instead', [
                 'payable_id' => $payableId,
                 'payable_type' => $payableType,
                 'error' => $e->getMessage(),
             ]);
+
+            // Fallback: reset amount_paid so the record doesn't show fake paid amount
+            try {
+                if ($payableType === Payment::TYPE_BOOKING) {
+                    Booking::where('id', $payableId)->update(['amount_paid' => 0, 'payment_status' => 'pending']);
+                } elseif ($payableType === Payment::TYPE_ATTRACTION_PURCHASE) {
+                    AttractionPurchase::where('id', $payableId)->update(['amount_paid' => 0]);
+                } elseif ($payableType === Payment::TYPE_EVENT_PURCHASE) {
+                    EventPurchase::where('id', $payableId)->update(['amount_paid' => 0, 'payment_status' => 'pending']);
+                }
+            } catch (\Exception $resetException) {
+                Log::error('Failed to reset amount_paid as fallback', [
+                    'payable_id' => $payableId,
+                    'payable_type' => $payableType,
+                    'error' => $resetException->getMessage(),
+                ]);
+            }
         }
     }
 

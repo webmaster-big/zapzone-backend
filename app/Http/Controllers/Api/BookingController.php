@@ -350,6 +350,7 @@ class BookingController extends Controller
         // Always start as pending — only charge endpoint can confirm
         $validated['payment_status'] = 'pending';
         $validated['status'] = 'pending';
+        $validated['amount_paid'] = 0;
 
         // Default payment method to paylater when not specified
         if (!isset($validated['payment_method'])) {
