@@ -515,9 +515,10 @@ class PaymentController extends Controller
             $merchantAuthentication->setTransactionKey($transactionKey);
 
             // 4. Create credit card payment type (last 4 digits required for refund)
-            // For refunds, Authorize.Net requires a payment reference
+            // Use stored card_last_four from the original charge response
             $creditCard = new AnetAPI\CreditCardType();
-            $creditCard->setCardNumber('XXXX' . substr($payment->payment_id ?? $payment->transaction_id, -4));
+            $lastFour = $payment->card_last_four ?? substr($payment->transaction_id, -4);
+            $creditCard->setCardNumber('XXXX' . $lastFour);
             $creditCard->setExpirationDate('XXXX');
 
             $paymentType = new AnetAPI\PaymentType();
@@ -720,14 +721,14 @@ class PaymentController extends Controller
                         if ($payable) {
                             if ($isCancelled) {
                                 $payable->update([
-                                    'status' => $isFullRefund ? AttractionPurchase::STATUS_REFUNDED : AttractionPurchase::STATUS_PENDING,
+                                    'status' => $isFullRefund ? AttractionPurchase::STATUS_REFUNDED : AttractionPurchase::STATUS_CONFIRMED,
                                     'amount_paid' => max(0, $payable->amount_paid - $refundAmount),
                                 ]);
                             } else {
                                 $newAmountPaid = max(0, $payable->amount_paid - $refundAmount);
                                 $payable->update([
                                     'amount_paid' => $newAmountPaid,
-                                    'status' => $newAmountPaid <= 0 ? AttractionPurchase::STATUS_REFUNDED : AttractionPurchase::STATUS_PENDING,
+                                    'status' => $newAmountPaid <= 0 ? AttractionPurchase::STATUS_REFUNDED : AttractionPurchase::STATUS_CONFIRMED,
                                 ]);
                             }
 
@@ -1057,14 +1058,14 @@ class PaymentController extends Controller
             if ($payable) {
                 if ($isCancelled) {
                     $payable->update([
-                        'status' => $isFullRefund ? AttractionPurchase::STATUS_REFUNDED : AttractionPurchase::STATUS_PENDING,
+                        'status' => $isFullRefund ? AttractionPurchase::STATUS_REFUNDED : AttractionPurchase::STATUS_CONFIRMED,
                         'amount_paid' => max(0, $payable->amount_paid - $refundAmount),
                     ]);
                 } else {
                     $newAmountPaid = max(0, $payable->amount_paid - $refundAmount);
                     $payable->update([
                         'amount_paid' => $newAmountPaid,
-                        'status' => $newAmountPaid <= 0 ? AttractionPurchase::STATUS_REFUNDED : AttractionPurchase::STATUS_PENDING,
+                        'status' => $newAmountPaid <= 0 ? AttractionPurchase::STATUS_REFUNDED : AttractionPurchase::STATUS_CONFIRMED,
                     ]);
                 }
 
@@ -1292,7 +1293,7 @@ class PaymentController extends Controller
                         if ($payable) {
                             $payable->update([
                                 'status' => 'cancelled',
-                                'payment_status' => 'refunded',
+                                'payment_status' => 'voided',
                                 'cancelled_at' => now(),
                                 'amount_paid' => max(0, $payable->amount_paid - $voidAmount),
                             ]);
@@ -1344,7 +1345,7 @@ class PaymentController extends Controller
                             $newAmountPaid = max(0, $payable->amount_paid - $voidAmount);
                             $payable->update([
                                 'amount_paid' => $newAmountPaid,
-                                'payment_status' => 'refunded',
+                                'payment_status' => 'voided',
                                 'status' => 'cancelled',
                                 'cancelled_at' => now(),
                             ]);
@@ -1685,6 +1686,12 @@ class PaymentController extends Controller
                     }
 
                     // Success - create payment record with optional payable linking
+                    // Capture card last 4 digits from Authorize.Net response for future refunds
+                    $cardLastFour = null;
+                    if ($tresponse->getAccountNumber()) {
+                        $cardLastFour = substr($tresponse->getAccountNumber(), -4);
+                    }
+
                     $payment = Payment::create([
                         'customer_id' => $request->customer_id,
                         'location_id' => $request->location_id,
@@ -1694,6 +1701,7 @@ class PaymentController extends Controller
                         'status' => 'completed',
                         'transaction_id' => $transactionId,
                         'payment_id' => $transactionId,
+                        'card_last_four' => $cardLastFour,
                         'payable_id' => $request->payable_id,
                         'payable_type' => $request->payable_type,
                         'notes' => $request->description ?? 'Authorize.Net payment via Accept.js',

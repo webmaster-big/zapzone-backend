@@ -33,6 +33,7 @@ class Payment extends Model
         'paid_at',
         'refunded_at',
         'payment_id',
+        'card_last_four',
         'location_id',
     ];
 

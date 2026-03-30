@@ -538,9 +538,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('events/{event}/toggle-status', [EventController::class, 'toggleStatus']);
 
     // Event Purchase routes
+    // Soft delete routes - MUST be before apiResource to avoid {eventPurchase} catching "trashed"
+    Route::get('event-purchases/trashed', [EventPurchaseController::class, 'trashed']);
+    Route::post('event-purchases/bulk-restore', [EventPurchaseController::class, 'bulkRestore']);
     Route::apiResource('event-purchases', EventPurchaseController::class)->except(['store']);
     Route::patch('event-purchases/{eventPurchase}/cancel', [EventPurchaseController::class, 'cancel']);
     Route::patch('event-purchases/{eventPurchase}/status', [EventPurchaseController::class, 'updateStatus']);
+    Route::post('event-purchases/{id}/restore', [EventPurchaseController::class, 'restore']);
 
     // Google Calendar routes
     Route::prefix('google-calendar')->group(function () {

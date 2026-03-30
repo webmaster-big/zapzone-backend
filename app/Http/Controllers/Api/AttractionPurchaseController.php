@@ -300,12 +300,19 @@ class AttractionPurchaseController extends Controller
         }
         // --- End duplicate prevention ---
 
-        // Always start as pending — status will be updated to confirmed after successful payment via charge endpoint
-        $validated['status'] = AttractionPurchase::STATUS_PENDING;
-
         // Default payment method to paylater when not specified
         if (!isset($validated['payment_method'])) {
             $validated['payment_method'] = 'paylater';
+        }
+
+        // Set status based on payment method:
+        // - in-store/card (on-site): confirmed immediately, no charge step needed
+        // - paylater: pending until payment is collected later
+        // - authorize.net: pending until charge endpoint confirms after successful payment
+        if (in_array($validated['payment_method'], ['in-store', 'card'])) {
+            $validated['status'] = AttractionPurchase::STATUS_CONFIRMED;
+        } else {
+            $validated['status'] = AttractionPurchase::STATUS_PENDING;
         }
 
         $validated['created_by'] = auth()->id() ?? null;
@@ -348,9 +355,10 @@ class AttractionPurchaseController extends Controller
             ]);
         }
 
-        // Create notification for location staff
+        // Create notification for location staff (only for confirmed purchases)
+        // For authorize.net pending purchases, staff notifications are sent from PaymentController::charge after payment succeeds
         $customerName = $purchase->customer ? "{$purchase->customer->first_name} {$purchase->customer->last_name}" : $purchase->guest_name;
-        if ($purchase->attraction->location_id) {
+        if ($purchase->status !== AttractionPurchase::STATUS_PENDING && $purchase->attraction->location_id) {
             Notification::create([
                 'location_id' => $purchase->attraction->location_id,
                 'type' => 'payment',

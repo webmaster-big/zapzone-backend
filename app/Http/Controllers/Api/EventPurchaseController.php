@@ -90,8 +90,8 @@ class EventPurchaseController extends Controller
                 'amount_paid' => 'nullable|numeric|min:0',
                 'discount_amount' => 'nullable|numeric|min:0',
                 'payment_method' => 'nullable|in:card,in-store,paylater,authorize.net',
-                // Note: status and payment_status are NOT accepted from frontend on create
-                // They are always forced to 'pending' below — only the charge endpoint can confirm
+                // Note: status and payment_status are set automatically based on payment_method:
+                // in-store/card → confirmed, paylater/authorize.net → pending (charge endpoint confirms)
                 'transaction_id' => 'nullable|string|max:255',
                 'notes' => 'nullable|string',
                 'special_requests' => 'nullable|string',
@@ -150,13 +150,21 @@ class EventPurchaseController extends Controller
             // Generate reference number
             $validated['reference_number'] = 'EVT-' . strtoupper(Str::random(8));
 
-            // Always start as pending — only charge endpoint can confirm
-            $validated['status'] = 'pending';
-            $validated['payment_status'] = 'pending';
-
             // Default payment method to paylater when not specified
             if (!isset($validated['payment_method'])) {
                 $validated['payment_method'] = 'paylater';
+            }
+
+            // Set status based on payment method:
+            // - in-store/card (on-site): confirmed immediately, no charge step needed
+            // - paylater: pending until payment is collected later
+            // - authorize.net: pending until charge endpoint confirms after successful payment
+            if (in_array($validated['payment_method'], ['in-store', 'card'])) {
+                $validated['status'] = 'confirmed';
+                $validated['payment_status'] = ($validated['amount_paid'] ?? 0) >= ($validated['total_amount'] ?? 0) ? 'paid' : 'partial';
+            } else {
+                $validated['status'] = 'pending';
+                $validated['payment_status'] = 'pending';
             }
 
             // Extract add_ons, send_email, and sms_consent before creating purchase
@@ -201,28 +209,31 @@ class EventPurchaseController extends Controller
                 ]);
             }
 
-            // Create notification for location staff
+            // Create notification for location staff (only for confirmed purchases)
+            // For authorize.net pending purchases, staff notifications are sent from PaymentController::charge after payment succeeds
             $customerName = $purchase->customer ? "{$purchase->customer->first_name} {$purchase->customer->last_name}" : $purchase->guest_name;
-            $formattedDate = \Carbon\Carbon::parse($purchase->purchase_date)->format('m-d');
-            $formattedTime = \Carbon\Carbon::parse($purchase->purchase_time)->format('g:i A');
-            Notification::create([
-                'location_id' => $purchase->location_id,
-                'type' => 'payment',
-                'priority' => 'medium',
-                'user_id' => auth()->id(),
-                'title' => 'New Event Purchase',
-                'message' => "{$customerName} — {$purchase->quantity}x {$purchase->event->name} on {$formattedDate} at {$formattedTime} • $" . number_format($purchase->total_amount, 2),
-                'status' => 'unread',
-                'action_url' => "/events/purchases/{$purchase->id}",
-                'action_text' => 'View Purchase',
-                'metadata' => [
-                    'purchase_id' => $purchase->id,
-                    'event_id' => $purchase->event_id,
-                    'customer_id' => $purchase->customer_id,
-                    'quantity' => $purchase->quantity,
-                    'total_amount' => $purchase->total_amount,
-                ],
-            ]);
+            if ($purchase->status === 'confirmed') {
+                $formattedDate = \Carbon\Carbon::parse($purchase->purchase_date)->format('m-d');
+                $formattedTime = \Carbon\Carbon::parse($purchase->purchase_time)->format('g:i A');
+                Notification::create([
+                    'location_id' => $purchase->location_id,
+                    'type' => 'payment',
+                    'priority' => 'medium',
+                    'user_id' => auth()->id(),
+                    'title' => 'New Event Purchase',
+                    'message' => "{$customerName} — {$purchase->quantity}x {$purchase->event->name} on {$formattedDate} at {$formattedTime} • $" . number_format($purchase->total_amount, 2),
+                    'status' => 'unread',
+                    'action_url' => "/events/purchases/{$purchase->id}",
+                    'action_text' => 'View Purchase',
+                    'metadata' => [
+                        'purchase_id' => $purchase->id,
+                        'event_id' => $purchase->event_id,
+                        'customer_id' => $purchase->customer_id,
+                        'quantity' => $purchase->quantity,
+                        'total_amount' => $purchase->total_amount,
+                    ],
+                ]);
+            }
 
             // Log event purchase activity
             if (auth()->id()) {
@@ -712,5 +723,133 @@ class EventPurchaseController extends Controller
                 'message' => 'Failed to force delete event purchase: ' . $e->getMessage(),
             ], 500);
         }
+    }
+
+    /**
+     * List soft-deleted event purchases.
+     */
+    public function trashed(Request $request): JsonResponse
+    {
+        try {
+            $query = EventPurchase::onlyTrashed()->with([
+                'event:id,name,start_date,end_date,time_start,time_end,price',
+                'customer:id,first_name,last_name,email,phone',
+                'location:id,name',
+                'addOns:id,name',
+            ]);
+
+            if ($request->has('location_id')) {
+                $query->byLocation($request->location_id);
+            }
+
+            if ($request->has('search')) {
+                $search = $request->search;
+                $query->where(function ($q) use ($search) {
+                    $q->where('reference_number', 'like', "%{$search}%")
+                      ->orWhere('guest_name', 'like', "%{$search}%")
+                      ->orWhere('guest_email', 'like', "%{$search}%")
+                      ->orWhereHas('customer', function ($subQ) use ($search) {
+                          $subQ->where('first_name', 'like', "%{$search}%")
+                               ->orWhere('last_name', 'like', "%{$search}%")
+                               ->orWhere('email', 'like', "%{$search}%");
+                      });
+                });
+            }
+
+            $sortBy = $request->get('sort_by', 'deleted_at');
+            $sortOrder = $request->get('sort_order', 'desc');
+            $query->orderBy($sortBy, $sortOrder);
+
+            $perPage = min($request->get('per_page', 15), 100);
+            $purchases = $query->paginate($perPage);
+
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'purchases' => $purchases->items(),
+                    'pagination' => [
+                        'current_page' => $purchases->currentPage(),
+                        'last_page' => $purchases->lastPage(),
+                        'per_page' => $purchases->perPage(),
+                        'total' => $purchases->total(),
+                        'from' => $purchases->firstItem(),
+                        'to' => $purchases->lastItem(),
+                    ],
+                ],
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Error fetching trashed event purchases', ['error' => $e->getMessage()]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch trashed event purchases',
+            ], 500);
+        }
+    }
+
+    /**
+     * Restore a soft-deleted event purchase.
+     */
+    public function restore(int $id): JsonResponse
+    {
+        $purchase = EventPurchase::onlyTrashed()->findOrFail($id);
+        $purchase->restore();
+        $purchase->load(['event', 'customer', 'location:id,name', 'addOns']);
+
+        ActivityLog::log(
+            action: 'Event Purchase Restored',
+            category: 'update',
+            description: "Event purchase {$purchase->reference_number} restored",
+            userId: auth()->id(),
+            locationId: $purchase->location_id,
+            entityType: 'event_purchase',
+            entityId: $purchase->id,
+            metadata: [
+                'restored_at' => now()->toIso8601String(),
+                'reference_number' => $purchase->reference_number,
+            ]
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Event purchase restored successfully',
+            'data' => $purchase,
+        ]);
+    }
+
+    /**
+     * Bulk restore soft-deleted event purchases.
+     */
+    public function bulkRestore(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'ids' => 'required|array|min:1',
+            'ids.*' => 'required|integer',
+        ]);
+
+        $purchases = EventPurchase::onlyTrashed()->whereIn('id', $validated['ids'])->get();
+        $restoredCount = 0;
+
+        foreach ($purchases as $purchase) {
+            $purchase->restore();
+            $restoredCount++;
+        }
+
+        ActivityLog::log(
+            action: 'Bulk Event Purchases Restored',
+            category: 'update',
+            description: "{$restoredCount} event purchases restored in bulk",
+            userId: auth()->id(),
+            entityType: 'event_purchase',
+            metadata: [
+                'restored_at' => now()->toIso8601String(),
+                'restored_count' => $restoredCount,
+                'purchase_ids' => $validated['ids'],
+            ]
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => "{$restoredCount} event purchase(s) restored successfully",
+        ]);
     }
 }

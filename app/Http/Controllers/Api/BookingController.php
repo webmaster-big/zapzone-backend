@@ -285,8 +285,8 @@ class BookingController extends Controller
             'applied_discounts.*.original_price' => 'required_with:applied_discounts|numeric|min:0',
             'applied_discounts.*.special_pricing_id' => 'nullable|integer',
             'payment_method' => ['nullable', Rule::in(['card', 'in-store', 'paylater', 'authorize.net'])],
-            // Note: status and payment_status are NOT accepted from frontend on create
-            // They are always forced to 'pending' below — only the charge endpoint can confirm
+            // Note: status and payment_status are set automatically based on payment_method:
+            // in-store/card → confirmed, paylater/authorize.net → pending (charge endpoint confirms)
             'notes' => 'nullable|string',
             'internal_notes' => 'nullable|string',
             'send_notification' => 'nullable|boolean',
@@ -313,11 +313,11 @@ class BookingController extends Controller
         ]);
 
         // --- Duplicate booking prevention ---
-        // Check for any existing pending booking with same key fields (no time window)
+        // Check for any existing pending/confirmed booking with same key fields (no time window)
         $duplicateQuery = Booking::where('package_id', $validated['package_id'] ?? null)
             ->where('booking_date', $validated['booking_date'])
             ->where('booking_time', $validated['booking_time'])
-            ->where('status', 'pending');
+            ->whereIn('status', ['pending', 'confirmed']);
 
         if (!empty($validated['customer_id'])) {
             $duplicateQuery->where('customer_id', $validated['customer_id']);
@@ -347,13 +347,21 @@ class BookingController extends Controller
             $validated['reference_number'] = 'BK' . now()->format('Ymd') . strtoupper(Str::random(6));
         } while (Booking::where('reference_number', $validated['reference_number'])->exists());
 
-        // Always start as pending — only charge endpoint can confirm
-        $validated['payment_status'] = 'pending';
-        $validated['status'] = 'pending';
-
         // Default payment method to paylater when not specified
         if (!isset($validated['payment_method'])) {
             $validated['payment_method'] = 'paylater';
+        }
+
+        // Set status based on payment method:
+        // - in-store/card (on-site): confirmed immediately, no charge step needed
+        // - paylater: pending until payment is collected later
+        // - authorize.net: pending until charge endpoint confirms after successful payment
+        if (in_array($validated['payment_method'], ['in-store', 'card'])) {
+            $validated['status'] = 'confirmed';
+            $validated['payment_status'] = $validated['amount_paid'] >= $validated['total_amount'] ? 'paid' : 'partial';
+        } else {
+            $validated['status'] = 'pending';
+            $validated['payment_status'] = 'pending';
         }
 
         $booking = Booking::create($validated);
@@ -423,28 +431,31 @@ class BookingController extends Controller
             ]);
         }
 
-        // Create notification for location staff
+        // Create notification for location staff (only for confirmed bookings)
+        // For authorize.net pending bookings, staff notifications are sent from PaymentController::charge after payment succeeds
         $customerName = $booking->customer ? "{$booking->customer->first_name} {$booking->customer->last_name}" : $booking->guest_name;
-        $formattedDate = \Carbon\Carbon::parse($booking->booking_date)->format('m-d');
-        $formattedTime = \Carbon\Carbon::parse($booking->booking_time)->format('g:i A');
-        Notification::create([
-            'location_id' => $booking->location_id,
-            'type' => 'booking',
-            'priority' => 'medium',
-            'user_id' => $booking->created_by ?? auth()->id(),
-            'title' => 'New Booking Received',
-            'message' => "{$customerName} — {$formattedDate} at {$formattedTime} • $" . number_format($booking->total_amount, 2) . " ({$booking->reference_number})",
-            'status' => 'unread',
-            'action_url' => "/bookings/{$booking->id}",
-            'action_text' => 'View Booking',
-            'metadata' => [
-                'booking_id' => $booking->id,
-                'reference_number' => $booking->reference_number,
-                'customer_id' => $booking->customer_id,
-                'total_amount' => $booking->total_amount,
-                'booking_date' => $booking->booking_date,
-            ],
-        ]);
+        if ($booking->status === 'confirmed') {
+            $formattedDate = \Carbon\Carbon::parse($booking->booking_date)->format('m-d');
+            $formattedTime = \Carbon\Carbon::parse($booking->booking_time)->format('g:i A');
+            Notification::create([
+                'location_id' => $booking->location_id,
+                'type' => 'booking',
+                'priority' => 'medium',
+                'user_id' => $booking->created_by ?? auth()->id(),
+                'title' => 'New Booking Received',
+                'message' => "{$customerName} — {$formattedDate} at {$formattedTime} • $" . number_format($booking->total_amount, 2) . " ({$booking->reference_number})",
+                'status' => 'unread',
+                'action_url' => "/bookings/{$booking->id}",
+                'action_text' => 'View Booking',
+                'metadata' => [
+                    'booking_id' => $booking->id,
+                    'reference_number' => $booking->reference_number,
+                    'customer_id' => $booking->customer_id,
+                    'total_amount' => $booking->total_amount,
+                    'booking_date' => $booking->booking_date,
+                ],
+            ]);
+        }
 
         // Log booking creation activity
         // if created_by is not null

@@ -56,7 +56,7 @@ class EventPurchase extends Model
     // Relationships
     public function event(): BelongsTo
     {
-        return $this->belongsTo(Event::class);
+        return $this->belongsTo(Event::class)->withTrashed();
     }
 
     public function customer(): BelongsTo
