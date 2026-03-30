@@ -213,7 +213,7 @@ class AccountingAnalyticsController extends Controller
         // Use select to limit memory usage
         $query->select([
             'id', 'package_id', 'total_amount', 'amount_paid',
-            'discount_amount', 'applied_fees', 'applied_discounts'
+            'discount_amount', 'applied_fees', 'applied_discounts', 'payment_method'
         ]);
 
         $items = [];
@@ -256,6 +256,8 @@ class AccountingAnalyticsController extends Controller
                 'total_billed' => round($itemTotals['total_billed'], 2),
                 'grand_total' => round($itemTotals['grand_total'], 2),
                 'balance_due' => round($itemTotals['balance_due'], 2),
+                'collected_via_gateway' => round($itemTotals['collected_via_gateway'], 2),
+                'collected_via_gateway_net' => round($itemTotals['collected_via_gateway_net'], 2),
             ];
 
             $this->accumulateTotals($categoryTotals, $itemTotals);
@@ -309,7 +311,7 @@ class AccountingAnalyticsController extends Controller
         // Select only needed columns
         $query->select([
             'id', 'attraction_id', 'quantity', 'total_amount', 'amount_paid',
-            'discount_amount', 'applied_fees', 'applied_discounts'
+            'discount_amount', 'applied_fees', 'applied_discounts', 'payment_method'
         ]);
 
         $groupedData = [];
@@ -350,6 +352,8 @@ class AccountingAnalyticsController extends Controller
                 'total_billed' => round($itemTotals['total_billed'], 2),
                 'grand_total' => round($itemTotals['grand_total'], 2),
                 'balance_due' => round($itemTotals['balance_due'], 2),
+                'collected_via_gateway' => round($itemTotals['collected_via_gateway'], 2),
+                'collected_via_gateway_net' => round($itemTotals['collected_via_gateway_net'], 2),
             ];
 
             $this->accumulateTotals($categoryTotals, $itemTotals);
@@ -399,7 +403,7 @@ class AccountingAnalyticsController extends Controller
 
         $query->select([
             'id', 'event_id', 'quantity', 'total_amount', 'amount_paid',
-            'discount_amount', 'applied_fees', 'applied_discounts'
+            'discount_amount', 'applied_fees', 'applied_discounts', 'payment_method'
         ]);
 
         $groupedData = [];
@@ -437,6 +441,8 @@ class AccountingAnalyticsController extends Controller
                 'total_billed' => round($itemTotals['total_billed'], 2),
                 'grand_total' => round($itemTotals['grand_total'], 2),
                 'balance_due' => round($itemTotals['balance_due'], 2),
+                'collected_via_gateway' => round($itemTotals['collected_via_gateway'], 2),
+                'collected_via_gateway_net' => round($itemTotals['collected_via_gateway_net'], 2),
             ];
 
             $this->accumulateTotals($categoryTotals, $itemTotals);
@@ -614,6 +620,8 @@ class AccountingAnalyticsController extends Controller
                 'total_billed' => round($grossSales, 2),
                 'grand_total' => round($collected, 2),
                 'balance_due' => round($grossSales - $collected, 2),
+                'collected_via_gateway' => 0,
+                'collected_via_gateway_net' => 0,
             ];
 
             $categoryTotals['quantity'] += $addOnData['quantity'];
@@ -637,6 +645,8 @@ class AccountingAnalyticsController extends Controller
                 'total_billed' => round($categoryTotals['gross_sales'], 2),
                 'grand_total' => round($categoryTotals['collected'], 2),
                 'balance_due' => round($categoryTotals['gross_sales'] - $categoryTotals['collected'], 2),
+                'collected_via_gateway' => 0,
+                'collected_via_gateway_net' => 0,
             ],
         ];
     }
@@ -658,6 +668,8 @@ class AccountingAnalyticsController extends Controller
             'total_billed' => 0,
             'grand_total' => 0,
             'balance_due' => 0,
+            'collected_via_gateway' => 0,
+            'collected_via_gateway_net' => 0,
         ];
     }
 
@@ -719,6 +731,12 @@ class AccountingAnalyticsController extends Controller
             $totals['total_billed'] += $totalAmount;
             $totals['grand_total'] += $amountPaid;
             $totals['balance_due'] += ($totalAmount - $amountPaid);
+
+            // Track money actually collected through Authorize.Net gateway
+            if (($booking->payment_method ?? null) === 'authorize.net') {
+                $totals['collected_via_gateway'] += $amountPaid;
+                $totals['collected_via_gateway_net'] += ($amountPaid - $feeAmount - $taxAmount);
+            }
         }
 
         return $totals;
@@ -771,6 +789,12 @@ class AccountingAnalyticsController extends Controller
             $totals['total_billed'] += $totalAmount;
             $totals['grand_total'] += $amountPaid;
             $totals['balance_due'] += ($totalAmount - $amountPaid);
+
+            // Track money actually collected through Authorize.Net gateway
+            if (($purchase->payment_method ?? null) === 'authorize.net') {
+                $totals['collected_via_gateway'] += $amountPaid;
+                $totals['collected_via_gateway_net'] += ($amountPaid - $feeAmount - $taxAmount);
+            }
         }
 
         return $totals;
@@ -827,6 +851,8 @@ class AccountingAnalyticsController extends Controller
         $categoryTotals['total_billed'] += $itemTotals['total_billed'];
         $categoryTotals['grand_total'] += $itemTotals['grand_total'];
         $categoryTotals['balance_due'] += $itemTotals['balance_due'];
+        $categoryTotals['collected_via_gateway'] += $itemTotals['collected_via_gateway'];
+        $categoryTotals['collected_via_gateway_net'] += $itemTotals['collected_via_gateway_net'];
     }
 
     /**
@@ -847,6 +873,8 @@ class AccountingAnalyticsController extends Controller
             'total_billed' => round($totals['total_billed'], 2),
             'grand_total' => round($totals['grand_total'], 2),
             'balance_due' => round($totals['balance_due'], 2),
+            'collected_via_gateway' => round($totals['collected_via_gateway'], 2),
+            'collected_via_gateway_net' => round($totals['collected_via_gateway_net'], 2),
         ];
     }
 
@@ -871,6 +899,8 @@ class AccountingAnalyticsController extends Controller
             $totals['total_billed'] += $summary['total_billed'];
             $totals['grand_total'] += $summary['grand_total'];
             $totals['balance_due'] += $summary['balance_due'];
+            $totals['collected_via_gateway'] += $summary['collected_via_gateway'];
+            $totals['collected_via_gateway_net'] += $summary['collected_via_gateway_net'];
         }
 
         return $this->formatTotals($totals);
@@ -928,6 +958,8 @@ class AccountingAnalyticsController extends Controller
                 $rangeTotals['total_billed'] += $summary['total_billed'];
                 $rangeTotals['grand_total'] += $summary['grand_total'];
                 $rangeTotals['balance_due'] += $summary['balance_due'];
+                $rangeTotals['collected_via_gateway'] += $summary['collected_via_gateway'];
+                $rangeTotals['collected_via_gateway_net'] += $summary['collected_via_gateway_net'];
             }
 
             return response()->json([
