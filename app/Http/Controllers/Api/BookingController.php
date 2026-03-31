@@ -2737,7 +2737,7 @@ class BookingController extends Controller
         Log::info('Booking public force delete request', ['id' => $id, 'ip' => request()->ip()]);
 
         try {
-            $booking = Booking::find($id);
+            $booking = Booking::withTrashed()->find($id);
 
             if (!$booking) {
                 return response()->json([
@@ -2746,7 +2746,7 @@ class BookingController extends Controller
                 ], 404);
             }
 
-            if ($booking->status !== 'pending') {
+            if (!$booking->trashed() && $booking->status !== 'pending') {
                 return response()->json([
                     'success' => false,
                     'message' => 'Only pending bookings can be force deleted',

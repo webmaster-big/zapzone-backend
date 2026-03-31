@@ -1595,7 +1595,7 @@ public function checkIn(Request $request, int $id): JsonResponse
         Log::info('Attraction purchase public force delete request', ['id' => $id, 'ip' => request()->ip()]);
 
         try {
-            $attractionPurchase = AttractionPurchase::find($id);
+            $attractionPurchase = AttractionPurchase::withTrashed()->find($id);
 
             if (!$attractionPurchase) {
                 return response()->json([
@@ -1604,7 +1604,7 @@ public function checkIn(Request $request, int $id): JsonResponse
                 ], 404);
             }
 
-            if ($attractionPurchase->status !== AttractionPurchase::STATUS_PENDING) {
+            if (!$attractionPurchase->trashed() && $attractionPurchase->status !== AttractionPurchase::STATUS_PENDING) {
                 return response()->json([
                     'success' => false,
                     'message' => 'Only pending attraction purchases can be force deleted',

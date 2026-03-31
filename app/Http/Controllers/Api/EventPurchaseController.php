@@ -671,7 +671,7 @@ class EventPurchaseController extends Controller
         Log::info('Event purchase public force delete request', ['id' => $id, 'ip' => request()->ip()]);
 
         try {
-            $eventPurchase = EventPurchase::find($id);
+            $eventPurchase = EventPurchase::withTrashed()->find($id);
 
             if (!$eventPurchase) {
                 return response()->json([
@@ -680,7 +680,7 @@ class EventPurchaseController extends Controller
                 ], 404);
             }
 
-            if ($eventPurchase->status !== 'pending') {
+            if (!$eventPurchase->trashed() && $eventPurchase->status !== 'pending') {
                 return response()->json([
                     'success' => false,
                     'message' => 'Only pending event purchases can be force deleted',
