@@ -333,9 +333,10 @@ class AttractionPurchaseController extends Controller
 
         $purchase->load(['attraction', 'customer', 'createdBy', 'addOns']);
 
-        // Create notification for customer (only when purchase is confirmed, e.g. onsite purchases)
+        // Create notification for customer (only when purchase is confirmed AND payment collected)
         // For online purchases (pending → charge → confirmed), notifications are sent from PaymentController::charge
-        if ($purchase->customer_id && $purchase->status !== AttractionPurchase::STATUS_PENDING) {
+        // Skip notification if no payment was collected to avoid confusing admin with unpaid purchases
+        if ($purchase->customer_id && $purchase->status !== AttractionPurchase::STATUS_PENDING && (float) ($purchase->amount_paid ?? 0) > 0) {
             CustomerNotification::create([
                 'customer_id' => $purchase->customer_id,
                 'location_id' => $purchase->attraction->location_id ?? null,
@@ -355,10 +356,11 @@ class AttractionPurchaseController extends Controller
             ]);
         }
 
-        // Create notification for location staff (only for confirmed purchases)
+        // Create notification for location staff (only for confirmed purchases with payment collected)
         // For authorize.net pending purchases, staff notifications are sent from PaymentController::charge after payment succeeds
+        // Skip notification if no payment was collected to avoid admin seeing purchases they can't act on
         $customerName = $purchase->customer ? "{$purchase->customer->first_name} {$purchase->customer->last_name}" : $purchase->guest_name;
-        if ($purchase->status !== AttractionPurchase::STATUS_PENDING && $purchase->attraction->location_id) {
+        if ($purchase->status !== AttractionPurchase::STATUS_PENDING && $purchase->attraction->location_id && (float) ($purchase->amount_paid ?? 0) > 0) {
             Notification::create([
                 'location_id' => $purchase->attraction->location_id,
                 'type' => 'payment',

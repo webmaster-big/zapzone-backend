@@ -187,9 +187,10 @@ class EventPurchaseController extends Controller
 
             $purchase->load(['event.location.company', 'customer', 'location:id,name', 'addOns']);
 
-            // Create notification for customer (only when purchase is confirmed, e.g. onsite purchases)
+            // Create notification for customer (only when purchase is confirmed AND payment collected)
             // For online purchases (pending → charge → confirmed), notifications are sent from PaymentController::charge
-            if ($purchase->customer_id && $purchase->status === 'confirmed') {
+            // Skip notification if no payment was collected to avoid confusing admin with unpaid purchases
+            if ($purchase->customer_id && $purchase->status === 'confirmed' && (float) ($purchase->amount_paid ?? 0) > 0) {
                 CustomerNotification::create([
                     'customer_id' => $purchase->customer_id,
                     'location_id' => $purchase->location_id,
@@ -209,10 +210,11 @@ class EventPurchaseController extends Controller
                 ]);
             }
 
-            // Create notification for location staff (only for confirmed purchases)
+            // Create notification for location staff (only for confirmed purchases with payment collected)
             // For authorize.net pending purchases, staff notifications are sent from PaymentController::charge after payment succeeds
+            // Skip notification if no payment was collected to avoid admin seeing purchases they can't act on
             $customerName = $purchase->customer ? "{$purchase->customer->first_name} {$purchase->customer->last_name}" : $purchase->guest_name;
-            if ($purchase->status === 'confirmed') {
+            if ($purchase->status === 'confirmed' && (float) ($purchase->amount_paid ?? 0) > 0) {
                 $formattedDate = \Carbon\Carbon::parse($purchase->purchase_date)->format('m-d');
                 $formattedTime = \Carbon\Carbon::parse($purchase->purchase_time)->format('g:i A');
                 Notification::create([

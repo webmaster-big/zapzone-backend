@@ -2082,6 +2082,29 @@ class PaymentController extends Controller
                                         ],
                                     ]);
                                 }
+
+                                // Create staff in-app notification for the booking (mirrors store-time notification)
+                                $bookingCustomerName = $booking->customer ? "{$booking->customer->first_name} {$booking->customer->last_name}" : $booking->guest_name;
+                                $formattedDate = \Carbon\Carbon::parse($booking->booking_date)->format('m-d');
+                                $formattedTime = \Carbon\Carbon::parse($booking->booking_time)->format('g:i A');
+                                Notification::create([
+                                    'location_id' => $booking->location_id,
+                                    'type' => 'booking',
+                                    'priority' => 'medium',
+                                    'user_id' => $booking->created_by ?? auth()->id(),
+                                    'title' => 'New Booking Received',
+                                    'message' => "{$bookingCustomerName} — {$formattedDate} at {$formattedTime} • $" . number_format($booking->total_amount, 2) . " ({$booking->reference_number})",
+                                    'status' => 'unread',
+                                    'action_url' => "/bookings/{$booking->id}",
+                                    'action_text' => 'View Booking',
+                                    'metadata' => [
+                                        'booking_id' => $booking->id,
+                                        'reference_number' => $booking->reference_number,
+                                        'customer_id' => $booking->customer_id,
+                                        'total_amount' => $booking->total_amount,
+                                        'booking_date' => $booking->booking_date,
+                                    ],
+                                ]);
                             } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE) {
                                 $purchase = $payable;
                                 $purchase->loadMissing(['attraction.location', 'customer', 'createdBy', 'addOns']);
@@ -2105,6 +2128,29 @@ class PaymentController extends Controller
                                         'metadata' => [
                                             'purchase_id' => $purchase->id,
                                             'attraction_id' => $purchase->attraction_id,
+                                            'quantity' => $purchase->quantity,
+                                            'total_amount' => $purchase->total_amount,
+                                        ],
+                                    ]);
+                                }
+
+                                // Create staff in-app notification for the attraction purchase (mirrors store-time notification)
+                                $attractionCustomerName = $purchase->customer ? "{$purchase->customer->first_name} {$purchase->customer->last_name}" : $purchase->guest_name;
+                                if ($purchase->attraction->location_id) {
+                                    Notification::create([
+                                        'location_id' => $purchase->attraction->location_id,
+                                        'type' => 'payment',
+                                        'priority' => 'medium',
+                                        'user_id' => $purchase->created_by ?? auth()->id(),
+                                        'title' => 'New Attraction Purchase',
+                                        'message' => "{$attractionCustomerName} — {$purchase->quantity}x {$purchase->attraction->name} • $" . number_format($purchase->total_amount, 2),
+                                        'status' => 'unread',
+                                        'action_url' => "/attractions/purchases/{$purchase->id}",
+                                        'action_text' => 'View Purchase',
+                                        'metadata' => [
+                                            'purchase_id' => $purchase->id,
+                                            'attraction_id' => $purchase->attraction_id,
+                                            'customer_id' => $purchase->customer_id,
                                             'quantity' => $purchase->quantity,
                                             'total_amount' => $purchase->total_amount,
                                         ],
@@ -2134,6 +2180,29 @@ class PaymentController extends Controller
                                         ],
                                     ]);
                                 }
+
+                                // Create staff in-app notification for the event purchase (mirrors store-time notification)
+                                $eventCustomerName = $eventPurchase->customer ? "{$eventPurchase->customer->first_name} {$eventPurchase->customer->last_name}" : $eventPurchase->guest_name;
+                                $eventFormattedDate = \Carbon\Carbon::parse($eventPurchase->purchase_date)->format('m-d');
+                                $eventFormattedTime = \Carbon\Carbon::parse($eventPurchase->purchase_time)->format('g:i A');
+                                Notification::create([
+                                    'location_id' => $eventPurchase->location_id,
+                                    'type' => 'payment',
+                                    'priority' => 'medium',
+                                    'user_id' => auth()->id(),
+                                    'title' => 'New Event Purchase',
+                                    'message' => "{$eventCustomerName} — {$eventPurchase->quantity}x {$eventPurchase->event->name} on {$eventFormattedDate} at {$eventFormattedTime} • $" . number_format($eventPurchase->total_amount, 2),
+                                    'status' => 'unread',
+                                    'action_url' => "/events/purchases/{$eventPurchase->id}",
+                                    'action_text' => 'View Purchase',
+                                    'metadata' => [
+                                        'purchase_id' => $eventPurchase->id,
+                                        'event_id' => $eventPurchase->event_id,
+                                        'customer_id' => $eventPurchase->customer_id,
+                                        'quantity' => $eventPurchase->quantity,
+                                        'total_amount' => $eventPurchase->total_amount,
+                                    ],
+                                ]);
                             }
                         } catch (\Exception $e) {
                             Log::warning('Failed to send staff notifications from charge()', [
@@ -2255,9 +2324,9 @@ class PaymentController extends Controller
     }
 
     /**
-     * Soft delete the related pending entity when payment fails.
+     * Force delete the related pending entity when payment fails.
      * Only deletes entities that are still in 'pending' status.
-     * If soft delete fails, falls back to resetting amount_paid to 0.
+     * If force delete fails, falls back to soft delete.
      */
     private function forceDeletePayableOnFailure(?int $payableId, ?string $payableType): void
     {
@@ -2286,40 +2355,45 @@ class PaymentController extends Controller
                 : $payable->status === 'pending';
 
             if ($isPending) {
-                $payable->delete();
-                Log::info('Soft deleted pending entity after payment failure', [
+                $payable->forceDelete();
+                Log::info('Force deleted pending entity after payment failure', [
                     'payable_type' => $payableType,
                     'payable_id' => $payableId,
                 ]);
             }
         } catch (\Exception $e) {
-            Log::error('Soft delete failed, resetting amount_paid to 0 as fallback', [
+            Log::error('Force delete failed, falling back to soft delete', [
                 'payable_id' => $payableId,
                 'payable_type' => $payableType,
                 'error' => $e->getMessage(),
             ]);
 
-            // Fallback: reset amount_paid to 0 so the record doesn't show a false paid amount
+            // Fallback: soft delete if force delete fails
             try {
                 $fallback = null;
                 if ($payableType === Payment::TYPE_BOOKING) {
                     $fallback = Booking::find($payableId);
                     if ($fallback && $fallback->status === 'pending') {
-                        $fallback->update(['amount_paid' => 0, 'payment_status' => 'pending']);
+                        $fallback->delete();
                     }
                 } elseif ($payableType === Payment::TYPE_ATTRACTION_PURCHASE) {
                     $fallback = AttractionPurchase::find($payableId);
                     if ($fallback && $fallback->status === AttractionPurchase::STATUS_PENDING) {
-                        $fallback->update(['amount_paid' => 0]);
+                        $fallback->delete();
                     }
                 } elseif ($payableType === Payment::TYPE_EVENT_PURCHASE) {
                     $fallback = EventPurchase::find($payableId);
                     if ($fallback && $fallback->status === 'pending') {
-                        $fallback->update(['amount_paid' => 0, 'payment_status' => 'pending']);
+                        $fallback->delete();
                     }
                 }
+
+                Log::info('Soft deleted pending entity as fallback after force delete failure', [
+                    'payable_type' => $payableType,
+                    'payable_id' => $payableId,
+                ]);
             } catch (\Exception $fallbackError) {
-                Log::error('Fallback amount_paid reset also failed', [
+                Log::error('Soft delete fallback also failed', [
                     'payable_id' => $payableId,
                     'payable_type' => $payableType,
                     'error' => $fallbackError->getMessage(),

@@ -409,9 +409,10 @@ class BookingController extends Controller
 
         $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
 
-        // Create notification for customer (only when booking is confirmed, e.g. onsite bookings)
+        // Create notification for customer (only when booking is confirmed AND payment collected)
         // For online bookings (pending → charge → confirmed), notifications are sent from PaymentController::charge
-        if ($booking->customer_id && $booking->status === 'confirmed') {
+        // Skip notification if no payment was collected to avoid confusing admin with unpaid bookings
+        if ($booking->customer_id && $booking->status === 'confirmed' && (float) ($booking->amount_paid ?? 0) > 0) {
             CustomerNotification::create([
                 'customer_id' => $booking->customer_id,
                 'location_id' => $booking->location_id,
@@ -431,10 +432,11 @@ class BookingController extends Controller
             ]);
         }
 
-        // Create notification for location staff (only for confirmed bookings)
+        // Create notification for location staff (only for confirmed bookings with payment collected)
         // For authorize.net pending bookings, staff notifications are sent from PaymentController::charge after payment succeeds
+        // Skip notification if no payment was collected to avoid admin seeing bookings they can't act on
         $customerName = $booking->customer ? "{$booking->customer->first_name} {$booking->customer->last_name}" : $booking->guest_name;
-        if ($booking->status === 'confirmed') {
+        if ($booking->status === 'confirmed' && (float) ($booking->amount_paid ?? 0) > 0) {
             $formattedDate = \Carbon\Carbon::parse($booking->booking_date)->format('m-d');
             $formattedTime = \Carbon\Carbon::parse($booking->booking_time)->format('g:i A');
             Notification::create([
