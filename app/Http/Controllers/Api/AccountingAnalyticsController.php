@@ -3,10 +3,8 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Models\AttractionPurchase;
-use App\Models\Booking;
-use App\Models\EventPurchase;
 use App\Models\Location;
+use App\Models\Payment;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -174,7 +172,7 @@ class AccountingAnalyticsController extends Controller
 
     /**
      * Get parties (package bookings) data grouped by package category.
-     * Uses memory-efficient chunking for large datasets.
+     * Uses DB::table() for lightweight queries and payments table for accurate gateway tracking.
      *
      * @param int $locationId
      * @param Carbon $startDate
@@ -185,99 +183,70 @@ class AccountingAnalyticsController extends Controller
      */
     private function getPartiesData(int $locationId, Carbon $startDate, Carbon $endDate, string $viewMode, array $filters = []): array
     {
-        $query = Booking::with(['package:id,name,category'])
-            ->where('location_id', $locationId)
-            ->whereNotIn('status', ['cancelled']);
+        $query = DB::table('bookings')
+            ->join('packages', 'bookings.package_id', '=', 'packages.id')
+            ->where('bookings.location_id', $locationId)
+            ->whereNotIn('bookings.status', ['cancelled'])
+            ->whereNull('bookings.deleted_at');
 
         // Apply date filter based on view mode
         if ($viewMode === 'booked_on') {
-            $query->whereDate('created_at', '>=', $startDate->toDateString())
-                  ->whereDate('created_at', '<=', $endDate->toDateString());
+            $query->whereDate('bookings.created_at', '>=', $startDate->toDateString())
+                  ->whereDate('bookings.created_at', '<=', $endDate->toDateString());
         } else {
-            $query->whereDate('booking_date', '>=', $startDate->toDateString())
-                  ->whereDate('booking_date', '<=', $endDate->toDateString());
+            $query->whereDate('bookings.booking_date', '>=', $startDate->toDateString())
+                  ->whereDate('bookings.booking_date', '<=', $endDate->toDateString());
         }
 
         // Apply payment status filter
         if (isset($filters['payment_status']) && $filters['payment_status'] !== 'all') {
-            $query->where('payment_status', $filters['payment_status']);
+            $query->where('bookings.payment_status', $filters['payment_status']);
         }
 
         // Apply category filter if specified
         if (!empty($filters['category_filter'])) {
-            $query->whereHas('package', function ($q) use ($filters) {
-                $q->where('category', $filters['category_filter']);
-            });
+            $query->where('packages.category', $filters['category_filter']);
         }
 
-        // Use select to limit memory usage
-        $query->select([
-            'id', 'package_id', 'total_amount', 'amount_paid',
-            'discount_amount', 'applied_fees', 'applied_discounts', 'payment_method'
-        ]);
+        // Select only needed columns (lightweight stdClass, no Eloquent overhead)
+        $bookings = $query->select(
+            'bookings.id',
+            'packages.category as sub_category',
+            'packages.name as package_name',
+            'bookings.total_amount',
+            'bookings.amount_paid',
+            'bookings.discount_amount',
+            'bookings.applied_fees'
+        )->get();
 
-        $items = [];
-        $categoryTotals = $this->initializeTotals();
+        // Get accurate gateway amounts from the payments table
+        $bookingIds = $bookings->pluck('id')->all();
+        $gatewayAmounts = $this->getGatewayAmounts($bookingIds, Payment::TYPE_BOOKING);
 
-        // Process in chunks for memory efficiency
-        $groupedData = [];
+        // Group and calculate in a single pass
+        $grouped = [];
+        foreach ($bookings as $booking) {
+            $key = ($booking->sub_category ?? 'Uncategorized') . '|||' . ($booking->package_name ?? 'Unknown Package');
 
-        $query->chunk(500, function ($bookings) use (&$groupedData) {
-            foreach ($bookings as $booking) {
-                $category = $booking->package?->category ?? 'Uncategorized';
-                $packageName = $booking->package?->name ?? 'Unknown Package';
-                $key = $category . '|||' . $packageName;
-
-                if (!isset($groupedData[$key])) {
-                    $groupedData[$key] = [
-                        'category' => $category,
-                        'package_name' => $packageName,
-                        'bookings' => [],
-                    ];
-                }
-
-                $groupedData[$key]['bookings'][] = $booking;
+            if (!isset($grouped[$key])) {
+                $grouped[$key] = [
+                    'name' => $booking->package_name ?? 'Unknown Package',
+                    'sub_category' => $booking->sub_category ?? 'Uncategorized',
+                    'totals' => $this->initializeTotals(),
+                ];
             }
-        });
 
-        // Calculate totals for each package
-        foreach ($groupedData as $data) {
-            $itemTotals = $this->calculateBookingTotals($data['bookings']);
-
-            $items[] = [
-                'name' => $data['package_name'],
-                'sub_category' => $data['category'],
-                'quantity_sold' => $itemTotals['quantity'],
-                'gross_sales' => round($itemTotals['gross_sales'], 2),
-                'net_sales' => round($itemTotals['net_sales'], 2),
-                'fee_amount' => round($itemTotals['fee_amount'], 2),
-                'discount_amount' => round($itemTotals['discount_amount'], 2),
-                'tax_amount' => round($itemTotals['tax_amount'], 2),
-                'total_billed' => round($itemTotals['total_billed'], 2),
-                'grand_total' => round($itemTotals['grand_total'], 2),
-                'balance_due' => round($itemTotals['balance_due'], 2),
-                'collected_via_gateway' => round($itemTotals['collected_via_gateway'], 2),
-                'collected_via_gateway_net' => round($itemTotals['collected_via_gateway_net'], 2),
-            ];
-
-            $this->accumulateTotals($categoryTotals, $itemTotals);
+            $totals = &$grouped[$key]['totals'];
+            $this->accumulateRecordTotals($totals, $booking, $gatewayAmounts[$booking->id] ?? 0);
+            unset($totals);
         }
 
-        // Sort items by sub_category then name for consistent ordering
-        usort($items, function ($a, $b) {
-            $catCompare = strcmp($a['sub_category'], $b['sub_category']);
-            return $catCompare !== 0 ? $catCompare : strcmp($a['name'], $b['name']);
-        });
-
-        return [
-            'name' => self::CATEGORY_PARTIES,
-            'items' => $items,
-            'summary' => $this->formatTotals($categoryTotals),
-        ];
+        return $this->buildCategoryResult(self::CATEGORY_PARTIES, $grouped);
     }
 
     /**
      * Get attractions (ticket purchases) data grouped by attraction category.
+     * Uses DB::table() for lightweight queries and payments table for accurate gateway tracking.
      *
      * @param int $locationId
      * @param Carbon $startDate
@@ -288,91 +257,67 @@ class AccountingAnalyticsController extends Controller
      */
     private function getAttractionsData(int $locationId, Carbon $startDate, Carbon $endDate, string $viewMode, array $filters = []): array
     {
-        $query = AttractionPurchase::with(['attraction:id,name,category'])
-            ->byLocation($locationId)
-            ->whereNotIn('status', ['cancelled', 'refunded']);
+        $query = DB::table('attraction_purchases')
+            ->join('attractions', 'attraction_purchases.attraction_id', '=', 'attractions.id')
+            ->where('attractions.location_id', $locationId)
+            ->whereNotIn('attraction_purchases.status', ['cancelled', 'refunded'])
+            ->whereNull('attraction_purchases.deleted_at');
 
         // Apply date filter based on view mode
         if ($viewMode === 'booked_on') {
-            $query->whereDate('created_at', '>=', $startDate->toDateString())
-                  ->whereDate('created_at', '<=', $endDate->toDateString());
+            $query->whereDate('attraction_purchases.created_at', '>=', $startDate->toDateString())
+                  ->whereDate('attraction_purchases.created_at', '<=', $endDate->toDateString());
         } else {
-            // For booked_for, use scheduled_date if available, otherwise purchase_date
-            $query->whereRaw('DATE(COALESCE(scheduled_date, purchase_date)) BETWEEN ? AND ?', [$startDate->toDateString(), $endDate->toDateString()]);
+            $query->whereRaw(
+                'DATE(COALESCE(attraction_purchases.scheduled_date, attraction_purchases.purchase_date)) BETWEEN ? AND ?',
+                [$startDate->toDateString(), $endDate->toDateString()]
+            );
         }
 
         // Apply category filter if specified
         if (!empty($filters['category_filter'])) {
-            $query->whereHas('attraction', function ($q) use ($filters) {
-                $q->where('category', $filters['category_filter']);
-            });
+            $query->where('attractions.category', $filters['category_filter']);
         }
 
-        // Select only needed columns
-        $query->select([
-            'id', 'attraction_id', 'quantity', 'total_amount', 'amount_paid',
-            'discount_amount', 'applied_fees', 'applied_discounts', 'payment_method'
-        ]);
+        $purchases = $query->select(
+            'attraction_purchases.id',
+            'attractions.category as sub_category',
+            'attractions.name as attraction_name',
+            'attraction_purchases.quantity',
+            'attraction_purchases.total_amount',
+            'attraction_purchases.amount_paid',
+            'attraction_purchases.discount_amount',
+            'attraction_purchases.applied_fees'
+        )->get();
 
-        $groupedData = [];
+        // Get accurate gateway amounts from the payments table
+        $purchaseIds = $purchases->pluck('id')->all();
+        $gatewayAmounts = $this->getGatewayAmounts($purchaseIds, Payment::TYPE_ATTRACTION_PURCHASE);
 
-        $query->chunk(500, function ($purchases) use (&$groupedData) {
-            foreach ($purchases as $purchase) {
-                $category = $purchase->attraction?->category ?? 'Uncategorized';
-                $attractionName = $purchase->attraction?->name ?? 'Unknown Attraction';
-                $key = $category . '|||' . $attractionName;
+        // Group and calculate in a single pass
+        $grouped = [];
+        foreach ($purchases as $purchase) {
+            $key = ($purchase->sub_category ?? 'Uncategorized') . '|||' . ($purchase->attraction_name ?? 'Unknown Attraction');
 
-                if (!isset($groupedData[$key])) {
-                    $groupedData[$key] = [
-                        'category' => $category,
-                        'attraction_name' => $attractionName,
-                        'purchases' => [],
-                    ];
-                }
-
-                $groupedData[$key]['purchases'][] = $purchase;
+            if (!isset($grouped[$key])) {
+                $grouped[$key] = [
+                    'name' => $purchase->attraction_name ?? 'Unknown Attraction',
+                    'sub_category' => $purchase->sub_category ?? 'Uncategorized',
+                    'totals' => $this->initializeTotals(),
+                ];
             }
-        });
 
-        $items = [];
-        $categoryTotals = $this->initializeTotals();
-
-        foreach ($groupedData as $data) {
-            $itemTotals = $this->calculatePurchaseTotals($data['purchases']);
-
-            $items[] = [
-                'name' => $data['attraction_name'],
-                'sub_category' => $data['category'],
-                'quantity_sold' => $itemTotals['quantity'],
-                'gross_sales' => round($itemTotals['gross_sales'], 2),
-                'net_sales' => round($itemTotals['net_sales'], 2),
-                'fee_amount' => round($itemTotals['fee_amount'], 2),
-                'discount_amount' => round($itemTotals['discount_amount'], 2),
-                'tax_amount' => round($itemTotals['tax_amount'], 2),
-                'total_billed' => round($itemTotals['total_billed'], 2),
-                'grand_total' => round($itemTotals['grand_total'], 2),
-                'balance_due' => round($itemTotals['balance_due'], 2),
-                'collected_via_gateway' => round($itemTotals['collected_via_gateway'], 2),
-                'collected_via_gateway_net' => round($itemTotals['collected_via_gateway_net'], 2),
-            ];
-
-            $this->accumulateTotals($categoryTotals, $itemTotals);
+            $totals = &$grouped[$key]['totals'];
+            $this->accumulateRecordTotals($totals, $purchase, $gatewayAmounts[$purchase->id] ?? 0);
+            unset($totals);
         }
 
-        usort($items, function ($a, $b) {
-            $catCompare = strcmp($a['sub_category'], $b['sub_category']);
-            return $catCompare !== 0 ? $catCompare : strcmp($a['name'], $b['name']);
-        });
-
-        return [
-            'name' => self::CATEGORY_ATTRACTIONS,
-            'items' => $items,
-            'summary' => $this->formatTotals($categoryTotals),
-        ];
+        return $this->buildCategoryResult(self::CATEGORY_ATTRACTIONS, $grouped);
     }
 
     /**
      * Get events data grouped by event name.
+     * Uses DB::table() for lightweight queries and payments table for accurate gateway tracking.
      *
      * @param int $locationId
      * @param Carbon $startDate
@@ -383,78 +328,59 @@ class AccountingAnalyticsController extends Controller
      */
     private function getEventsData(int $locationId, Carbon $startDate, Carbon $endDate, string $viewMode, array $filters = []): array
     {
-        $query = EventPurchase::with(['event:id,name'])
-            ->where('location_id', $locationId)
-            ->whereNotIn('status', ['cancelled', 'refunded']);
+        $query = DB::table('event_purchases')
+            ->join('events', 'event_purchases.event_id', '=', 'events.id')
+            ->where('event_purchases.location_id', $locationId)
+            ->whereNotIn('event_purchases.status', ['cancelled', 'refunded'])
+            ->whereNull('event_purchases.deleted_at');
 
         // Apply date filter based on view mode
         if ($viewMode === 'booked_on') {
-            $query->whereDate('created_at', '>=', $startDate->toDateString())
-                  ->whereDate('created_at', '<=', $endDate->toDateString());
+            $query->whereDate('event_purchases.created_at', '>=', $startDate->toDateString())
+                  ->whereDate('event_purchases.created_at', '<=', $endDate->toDateString());
         } else {
-            $query->whereDate('purchase_date', '>=', $startDate->toDateString())
-                  ->whereDate('purchase_date', '<=', $endDate->toDateString());
+            $query->whereDate('event_purchases.purchase_date', '>=', $startDate->toDateString())
+                  ->whereDate('event_purchases.purchase_date', '<=', $endDate->toDateString());
         }
 
         // Apply payment status filter (EventPurchase has payment_status field)
         if (isset($filters['payment_status']) && $filters['payment_status'] !== 'all') {
-            $query->where('payment_status', $filters['payment_status']);
+            $query->where('event_purchases.payment_status', $filters['payment_status']);
         }
 
-        $query->select([
-            'id', 'event_id', 'quantity', 'total_amount', 'amount_paid',
-            'discount_amount', 'applied_fees', 'applied_discounts', 'payment_method'
-        ]);
+        $purchases = $query->select(
+            'event_purchases.id',
+            'events.name as event_name',
+            'event_purchases.quantity',
+            'event_purchases.total_amount',
+            'event_purchases.amount_paid',
+            'event_purchases.discount_amount',
+            'event_purchases.applied_fees'
+        )->get();
 
-        $groupedData = [];
+        // Get accurate gateway amounts from the payments table
+        $purchaseIds = $purchases->pluck('id')->all();
+        $gatewayAmounts = $this->getGatewayAmounts($purchaseIds, Payment::TYPE_EVENT_PURCHASE);
 
-        $query->chunk(500, function ($purchases) use (&$groupedData) {
-            foreach ($purchases as $purchase) {
-                $eventName = $purchase->event?->name ?? 'Unknown Event';
+        // Group and calculate in a single pass
+        $grouped = [];
+        foreach ($purchases as $purchase) {
+            $eventName = $purchase->event_name ?? 'Unknown Event';
 
-                if (!isset($groupedData[$eventName])) {
-                    $groupedData[$eventName] = [
-                        'event_name' => $eventName,
-                        'purchases' => [],
-                    ];
-                }
-
-                $groupedData[$eventName]['purchases'][] = $purchase;
+            if (!isset($grouped[$eventName])) {
+                $grouped[$eventName] = [
+                    'name' => $eventName,
+                    'sub_category' => 'Events',
+                    'totals' => $this->initializeTotals(),
+                ];
             }
-        });
 
-        $items = [];
-        $categoryTotals = $this->initializeTotals();
-
-        foreach ($groupedData as $data) {
-            $itemTotals = $this->calculatePurchaseTotals($data['purchases']);
-
-            $items[] = [
-                'name' => $data['event_name'],
-                'sub_category' => 'Events',
-                'quantity_sold' => $itemTotals['quantity'],
-                'gross_sales' => round($itemTotals['gross_sales'], 2),
-                'net_sales' => round($itemTotals['net_sales'], 2),
-                'fee_amount' => round($itemTotals['fee_amount'], 2),
-                'discount_amount' => round($itemTotals['discount_amount'], 2),
-                'tax_amount' => round($itemTotals['tax_amount'], 2),
-                'total_billed' => round($itemTotals['total_billed'], 2),
-                'grand_total' => round($itemTotals['grand_total'], 2),
-                'balance_due' => round($itemTotals['balance_due'], 2),
-                'collected_via_gateway' => round($itemTotals['collected_via_gateway'], 2),
-                'collected_via_gateway_net' => round($itemTotals['collected_via_gateway_net'], 2),
-            ];
-
-            $this->accumulateTotals($categoryTotals, $itemTotals);
+            $totals = &$grouped[$eventName]['totals'];
+            $this->accumulateRecordTotals($totals, $purchase, $gatewayAmounts[$purchase->id] ?? 0);
+            unset($totals);
         }
 
-        usort($items, fn($a, $b) => strcmp($a['name'], $b['name']));
-
-        return [
-            'name' => self::CATEGORY_EVENTS,
-            'items' => $items,
-            'summary' => $this->formatTotals($categoryTotals),
-        ];
+        return $this->buildCategoryResult(self::CATEGORY_EVENTS, $grouped);
     }
 
     /**
@@ -674,7 +600,8 @@ class AccountingAnalyticsController extends Controller
     }
 
     /**
-     * Calculate totals for booking items (parties).
+     * Accumulate totals from a single record (booking or purchase) into group totals.
+     * Uses the payments table gateway amount for accurate gateway tracking.
      *
      * ACCOUNTING DEFINITIONS:
      * - Gross Sales = total_amount + discount_amount (original price before discount)
@@ -682,122 +609,121 @@ class AccountingAnalyticsController extends Controller
      * - Fee Amount = sum of all applied_fees, excluding taxes
      * - Tax Amount = sum of applied_fees matching TAX_KEYWORDS
      * - Discount = discount_amount field
-     * - Amount Due = total_amount (the full expected amount to be collected)
+     * - Total Billed = total_amount (the full expected amount to be collected)
      * - Grand Total = amount_paid (what customer actually paid so far)
      * - Balance Due = total_amount - amount_paid (outstanding amount still owed)
+     * - Collected Via Gateway = actual payments from Authorize.Net (from payments table)
+     * - Collected Via Gateway Net = gateway minus proportional fees/taxes
      *
-     * @param array $bookings Array of booking records
-     * @return array
+     * @param array &$totals Reference to group totals array
+     * @param object $record A stdClass row from DB::table()
+     * @param float $gatewayAmount Actual gateway amount from the payments table
      */
-    private function calculateBookingTotals(array $bookings): array
+    private function accumulateRecordTotals(array &$totals, object $record, float $gatewayAmount): void
     {
-        $totals = $this->initializeTotals();
+        $quantity = (int) ($record->quantity ?? 1);
+        $totalAmount = (float) ($record->total_amount ?? 0);
+        $amountPaid = (float) ($record->amount_paid ?? 0);
+        $discountAmount = (float) ($record->discount_amount ?? 0);
 
-        foreach ($bookings as $booking) {
-            $totals['quantity'] += 1; // Each booking counts as 1
-
-            // Extract numeric values safely
-            $discountAmount = (float) ($booking->discount_amount ?? 0);
-            $totalAmount = (float) ($booking->total_amount ?? 0);
-            $amountPaid = (float) ($booking->amount_paid ?? 0);
-
-            // Gross sales: original price before discount
-            $grossSales = $totalAmount + $discountAmount;
-
-            // Net sales: after discount, includes fees (total_amount)
-            $netSales = $totalAmount;
-
-            // Parse applied_fees and separate taxes from other fees
-            $appliedFees = $this->ensureArray($booking->applied_fees);
-            $feeAmount = 0;
-            $taxAmount = 0;
-
-            foreach ($appliedFees as $fee) {
-                $feeValue = (float) ($fee['fee_amount'] ?? 0);
-                $feeName = strtolower(trim($fee['fee_name'] ?? ''));
-
-                if ($this->isTaxFee($feeName)) {
-                    $taxAmount += $feeValue;
-                } else {
-                    $feeAmount += $feeValue;
-                }
-            }
-
-            $totals['gross_sales'] += $grossSales;
-            $totals['net_sales'] += $netSales;
-            $totals['fee_amount'] += $feeAmount;
-            $totals['discount_amount'] += $discountAmount;
-            $totals['tax_amount'] += $taxAmount;
-            $totals['total_billed'] += $totalAmount;
-            $totals['grand_total'] += $amountPaid;
-            $totals['balance_due'] += ($totalAmount - $amountPaid);
-
-            // Track money actually collected through Authorize.Net gateway
-            if (($booking->payment_method ?? null) === 'authorize.net') {
-                $totals['collected_via_gateway'] += $amountPaid;
-                $totals['collected_via_gateway_net'] += ($amountPaid - $feeAmount - $taxAmount);
+        // Parse applied_fees JSON and separate taxes from other fees
+        $appliedFees = $this->ensureArray($record->applied_fees);
+        $feeAmount = 0;
+        $taxAmount = 0;
+        foreach ($appliedFees as $fee) {
+            $feeValue = (float) ($fee['fee_amount'] ?? 0);
+            if ($this->isTaxFee(strtolower(trim($fee['fee_name'] ?? '')))) {
+                $taxAmount += $feeValue;
+            } else {
+                $feeAmount += $feeValue;
             }
         }
 
-        return $totals;
+        $totals['quantity'] += $quantity;
+        $totals['gross_sales'] += $totalAmount + $discountAmount;
+        $totals['net_sales'] += $totalAmount;
+        $totals['fee_amount'] += $feeAmount;
+        $totals['discount_amount'] += $discountAmount;
+        $totals['tax_amount'] += $taxAmount;
+        $totals['total_billed'] += $totalAmount;
+        $totals['grand_total'] += $amountPaid;
+        $totals['balance_due'] += ($totalAmount - $amountPaid);
+        $totals['collected_via_gateway'] += $gatewayAmount;
+
+        // Gateway net: proportionally attribute fees/taxes to gateway portion
+        if ($gatewayAmount > 0 && $amountPaid > 0) {
+            $ratio = min($gatewayAmount / $amountPaid, 1.0);
+            $totals['collected_via_gateway_net'] += $gatewayAmount - (($feeAmount + $taxAmount) * $ratio);
+        }
     }
 
     /**
-     * Calculate totals for purchase items (attractions and events).
+     * Get actual gateway payment amounts from the payments table.
+     * This is the authoritative source for money collected through Authorize.Net.
      *
-     * ACCOUNTING DEFINITIONS (same as bookings):
-     * - Includes quantity field for ticket-based purchases
-     *
-     * @param array $purchases Array of purchase records
-     * @return array
+     * @param array $payableIds IDs of the payable records
+     * @param string $payableType Payment::TYPE_BOOKING, TYPE_ATTRACTION_PURCHASE, or TYPE_EVENT_PURCHASE
+     * @return array Keyed by payable_id => gateway_amount
      */
-    private function calculatePurchaseTotals(array $purchases): array
+    private function getGatewayAmounts(array $payableIds, string $payableType): array
     {
-        $totals = $this->initializeTotals();
-
-        foreach ($purchases as $purchase) {
-            $quantity = (int) ($purchase->quantity ?? 1);
-            $totals['quantity'] += $quantity;
-
-            $discountAmount = (float) ($purchase->discount_amount ?? 0);
-            $totalAmount = (float) ($purchase->total_amount ?? 0);
-            $amountPaid = (float) ($purchase->amount_paid ?? 0);
-
-            $grossSales = $totalAmount + $discountAmount;
-            $netSales = $totalAmount;
-
-            $appliedFees = $this->ensureArray($purchase->applied_fees);
-            $feeAmount = 0;
-            $taxAmount = 0;
-
-            foreach ($appliedFees as $fee) {
-                $feeValue = (float) ($fee['fee_amount'] ?? 0);
-                $feeName = strtolower(trim($fee['fee_name'] ?? ''));
-
-                if ($this->isTaxFee($feeName)) {
-                    $taxAmount += $feeValue;
-                } else {
-                    $feeAmount += $feeValue;
-                }
-            }
-
-            $totals['gross_sales'] += $grossSales;
-            $totals['net_sales'] += $netSales;
-            $totals['fee_amount'] += $feeAmount;
-            $totals['discount_amount'] += $discountAmount;
-            $totals['tax_amount'] += $taxAmount;
-            $totals['total_billed'] += $totalAmount;
-            $totals['grand_total'] += $amountPaid;
-            $totals['balance_due'] += ($totalAmount - $amountPaid);
-
-            // Track money actually collected through Authorize.Net gateway
-            if (($purchase->payment_method ?? null) === 'authorize.net') {
-                $totals['collected_via_gateway'] += $amountPaid;
-                $totals['collected_via_gateway_net'] += ($amountPaid - $feeAmount - $taxAmount);
-            }
+        if (empty($payableIds)) {
+            return [];
         }
 
-        return $totals;
+        return DB::table('payments')
+            ->where('payable_type', $payableType)
+            ->where('method', 'authorize.net')
+            ->where('status', 'completed')
+            ->whereIn('payable_id', $payableIds)
+            ->groupBy('payable_id')
+            ->pluck(DB::raw('SUM(amount) as gateway_amount'), 'payable_id')
+            ->map(fn($v) => (float) $v)
+            ->all();
+    }
+
+    /**
+     * Build the final category result array from grouped data.
+     *
+     * @param string $categoryName
+     * @param array $grouped
+     * @return array
+     */
+    private function buildCategoryResult(string $categoryName, array $grouped): array
+    {
+        $items = [];
+        $categoryTotals = $this->initializeTotals();
+
+        foreach ($grouped as $data) {
+            $t = $data['totals'];
+            $items[] = [
+                'name' => $data['name'],
+                'sub_category' => $data['sub_category'],
+                'quantity_sold' => $t['quantity'],
+                'gross_sales' => round($t['gross_sales'], 2),
+                'net_sales' => round($t['net_sales'], 2),
+                'fee_amount' => round($t['fee_amount'], 2),
+                'discount_amount' => round($t['discount_amount'], 2),
+                'tax_amount' => round($t['tax_amount'], 2),
+                'total_billed' => round($t['total_billed'], 2),
+                'grand_total' => round($t['grand_total'], 2),
+                'balance_due' => round($t['balance_due'], 2),
+                'collected_via_gateway' => round($t['collected_via_gateway'], 2),
+                'collected_via_gateway_net' => round($t['collected_via_gateway_net'], 2),
+            ];
+            $this->accumulateTotals($categoryTotals, $t);
+        }
+
+        usort($items, function ($a, $b) {
+            $catCompare = strcmp($a['sub_category'], $b['sub_category']);
+            return $catCompare !== 0 ? $catCompare : strcmp($a['name'], $b['name']);
+        });
+
+        return [
+            'name' => $categoryName,
+            'items' => $items,
+            'summary' => $this->formatTotals($categoryTotals),
+        ];
     }
 
     /**
