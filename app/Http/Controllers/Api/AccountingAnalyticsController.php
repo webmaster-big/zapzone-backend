@@ -216,7 +216,8 @@ class AccountingAnalyticsController extends Controller
             'bookings.total_amount',
             'bookings.amount_paid',
             'bookings.discount_amount',
-            'bookings.applied_fees'
+            'bookings.applied_fees',
+            'bookings.payment_method'
         )->get();
 
         // Get accurate gateway amounts from the payments table
@@ -237,7 +238,9 @@ class AccountingAnalyticsController extends Controller
             }
 
             $totals = &$grouped[$key]['totals'];
-            $this->accumulateRecordTotals($totals, $booking, $gatewayAmounts[$booking->id] ?? 0);
+            // In-store payments should not count as gateway collected
+            $gatewayAmount = ($booking->payment_method === 'in-store') ? 0 : ($gatewayAmounts[$booking->id] ?? 0);
+            $this->accumulateRecordTotals($totals, $booking, $gatewayAmount);
             unset($totals);
         }
 
@@ -287,7 +290,8 @@ class AccountingAnalyticsController extends Controller
             'attraction_purchases.total_amount',
             'attraction_purchases.amount_paid',
             'attraction_purchases.discount_amount',
-            'attraction_purchases.applied_fees'
+            'attraction_purchases.applied_fees',
+            'attraction_purchases.payment_method'
         )->get();
 
         // Get accurate gateway amounts from the payments table
@@ -308,7 +312,9 @@ class AccountingAnalyticsController extends Controller
             }
 
             $totals = &$grouped[$key]['totals'];
-            $this->accumulateRecordTotals($totals, $purchase, $gatewayAmounts[$purchase->id] ?? 0);
+            // In-store payments should not count as gateway collected
+            $gatewayAmount = ($purchase->payment_method === 'in-store') ? 0 : ($gatewayAmounts[$purchase->id] ?? 0);
+            $this->accumulateRecordTotals($totals, $purchase, $gatewayAmount);
             unset($totals);
         }
 
@@ -355,7 +361,8 @@ class AccountingAnalyticsController extends Controller
             'event_purchases.total_amount',
             'event_purchases.amount_paid',
             'event_purchases.discount_amount',
-            'event_purchases.applied_fees'
+            'event_purchases.applied_fees',
+            'event_purchases.payment_method'
         )->get();
 
         // Get accurate gateway amounts from the payments table
@@ -376,7 +383,9 @@ class AccountingAnalyticsController extends Controller
             }
 
             $totals = &$grouped[$eventName]['totals'];
-            $this->accumulateRecordTotals($totals, $purchase, $gatewayAmounts[$purchase->id] ?? 0);
+            // In-store payments should not count as gateway collected
+            $gatewayAmount = ($purchase->payment_method === 'in-store') ? 0 : ($gatewayAmounts[$purchase->id] ?? 0);
+            $this->accumulateRecordTotals($totals, $purchase, $gatewayAmount);
             unset($totals);
         }
 
