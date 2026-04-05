@@ -516,8 +516,14 @@ class PaymentController extends Controller
 
             // 4. Create credit card payment type (last 4 digits required for refund)
             // Use stored card_last_four from the original charge response
+            if (!$payment->card_last_four) {
+                Log::warning('Refund attempted without card_last_four, will fall back to void if refund fails', [
+                    'payment_id' => $payment->id,
+                    'transaction_id' => $payment->transaction_id,
+                ]);
+            }
             $creditCard = new AnetAPI\CreditCardType();
-            $lastFour = $payment->card_last_four ?? substr($payment->transaction_id, -4);
+            $lastFour = $payment->card_last_four ?? '0000';
             $creditCard->setCardNumber('XXXX' . $lastFour);
             $creditCard->setExpirationDate('XXXX');
 
@@ -797,23 +803,155 @@ class PaymentController extends Controller
             } else {
                 $errorMessage = 'Unknown error';
                 $errorCode = null;
+                $transactionErrorCode = null;
+                $transactionErrorText = null;
+
                 if ($response != null) {
                     $errorMessages = $response->getMessages()->getMessage();
                     $errorCode = $errorMessages[0]->getCode();
                     $errorMessage = $errorMessages[0]->getText();
+
+                    // Capture transaction-level error details for better diagnostics
+                    $tresponse = $response->getTransactionResponse();
+                    if ($tresponse && $tresponse->getErrors() != null) {
+                        $transactionErrorCode = $tresponse->getErrors()[0]->getErrorCode();
+                        $transactionErrorText = $tresponse->getErrors()[0]->getErrorText();
+                    }
                 }
 
                 Log::error('Authorize.Net refund API error', [
                     'error' => $errorMessage,
                     'error_code' => $errorCode,
+                    'transaction_error_code' => $transactionErrorCode,
+                    'transaction_error_text' => $transactionErrorText,
                     'transaction_id' => $payment->transaction_id,
                     'location_id' => $payment->location_id,
                 ]);
 
+                // E00027 with transaction error code 54 means the transaction is unsettled.
+                // Also fall back to void for any E00027 refund failure as the most common cause
+                // is attempting to refund an unsettled transaction.
+                $isUnsettledError = $errorCode === 'E00027';
+                $isPartialRefund = $refundAmount < $payment->amount;
+
+                if ($isUnsettledError && !$isPartialRefund && $totalAlreadyRefunded <= 0) {
+                    Log::info('Refund failed (likely unsettled transaction), attempting void instead', [
+                        'payment_id' => $payment->id,
+                        'transaction_id' => $payment->transaction_id,
+                    ]);
+
+                    // Attempt a void instead
+                    $voidTransactionRequestType = new AnetAPI\TransactionRequestType();
+                    $voidTransactionRequestType->setTransactionType('voidTransaction');
+                    $voidTransactionRequestType->setRefTransId($payment->transaction_id);
+
+                    $voidApiRequest = new AnetAPI\CreateTransactionRequest();
+                    $voidApiRequest->setMerchantAuthentication($merchantAuthentication);
+                    $voidApiRequest->setTransactionRequest($voidTransactionRequestType);
+
+                    $voidController = new AnetController\CreateTransactionController($voidApiRequest);
+                    $voidResponse = $voidController->executeWithApiResponse($environment);
+
+                    if ($voidResponse != null && $voidResponse->getMessages()->getResultCode() == 'Ok') {
+                        $voidTresponse = $voidResponse->getTransactionResponse();
+                        if ($voidTresponse != null && $voidTresponse->getMessages() != null) {
+                            Log::info('Void fallback successful (unsettled refund → void)', [
+                                'payment_id' => $payment->id,
+                                'transaction_id' => $payment->transaction_id,
+                            ]);
+
+                            // Update original payment status to voided
+                            $payment->update([
+                                'status' => 'voided',
+                                'refunded_at' => now(),
+                            ]);
+
+                            // Create a void payment record for the audit trail
+                            $voidPayment = Payment::create([
+                                'payable_id' => $payment->payable_id,
+                                'payable_type' => $payment->payable_type,
+                                'customer_id' => $payment->customer_id,
+                                'transaction_id' => 'VOID-' . $payment->transaction_id,
+                                'amount' => $payment->amount,
+                                'currency' => $payment->currency ?? 'USD',
+                                'method' => 'authorize.net',
+                                'status' => 'voided',
+                                'notes' => "Void of Payment #{$payment->id} (auto: refund failed, transaction unsettled)",
+                                'refunded_at' => now(),
+                                'payment_id' => 'VOID-' . ($payment->payment_id ?? $payment->transaction_id),
+                                'location_id' => $payment->location_id,
+                            ]);
+
+                            $payment->update([
+                                'notes' => trim(($payment->notes ?? '') . "\nTransaction voided (auto-fallback from refund) → Void Payment #{$voidPayment->id}"),
+                            ]);
+
+                            // Update the related payable (void = always cancel)
+                            $payable = null;
+                            if ($payment->payable_type === Payment::TYPE_BOOKING && $payment->payable_id) {
+                                $payable = Booking::withTrashed()->find($payment->payable_id);
+                                if ($payable) {
+                                    $payable->update([
+                                        'status' => 'cancelled',
+                                        'payment_status' => 'voided',
+                                        'cancelled_at' => now(),
+                                        'amount_paid' => max(0, $payable->amount_paid - $payment->amount),
+                                    ]);
+                                }
+                            } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE && $payment->payable_id) {
+                                $payable = AttractionPurchase::withTrashed()->find($payment->payable_id);
+                                if ($payable) {
+                                    $payable->update([
+                                        'status' => AttractionPurchase::STATUS_REFUNDED,
+                                        'amount_paid' => max(0, $payable->amount_paid - $payment->amount),
+                                    ]);
+                                }
+                            } elseif ($payment->payable_type === Payment::TYPE_EVENT_PURCHASE && $payment->payable_id) {
+                                $payable = EventPurchase::withTrashed()->find($payment->payable_id);
+                                if ($payable) {
+                                    $payable->update([
+                                        'amount_paid' => max(0, $payable->amount_paid - $payment->amount),
+                                        'payment_status' => 'voided',
+                                        'status' => 'cancelled',
+                                        'cancelled_at' => now(),
+                                    ]);
+                                }
+                            }
+
+                            return response()->json([
+                                'success' => true,
+                                'message' => 'Transaction was unsettled — voided successfully instead of refunded',
+                                'data' => [
+                                    'original_payment' => $payment->fresh(),
+                                    'void_payment' => $voidPayment->fresh(),
+                                ],
+                                'void_amount' => $payment->amount,
+                                'was_void_fallback' => true,
+                                'payable_cancelled' => true,
+                                'payable' => $payable?->fresh(),
+                            ]);
+                        }
+                    }
+
+                    Log::warning('Void fallback also failed', [
+                        'payment_id' => $payment->id,
+                        'transaction_id' => $payment->transaction_id,
+                    ]);
+                }
+
+                $userMessage = $errorMessage;
+                if ($isUnsettledError && $isPartialRefund) {
+                    $userMessage = 'This transaction has not settled yet (takes up to 24-48 hours). Partial refunds are not available for unsettled transactions. You can void the full payment instead.';
+                } elseif ($isUnsettledError) {
+                    $userMessage = 'This transaction has not settled yet and could not be voided automatically. Please try voiding the payment manually or wait 24-48 hours and retry the refund.';
+                }
+
                 return response()->json([
                     'success' => false,
-                    'message' => $errorMessage,
+                    'message' => $userMessage,
                     'error_code' => $errorCode,
+                    'transaction_error_code' => $transactionErrorCode,
+                    'is_unsettled' => $isUnsettledError,
                 ], 400);
             }
         } catch (\Illuminate\Contracts\Encryption\DecryptException $e) {
