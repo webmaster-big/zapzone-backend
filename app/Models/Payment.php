@@ -34,6 +34,8 @@ class Payment extends Model
         'refunded_at',
         'payment_id',
         'card_last_four',
+        'avs_result_code',
+        'cvv_result_code',
         'location_id',
     ];
 

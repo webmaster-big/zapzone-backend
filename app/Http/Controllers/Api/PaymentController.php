@@ -1886,11 +1886,79 @@ class PaymentController extends Controller
                         ], 400);
                     }
 
-                    // Success - create payment record with optional payable linking
-                    // Capture card last 4 digits from Authorize.Net response for future refunds
+                    // Success - capture verification codes from Authorize.Net response
                     $cardLastFour = null;
                     if ($tresponse->getAccountNumber()) {
                         $cardLastFour = substr($tresponse->getAccountNumber(), -4);
+                    }
+
+                    $avsResultCode = $tresponse->getAvsResultCode();
+                    $cvvResultCode = $tresponse->getCvvResultCode();
+
+                    Log::info('AVS/CVV verification results', [
+                        'transaction_id' => $transactionId,
+                        'avs_result_code' => $avsResultCode,
+                        'cvv_result_code' => $cvvResultCode,
+                        'location_id' => $request->location_id,
+                    ]);
+
+                    // AVS fraud protection: reject and auto-void transactions with high-risk AVS codes
+                    // N = No match (address & zip), G = Non-US issuer, no AVS support
+                    // R = System unavailable, S = Not supported, U = Info unavailable
+                    // These codes indicate the cardholder's billing address does not match
+                    $avsRejectCodes = ['N']; // Only hard-reject on full mismatch
+                    $avsWarnCodes = ['A', 'W', 'Z']; // Partial matches: log warning but allow
+
+                    if ($avsResultCode && in_array($avsResultCode, $avsRejectCodes)) {
+                        Log::warning('AVS verification FAILED - auto-voiding transaction for fraud prevention', [
+                            'transaction_id' => $transactionId,
+                            'avs_result_code' => $avsResultCode,
+                            'location_id' => $request->location_id,
+                            'amount' => $request->amount,
+                            'customer_zip' => $request->customer['zip'] ?? 'not provided',
+                        ]);
+
+                        // Auto-void the transaction
+                        try {
+                            $voidRequest = new AnetAPI\TransactionRequestType();
+                            $voidRequest->setTransactionType('voidTransaction');
+                            $voidRequest->setRefTransId($transactionId);
+
+                            $voidApiRequest = new AnetAPI\CreateTransactionRequest();
+                            $voidApiRequest->setMerchantAuthentication($merchantAuthentication);
+                            $voidApiRequest->setTransactionRequest($voidRequest);
+
+                            $voidController = new AnetController\CreateTransactionController($voidApiRequest);
+                            $voidResponse = $voidController->executeWithApiResponse($environment);
+
+                            if ($voidResponse != null && $voidResponse->getMessages()->getResultCode() == 'Ok') {
+                                Log::info('AVS-failed transaction voided successfully', ['transaction_id' => $transactionId]);
+                            } else {
+                                Log::error('Failed to void AVS-failed transaction', ['transaction_id' => $transactionId]);
+                            }
+                        } catch (\Exception $e) {
+                            Log::error('Exception voiding AVS-failed transaction', [
+                                'transaction_id' => $transactionId,
+                                'error' => $e->getMessage(),
+                            ]);
+                        }
+
+                        $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
+
+                        return response()->json([
+                            'success' => false,
+                            'message' => 'Payment declined: billing address verification failed. Please ensure your billing ZIP code matches the one on file with your card issuer.',
+                            'error_code' => 'AVS_MISMATCH',
+                            'avs_result_code' => $avsResultCode,
+                        ], 400);
+                    }
+
+                    if ($avsResultCode && in_array($avsResultCode, $avsWarnCodes)) {
+                        Log::warning('AVS partial match - allowing transaction but logging for review', [
+                            'transaction_id' => $transactionId,
+                            'avs_result_code' => $avsResultCode,
+                            'location_id' => $request->location_id,
+                        ]);
                     }
 
                     $payment = Payment::create([
@@ -1903,6 +1971,8 @@ class PaymentController extends Controller
                         'transaction_id' => $transactionId,
                         'payment_id' => $transactionId,
                         'card_last_four' => $cardLastFour,
+                        'avs_result_code' => $avsResultCode,
+                        'cvv_result_code' => $cvvResultCode,
                         'payable_id' => $request->payable_id,
                         'payable_type' => $request->payable_type,
                         'notes' => $request->description ?? 'Authorize.Net payment via Accept.js',
@@ -1976,6 +2046,8 @@ class PaymentController extends Controller
                         'transaction_id' => $transactionId,
                         'amount' => $request->amount,
                         'location_id' => $request->location_id,
+                        'avs_result_code' => $avsResultCode,
+                        'cvv_result_code' => $cvvResultCode,
                         'customer_name' => $request->has('customer') ?
                             ($request->customer['first_name'] ?? '') . ' ' . ($request->customer['last_name'] ?? '') :
                             'Not provided',
@@ -2420,6 +2492,8 @@ class PaymentController extends Controller
                         'message' => 'Payment processed successfully',
                         'transaction_id' => $transactionId,
                         'auth_code' => $tresponse->getAuthCode(),
+                        'avs_result_code' => $avsResultCode,
+                        'cvv_result_code' => $cvvResultCode,
                         'payment' => $payment,
                         'email_sent' => $emailSent,
                         'email_error' => $emailError,
