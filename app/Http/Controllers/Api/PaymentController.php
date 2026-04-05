@@ -515,15 +515,62 @@ class PaymentController extends Controller
             $merchantAuthentication->setTransactionKey($transactionKey);
 
             // 4. Create credit card payment type (last 4 digits required for refund)
-            // Use stored card_last_four from the original charge response
-            if (!$payment->card_last_four) {
-                Log::warning('Refund attempted without card_last_four, will fall back to void if refund fails', [
+            $lastFour = $payment->card_last_four;
+
+            // If card_last_four is missing, fetch it from Authorize.Net transaction details
+            if (!$lastFour) {
+                Log::info('card_last_four missing, fetching from Authorize.Net GetTransactionDetails', [
                     'payment_id' => $payment->id,
                     'transaction_id' => $payment->transaction_id,
                 ]);
+
+                try {
+                    $detailsRequest = new AnetAPI\GetTransactionDetailsRequest();
+                    $detailsRequest->setMerchantAuthentication($merchantAuthentication);
+                    $detailsRequest->setTransId($payment->transaction_id);
+
+                    $detailsController = new AnetController\GetTransactionDetailsController($detailsRequest);
+                    $detailsResponse = $detailsController->executeWithApiResponse($environment);
+
+                    if ($detailsResponse != null && $detailsResponse->getMessages()->getResultCode() == 'Ok') {
+                        $txn = $detailsResponse->getTransaction();
+                        if ($txn && $txn->getPayment() && $txn->getPayment()->getCreditCard()) {
+                            $cardNumber = $txn->getPayment()->getCreditCard()->getCardNumber();
+                            // Authorize.Net returns masked card like XXXX1234
+                            $lastFour = substr($cardNumber, -4);
+
+                            // Persist for future refunds so we don't need to look it up again
+                            $payment->update(['card_last_four' => $lastFour]);
+
+                            Log::info('card_last_four retrieved and saved from Authorize.Net', [
+                                'payment_id' => $payment->id,
+                                'card_last_four' => $lastFour,
+                            ]);
+                        }
+                    } else {
+                        Log::warning('Failed to fetch transaction details from Authorize.Net', [
+                            'payment_id' => $payment->id,
+                            'transaction_id' => $payment->transaction_id,
+                            'error' => $detailsResponse?->getMessages()->getMessage()[0]->getText() ?? 'No response',
+                        ]);
+                    }
+                } catch (\Exception $e) {
+                    Log::warning('Exception fetching transaction details', [
+                        'payment_id' => $payment->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
             }
+
+            if (!$lastFour) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Unable to determine card details for this transaction. The card last four digits could not be retrieved from Authorize.Net. Please try voiding the payment instead, or contact support.',
+                    'error_code' => 'MISSING_CARD_LAST_FOUR',
+                ], 400);
+            }
+
             $creditCard = new AnetAPI\CreditCardType();
-            $lastFour = $payment->card_last_four ?? '0000';
             $creditCard->setCardNumber('XXXX' . $lastFour);
             $creditCard->setExpirationDate('XXXX');
 
@@ -933,9 +980,25 @@ class PaymentController extends Controller
                         }
                     }
 
+                    // Log detailed void failure
+                    $voidErrorMessage = 'Unknown void error';
+                    $voidErrorCode = null;
+                    if ($voidResponse != null) {
+                        $voidMessages = $voidResponse->getMessages()->getMessage();
+                        $voidErrorCode = $voidMessages[0]->getCode();
+                        $voidErrorMessage = $voidMessages[0]->getText();
+                        $voidTresponse = $voidResponse->getTransactionResponse();
+                        if ($voidTresponse && $voidTresponse->getErrors() != null) {
+                            $voidErrorCode = $voidTresponse->getErrors()[0]->getErrorCode();
+                            $voidErrorMessage = $voidTresponse->getErrors()[0]->getErrorText();
+                        }
+                    }
+
                     Log::warning('Void fallback also failed', [
                         'payment_id' => $payment->id,
                         'transaction_id' => $payment->transaction_id,
+                        'void_error' => $voidErrorMessage,
+                        'void_error_code' => $voidErrorCode,
                     ]);
                 }
 
