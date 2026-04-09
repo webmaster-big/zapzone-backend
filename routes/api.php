@@ -412,6 +412,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Soft delete routes - MUST be before apiResource to avoid {booking} catching "trashed"
     Route::get('bookings/trashed', [BookingController::class, 'trashed']);
     Route::post('bookings/bulk-restore', [BookingController::class, 'bulkRestore']);
+    Route::post('bookings/bulk-import-csv', [BookingController::class, 'bulkImportCsv']);
 
     Route::apiResource('bookings', BookingController::class)->except(['store', 'destroy']);
     Route::patch('bookings/{booking}/cancel', [BookingController::class, 'cancel']);

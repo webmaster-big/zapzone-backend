@@ -2793,5 +2793,97 @@ class BookingController extends Controller
         }
     }
 
+    /**
+     * Bulk import bookings from a CSV file (Bookly format).
+     */
+    public function bulkImportCsv(Request $request): JsonResponse
+    {
+        $request->validate([
+            'file' => 'required|file|mimes:csv,txt,xlsx,xls|max:10240', // 10MB max
+            'location_id' => 'required|exists:locations,id',
+            'skip_duplicates' => 'nullable|boolean',
+        ]);
+
+        $locationId = (int) $request->location_id;
+        $createdBy = auth()->id();
+
+        try {
+            $service = new \App\Services\BookingCsvImportService();
+            $file = $request->file('file');
+
+            // Parse CSV or Excel
+            $rows = $service->parseFile(
+                $file->getRealPath(),
+                $file->getClientOriginalName()
+            );
+
+            if (empty($rows)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'CSV file is empty or contains no data rows.',
+                ], 422);
+            }
+
+            // Process rows in a transaction
+            \Illuminate\Support\Facades\DB::beginTransaction();
+
+            try {
+                $result = $service->processRows($rows, $locationId, $createdBy);
+
+                \Illuminate\Support\Facades\DB::commit();
+            } catch (\Exception $e) {
+                \Illuminate\Support\Facades\DB::rollBack();
+                throw $e;
+            }
+
+            // Log activity
+            $currentUser = auth()->user();
+            ActivityLog::log(
+                action: 'Bookings Bulk Import (CSV)',
+                category: 'create',
+                description: "Imported {$result['imported']} bookings from CSV, skipped {$result['skipped']}",
+                userId: auth()->id(),
+                locationId: $locationId,
+                metadata: [
+                    'imported_by' => [
+                        'user_id' => auth()->id(),
+                        'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                        'email' => $currentUser?->email,
+                    ],
+                    'imported_at' => now()->toIso8601String(),
+                    'import_details' => [
+                        'location_id' => $locationId,
+                        'total_rows' => count($rows),
+                        'imported_count' => $result['imported'],
+                        'skipped_count' => $result['skipped'],
+                        'errors_count' => count($result['errors']),
+                    ],
+                ]
+            );
+
+            return response()->json([
+                'success' => true,
+                'message' => "Imported {$result['imported']} bookings successfully",
+                'data' => [
+                    'imported' => $result['imported'],
+                    'skipped' => $result['skipped'],
+                    'errors' => $result['errors'],
+                    'total_rows' => count($rows),
+                ],
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('Booking CSV bulk import failed', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Import failed: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
 }
 
