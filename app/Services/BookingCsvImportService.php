@@ -3,7 +3,8 @@
 namespace App\Services;
 
 use App\Models\Booking;
-use App\Models\Customer;
+use App\Models\Contact;
+use App\Models\Location;
 use App\Models\Package;
 use App\Models\Room;
 use App\Models\BookingAddOn;
@@ -187,29 +188,29 @@ class BookingCsvImportService
             throw new \RuntimeException('Customer name and email are both empty');
         }
 
-        // Try to find or create customer by email
-        $customer = null;
-        if (!empty($customerEmail)) {
-            $customer = Customer::where('email', $customerEmail)->first();
+        // Add to contacts table (no customer account creation)
+        $nameParts = $this->splitName($customerName);
+        $addressParts = $this->parseAddress($customerAddress);
+        $companyId = Location::find($locationId)?->company_id;
 
-            if (!$customer) {
-                $nameParts = $this->splitName($customerName);
-                $addressParts = $this->parseAddress($customerAddress);
-
-                $customer = Customer::create([
+        if (!empty($customerEmail) && $companyId) {
+            Contact::firstOrCreate(
+                ['company_id' => $companyId, 'email' => $customerEmail],
+                [
+                    'location_id' => $locationId,
                     'first_name' => $nameParts['first_name'],
                     'last_name' => $nameParts['last_name'],
-                    'email' => $customerEmail,
                     'phone' => $this->cleanPhone($customerPhone),
-                    'password' => Str::random(16), // temporary; model casts to hashed
                     'address' => $addressParts['address'],
                     'city' => $addressParts['city'],
                     'state' => $addressParts['state'],
                     'zip' => $addressParts['zip'],
                     'country' => 'US',
+                    'source' => 'booking',
                     'status' => 'active',
-                ]);
-            }
+                    'created_by' => $createdBy,
+                ]
+            );
         }
 
         // Parse service/package name (the CSV "Service" column may have add-ons in parentheses)
@@ -332,7 +333,7 @@ class BookingCsvImportService
 
         $booking = Booking::create([
             'reference_number' => $referenceNumber,
-            'customer_id' => $customer?->id,
+            'customer_id' => null,
             'package_id' => $package?->id,
             'location_id' => $locationId,
             'room_id' => $room?->id,
@@ -350,9 +351,14 @@ class BookingCsvImportService
             'status' => $status,
             'notes' => !empty($notes) ? $notes : null,
             'internal_notes' => implode(' | ', $internalNotesParts),
-            'guest_name' => $customer ? null : $customerName,
-            'guest_email' => $customer ? null : $customerEmail,
-            'guest_phone' => $customer ? null : $this->cleanPhone($customerPhone),
+            'guest_name' => $customerName ?: null,
+            'guest_email' => $customerEmail ?: null,
+            'guest_phone' => !empty($customerPhone) ? $this->cleanPhone($customerPhone) : null,
+            'guest_address' => $addressParts['address'],
+            'guest_city' => $addressParts['city'],
+            'guest_state' => $addressParts['state'],
+            'guest_zip' => $addressParts['zip'],
+            'guest_country' => !empty($customerAddress) ? 'US' : null,
             'guest_of_honor_name' => !empty($guestOfHonorName) ? $guestOfHonorName : null,
             'guest_of_honor_age' => $guestOfHonorAge,
             'completed_at' => $completedAt,
@@ -365,7 +371,7 @@ class BookingCsvImportService
                 'package_id' => $package->id,
                 'booking_id' => $booking->id,
                 'room_id' => $room->id,
-                'customer_id' => $customer?->id,
+                'customer_id' => null,
                 'user_id' => $createdBy,
                 'booked_date' => $bookingDate,
                 'time_slot_start' => $bookingTime,
