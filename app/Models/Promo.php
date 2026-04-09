@@ -13,6 +13,8 @@ class Promo extends Model
 
     protected $fillable = [
         'code',
+        'code_mode',
+        'batch_id',
         'name',
         'type',
         'value',
@@ -69,6 +71,21 @@ class Promo extends Model
     public function scopeByCode($query, $code)
     {
         return $query->where('code', $code);
+    }
+
+    public function scopeByBatch($query, $batchId)
+    {
+        return $query->where('batch_id', $batchId);
+    }
+
+    public function scopeSingleMode($query)
+    {
+        return $query->where('code_mode', 'single');
+    }
+
+    public function scopeUniqueMode($query)
+    {
+        return $query->where('code_mode', 'unique');
     }
 
     // Helpers

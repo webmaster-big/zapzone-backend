@@ -384,11 +384,18 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('gift-cards/{giftCard}/deactivate', [GiftCardController::class, 'deactivate']);
     Route::patch('gift-cards/{giftCard}/reactivate', [GiftCardController::class, 'reactivate']);
 
-    // Promo routes
-    Route::apiResource('promos', PromoController::class);
+    // Promo routes — static (non-parameterized) routes MUST come before apiResource
+    // to prevent GET /promos/{promo} from shadowing them via route model binding
     Route::post('promos/validate-code', [PromoController::class, 'validateByCode']);
-    Route::post('promos/{promo}/apply', [PromoController::class, 'apply']);
     Route::get('promos/valid', [PromoController::class, 'getValid']);
+    Route::post('promos/generate-bulk', [PromoController::class, 'generateBulk']);
+    Route::get('promos/batches', [PromoController::class, 'listBatches']);
+    Route::get('promos/batches/{batchId}', [PromoController::class, 'showBatch']);
+    Route::get('promos/batches/{batchId}/export-csv', [PromoController::class, 'exportBatchCsv']);
+    Route::patch('promos/batches/{batchId}/deactivate', [PromoController::class, 'deactivateBatch']);
+    Route::delete('promos/batches/{batchId}', [PromoController::class, 'destroyBatch']);
+    Route::apiResource('promos', PromoController::class);
+    Route::post('promos/{promo}/apply', [PromoController::class, 'apply']);
     Route::patch('promos/{promo}/toggle-status', [PromoController::class, 'toggleStatus']);
 
     // Booking routes
