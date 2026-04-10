@@ -10,7 +10,7 @@
         "authorizenet/authorizenet": "^2.0",
         "barryvdh/laravel-dompdf": "*",
         "google/apiclient": "*",
-        "laravel/framework": "^12.0",
+        "laravel/framework": "~12.48.0",
         "laravel/sanctum": "^4.0",
         "laravel/tinker": "^2.10.1",
         "phpoffice/phpspreadsheet": "^4.0",
@@ -81,7 +81,7 @@
         }
     },
     "config": {
-        "optimize-autoloader": true,
+        "optimize-autoloader": false,
         "preferred-install": "dist",
         "sort-packages": true,
         "allow-plugins": {
