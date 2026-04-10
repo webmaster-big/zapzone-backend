@@ -1299,14 +1299,14 @@ class BookingController extends Controller
             'status' => 'cancelled',
         ]);
 
-        // Update Google Calendar event (mark as cancelled) or delete it
+        // Remove from Google Calendar when cancelled
         try {
             $gcalService = new GoogleCalendarService($booking->location_id);
             if ($gcalService->isConnected() && $booking->google_calendar_event_id) {
-                $gcalService->updateEventFromBooking($booking);
+                $gcalService->deleteEvent($booking);
             }
         } catch (\Exception $e) {
-            Log::warning('Google Calendar update failed for cancelled booking', [
+            Log::warning('Google Calendar delete failed for cancelled booking', [
                 'booking_id' => $booking->id,
                 'error' => $e->getMessage(),
             ]);
@@ -1561,7 +1561,12 @@ class BookingController extends Controller
         try {
             $gcalService = new GoogleCalendarService($booking->location_id);
             if ($gcalService->isConnected()) {
-                $gcalService->updateEventFromBooking($booking);
+                if ($validated['status'] === 'cancelled') {
+                    // Remove from Google Calendar when cancelled
+                    $gcalService->deleteEvent($booking);
+                } else {
+                    $gcalService->updateEventFromBooking($booking);
+                }
             }
         } catch (\Exception $e) {
             Log::warning('Google Calendar sync failed on status update', ['booking_id' => $booking->id, 'error' => $e->getMessage()]);
@@ -2700,6 +2705,19 @@ class BookingController extends Controller
         foreach ($bookings as $booking) {
             $booking->restore();
             $restoredCount++;
+
+            // Re-sync to Google Calendar if connected
+            try {
+                $gcalService = new GoogleCalendarService($booking->location_id);
+                if ($gcalService->isConnected() && !$booking->google_calendar_event_id) {
+                    $gcalService->createEventFromBooking($booking);
+                }
+            } catch (\Exception $e) {
+                Log::warning('Google Calendar event creation failed on bulk restore', [
+                    'booking_id' => $booking->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
         }
 
         // Log bulk restore
@@ -2756,6 +2774,19 @@ class BookingController extends Controller
             $referenceNumber = $booking->reference_number;
             $bookingId = $booking->id;
             $locationId = $booking->location_id;
+
+            // Remove from Google Calendar before permanently deleting
+            try {
+                $gcalService = new GoogleCalendarService($booking->location_id);
+                if ($gcalService->isConnected() && $booking->google_calendar_event_id) {
+                    $gcalService->deleteEvent($booking);
+                }
+            } catch (\Exception $e) {
+                Log::warning('Google Calendar cleanup failed during public force delete', [
+                    'booking_id' => $bookingId,
+                    'error' => $e->getMessage(),
+                ]);
+            }
 
             $booking->forceDelete();
 

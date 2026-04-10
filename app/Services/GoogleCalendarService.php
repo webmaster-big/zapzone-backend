@@ -792,10 +792,13 @@ class GoogleCalendarService
         ]);
 
         // Step 2: Re-create events for all active bookings from the given date
+        // Exclude cancelled and soft-deleted bookings
         $bookingsToSync = Booking::with(['package', 'location', 'customer', 'room', 'attractions', 'addOns'])
             ->where('booking_date', '>=', $fromDate->format('Y-m-d'))
             ->whereNotIn('status', ['cancelled'])
             ->whereNull('google_calendar_event_id');
+
+        // Note: withoutTrashed is the default, so soft-deleted bookings are already excluded
 
         if ($this->locationId) {
             $bookingsToSync->where('location_id', $this->locationId);

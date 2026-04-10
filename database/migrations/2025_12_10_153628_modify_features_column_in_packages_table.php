@@ -13,7 +13,12 @@ return new class extends Migration
     public function up(): void
     {
         // First, convert existing comma-separated features to JSON array
-        DB::statement("UPDATE packages SET features = CONCAT('[\"', REPLACE(REPLACE(features, '\"', '\\\\\"'), ',', '\",\"'), '\"]') WHERE features IS NOT NULL AND features != ''");
+        if (DB::getDriverName() === 'sqlite') {
+            // SQLite uses || for concatenation
+            DB::statement("UPDATE packages SET features = '[\"' || REPLACE(REPLACE(features, '\"', '\\\"'), ',', '\",\"') || '\"]' WHERE features IS NOT NULL AND features != ''");
+        } else {
+            DB::statement("UPDATE packages SET features = CONCAT('[\"', REPLACE(REPLACE(features, '\"', '\\\\\"'), ',', '\",\"'), '\"]') WHERE features IS NOT NULL AND features != ''");
+        }
 
         // Handle empty strings
         DB::statement("UPDATE packages SET features = NULL WHERE features = ''");
