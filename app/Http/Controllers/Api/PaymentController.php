@@ -412,7 +412,7 @@ class PaymentController extends Controller
      */
     public function trashed(Request $request): JsonResponse
     {
-        $query = Payment::onlyTrashed()->with(['customer', 'location']);
+        $query = Payment::onlyTrashed()->with(['customer', 'location', 'booking', 'attractionPurchase', 'eventPurchase']);
 
         if ($request->has('payable_type')) {
             $query->where('payable_type', $request->payable_type);
