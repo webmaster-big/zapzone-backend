@@ -454,7 +454,7 @@ class PaymentController extends Controller
             if ($payable) {
                 $payable->update([
                     'amount_paid' => $totalPaid,
-                    'payment_status' => $totalPaid >= $payable->total_amount ? 'paid' : ($totalPaid > 0 ? 'partial' : 'unpaid'),
+                    'payment_status' => $totalPaid >= $payable->total_amount ? 'paid' : ($totalPaid > 0 ? 'partial' : 'pending'),
                 ]);
             }
         } elseif ($payableType === Payment::TYPE_ATTRACTION_PURCHASE) {
@@ -470,7 +470,7 @@ class PaymentController extends Controller
             if ($payable) {
                 $payable->update([
                     'amount_paid' => $totalPaid,
-                    'payment_status' => $totalPaid >= $payable->total_amount ? 'paid' : ($totalPaid > 0 ? 'partial' : 'unpaid'),
+                    'payment_status' => $totalPaid >= $payable->total_amount ? 'paid' : ($totalPaid > 0 ? 'partial' : 'pending'),
                 ]);
             }
         }
