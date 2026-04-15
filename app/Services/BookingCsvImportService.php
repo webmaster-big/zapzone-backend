@@ -163,8 +163,7 @@ class BookingCsvImportService
      */
     protected function processRow(array $row, int $index, int $locationId, ?int $createdBy): ?Booking
     {
-        // Collect unmatched data for internal notes
-        $unmatchedNotes = [];
+
 
         // Parse appointment date and time
         $appointmentDate = $this->parseDateTime($row['Appointment date'] ?? $row['appointment_date'] ?? null);
@@ -219,73 +218,37 @@ class BookingCsvImportService
         $packageName = $parsed['package_name'];
 
         // Match package
-        $packageMatchType = 'none';
         $package = Package::where('name', $packageName)->first();
-        if ($package) {
-            $packageMatchType = 'exact';
-        }
         if (!$package) {
-            // Try fuzzy match
             $package = Package::where('name', 'LIKE', '%' . $packageName . '%')->first();
-            if ($package) {
-                $packageMatchType = 'fuzzy';
-            }
         }
         if (!$package && !empty($packageName)) {
-            // Try matching by splitting pipe (Summer Camp | Unlimited → "Summer Camp")
             $basePackageName = trim(explode('|', $packageName)[0]);
             if ($basePackageName !== $packageName) {
                 $package = Package::where('name', 'LIKE', '%' . $basePackageName . '%')->first();
-                if ($package) {
-                    $packageMatchType = 'fuzzy';
-                }
             }
-        }
-        if (!$package && !empty($packageName)) {
-            $unmatchedNotes[] = "UNMATCHED PACKAGE: \"{$packageName}\" (from Service: \"{$serviceRaw}\")";
-        } elseif ($package && $packageMatchType === 'fuzzy') {
-            $unmatchedNotes[] = "FUZZY MATCHED PACKAGE: CSV \"{$packageName}\" → matched \"{$package->name}\" (ID:{$package->id})";
         }
 
         // Match room from "Party Area" column
         $roomName = trim((string) ($row['Party Area'] ?? $row['party_area'] ?? ''));
         $room = null;
-        $roomMatchType = 'none';
         if (!empty($roomName) && strtolower($roomName) !== 'no area') {
-            // Try exact match first
             $room = Room::where('location_id', $locationId)
                 ->where('name', $roomName)
                 ->first();
-            if ($room) {
-                $roomMatchType = 'exact';
-            }
 
             if (!$room) {
-                // Try matching without "(Any)" suffix
                 $cleanRoomName = preg_replace('/\s*\(Any\)\s*$/i', '', $roomName);
                 $room = Room::where('location_id', $locationId)
                     ->where('name', $cleanRoomName)
                     ->first();
-                if ($room) {
-                    $roomMatchType = 'fuzzy';
-                }
             }
 
             if (!$room) {
-                // Try LIKE match
                 $cleanRoomName = preg_replace('/\s*\(Any\)\s*$/i', '', $roomName);
                 $room = Room::where('location_id', $locationId)
                     ->where('name', 'LIKE', '%' . $cleanRoomName . '%')
                     ->first();
-                if ($room) {
-                    $roomMatchType = 'fuzzy';
-                }
-            }
-
-            if (!$room) {
-                $unmatchedNotes[] = "UNMATCHED ROOM: \"{$roomName}\"";
-            } elseif ($roomMatchType === 'fuzzy') {
-                $unmatchedNotes[] = "FUZZY MATCHED ROOM: CSV \"{$roomName}\" → matched \"{$room->name}\" (ID:{$room->id})";
             }
         }
 
@@ -319,14 +282,18 @@ class BookingCsvImportService
         $guestOfHonorAge = trim((string) ($row["Guest of Honor's Age (or General Age of Group)"] ?? $row['guest_of_honor_age'] ?? ''));
         $guestOfHonorAge = is_numeric($guestOfHonorAge) ? (int) $guestOfHonorAge : null;
 
-        // Check for duplicate by external ID
+        // Check for duplicate - match by date, time, and guest email/name
         $externalId = trim((string) ($row['ID'] ?? $row['id'] ?? ''));
-        if (!empty($externalId)) {
-            $existing = Booking::where('internal_notes', 'LIKE', '%bookly_id:' . $externalId . '%')
-                ->first();
-            if ($existing) {
-                return null; // Skip duplicate
-            }
+        $duplicateQuery = Booking::where('booking_date', $bookingDate)
+            ->where('booking_time', $bookingTime)
+            ->where('location_id', $locationId);
+        if (!empty($customerEmail)) {
+            $duplicateQuery->where('guest_email', $customerEmail);
+        } elseif (!empty($customerName)) {
+            $duplicateQuery->where('guest_name', $customerName);
+        }
+        if ($duplicateQuery->exists()) {
+            return null; // Skip duplicate
         }
 
         // Generate reference number
@@ -334,70 +301,33 @@ class BookingCsvImportService
             $referenceNumber = 'BK' . now()->format('Ymd') . strtoupper(Str::random(6));
         } while (Booking::where('reference_number', $referenceNumber)->exists());
 
-        // Build internal notes with import tracking info
-        $internalNotesParts = ['Imported from Bookly CSV'];
-        if (!empty($externalId)) {
-            $internalNotesParts[] = 'bookly_id:' . $externalId;
-        }
-        if ($createdDate) {
-            $internalNotesParts[] = 'Original created: ' . $createdDate->format('Y-m-d H:i');
-        }
-        if (!empty($paymentRaw)) {
-            $internalNotesParts[] = 'Original payment: ' . $paymentRaw;
+        // Build internal notes - only store unmatched/not-found data from CSV import
+        $internalNotesParts = [];
+
+        // Package not found in system
+        if (!$package && !empty($packageName)) {
+            $internalNotesParts[] = "Package not found: {$serviceRaw}";
         }
 
-        // Always store original CSV values for traceability
-        if (!empty($serviceRaw)) {
-            $internalNotesParts[] = 'CSV Service: ' . $serviceRaw;
+        // Room/space not found in system
+        if (!$room && !empty($roomName) && strtolower($roomName) !== 'no area') {
+            $internalNotesParts[] = "Space not found: {$roomName}";
         }
-        if ($package) {
-            $internalNotesParts[] = 'Matched Package: ' . $package->name . ' (ID:' . $package->id . ')';
-        }
-        if (!empty($roomName)) {
-            $internalNotesParts[] = 'CSV Party Area: ' . $roomName;
-        }
-        if ($room) {
-            $internalNotesParts[] = 'Matched Room: ' . $room->name . ' (ID:' . $room->id . ')';
-        }
+
+        // Staff info (we don't match staff, always store if present)
         if (!empty($csvStaff)) {
-            $internalNotesParts[] = 'CSV Staff: ' . $csvStaff;
+            $internalNotesParts[] = "Staff: {$csvStaff}";
         }
-        if ($csvPersonsInt !== null) {
-            $internalNotesParts[] = 'CSV Persons: ' . $csvPersonsInt;
-        }
+
+        // Bookly internal note
         if (!empty($csvInternalNote)) {
-            $internalNotesParts[] = 'Bookly Internal Note: ' . $csvInternalNote;
-        }
-        // Store parsed add-on names from CSV for traceability
-        if (!empty($parsed['addons'])) {
-            $addonSummary = array_map(fn($a) => ($a['quantity'] > 1 ? $a['quantity'] . '× ' : '') . $a['name'], $parsed['addons']);
-            $internalNotesParts[] = 'CSV Add-ons: ' . implode(', ', $addonSummary);
+            $internalNotesParts[] = "Bookly note: {$csvInternalNote}";
         }
 
-        // Collect any extra CSV columns not explicitly mapped
-        $knownColumns = [
-            'ID', 'id', 'Appointment date', 'appointment_date', 'Created', 'created',
-            'Customer name', 'customer_name', 'Customer email', 'customer_email',
-            'Customer phone', 'customer_phone', 'Customer address', 'customer_address',
-            'Service', 'service', 'Party Area', 'party_area',
-            'Duration', 'duration', 'Payment', 'payment', 'Status', 'status',
-            'Notes', 'notes', 'Internal Note', 'internal_note', 'Internal Notes', 'internal_notes',
-            "Guest of Honor's Name", 'guest_of_honor_name',
-            "Guest of Honor's Age (or General Age of Group)", 'guest_of_honor_age',
-            'Number of Persons', 'number_of_persons', 'Persons', 'persons',
-            'Participants', 'participants', 'Staff', 'staff', 'Staff Member', 'staff_member',
-        ];
-        foreach ($row as $colName => $colValue) {
-            $colValue = trim((string) $colValue);
-            if (!in_array($colName, $knownColumns) && !empty($colValue)) {
-                $internalNotesParts[] = 'CSV ' . $colName . ': ' . $colValue;
-            }
-        }
-
-        // Append all unmatched data warnings
-        if (!empty($unmatchedNotes)) {
-            $internalNotesParts[] = '--- UNMATCHED DATA ---';
-            $internalNotesParts = array_merge($internalNotesParts, $unmatchedNotes);
+        // Build the final internal notes string
+        $internalNotes = null;
+        if (!empty($internalNotesParts)) {
+            $internalNotes = "[CSV Import]\n" . implode("\n", $internalNotesParts);
         }
 
         // Determine payment status
@@ -433,7 +363,7 @@ class BookingCsvImportService
             'payment_status' => $paymentStatus,
             'status' => $status,
             'notes' => !empty($notes) ? $notes : null,
-            'internal_notes' => implode(' | ', $internalNotesParts),
+            'internal_notes' => $internalNotes,
             'guest_name' => $customerName ?: null,
             'guest_email' => $customerEmail ?: null,
             'guest_phone' => !empty($customerPhone) ? $this->cleanPhone($customerPhone) : null,
@@ -469,20 +399,25 @@ class BookingCsvImportService
         if (!empty($parsed['addons'])) {
             $unmatchedAddons = $this->attachAddons($booking, $package, $parsed['addons']);
 
-            // If there were unmatched or fuzzy-matched add-ons, append them to internal notes
+            // If there were unmatched add-ons, append them to internal notes
             if (!empty($unmatchedAddons)) {
-                $addonWarnings = array_map(function ($a) {
+                $addonLines = [];
+                foreach ($unmatchedAddons as $a) {
                     if (isset($a['fuzzy_matched_to'])) {
-                        return "FUZZY MATCHED ADD-ON: \"{$a['name']}\" (qty: {$a['quantity']}) → matched \"{$a['fuzzy_matched_to']}\" (ID:{$a['fuzzy_matched_id']})";
+                        continue; // fuzzy matched is fine, skip
                     }
-                    return "UNMATCHED ADD-ON: \"{$a['name']}\" (qty: {$a['quantity']})";
-                }, $unmatchedAddons);
-                $currentNotes = $booking->internal_notes;
-                if (strpos($currentNotes, '--- UNMATCHED DATA ---') === false) {
-                    $currentNotes .= ' | --- UNMATCHED DATA ---';
+                    $qty = $a['quantity'] > 1 ? " (qty: {$a['quantity']})" : '';
+                    $addonLines[] = "Add-on not found: {$a['name']}{$qty}";
                 }
-                $currentNotes .= ' | ' . implode(' | ', $addonWarnings);
-                $booking->update(['internal_notes' => $currentNotes]);
+                if (!empty($addonLines)) {
+                    $currentNotes = $booking->internal_notes ?? '';
+                    if (empty($currentNotes)) {
+                        $currentNotes = "[CSV Import]\n" . implode("\n", $addonLines);
+                    } else {
+                        $currentNotes .= "\n" . implode("\n", $addonLines);
+                    }
+                    $booking->update(['internal_notes' => $currentNotes]);
+                }
             }
         }
 
