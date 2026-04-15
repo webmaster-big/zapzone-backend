@@ -445,10 +445,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('payments/invoices/bulk', [PaymentController::class, 'invoicesBulk']);
 
     // Payment routes
+    Route::get('payments/trashed', [PaymentController::class, 'trashed']);
     Route::apiResource('payments', PaymentController::class)->except(['update']);
     Route::patch('payments/{payment}/refund', [PaymentController::class, 'refund']);
     Route::patch('payments/{payment}/manual-refund', [PaymentController::class, 'manualRefund']);
     Route::patch('payments/{payment}/void', [PaymentController::class, 'voidTransaction']);
+    Route::patch('payments/{payment}/restore', [PaymentController::class, 'restore']);
+    Route::delete('payments/{payment}/force-delete', [PaymentController::class, 'forceDelete']);
     // Route::match(['put', 'patch'], 'payments/{id}/payable', [PaymentController::class, 'updatePayable']); // Deprecated: payable linking is now handled in charge()
     Route::get('payments/{payment}/invoice', [PaymentController::class, 'invoice']);
     Route::get('payments/{payment}/invoice/view', [PaymentController::class, 'invoiceView']);

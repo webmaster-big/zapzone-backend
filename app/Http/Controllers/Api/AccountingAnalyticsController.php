@@ -684,6 +684,7 @@ class AccountingAnalyticsController extends Controller
             ->where('payable_type', $payableType)
             ->where('method', 'authorize.net')
             ->where('status', 'completed')
+            ->whereNull('deleted_at')
             ->whereIn('payable_id', $payableIds)
             ->groupBy('payable_id')
             ->pluck(DB::raw('SUM(amount) as gateway_amount'), 'payable_id')

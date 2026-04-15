@@ -325,6 +325,158 @@ class PaymentController extends Controller
     }
 
     /**
+     * Soft delete a payment record.
+     */
+    public function destroy(Payment $payment): JsonResponse
+    {
+        $payment->delete();
+
+        // Recalculate amount_paid on the linked entity
+        if ($payment->payable_id && $payment->payable_type && $payment->status === 'completed') {
+            $this->recalculatePayableAmountPaid($payment->payable_id, $payment->payable_type);
+        }
+
+        // Log activity
+        ActivityLog::create([
+            'user_id' => auth()->id(),
+            'action' => 'soft_deleted',
+            'subject_type' => 'payment',
+            'subject_id' => $payment->id,
+            'description' => "Soft deleted payment #{$payment->id} (amount: {$payment->amount}, method: {$payment->method})",
+            'location_id' => $payment->location_id,
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Payment soft deleted successfully',
+        ]);
+    }
+
+    /**
+     * Restore a soft-deleted payment record.
+     */
+    public function restore(int $id): JsonResponse
+    {
+        $payment = Payment::onlyTrashed()->findOrFail($id);
+        $payment->restore();
+
+        // Recalculate amount_paid on the linked entity
+        if ($payment->payable_id && $payment->payable_type && $payment->status === 'completed') {
+            $this->recalculatePayableAmountPaid($payment->payable_id, $payment->payable_type);
+        }
+
+        // Log activity
+        ActivityLog::create([
+            'user_id' => auth()->id(),
+            'action' => 'restored',
+            'subject_type' => 'payment',
+            'subject_id' => $payment->id,
+            'description' => "Restored payment #{$payment->id} (amount: {$payment->amount}, method: {$payment->method})",
+            'location_id' => $payment->location_id,
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Payment restored successfully',
+            'data' => $payment->load(['customer', 'location']),
+        ]);
+    }
+
+    /**
+     * Permanently delete a soft-deleted payment record.
+     */
+    public function forceDelete(int $id): JsonResponse
+    {
+        $payment = Payment::onlyTrashed()->findOrFail($id);
+
+        // Log activity before permanent deletion
+        ActivityLog::create([
+            'user_id' => auth()->id(),
+            'action' => 'force_deleted',
+            'subject_type' => 'payment',
+            'subject_id' => $payment->id,
+            'description' => "Permanently deleted payment #{$payment->id} (amount: {$payment->amount}, method: {$payment->method})",
+            'location_id' => $payment->location_id,
+        ]);
+
+        $payment->forceDelete();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Payment permanently deleted',
+        ]);
+    }
+
+    /**
+     * List soft-deleted (trashed) payment records.
+     */
+    public function trashed(Request $request): JsonResponse
+    {
+        $query = Payment::onlyTrashed()->with(['customer', 'location']);
+
+        if ($request->has('payable_type')) {
+            $query->where('payable_type', $request->payable_type);
+        }
+
+        if ($request->has('location_id')) {
+            $query->where('location_id', $request->location_id);
+        }
+
+        $perPage = $request->get('per_page', 15);
+        $payments = $query->orderBy('deleted_at', 'desc')->paginate($perPage);
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'payments' => $payments->items(),
+                'pagination' => [
+                    'current_page' => $payments->currentPage(),
+                    'last_page' => $payments->lastPage(),
+                    'per_page' => $payments->perPage(),
+                    'total' => $payments->total(),
+                ],
+            ],
+        ]);
+    }
+
+    /**
+     * Recalculate amount_paid on a payable entity after soft delete/restore.
+     */
+    private function recalculatePayableAmountPaid(int $payableId, string $payableType): void
+    {
+        $totalPaid = Payment::where('payable_id', $payableId)
+            ->where('payable_type', $payableType)
+            ->where('status', 'completed')
+            ->sum('amount');
+
+        if ($payableType === Payment::TYPE_BOOKING) {
+            $payable = Booking::find($payableId);
+            if ($payable) {
+                $payable->update([
+                    'amount_paid' => $totalPaid,
+                    'payment_status' => $totalPaid >= $payable->total_amount ? 'paid' : ($totalPaid > 0 ? 'partial' : 'unpaid'),
+                ]);
+            }
+        } elseif ($payableType === Payment::TYPE_ATTRACTION_PURCHASE) {
+            $payable = AttractionPurchase::find($payableId);
+            if ($payable) {
+                $payable->update([
+                    'amount_paid' => $totalPaid,
+                    'status' => $totalPaid >= $payable->total_amount ? AttractionPurchase::STATUS_CONFIRMED : AttractionPurchase::STATUS_PENDING,
+                ]);
+            }
+        } elseif ($payableType === Payment::TYPE_EVENT_PURCHASE) {
+            $payable = EventPurchase::find($payableId);
+            if ($payable) {
+                $payable->update([
+                    'amount_paid' => $totalPaid,
+                    'payment_status' => $totalPaid >= $payable->total_amount ? 'paid' : ($totalPaid > 0 ? 'partial' : 'unpaid'),
+                ]);
+            }
+        }
+    }
+
+    /**
      * Link a payment to a booking or attraction purchase.
      *
      * Use this after charging the customer and then creating the booking/purchase.
