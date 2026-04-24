@@ -48,6 +48,19 @@ class EmailNotification extends Model
     const TRIGGER_INVITATION_SENT = 'invitation_sent';
     const TRIGGER_INVITATION_RSVP_RECEIVED = 'invitation_rsvp_received';
 
+    // ============================================
+    // DEFAULT EMAIL KEYS
+    // ============================================
+    const DEFAULT_BOOKING_CONFIRMATION_CUSTOMER = 'booking_confirmation_customer';
+    const DEFAULT_BOOKING_CONFIRMATION_STAFF = 'booking_confirmation_staff';
+    const DEFAULT_BOOKING_CANCELLATION_CUSTOMER = 'booking_cancellation_customer';
+    const DEFAULT_BOOKING_REMINDER_CUSTOMER = 'booking_reminder_customer';
+    const DEFAULT_BOOKING_UPDATED_CUSTOMER = 'booking_updated_customer';
+    const DEFAULT_PURCHASE_CONFIRMATION_CUSTOMER = 'purchase_confirmation_customer';
+    const DEFAULT_PURCHASE_CANCELLATION_CUSTOMER = 'purchase_cancellation_customer';
+    const DEFAULT_PAYMENT_RECEIVED_CUSTOMER = 'payment_received_customer';
+    const DEFAULT_PAYMENT_REFUNDED_CUSTOMER = 'payment_refunded_customer';
+
     // Entity types
     const ENTITY_PACKAGE = 'package';
     const ENTITY_ATTRACTION = 'attraction';
@@ -64,16 +77,21 @@ class EmailNotification extends Model
         'company_id',
         'location_id',
         'name',
+        'description',
         'trigger_type',
         'entity_type',
         'entity_ids',
         'email_template_id',
         'subject',
+        'default_subject',
         'body',
+        'default_body',
         'recipient_types',
         'custom_emails',
         'include_qr_code',
         'is_active',
+        'is_default',
+        'default_key',
         'send_before_hours',
         'send_after_hours',
     ];
@@ -84,6 +102,7 @@ class EmailNotification extends Model
         'custom_emails' => 'array',
         'include_qr_code' => 'boolean',
         'is_active' => 'boolean',
+        'is_default' => 'boolean',
         'send_before_hours' => 'integer',
         'send_after_hours' => 'integer',
     ];
@@ -145,6 +164,30 @@ class EmailNotification extends Model
     }
 
     /**
+     * Scope to get default notifications only.
+     */
+    public function scopeDefaults($query)
+    {
+        return $query->where('is_default', true);
+    }
+
+    /**
+     * Scope to get custom (non-default) notifications only.
+     */
+    public function scopeCustom($query)
+    {
+        return $query->where('is_default', false);
+    }
+
+    /**
+     * Scope by default key.
+     */
+    public function scopeForDefaultKey($query, string $defaultKey)
+    {
+        return $query->where('default_key', $defaultKey);
+    }
+
+    /**
      * Check if this notification applies to a specific entity ID.
      */
     public function appliesToEntity(?int $entityId): bool
@@ -165,27 +208,103 @@ class EmailNotification extends Model
     }
 
     /**
-     * Get the subject (from template or custom).
+     * Get the subject (user-edited > template > default).
      */
     public function getEffectiveSubject(): string
     {
+        // User-edited subject always takes priority
+        if ($this->subject !== null) {
+            return $this->subject;
+        }
+
+        // Fall back to linked template if exists
         if ($this->template) {
             return $this->template->subject;
         }
 
-        return $this->subject ?? 'Notification';
+        return $this->default_subject ?? 'Notification';
     }
 
     /**
-     * Get the body (from template or custom).
+     * Get the body (user-edited > template > default).
      */
     public function getEffectiveBody(): string
     {
+        // User-edited body always takes priority
+        if ($this->body !== null) {
+            return $this->body;
+        }
+
+        // Fall back to linked template if exists
         if ($this->template) {
             return $this->template->body;
         }
 
-        return $this->body ?? '';
+        return $this->default_body ?? '';
+    }
+
+    /**
+     * Check if the body has been customized (differs from default).
+     */
+    public function isBodyCustomized(): bool
+    {
+        if (!$this->is_default) {
+            return false;
+        }
+
+        return $this->body !== null && $this->body !== $this->default_body;
+    }
+
+    /**
+     * Check if the subject has been customized (differs from default).
+     */
+    public function isSubjectCustomized(): bool
+    {
+        if (!$this->is_default) {
+            return false;
+        }
+
+        return $this->subject !== null && $this->subject !== $this->default_subject;
+    }
+
+    /**
+     * Reset body to default template.
+     */
+    public function resetToDefault(): void
+    {
+        $this->update([
+            'subject' => null,
+            'body' => null,
+        ]);
+    }
+
+    /**
+     * Get all available default email keys with labels.
+     */
+    public static function getDefaultKeys(): array
+    {
+        return [
+            self::DEFAULT_BOOKING_CONFIRMATION_CUSTOMER => 'Booking Confirmation (Customer)',
+            self::DEFAULT_BOOKING_CONFIRMATION_STAFF => 'Booking Confirmation (Staff)',
+            self::DEFAULT_BOOKING_CANCELLATION_CUSTOMER => 'Booking Cancellation (Customer)',
+            self::DEFAULT_BOOKING_REMINDER_CUSTOMER => 'Booking Reminder (Customer)',
+            self::DEFAULT_BOOKING_UPDATED_CUSTOMER => 'Booking Updated (Customer)',
+            self::DEFAULT_PURCHASE_CONFIRMATION_CUSTOMER => 'Purchase Confirmation (Customer)',
+            self::DEFAULT_PURCHASE_CANCELLATION_CUSTOMER => 'Purchase Cancellation (Customer)',
+            self::DEFAULT_PAYMENT_RECEIVED_CUSTOMER => 'Payment Received (Customer)',
+            self::DEFAULT_PAYMENT_REFUNDED_CUSTOMER => 'Payment Refunded (Customer)',
+        ];
+    }
+
+    /**
+     * Find a default notification by key for a company.
+     */
+    public static function findDefault(int $companyId, string $defaultKey): ?self
+    {
+        return self::where('company_id', $companyId)
+            ->where('default_key', $defaultKey)
+            ->where('is_default', true)
+            ->first();
     }
 
     /**
@@ -193,14 +312,21 @@ class EmailNotification extends Model
      */
     public static function findForBooking(Booking $booking, string $triggerType = self::TRIGGER_BOOKING_CREATED): \Illuminate\Support\Collection
     {
+        $companyId = $booking->location?->company_id;
+
+        // Fail closed: without a company, never return any templates (prevent tenant leakage).
+        if (!$companyId) {
+            return collect();
+        }
+
         return self::active()
             ->forTrigger($triggerType)
+            ->where('company_id', $companyId)
             ->where(function ($query) {
                 $query->where('entity_type', self::ENTITY_PACKAGE)
                     ->orWhere('entity_type', self::ENTITY_ALL);
             })
             ->where(function ($query) use ($booking) {
-                // Match by location if specified
                 $query->whereNull('location_id')
                     ->orWhere('location_id', $booking->location_id);
             })
@@ -215,14 +341,21 @@ class EmailNotification extends Model
      */
     public static function findForPurchase(AttractionPurchase $purchase, string $triggerType = self::TRIGGER_PURCHASE_CREATED): \Illuminate\Support\Collection
     {
+        $companyId = $purchase->attraction?->location?->company_id;
+
+        // Fail closed: without a company, never return any templates (prevent tenant leakage).
+        if (!$companyId) {
+            return collect();
+        }
+
         return self::active()
             ->forTrigger($triggerType)
+            ->where('company_id', $companyId)
             ->where(function ($query) {
                 $query->where('entity_type', self::ENTITY_ATTRACTION)
                     ->orWhere('entity_type', self::ENTITY_ALL);
             })
             ->where(function ($query) use ($purchase) {
-                // Match by location if specified
                 $query->whereNull('location_id')
                     ->orWhere('location_id', $purchase->attraction->location_id ?? null);
             })
@@ -238,18 +371,28 @@ class EmailNotification extends Model
     public static function findForPayment($payment, string $triggerType): \Illuminate\Support\Collection
     {
         $locationId = null;
+        $companyId = null;
 
-        // Get location from payable entity
+        // Get location and company from payable entity
         if ($payment->payable_type === 'App\\Models\\Booking') {
             $locationId = $payment->payable?->location_id;
+            $companyId = $payment->payable?->location?->company_id;
         } elseif ($payment->payable_type === 'App\\Models\\AttractionPurchase') {
             $locationId = $payment->payable?->location_id ?? $payment->payable?->attraction?->location_id;
+            $companyId = $payment->payable?->attraction?->location?->company_id;
         } elseif ($payment->payable_type === 'App\\Models\\EventPurchase') {
             $locationId = $payment->payable?->location_id;
+            $companyId = $payment->payable?->location?->company_id;
         }
 
         return self::active()
             ->forTrigger($triggerType)
+            ->when($companyId, function ($query) use ($companyId) {
+                $query->where('company_id', $companyId);
+            }, function ($query) {
+                // Fail closed: if no company resolved, return no rows.
+                $query->whereRaw('1 = 0');
+            })
             ->where(function ($query) use ($locationId) {
                 $query->whereNull('location_id');
                 if ($locationId) {

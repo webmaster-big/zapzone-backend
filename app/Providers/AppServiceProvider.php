@@ -25,5 +25,17 @@ class AppServiceProvider extends ServiceProvider
             'attraction_purchase' => \App\Models\AttractionPurchase::class,
             'event_purchase' => \App\Models\EventPurchase::class,
         ]);
+
+        // Auto-seed default email notifications when a new company is created.
+        \App\Models\Company::created(function (\App\Models\Company $company) {
+            try {
+                \Database\Seeders\DefaultEmailNotificationSeeder::seedForCompany($company);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::error(
+                    'Failed to seed default email notifications for new company',
+                    ['company_id' => $company->id, 'error' => $e->getMessage()]
+                );
+            }
+        });
     }
 }

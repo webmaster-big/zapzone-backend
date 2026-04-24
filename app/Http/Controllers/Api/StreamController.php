@@ -7,7 +7,6 @@ use App\Models\Booking;
 use App\Models\AttractionPurchase;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
 
 class StreamController extends Controller
     {
@@ -101,12 +100,6 @@ class StreamController extends Controller
         {
             $locationId = $request->query('location_id');
             $userId = $request->query('user_id'); // Filter out user's own notifications
-
-            Log::info('=== SSE Booking Stream Started ===', [
-                'location_id' => $locationId,
-                'user_id' => $userId,
-                'timestamp' => now()->toDateTimeString(),
-            ]);
 
             return response()->stream(function () use ($locationId, $userId) {
                 // Initialize stream - clear all buffers to prevent memory buildup
@@ -219,12 +212,6 @@ class StreamController extends Controller
             $locationId = $request->query('location_id');
             $userId = $request->query('user_id'); // Filter out user's own notifications
 
-            Log::info('=== SSE Attraction Purchase Stream Started ===', [
-                'location_id' => $locationId,
-                'user_id' => $userId,
-                'timestamp' => now()->toDateTimeString(),
-            ]);
-
             return response()->stream(function () use ($locationId, $userId) {
                 // Initialize stream - clear all buffers to prevent memory buildup
                 $this->initializeStream();
@@ -336,12 +323,6 @@ class StreamController extends Controller
         {
             $locationId = $request->query('location_id');
             $userId = $request->query('user_id'); // Filter out user's own notifications
-
-            Log::info('=== SSE Combined Stream Started ===', [
-                'location_id' => $locationId,
-                'user_id' => $userId,
-                'timestamp' => now()->toDateTimeString(),
-            ]);
 
             return response()->stream(function () use ($locationId, $userId) {
                 // Initialize stream - clear all buffers to prevent memory buildup

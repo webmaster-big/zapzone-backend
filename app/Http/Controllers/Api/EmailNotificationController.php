@@ -10,6 +10,7 @@ use App\Models\Customer;
 use App\Models\EmailNotification;
 use App\Models\Package;
 use App\Services\EmailNotificationService;
+use Database\Seeders\DefaultEmailNotificationSeeder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -25,6 +26,15 @@ class EmailNotificationController extends Controller
     public function index(Request $request): JsonResponse
     {
         $user = Auth::user();
+
+        // Ensure defaults exist for this company so they appear in the unified list.
+        // Idempotent — skips entries that already exist.
+        if ($user->company_id) {
+            $company = \App\Models\Company::find($user->company_id);
+            if ($company) {
+                DefaultEmailNotificationSeeder::seedForCompany($company);
+            }
+        }
 
         $query = EmailNotification::with(['company', 'location', 'template'])
             ->where('company_id', $user->company_id);
@@ -52,6 +62,11 @@ class EmailNotificationController extends Controller
             $query->where('is_active', $request->boolean('is_active'));
         }
 
+        // Filter by default status
+        if ($request->has('is_default')) {
+            $query->where('is_default', $request->boolean('is_default'));
+        }
+
         // Search by name
         if ($request->has('search')) {
             $query->where('name', 'like', '%' . $request->search . '%');
@@ -59,8 +74,23 @@ class EmailNotificationController extends Controller
 
         $notifications = $query
             ->withCount('logs')
+            ->orderBy('is_default', 'desc')
             ->orderBy('created_at', 'desc')
             ->paginate($request->per_page ?? 15);
+
+        // Enrich each item with effective values + customization flags so the
+        // frontend code editor can render correctly without an extra fetch.
+        $notifications->getCollection()->transform(function ($notification) {
+            $notification->effective_subject = $notification->getEffectiveSubject();
+            $notification->effective_body = $notification->getEffectiveBody();
+            $notification->is_subject_customized = $notification->is_default
+                ? $notification->isSubjectCustomized()
+                : false;
+            $notification->is_body_customized = $notification->is_default
+                ? $notification->isBodyCustomized()
+                : false;
+            return $notification;
+        });
 
         return response()->json([
             'success' => true,
@@ -79,6 +109,7 @@ class EmailNotificationController extends Controller
 
         $validated = $request->validate([
             'name' => 'required|string|max:255',
+            'description' => 'nullable|string',
             'trigger_type' => ['required', Rule::in($allTriggerTypes)],
             'entity_type' => ['required', Rule::in($allEntityTypes)],
             'entity_ids' => 'nullable|array',
@@ -106,6 +137,7 @@ class EmailNotificationController extends Controller
                 'company_id' => $user->company_id,
                 'location_id' => $validated['location_id'] ?? $user->location_id,
                 'name' => $validated['name'],
+                'description' => $validated['description'] ?? null,
                 'trigger_type' => $validated['trigger_type'],
                 'entity_type' => $validated['entity_type'],
                 'entity_ids' => $validated['entity_ids'] ?? [],
@@ -116,6 +148,7 @@ class EmailNotificationController extends Controller
                 'custom_emails' => $validated['custom_emails'] ?? [],
                 'include_qr_code' => $validated['include_qr_code'] ?? true,
                 'is_active' => $validated['is_active'] ?? true,
+                'is_default' => false,
                 'send_before_hours' => $validated['send_before_hours'] ?? null,
                 'send_after_hours' => $validated['send_after_hours'] ?? null,
             ]);
@@ -170,11 +203,29 @@ class EmailNotificationController extends Controller
         // Get entity names
         $entityNames = $this->getEntityNames($emailNotification);
 
+        // Default email info
+        $defaultInfo = null;
+        if ($emailNotification->is_default) {
+            $defaultInfo = [
+                'default_key' => $emailNotification->default_key,
+                'is_body_customized' => $emailNotification->isBodyCustomized(),
+                'is_subject_customized' => $emailNotification->isSubjectCustomized(),
+                'default_subject' => $emailNotification->default_subject,
+                'default_body' => $emailNotification->default_body,
+            ];
+        }
+
+        // Effective values — what the email will actually use when sent.
+        // Frontend code editor should display these.
+        $emailNotification->effective_subject = $emailNotification->getEffectiveSubject();
+        $emailNotification->effective_body = $emailNotification->getEffectiveBody();
+
         return response()->json([
             'success' => true,
             'data' => $emailNotification,
             'statistics' => $stats,
             'entity_names' => $entityNames,
+            'default_info' => $defaultInfo,
         ]);
     }
 
@@ -214,7 +265,14 @@ class EmailNotificationController extends Controller
             'location_id' => 'nullable|exists:locations,id',
             'send_before_hours' => 'nullable|integer|min:1',
             'send_after_hours' => 'nullable|integer|min:1',
+            'description' => 'nullable|string|max:1000',
         ]);
+
+        // For default notifications, restrict which fields can be updated
+        if ($emailNotification->is_default) {
+            $allowedDefaultFields = ['subject', 'body', 'is_active', 'include_qr_code', 'recipient_types', 'custom_emails', 'send_before_hours', 'send_after_hours', 'description'];
+            $validated = array_intersect_key($validated, array_flip($allowedDefaultFields));
+        }
 
         try {
             $emailNotification->update($validated);
@@ -250,6 +308,14 @@ class EmailNotificationController extends Controller
                 'success' => false,
                 'message' => 'Notification not found',
             ], 404);
+        }
+
+        // Prevent deletion of default emails
+        if ($emailNotification->is_default) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Default email notifications cannot be deleted. You can disable them or reset to default instead.',
+            ], 403);
         }
 
         $emailNotification->delete();
@@ -896,5 +962,187 @@ class EmailNotificationController extends Controller
 </body>
 </html>
 HTML;
+    }
+
+    // ============================================
+    // DEFAULT EMAIL MANAGEMENT ENDPOINTS
+    // ============================================
+
+    /**
+     * Get all default email notifications for the company.
+     * If defaults don't exist yet, seeds them first.
+     */
+    public function getDefaults(Request $request): JsonResponse
+    {
+        $user = Auth::user();
+
+        // Ensure all defaults exist (idempotent - skips existing ones)
+        $company = $user->company;
+        if ($company) {
+            DefaultEmailNotificationSeeder::seedForCompany($company);
+        }
+
+        $query = EmailNotification::where('company_id', $user->company_id)
+            ->where('is_default', true)
+            ->with(['company', 'location']);
+
+        // Filter by trigger type
+        if ($request->has('trigger_type')) {
+            $query->where('trigger_type', $request->trigger_type);
+        }
+
+        // Filter by entity type
+        if ($request->has('entity_type')) {
+            $query->where('entity_type', $request->entity_type);
+        }
+
+        $defaults = $query->orderBy('name')->get()->map(function ($notification) {
+            return [
+                'id' => $notification->id,
+                'name' => $notification->name,
+                'description' => $notification->description,
+                'default_key' => $notification->default_key,
+                'trigger_type' => $notification->trigger_type,
+                'entity_type' => $notification->entity_type,
+                'recipient_types' => $notification->recipient_types,
+                'subject' => $notification->getEffectiveSubject(),
+                'body' => $notification->getEffectiveBody(),
+                'is_active' => $notification->is_active,
+                'is_default' => true,
+                'is_body_customized' => $notification->isBodyCustomized(),
+                'is_subject_customized' => $notification->isSubjectCustomized(),
+                'default_subject' => $notification->default_subject,
+                'include_qr_code' => $notification->include_qr_code,
+                'send_before_hours' => $notification->send_before_hours,
+                'send_after_hours' => $notification->send_after_hours,
+                'updated_at' => $notification->updated_at,
+            ];
+        });
+
+        return response()->json([
+            'success' => true,
+            'data' => $defaults,
+            'available_keys' => EmailNotification::getDefaultKeys(),
+        ]);
+    }
+
+    /**
+     * Reset a default email notification to its original template.
+     */
+    public function resetDefault(EmailNotification $emailNotification): JsonResponse
+    {
+        $user = Auth::user();
+
+        if ($emailNotification->company_id !== $user->company_id) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Notification not found',
+            ], 404);
+        }
+
+        if (!$emailNotification->is_default) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only default email notifications can be reset',
+            ], 400);
+        }
+
+        $emailNotification->resetToDefault();
+
+        $emailNotification->refresh();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Email notification reset to default template',
+            'data' => [
+                'id' => $emailNotification->id,
+                'subject' => $emailNotification->getEffectiveSubject(),
+                'body' => $emailNotification->getEffectiveBody(),
+                'is_body_customized' => false,
+                'is_subject_customized' => false,
+            ],
+        ]);
+    }
+
+    /**
+     * Preview an email notification with sample variables replaced.
+     * Returns rendered HTML that can be displayed in an iframe.
+     */
+    public function preview(Request $request, EmailNotification $emailNotification): JsonResponse
+    {
+        $user = Auth::user();
+
+        if ($emailNotification->company_id !== $user->company_id) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Notification not found',
+            ], 404);
+        }
+
+        // Allow overriding body/subject for live preview while editing
+        $subject = $request->input('subject', $emailNotification->getEffectiveSubject());
+        $body = $request->input('body', $emailNotification->getEffectiveBody());
+
+        // Build sample variables
+        $variables = $this->buildSampleVariables($emailNotification, $request->all());
+
+        // Replace variables
+        $processedSubject = $this->replaceVariables($subject, $variables);
+        $processedBody = $this->replaceVariables($body, $variables);
+
+        // Generate full HTML
+        $htmlEmail = $this->generateHtmlEmail($processedBody);
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'subject' => $processedSubject,
+                'body' => $processedBody,
+                'html' => $htmlEmail,
+                'variables_used' => $variables,
+            ],
+        ]);
+    }
+
+    /**
+     * Seed default email notifications for the current user's company.
+     * Useful when defaults are missing or need to be re-initialized.
+     */
+    public function seedDefaults(): JsonResponse
+    {
+        $user = Auth::user();
+        $company = $user->company;
+
+        if (!$company) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Company not found',
+            ], 404);
+        }
+
+        DefaultEmailNotificationSeeder::seedForCompany($company);
+
+        $defaults = EmailNotification::where('company_id', $company->id)
+            ->where('is_default', true)
+            ->orderBy('name')
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Default email notifications seeded successfully',
+            'data' => $defaults,
+            'count' => $defaults->count(),
+        ]);
+    }
+
+    /**
+     * Get available default email keys with their descriptions.
+     */
+    public function getDefaultKeys(): JsonResponse
+    {
+        return response()->json([
+            'success' => true,
+            'data' => EmailNotification::getDefaultKeys(),
+        ]);
     }
 }

@@ -534,12 +534,17 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/trigger-types', [EmailNotificationController::class, 'getTriggerTypes']);
         Route::get('/entity-types', [EmailNotificationController::class, 'getEntityTypes']);
         Route::get('/recipient-types', [EmailNotificationController::class, 'getRecipientTypes']);
+        Route::get('/defaults', [EmailNotificationController::class, 'getDefaults']);
+        Route::get('/default-keys', [EmailNotificationController::class, 'getDefaultKeys']);
+        Route::post('/seed-defaults', [EmailNotificationController::class, 'seedDefaults']);
         Route::get('/{emailNotification}', [EmailNotificationController::class, 'show']);
         Route::put('/{emailNotification}', [EmailNotificationController::class, 'update']);
         Route::delete('/{emailNotification}', [EmailNotificationController::class, 'destroy']);
         Route::patch('/{emailNotification}/toggle-status', [EmailNotificationController::class, 'toggleStatus']);
         Route::post('/{emailNotification}/duplicate', [EmailNotificationController::class, 'duplicate']);
         Route::post('/{emailNotification}/send-test', [EmailNotificationController::class, 'sendTest']);
+        Route::post('/{emailNotification}/preview', [EmailNotificationController::class, 'preview']);
+        Route::post('/{emailNotification}/reset-default', [EmailNotificationController::class, 'resetDefault']);
         Route::get('/{emailNotification}/logs', [EmailNotificationController::class, 'getLogs']);
         Route::post('/{emailNotification}/logs/{logId}/resend', [EmailNotificationController::class, 'resendLog']);
     });

@@ -31,6 +31,7 @@ use App\Mail\StaffBookingNotification;
 use App\Mail\EventPurchaseConfirmation;
 use App\Services\GmailApiService;
 use App\Services\EmailNotificationService;
+use App\Models\EmailNotification;
 use App\Services\GoogleCalendarService;
 use net\authorize\api\contract\v1 as AnetAPI;
 use net\authorize\api\controller as AnetController;
@@ -302,6 +303,16 @@ class PaymentController extends Controller
                 'notes' => $payment->notes,
             ]
         );
+
+        // Trigger payment received email notification
+        if ($payment->status === 'completed') {
+            try {
+                $emailService = app(EmailNotificationService::class);
+                $emailService->triggerPaymentNotification($payment, EmailNotification::TRIGGER_PAYMENT_RECEIVED);
+            } catch (\Exception $e) {
+                Log::error('Failed to send payment received email', ['error' => $e->getMessage(), 'payment_id' => $payment->id]);
+            }
+        }
 
         return response()->json([
             'success' => true,
@@ -908,16 +919,14 @@ class PaymentController extends Controller
                                 Log::warning('Google Calendar sync failed on refund', ['booking_id' => $payable->id, 'error' => $e->getMessage()]);
                             }
 
-                            // Send cancellation email
+                            // Send cancellation email via EmailNotificationService
                             if ($isCancelled) {
-                                $email = $payable->customer_email;
-                                if ($email) {
-                                    try {
-                                        Mail::to($email)->send(new BookingCancellation($payable, $refundPayment, $refundAmount, 'refund'));
-                                        Log::info('📧 Booking cancellation email sent', ['booking_id' => $payable->id, 'email' => $email]);
-                                    } catch (\Exception $e) {
-                                        Log::error('Failed to send booking cancellation email', ['error' => $e->getMessage(), 'booking_id' => $payable->id]);
-                                    }
+                                try {
+                                    $emailService = app(EmailNotificationService::class);
+                                    $emailService->triggerBookingNotification($payable, EmailNotification::TRIGGER_BOOKING_CANCELLED);
+                                    Log::info('Booking cancellation email sent via service', ['booking_id' => $payable->id]);
+                                } catch (\Exception $e) {
+                                    Log::error('Failed to send booking cancellation email', ['error' => $e->getMessage(), 'booking_id' => $payable->id]);
                                 }
                             }
                         }
@@ -937,16 +946,14 @@ class PaymentController extends Controller
                                 ]);
                             }
 
-                            // Send cancellation email
+                            // Send cancellation email via EmailNotificationService
                             if ($isCancelled) {
-                                $email = $payable->customer_email;
-                                if ($email) {
-                                    try {
-                                        Mail::to($email)->send(new AttractionPurchaseCancellation($payable, $refundPayment, $refundAmount, 'refund'));
-                                        Log::info('📧 Attraction purchase cancellation email sent', ['purchase_id' => $payable->id, 'email' => $email]);
-                                    } catch (\Exception $e) {
-                                        Log::error('Failed to send attraction purchase cancellation email', ['error' => $e->getMessage(), 'purchase_id' => $payable->id]);
-                                    }
+                                try {
+                                    $emailService = app(EmailNotificationService::class);
+                                    $emailService->triggerPurchaseNotification($payable, EmailNotification::TRIGGER_PURCHASE_CANCELLED);
+                                    Log::info('Attraction purchase cancellation email sent via service', ['purchase_id' => $payable->id]);
+                                } catch (\Exception $e) {
+                                    Log::error('Failed to send attraction purchase cancellation email', ['error' => $e->getMessage(), 'purchase_id' => $payable->id]);
                                 }
                             }
                         }
@@ -961,6 +968,14 @@ class PaymentController extends Controller
                                 'cancelled_at' => $isCancelled ? now() : $payable->cancelled_at,
                             ]);
                         }
+                    }
+
+                    // Trigger payment refunded email notification
+                    try {
+                        $emailService = app(EmailNotificationService::class);
+                        $emailService->triggerPaymentNotification($refundPayment, EmailNotification::TRIGGER_PAYMENT_REFUNDED);
+                    } catch (\Exception $e) {
+                        Log::error('Failed to send payment refunded email', ['error' => $e->getMessage(), 'payment_id' => $refundPayment->id]);
                     }
 
                     return response()->json([
@@ -1393,16 +1408,14 @@ class PaymentController extends Controller
                     Log::warning('Google Calendar sync failed on manual refund', ['booking_id' => $payable->id, 'error' => $e->getMessage()]);
                 }
 
-                // Send cancellation email
+                // Send cancellation email via EmailNotificationService
                 if ($isCancelled) {
-                    $email = $payable->customer_email;
-                    if ($email) {
-                        try {
-                            Mail::to($email)->send(new BookingCancellation($payable, $refundPayment, $refundAmount, 'refund'));
-                            Log::info('📧 Booking cancellation email sent (manual refund)', ['booking_id' => $payable->id, 'email' => $email]);
-                        } catch (\Exception $e) {
-                            Log::error('Failed to send booking cancellation email (manual refund)', ['error' => $e->getMessage(), 'booking_id' => $payable->id]);
-                        }
+                    try {
+                        $emailService = app(EmailNotificationService::class);
+                        $emailService->triggerBookingNotification($payable, EmailNotification::TRIGGER_BOOKING_CANCELLED);
+                        Log::info('Booking cancellation email sent via service (manual refund)', ['booking_id' => $payable->id]);
+                    } catch (\Exception $e) {
+                        Log::error('Failed to send booking cancellation email (manual refund)', ['error' => $e->getMessage(), 'booking_id' => $payable->id]);
                     }
                 }
             }
@@ -1422,16 +1435,14 @@ class PaymentController extends Controller
                     ]);
                 }
 
-                // Send cancellation email
+                // Send cancellation email via EmailNotificationService
                 if ($isCancelled) {
-                    $email = $payable->customer_email;
-                    if ($email) {
-                        try {
-                            Mail::to($email)->send(new AttractionPurchaseCancellation($payable, $refundPayment, $refundAmount, 'refund'));
-                            Log::info('📧 Attraction purchase cancellation email sent (manual refund)', ['purchase_id' => $payable->id, 'email' => $email]);
-                        } catch (\Exception $e) {
-                            Log::error('Failed to send attraction purchase cancellation email (manual refund)', ['error' => $e->getMessage(), 'purchase_id' => $payable->id]);
-                        }
+                    try {
+                        $emailService = app(EmailNotificationService::class);
+                        $emailService->triggerPurchaseNotification($payable, EmailNotification::TRIGGER_PURCHASE_CANCELLED);
+                        Log::info('Attraction purchase cancellation email sent via service (manual refund)', ['purchase_id' => $payable->id]);
+                    } catch (\Exception $e) {
+                        Log::error('Failed to send attraction purchase cancellation email (manual refund)', ['error' => $e->getMessage(), 'purchase_id' => $payable->id]);
                     }
                 }
             }
@@ -1446,6 +1457,14 @@ class PaymentController extends Controller
                     'cancelled_at' => $isCancelled ? now() : $payable->cancelled_at,
                 ]);
             }
+        }
+
+        // Trigger payment refunded email notification
+        try {
+            $emailService = app(EmailNotificationService::class);
+            $emailService->triggerPaymentNotification($refundPayment, EmailNotification::TRIGGER_PAYMENT_REFUNDED);
+        } catch (\Exception $e) {
+            Log::error('Failed to send payment refunded email (manual refund)', ['error' => $e->getMessage(), 'payment_id' => $refundPayment->id]);
         }
 
         return response()->json([
@@ -1661,15 +1680,13 @@ class PaymentController extends Controller
                                 Log::warning('Google Calendar sync failed on void', ['booking_id' => $payable->id, 'error' => $e->getMessage()]);
                             }
 
-                            // Send cancellation email
-                            $email = $payable->customer_email;
-                            if ($email) {
-                                try {
-                                    Mail::to($email)->send(new BookingCancellation($payable, $voidPayment, $voidAmount, 'void'));
-                                    Log::info('📧 Booking void cancellation email sent', ['booking_id' => $payable->id, 'email' => $email]);
-                                } catch (\Exception $e) {
-                                    Log::error('Failed to send booking void cancellation email', ['error' => $e->getMessage(), 'booking_id' => $payable->id]);
-                                }
+                            // Send cancellation email via EmailNotificationService
+                            try {
+                                $emailService = app(EmailNotificationService::class);
+                                $emailService->triggerBookingNotification($payable, EmailNotification::TRIGGER_BOOKING_CANCELLED);
+                                Log::info('Booking void cancellation email sent via service', ['booking_id' => $payable->id]);
+                            } catch (\Exception $e) {
+                                Log::error('Failed to send booking void cancellation email', ['error' => $e->getMessage(), 'booking_id' => $payable->id]);
                             }
                         }
                     } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE && $payment->payable_id) {
@@ -1681,15 +1698,13 @@ class PaymentController extends Controller
                                 'amount_paid' => $newAmountPaid,
                             ]);
 
-                            // Send cancellation email
-                            $email = $payable->customer_email;
-                            if ($email) {
-                                try {
-                                    Mail::to($email)->send(new AttractionPurchaseCancellation($payable, $voidPayment, $voidAmount, 'void'));
-                                    Log::info('📧 Attraction purchase void cancellation email sent', ['purchase_id' => $payable->id, 'email' => $email]);
-                                } catch (\Exception $e) {
-                                    Log::error('Failed to send attraction purchase void cancellation email', ['error' => $e->getMessage(), 'purchase_id' => $payable->id]);
-                                }
+                            // Send cancellation email via EmailNotificationService
+                            try {
+                                $emailService = app(EmailNotificationService::class);
+                                $emailService->triggerPurchaseNotification($payable, EmailNotification::TRIGGER_PURCHASE_CANCELLED);
+                                Log::info('Attraction purchase void cancellation email sent via service', ['purchase_id' => $payable->id]);
+                            } catch (\Exception $e) {
+                                Log::error('Failed to send attraction purchase void cancellation email', ['error' => $e->getMessage(), 'purchase_id' => $payable->id]);
                             }
                         }
                     } elseif ($payment->payable_type === Payment::TYPE_EVENT_PURCHASE && $payment->payable_id) {
@@ -1703,6 +1718,14 @@ class PaymentController extends Controller
                                 'cancelled_at' => now(),
                             ]);
                         }
+                    }
+
+                    // Trigger payment refunded email notification (void)
+                    try {
+                        $emailService = app(EmailNotificationService::class);
+                        $emailService->triggerPaymentNotification($voidPayment, EmailNotification::TRIGGER_PAYMENT_REFUNDED);
+                    } catch (\Exception $e) {
+                        Log::error('Failed to send payment refunded email (void)', ['error' => $e->getMessage(), 'payment_id' => $voidPayment->id]);
                     }
 
                     return response()->json([
@@ -2251,6 +2274,14 @@ class PaymentController extends Controller
                         ],
                     ]);
 
+                    // Trigger payment received email notification
+                    try {
+                        $emailService = app(EmailNotificationService::class);
+                        $emailService->triggerPaymentNotification($payment, EmailNotification::TRIGGER_PAYMENT_RECEIVED);
+                    } catch (\Exception $e) {
+                        Log::error('Failed to send payment received email (charge)', ['error' => $e->getMessage(), 'payment_id' => $payment->id]);
+                    }
+
                     // Send confirmation email if requested
                     $emailSent = false;
                     $emailError = null;
@@ -2261,16 +2292,11 @@ class PaymentController extends Controller
                             $qrCode = $request->qr_code;
 
                             if ($payment->payable_type === Payment::TYPE_BOOKING) {
-                                // Send booking confirmation email with QR code
+                                // Process and save QR code, then send via EmailNotificationService
                                 $booking = $payable;
-                                $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
+                                $booking->load(['customer', 'package', 'location.company', 'room', 'creator', 'attractions', 'addOns']);
 
-                                $recipientEmail = $booking->customer
-                                    ? $booking->customer->email
-                                    : $booking->guest_email;
-
-                                if ($recipientEmail && $qrCode) {
-                                    // Process QR code
+                                if ($qrCode) {
                                     $qrCodeData = $qrCode;
                                     if (strpos($qrCodeData, 'data:image') === 0) {
                                         $qrCodeData = substr($qrCodeData, strpos($qrCodeData, ',') + 1);
@@ -2278,7 +2304,6 @@ class PaymentController extends Controller
 
                                     $qrCodeImage = base64_decode($qrCodeData);
                                     if ($qrCodeImage) {
-                                        // Save QR code file
                                         $fileName = 'qr_' . $booking->id . '.png';
                                         $qrCodePath = 'qrcodes/' . $fileName;
                                         $fullPath = storage_path('app/public/' . $qrCodePath);
@@ -2288,44 +2313,18 @@ class PaymentController extends Controller
                                             mkdir($dir, 0755, true);
                                         }
                                         file_put_contents($fullPath, $qrCodeImage);
-
-                                        // Update booking with QR code path
                                         $booking->update(['qr_code_path' => $qrCodePath]);
-
-                                        // Send email
-                                        $useGmailApi = config('gmail.enabled', false) &&
-                                            (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
-
-                                        if ($useGmailApi) {
-                                            $gmailService = new GmailApiService();
-                                            $mailable = new BookingConfirmation($booking, $fullPath);
-                                            $emailBody = $mailable->render();
-
-                                            $gmailService->sendEmail(
-                                                $recipientEmail,
-                                                'Your Booking Confirmation - Zap Zone',
-                                                $emailBody,
-                                                'Zap Zone',
-                                                [['data' => $qrCodeData, 'filename' => 'booking-qrcode.png', 'mime_type' => 'image/png']]
-                                            );
-                                        } else {
-                                            Mail::send([], [], function ($message) use ($booking, $fullPath, $recipientEmail) {
-                                                $mailable = new BookingConfirmation($booking, $fullPath);
-                                                $emailBody = $mailable->render();
-                                                $message->to($recipientEmail)
-                                                    ->subject('Your Booking Confirmation - Zap Zone')
-                                                    ->html($emailBody)
-                                                    ->attach($fullPath, ['as' => 'booking-qrcode.png', 'mime' => 'image/png']);
-                                            });
-                                        }
-
-                                        $emailSent = true;
-                                        Log::info('Booking confirmation email sent from charge()', [
-                                            'booking_id' => $booking->id,
-                                            'email' => $recipientEmail,
-                                        ]);
                                     }
                                 }
+
+                                // Send booking confirmation via EmailNotificationService (handles both customer + staff)
+                                $emailService = app(EmailNotificationService::class);
+                                $emailService->triggerBookingNotification($booking, EmailNotification::TRIGGER_BOOKING_CONFIRMED);
+                                $emailSent = true;
+
+                                Log::info('Booking confirmation email sent from charge() via service', [
+                                    'booking_id' => $booking->id,
+                                ]);
                             } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE) {
                                 // Send attraction purchase receipt email with QR code
                                 $purchase = $payable;
@@ -2433,59 +2432,15 @@ class PaymentController extends Controller
                         }
                     }
 
-                    // Send staff email notifications after successful payment
-                    // This replaces the store-time staff emails for online (authorize.net) purchases
+                    // Send staff/in-app notifications after successful payment
                     if ($payable) {
                         try {
                             if ($payment->payable_type === Payment::TYPE_BOOKING) {
                                 $booking = $payable;
                                 $booking->loadMissing(['customer', 'package', 'location.company', 'room', 'creator', 'attractions', 'addOns']);
 
-                                // Send staff email notification
-                                $staffUsers = User::where('location_id', $booking->location_id)
-                                    ->whereNotNull('email')
-                                    ->get();
-
-                                if ($booking->location && $booking->location->company_id) {
-                                    $companyAdmins = User::where('company_id', $booking->location->company_id)
-                                        ->where('role', 'company_admin')
-                                        ->whereNotNull('email')
-                                        ->get();
-                                    $staffUsers = $staffUsers->merge($companyAdmins)->unique('email');
-                                }
-
-                                $useGmailApi = config('gmail.enabled', false) &&
-                                    (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
-
-                                foreach ($staffUsers as $staffUser) {
-                                    try {
-                                        $recipientName = $staffUser->first_name ?? $staffUser->name ?? 'Team Member';
-                                        if ($useGmailApi) {
-                                            $gmailService = new GmailApiService();
-                                            $mailable = new StaffBookingNotification($booking, $recipientName);
-                                            $mailable->build();
-                                            $emailBody = $mailable->render();
-                                            $gmailService->sendEmail(
-                                                $staffUser->email,
-                                                "New Booking Alert - {$booking->reference_number}",
-                                                $emailBody,
-                                                $booking->location->company->name ?? 'ZapZone'
-                                            );
-                                        } else {
-                                            Mail::to($staffUser->email)->send(new StaffBookingNotification($booking, $recipientName));
-                                        }
-                                        Log::info('Staff booking notification sent from charge()', [
-                                            'booking_id' => $booking->id,
-                                            'staff_email' => $staffUser->email,
-                                        ]);
-                                    } catch (\Exception $e) {
-                                        Log::warning('Failed to send staff booking notification from charge()', [
-                                            'booking_id' => $booking->id,
-                                            'staff_email' => $staffUser->email,
-                                            'error' => $e->getMessage(),
-                                        ]);
-                                    }
-                                }
+                                // Staff email notifications are already handled by triggerBookingNotification above
+                                // Only create in-app notifications here
 
                                 // Create customer notification (for in-app notifications)
                                 if ($booking->customer_id) {

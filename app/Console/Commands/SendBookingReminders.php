@@ -2,13 +2,12 @@
 
 namespace App\Console\Commands;
 
-use App\Mail\BookingReminder;
 use App\Models\Booking;
-use App\Services\GmailApiService;
+use App\Models\EmailNotification;
+use App\Services\EmailNotificationService;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Mail;
 
 class SendBookingReminders extends Command
 {
@@ -38,7 +37,7 @@ class SendBookingReminders extends Command
         $this->info("Checking for bookings on {$tomorrow}...");
 
         // Get all bookings for tomorrow that haven't been reminded yet
-        $bookingsToRemind = Booking::with(['customer', 'package', 'location', 'location.company', 'room'])
+        $bookingsToRemind = Booking::with(['customer', 'package', 'location.company', 'room'])
             ->where('booking_date', $tomorrow)
             ->where('reminder_sent', false)
             ->whereIn('status', ['confirmed', 'pending'])
@@ -54,6 +53,7 @@ class SendBookingReminders extends Command
 
         $sentCount = 0;
         $failedCount = 0;
+        $emailService = app(EmailNotificationService::class);
 
         foreach ($bookingsToRemind as $booking) {
             $recipientEmail = $booking->customer?->email ?? $booking->guest_email;
@@ -68,31 +68,8 @@ class SendBookingReminders extends Command
             }
 
             try {
-                $customerName = $booking->customer
-                    ? "{$booking->customer->first_name} {$booking->customer->last_name}"
-                    : $booking->guest_name;
-
-                // Check if Gmail API should be used
-                $useGmailApi = config('gmail.enabled', false) &&
-                              $booking->location &&
-                              $booking->location->company_id;
-
-                if ($useGmailApi) {
-                    $gmailService = new GmailApiService($booking->location->company_id);
-
-                    $emailBody = view('emails.booking-reminder', [
-                        'booking' => $booking,
-                        'customerName' => $customerName,
-                    ])->render();
-
-                    $gmailService->sendEmail(
-                        $recipientEmail,
-                        "Reminder: Your Booking Tomorrow - {$booking->reference_number}",
-                        $emailBody
-                    );
-                } else {
-                    Mail::to($recipientEmail)->send(new BookingReminder($booking));
-                }
+                // Send reminder via EmailNotificationService (uses editable DB template)
+                $emailService->triggerBookingNotification($booking, EmailNotification::TRIGGER_BOOKING_REMINDER);
 
                 // Mark reminder as sent
                 $booking->update(['reminder_sent' => true]);
@@ -101,10 +78,9 @@ class SendBookingReminders extends Command
                     'booking_id' => $booking->id,
                     'reference_number' => $booking->reference_number,
                     'recipient' => $recipientEmail,
-                    'method' => $useGmailApi ? 'Gmail API' : 'SMTP',
                 ]);
 
-                $this->info("✓ Sent reminder for {$booking->reference_number} to {$recipientEmail}");
+                $this->info("Sent reminder for {$booking->reference_number} to {$recipientEmail}");
                 $sentCount++;
 
             } catch (\Exception $e) {
@@ -113,7 +89,7 @@ class SendBookingReminders extends Command
                     'reference_number' => $booking->reference_number,
                     'error' => $e->getMessage(),
                 ]);
-                $this->error("✗ Failed to send reminder for {$booking->reference_number}: {$e->getMessage()}");
+                $this->error("Failed to send reminder for {$booking->reference_number}: {$e->getMessage()}");
                 $failedCount++;
             }
         }

@@ -4,12 +4,14 @@ namespace App\Services;
 
 use App\Models\AttractionPurchase;
 use App\Models\Booking;
+use App\Models\EventPurchase;
 use App\Models\Company;
 use App\Models\EmailNotification;
 use App\Models\EmailNotificationLog;
 use App\Models\Location;
 use App\Models\Payment;
 use App\Models\User;
+use Database\Seeders\DefaultEmailNotificationSeeder;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
@@ -32,27 +34,21 @@ class EmailNotificationService
     public function triggerBookingNotification(Booking $booking, string $triggerType): void
     {
         try {
-            $booking->load(['customer', 'package', 'location', 'room', 'addOns']);
+            $booking->load(['customer', 'package', 'location.company', 'room', 'addOns']);
+
+            // Auto-seed defaults if company has none yet
+            $this->ensureDefaultsSeeded($booking->location?->company);
 
             $notifications = EmailNotification::findForBooking($booking, $triggerType);
 
             if ($notifications->isNotEmpty()) {
                 foreach ($notifications as $notification) {
-                    Log::info('Processing custom email notification for booking', [
-                        'booking_id' => $booking->id,
-                        'notification_id' => $notification->id,
-                        'trigger_type' => $triggerType,
-                    ]);
                     $this->sendNotification($notification, $booking, 'booking');
                 }
             } else {
-                Log::info('No custom notification found for booking trigger', [
-                    'booking_id' => $booking->id,
-                    'trigger_type' => $triggerType,
-                ]);
-                // Only send default for created trigger
-                if ($triggerType === EmailNotification::TRIGGER_BOOKING_CREATED) {
-                    $this->sendDefaultBookingNotification($booking);
+                // Fallback for booking_created/confirmed only (hardcoded template)
+                if (in_array($triggerType, [EmailNotification::TRIGGER_BOOKING_CREATED, EmailNotification::TRIGGER_BOOKING_CONFIRMED])) {
+                    $this->sendDefaultBookingNotification($booking, $triggerType);
                 }
             }
         } catch (\Exception $e) {
@@ -70,27 +66,21 @@ class EmailNotificationService
     public function triggerPurchaseNotification(AttractionPurchase $purchase, string $triggerType): void
     {
         try {
-            $purchase->load(['customer', 'attraction.location']);
+            $purchase->load(['customer', 'attraction.location.company']);
+
+            // Auto-seed defaults if company has none yet
+            $this->ensureDefaultsSeeded($purchase->attraction?->location?->company);
 
             $notifications = EmailNotification::findForPurchase($purchase, $triggerType);
 
             if ($notifications->isNotEmpty()) {
                 foreach ($notifications as $notification) {
-                    Log::info('Processing custom email notification for purchase', [
-                        'purchase_id' => $purchase->id,
-                        'notification_id' => $notification->id,
-                        'trigger_type' => $triggerType,
-                    ]);
                     $this->sendNotification($notification, $purchase, 'purchase');
                 }
             } else {
-                Log::info('No custom notification found for purchase trigger', [
-                    'purchase_id' => $purchase->id,
-                    'trigger_type' => $triggerType,
-                ]);
-                // Only send default for created trigger
-                if ($triggerType === EmailNotification::TRIGGER_PURCHASE_CREATED) {
-                    $this->sendDefaultPurchaseNotification($purchase);
+                // Fallback for purchase_created/confirmed only (hardcoded template)
+                if (in_array($triggerType, [EmailNotification::TRIGGER_PURCHASE_CREATED, EmailNotification::TRIGGER_PURCHASE_CONFIRMED])) {
+                    $this->sendDefaultPurchaseNotification($purchase, $triggerType);
                 }
             }
         } catch (\Exception $e) {
@@ -108,15 +98,25 @@ class EmailNotificationService
     public function triggerPaymentNotification(Payment $payment, string $triggerType): void
     {
         try {
-            $payment->load('payable');
+            $payment->load(['payable']);
+
+            // Auto-seed defaults for the payable's company
+            $company = null;
+            if ($payment->payable instanceof Booking) {
+                $payment->payable->load('location.company');
+                $company = $payment->payable->location?->company;
+            } elseif ($payment->payable instanceof AttractionPurchase) {
+                $payment->payable->load('attraction.location.company');
+                $company = $payment->payable->attraction?->location?->company;
+            } elseif ($payment->payable instanceof EventPurchase) {
+                $payment->payable->load('location.company');
+                $company = $payment->payable->location?->company;
+            }
+            $this->ensureDefaultsSeeded($company);
+
             $notifications = EmailNotification::findForPayment($payment, $triggerType);
 
             foreach ($notifications as $notification) {
-                Log::info('Processing payment email notification', [
-                    'payment_id' => $payment->id,
-                    'notification_id' => $notification->id,
-                    'trigger_type' => $triggerType,
-                ]);
                 $this->sendNotification($notification, $payment, 'payment');
             }
         } catch (\Exception $e) {
@@ -125,6 +125,36 @@ class EmailNotificationService
                 'trigger_type' => $triggerType,
                 'error' => $e->getMessage(),
             ]);
+        }
+    }
+
+    // ============================================
+    // HELPER METHODS
+    // ============================================
+
+    /**
+     * Ensure default email notifications are seeded for a company.
+     * Prevents silent failures when triggers fire before admin visits email editor.
+     */
+    protected function ensureDefaultsSeeded(?Company $company): void
+    {
+        if (!$company) {
+            return;
+        }
+
+        $hasDefaults = EmailNotification::where('company_id', $company->id)
+            ->where('is_default', true)
+            ->exists();
+
+        if (!$hasDefaults) {
+            try {
+                DefaultEmailNotificationSeeder::seedForCompany($company);
+            } catch (\Exception $e) {
+                Log::warning('Failed to auto-seed email defaults', [
+                    'company_id' => $company->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
         }
     }
 
@@ -179,8 +209,11 @@ class EmailNotificationService
                 // Generate HTML
                 $htmlBody = $this->generateHtmlEmail($body);
 
+                // Build attachments
+                $attachments = $this->buildAttachments($entity, $type, $notification->include_qr_code);
+
                 // Send email
-                $this->sendEmail($recipient['email'], $subject, $htmlBody, $variables);
+                $this->sendEmail($recipient['email'], $subject, $htmlBody, $variables, $attachments);
 
                 $log->markAsSent();
 
@@ -267,11 +300,61 @@ class EmailNotificationService
      */
     protected function getCustomerEmail($entity, string $type): ?string
     {
-        if ($type === 'booking') {
-            return $entity->customer?->email ?? $entity->guest_email;
-        } else {
-            return $entity->customer?->email ?? $entity->guest_email;
+        if ($type === 'payment') {
+            // Prefer payment.customer; fall back to payable's customer/guest_email.
+            $email = $entity->customer?->email;
+            if (!$email && $entity->payable) {
+                $email = $entity->payable->customer?->email ?? ($entity->payable->guest_email ?? null);
+            }
+            return $email;
         }
+
+        return $entity->customer?->email ?? $entity->guest_email;
+    }
+
+    /**
+     * Resolve location_id for an entity given the trigger type.
+     * For payments, falls back to the payable's location_id when payment.location_id is null.
+     */
+    protected function resolveLocationId($entity, string $type): ?int
+    {
+        if ($type === 'booking') {
+            return $entity->location_id;
+        }
+
+        if ($type === 'payment') {
+            $locationId = $entity->location_id;
+            if (!$locationId && $entity->payable) {
+                $locationId = $entity->payable->location_id
+                    ?? ($entity->payable->attraction->location_id ?? null);
+            }
+            return $locationId;
+        }
+
+        // purchase
+        return $entity->attraction->location_id ?? null;
+    }
+
+    /**
+     * Resolve Location model for an entity given the trigger type.
+     */
+    protected function resolveLocation($entity, string $type)
+    {
+        if ($type === 'booking') {
+            return $entity->location;
+        }
+
+        if ($type === 'payment') {
+            $location = $entity->location;
+            if (!$location && $entity->payable) {
+                $location = $entity->payable->location
+                    ?? ($entity->payable->attraction->location ?? null);
+            }
+            return $location;
+        }
+
+        // purchase
+        return $entity->attraction->location ?? null;
     }
 
     /**
@@ -279,7 +362,7 @@ class EmailNotificationService
      */
     protected function getStaffEmails($entity, string $type): array
     {
-        $locationId = $type === 'booking' ? $entity->location_id : ($entity->attraction->location_id ?? null);
+        $locationId = $this->resolveLocationId($entity, $type);
 
         if (!$locationId) {
             return [];
@@ -298,7 +381,7 @@ class EmailNotificationService
      */
     protected function getCompanyAdminEmails($entity, string $type): array
     {
-        $location = $type === 'booking' ? $entity->location : ($entity->attraction->location ?? null);
+        $location = $this->resolveLocation($entity, $type);
 
         if (!$location) {
             return [];
@@ -317,7 +400,7 @@ class EmailNotificationService
      */
     protected function getLocationManagerEmails($entity, string $type): array
     {
-        $locationId = $type === 'booking' ? $entity->location_id : ($entity->attraction->location_id ?? null);
+        $locationId = $this->resolveLocationId($entity, $type);
 
         if (!$locationId) {
             return [];
@@ -401,8 +484,8 @@ class EmailNotificationService
 
         // QR Code
         $qrCodeHtml = '';
-        if ($includeQrCode && $booking->qrcode_path) {
-            $qrCodeUrl = Storage::url($booking->qrcode_path);
+        if ($includeQrCode && $booking->qr_code_path) {
+            $qrCodeUrl = Storage::url($booking->qr_code_path);
             $qrCodeHtml = "<img src=\"{$qrCodeUrl}\" alt=\"Booking QR Code\" style=\"width: 150px; height: 150px;\" />";
         }
 
@@ -468,7 +551,7 @@ class EmailNotificationService
 
             // QR Code
             'qr_code' => $qrCodeHtml,
-            'qr_code_url' => $booking->qrcode_path ? Storage::url($booking->qrcode_path) : '',
+            'qr_code_url' => $booking->qr_code_path ? Storage::url($booking->qr_code_path) : '',
 
             // Date/time
             'current_date' => now()->format('F j, Y'),
@@ -585,7 +668,7 @@ class EmailNotificationService
         return array_merge($this->buildCommonVariables($location, $company), [
             'payment_id' => (string) $payment->id,
             'payment_amount' => '$' . number_format($payment->amount ?? 0, 2),
-            'payment_method' => ucfirst($payment->payment_method ?? ''),
+            'payment_method' => ucfirst($payment->method ?? ''),
             'payment_status' => ucfirst($payment->status ?? ''),
             'payment_date' => $payment->created_at?->format('F j, Y g:i A') ?? '',
             'payment_transaction_id' => $payment->transaction_id ?? '',
@@ -634,7 +717,7 @@ HTML;
     /**
      * Send email via Gmail API or fallback.
      */
-    protected function sendEmail(string $to, string $subject, string $htmlBody, array $variables): void
+    protected function sendEmail(string $to, string $subject, string $htmlBody, array $variables, array $attachments = []): void
     {
         $useGmailApi = config('gmail.enabled', false) &&
             (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
@@ -645,22 +728,85 @@ HTML;
                 $subject,
                 $htmlBody,
                 $variables['company_name'] ?? 'Zap Zone',
-                [] // No attachments for now
+                $attachments
             );
         } else {
             // Fallback to Laravel Mail
-            \Illuminate\Support\Facades\Mail::html($htmlBody, function ($message) use ($to, $subject, $variables) {
+            \Illuminate\Support\Facades\Mail::html($htmlBody, function ($message) use ($to, $subject, $variables, $attachments) {
                 $message->to($to)
                     ->subject($subject)
                     ->from(config('mail.from.address'), $variables['company_name'] ?? config('mail.from.name'));
+
+                foreach ($attachments as $attachment) {
+                    if (isset($attachment['data'])) {
+                        $message->attachData(
+                            base64_decode($attachment['data']),
+                            $attachment['filename'] ?? 'attachment',
+                            ['mime' => $attachment['mime_type'] ?? 'application/octet-stream']
+                        );
+                    } elseif (isset($attachment['path']) && file_exists($attachment['path'])) {
+                        $message->attach($attachment['path'], [
+                            'as' => $attachment['filename'] ?? basename($attachment['path']),
+                            'mime' => $attachment['mime_type'] ?? null,
+                        ]);
+                    }
+                }
             });
         }
     }
 
     /**
-     * Send default booking notification.
+     * Build attachments array for an entity.
      */
-    protected function sendDefaultBookingNotification(Booking $booking): void
+    protected function buildAttachments($entity, string $type, bool $includeQrCode = true): array
+    {
+        $attachments = [];
+
+        if ($type === 'booking' && $includeQrCode && $entity->qr_code_path) {
+            $fullPath = storage_path('app/public/' . $entity->qr_code_path);
+            if (file_exists($fullPath)) {
+                $attachments[] = [
+                    'data' => base64_encode(file_get_contents($fullPath)),
+                    'filename' => 'booking-qrcode.png',
+                    'mime_type' => 'image/png',
+                ];
+            }
+        }
+
+        if ($type === 'purchase' && $includeQrCode && $entity->qrcode_path) {
+            $fullPath = storage_path('app/public/' . $entity->qrcode_path);
+            if (file_exists($fullPath)) {
+                $attachments[] = [
+                    'data' => base64_encode(file_get_contents($fullPath)),
+                    'filename' => 'purchase-qrcode.png',
+                    'mime_type' => 'image/png',
+                ];
+            }
+        }
+
+        // Attach invitation file if available for bookings
+        if ($type === 'booking' && $entity->package && $entity->package->invitation_file) {
+            $invitationFile = $entity->package->invitation_file;
+            if (!str_starts_with($invitationFile, 'data:') && !str_starts_with($invitationFile, 'http')) {
+                $storagePath = storage_path('app/public/' . $invitationFile);
+                if (file_exists($storagePath)) {
+                    $attachments[] = [
+                        'data' => base64_encode(file_get_contents($storagePath)),
+                        'filename' => 'invitation.' . pathinfo($storagePath, PATHINFO_EXTENSION),
+                        'mime_type' => mime_content_type($storagePath),
+                    ];
+                }
+            }
+        }
+
+        return $attachments;
+    }
+
+    /**
+     * Send default booking notification.
+     * Checks DB for editable default template first, then falls back to hardcoded.
+     */
+    protected function sendDefaultBookingNotification(Booking $booking, string $triggerType = 'booking_confirmed'): void
     {
         $customerEmail = $booking->customer?->email ?? $booking->guest_email;
 
@@ -674,12 +820,36 @@ HTML;
         try {
             $variables = $this->buildBookingVariables($booking, true);
 
-            $subject = "Booking Confirmation - {$variables['booking_reference']}";
-            $body = $this->getDefaultBookingEmailBody();
-            $processedBody = $this->replaceVariables($body, $variables);
-            $htmlBody = $this->generateHtmlEmail($processedBody);
+            // Try to find the DB-stored default notification
+            $companyId = $booking->location?->company_id;
+            $defaultNotification = null;
 
-            $this->sendEmail($customerEmail, $subject, $htmlBody, $variables);
+            if ($companyId) {
+                $defaultNotification = EmailNotification::findDefault(
+                    $companyId,
+                    EmailNotification::DEFAULT_BOOKING_CONFIRMATION_CUSTOMER
+                );
+            }
+
+            if ($defaultNotification && $defaultNotification->is_active) {
+                // Use the DB-stored (possibly edited) template
+                $subject = $this->replaceVariables($defaultNotification->getEffectiveSubject(), $variables);
+                $body = $this->replaceVariables($defaultNotification->getEffectiveBody(), $variables);
+
+                // Log via notification log if available
+                $this->createDefaultLog($defaultNotification, $customerEmail, $booking);
+            } else {
+                // Absolute fallback to hardcoded template
+                $subject = "Booking Confirmation - {$variables['booking_reference']}";
+                $body = $this->replaceVariables($this->getDefaultBookingEmailBody(), $variables);
+            }
+
+            $htmlBody = $this->generateHtmlEmail($body);
+
+            // Build attachments (QR code + invitation file)
+            $attachments = $this->buildAttachments($booking, 'booking', true);
+
+            $this->sendEmail($customerEmail, $subject, $htmlBody, $variables, $attachments);
 
             Log::info('Default booking notification sent', [
                 'booking_id' => $booking->id,
@@ -695,8 +865,9 @@ HTML;
 
     /**
      * Send default purchase notification.
+     * Checks DB for editable default template first, then falls back to hardcoded.
      */
-    protected function sendDefaultPurchaseNotification(AttractionPurchase $purchase): void
+    protected function sendDefaultPurchaseNotification(AttractionPurchase $purchase, string $triggerType = 'purchase_confirmed'): void
     {
         $customerEmail = $purchase->customer?->email ?? $purchase->guest_email;
 
@@ -710,12 +881,36 @@ HTML;
         try {
             $variables = $this->buildPurchaseVariables($purchase, true);
 
-            $subject = "Purchase Confirmation - {$variables['attraction_name']}";
-            $body = $this->getDefaultPurchaseEmailBody();
-            $processedBody = $this->replaceVariables($body, $variables);
-            $htmlBody = $this->generateHtmlEmail($processedBody);
+            // Try to find the DB-stored default notification
+            $companyId = $purchase->attraction?->location?->company_id;
+            $defaultNotification = null;
 
-            $this->sendEmail($customerEmail, $subject, $htmlBody, $variables);
+            if ($companyId) {
+                $defaultNotification = EmailNotification::findDefault(
+                    $companyId,
+                    EmailNotification::DEFAULT_PURCHASE_CONFIRMATION_CUSTOMER
+                );
+            }
+
+            if ($defaultNotification && $defaultNotification->is_active) {
+                // Use the DB-stored (possibly edited) template
+                $subject = $this->replaceVariables($defaultNotification->getEffectiveSubject(), $variables);
+                $body = $this->replaceVariables($defaultNotification->getEffectiveBody(), $variables);
+
+                // Log via notification log if available
+                $this->createDefaultLog($defaultNotification, $customerEmail, $purchase);
+            } else {
+                // Absolute fallback to hardcoded template
+                $subject = "Purchase Confirmation - {$variables['attraction_name']}";
+                $body = $this->replaceVariables($this->getDefaultPurchaseEmailBody(), $variables);
+            }
+
+            $htmlBody = $this->generateHtmlEmail($body);
+
+            // Build attachments (QR code if available)
+            $attachments = $this->buildAttachments($purchase, 'purchase', true);
+
+            $this->sendEmail($customerEmail, $subject, $htmlBody, $variables, $attachments);
 
             Log::info('Default purchase notification sent', [
                 'purchase_id' => $purchase->id,
@@ -724,6 +919,29 @@ HTML;
         } catch (\Exception $e) {
             Log::error('Failed to send default purchase notification', [
                 'purchase_id' => $purchase->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Create a log entry for a default email notification send.
+     */
+    protected function createDefaultLog(EmailNotification $notification, string $recipientEmail, $entity): void
+    {
+        try {
+            EmailNotificationLog::create([
+                'email_notification_id' => $notification->id,
+                'recipient_email' => $recipientEmail,
+                'recipient_type' => 'customer',
+                'notifiable_type' => get_class($entity),
+                'notifiable_id' => $entity->id,
+                'status' => EmailNotificationLog::STATUS_SENT,
+                'sent_at' => now(),
+            ]);
+        } catch (\Exception $e) {
+            Log::warning('Failed to create default notification log', [
+                'notification_id' => $notification->id,
                 'error' => $e->getMessage(),
             ]);
         }

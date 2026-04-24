@@ -6,9 +6,11 @@ use App\Http\Controllers\Controller;
 use App\Mail\BookingConfirmation;
 use App\Mail\BookingReminder;
 use App\Mail\StaffBookingNotification;
+use App\Services\EmailNotificationService;
 use App\Services\GmailApiService;
 use App\Services\GoogleCalendarService;
 use App\Models\ActivityLog;
+use App\Models\EmailNotification;
 use App\Models\Booking;
 use App\Models\BookingAttraction;
 use App\Models\BookingAddOn;
@@ -565,77 +567,9 @@ class BookingController extends Controller
             ]);
         }
 
-        // Send email notification to staff members at the booking location
-        // Only send if booking is confirmed (onsite) AND send_email is not explicitly false AND sent_email_to_staff is true
-        // For online bookings (pending → charge → confirmed), staff emails are sent from PaymentController::charge
-        $sendEmail = $validated['send_email'] ?? true;
-        if ($sendEmail && ($validated['sent_email_to_staff'] ?? true) && $booking->status === 'confirmed') {
-        try {
-            // Get all users at this location
-            $staffUsers = User::where('location_id', $booking->location_id)
-                ->whereNotNull('email')
-                ->get();
-
-            // Also get company admin(s) if company exists
-            if ($booking->location && $booking->location->company_id) {
-                $companyAdmins = User::where('company_id', $booking->location->company_id)
-                    ->where('role', 'company_admin')
-                    ->whereNotNull('email')
-                    ->get();
-
-                // Merge and dedupe by email
-                $staffUsers = $staffUsers->merge($companyAdmins)->unique('email');
-            }
-
-            // Check if Gmail API should be used
-            $useGmailApi = config('gmail.enabled', false) &&
-                          (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
-
-            foreach ($staffUsers as $staffUser) {
-                try {
-                    $recipientName = $staffUser->first_name ?? $staffUser->name ?? 'Team Member';
-
-                    if ($useGmailApi) {
-                        $gmailService = new GmailApiService();
-                        $mailable = new StaffBookingNotification($booking, $recipientName);
-                        $mailable->build(); // Ensure the mailable is built before rendering
-                        $emailBody = $mailable->render();
-
-                        $gmailService->sendEmail(
-                            $staffUser->email,
-                            "New Booking Alert - {$booking->reference_number}",
-                            $emailBody,
-                            $booking->location->company->name ?? 'ZapZone'
-                        );
-                    } else {
-                        Mail::to($staffUser->email)->send(new StaffBookingNotification($booking, $recipientName));
-                    }
-
-                    Log::info('Staff booking notification sent', [
-                        'booking_id' => $booking->id,
-                        'staff_email' => $staffUser->email,
-                    ]);
-                } catch (\Exception $e) {
-                    Log::warning('Failed to send staff booking notification', [
-                        'booking_id' => $booking->id,
-                        'staff_email' => $staffUser->email,
-                        'error' => $e->getMessage(),
-                    ]);
-                }
-            }
-        } catch (\Exception $e) {
-            // Log error but don't fail the booking creation
-            Log::warning('Failed to send staff booking notifications', [
-                'booking_id' => $booking->id,
-                'error' => $e->getMessage(),
-            ]);
-        }
-        } else {
-            Log::info('Staff email notifications skipped', [
-                'booking_id' => $booking->id,
-                'sent_email_to_staff' => false,
-            ]);
-        }
+        // Email notifications (staff + customer) are sent from storeQrCode() after QR code is generated,
+        // so that the QR code attachment is available. For online bookings, PaymentController::charge handles it.
+        // No email sending here to avoid double-emails.
 
         // Auto-sync to Google Calendar if connected
         if (config('google_calendar.auto_sync', true)) {
@@ -757,17 +691,7 @@ class BookingController extends Controller
             'send_email' => 'nullable|boolean', // Optional flag to control email sending
         ]);
 
-        // Check if email sending is disabled
-        if (isset($validated['send_email']) && $validated['send_email'] === false) {
-            Log::info('Email sending skipped per user request', [
-                'booking_id' => $booking->id,
-            ]);
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Booking created successfully. Email sending skipped.',
-            ]);
-        }
+        $sendEmail = !isset($validated['send_email']) || $validated['send_email'] !== false;
 
         // Decode base64 QR code
         $qrCodeData = $validated['qr_code'];
@@ -825,131 +749,41 @@ class BookingController extends Controller
         // Update booking with QR code path
         $booking->update(['qr_code_path' => $qrCodePath]);
 
-        // Send confirmation email with QR code
-        $emailQrPath = $fullPath;
-
-        // Get recipient email
-        $recipientEmail = $booking->customer
-            ? $booking->customer->email
-            : $booking->guest_email;
-
-        Log::info('Preparing to send booking confirmation email', [
-            'booking_id' => $booking->id,
-            'recipient_email' => $recipientEmail,
-            'has_customer' => $booking->customer ? true : false,
-            'customer_email' => $booking->customer ? $booking->customer->email : null,
-            'guest_email' => $booking->guest_email,
-        ]);
-
+        // Send confirmation email with QR code via EmailNotificationService
         $emailSent = false;
         $emailError = null;
 
-        if ($recipientEmail) {
-            try {
-                Log::info('Loading booking relationships for email', [
-                    'booking_id' => $booking->id,
-                ]);
+        if ($sendEmail) {
+            $booking->load(['customer', 'package', 'location.company', 'room', 'creator', 'attractions', 'addOns']);
+            $recipientEmail = $booking->customer?->email ?? $booking->guest_email;
 
-                $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
+            if ($recipientEmail) {
+                try {
+                    $emailService = app(EmailNotificationService::class);
+                    $emailService->triggerBookingNotification($booking, EmailNotification::TRIGGER_BOOKING_CONFIRMED);
+                    $emailSent = true;
 
-                // Verify QR code file exists before reading
-                if (!file_exists($emailQrPath)) {
-                    throw new \Exception("QR code file not found at path: {$emailQrPath}");
-                }
-
-                // Get QR code as base64 for attachment
-                $qrCodeBase64 = base64_encode(file_get_contents($emailQrPath));
-
-                if (!$qrCodeBase64) {
-                    throw new \Exception("Failed to read QR code file for email attachment");
-                }
-
-                Log::info('Preparing email', [
-                    'booking_id' => $booking->id,
-                    'qr_code_size' => strlen($qrCodeBase64),
-                    'use_gmail_api' => config('gmail.enabled', false),
-                ]);
-
-                // Check if Gmail API should be used
-                $useGmailApi = config('gmail.enabled', false) &&
-                              (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
-
-                if ($useGmailApi) {
-                    Log::info('Using Gmail API for email sending', [
+                    Log::info('Booking confirmation email sent via EmailNotificationService', [
                         'booking_id' => $booking->id,
+                        'recipient' => $recipientEmail,
                     ]);
-
-                    // Send using Gmail API
-                    $gmailService = new GmailApiService();
-                    $mailable = new BookingConfirmation($booking, $emailQrPath);
-                    $emailBody = $mailable->render();
-
-                    $attachments = [[
-                        'data' => $qrCodeBase64,
-                        'filename' => 'booking-qrcode.png',
-                        'mime_type' => 'image/png'
-                    ]];
-
-                    $gmailService->sendEmail(
-                        $recipientEmail,
-                        'Your Booking Confirmation - Zap Zone',
-                        $emailBody,
-                        'Zap Zone',
-                        $attachments
-                    );
-                } else {
-                    Log::info('Using Laravel Mail (SMTP) for email sending', [
+                } catch (\Exception $e) {
+                    $emailError = $e->getMessage();
+                    Log::error('Failed to send booking confirmation email', [
                         'booking_id' => $booking->id,
-                        'mail_driver' => config('mail.default'),
+                        'error' => $e->getMessage(),
                     ]);
-
-                    // Send using Laravel Mail (SMTP)
-                    \Illuminate\Support\Facades\Mail::send([], [], function ($message) use ($booking, $emailQrPath, $recipientEmail) {
-                        $mailable = new BookingConfirmation($booking, $emailQrPath);
-                        $emailBody = $mailable->render();
-
-                        $message->to($recipientEmail)
-                            ->subject('Your Booking Confirmation - Zap Zone')
-                            ->html($emailBody)
-                            ->attach($emailQrPath, [
-                                'as' => 'booking-qrcode.png',
-                                'mime' => 'image/png',
-                            ]);
-                    });
                 }
-
-                $emailSent = true;
-
-                Log::info('✅ Booking confirmation email sent successfully', [
-                    'email' => $recipientEmail,
+            } else {
+                Log::warning('No recipient email available for booking confirmation', [
                     'booking_id' => $booking->id,
-                    'reference_number' => $booking->reference_number,
-                    'method' => $useGmailApi ? 'Gmail API' : 'SMTP',
                 ]);
-
-            } catch (\Exception $e) {
-                $emailError = $e->getMessage();
-
-                // Log detailed error information
-                Log::error('❌ Failed to send booking confirmation email', [
-                    'email' => $recipientEmail,
-                    'booking_id' => $booking->id,
-                    'reference_number' => $booking->reference_number,
-                    'error' => $e->getMessage(),
-                    'error_class' => get_class($e),
-                    'file' => $e->getFile(),
-                    'line' => $e->getLine(),
-                    'trace' => $e->getTraceAsString(),
-                ]);
+                $emailError = 'No recipient email address available';
             }
         } else {
-            Log::warning('No recipient email available for booking confirmation', [
+            Log::info('Email sending skipped per user request', [
                 'booking_id' => $booking->id,
-                'reference_number' => $booking->reference_number,
-                'has_customer' => $booking->customer_id ? true : false,
-                'guest_email' => $booking->guest_email,
             ]);
-            $emailError = 'No recipient email address available';
         }
 
         return response()->json([
@@ -1307,6 +1141,17 @@ class BookingController extends Controller
             }
         } catch (\Exception $e) {
             Log::warning('Google Calendar delete failed for cancelled booking', [
+                'booking_id' => $booking->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        // Send cancellation email via EmailNotificationService
+        try {
+            $emailService = app(EmailNotificationService::class);
+            $emailService->triggerBookingNotification($booking, EmailNotification::TRIGGER_BOOKING_CANCELLED);
+        } catch (\Exception $e) {
+            Log::warning('Failed to send booking cancellation email', [
                 'booking_id' => $booking->id,
                 'error' => $e->getMessage(),
             ]);
@@ -1809,79 +1654,26 @@ class BookingController extends Controller
     }
 
     /**
-     * Send notification email to customer
+     * Send notification email to customer via EmailNotificationService
      */
     private function sendNotificationEmail(Booking $booking, string $action = 'updated'): void
     {
-        // Ensure location.company relationship is loaded for email template
-        $booking->loadMissing(['location.company', 'customer', 'package']);
-
-        // Get recipient email
-        $recipientEmail = $booking->customer
-            ? $booking->customer->email
-            : $booking->guest_email;
-
-        if (!$recipientEmail) {
-            Log::warning('No recipient email available for booking notification', [
-                'booking_id' => $booking->id,
-                'reference_number' => $booking->reference_number,
-            ]);
-            return;
-        }
-
         try {
-            Log::info('Sending booking notification email', [
-                'booking_id' => $booking->id,
-                'recipient_email' => $recipientEmail,
-                'action' => $action,
-            ]);
+            $triggerType = match ($action) {
+                'updated' => EmailNotification::TRIGGER_BOOKING_UPDATED,
+                'cancelled' => EmailNotification::TRIGGER_BOOKING_CANCELLED,
+                default => EmailNotification::TRIGGER_BOOKING_UPDATED,
+            };
 
-            // Prepare email data
-            $customerName = $booking->customer
-                ? "{$booking->customer->first_name} {$booking->customer->last_name}"
-                : $booking->guest_name;
+            $emailService = app(EmailNotificationService::class);
+            $emailService->triggerBookingNotification($booking, $triggerType);
 
-            $subject = $action === 'updated'
-                ? 'Your Booking Has Been Updated - Zap Zone'
-                : 'Booking Notification - Zap Zone';
-
-            $emailBody = view('emails.booking-update', [
-                'booking' => $booking,
-                'customerName' => $customerName,
-                'action' => $action,
-            ])->render();
-
-            // Check if Gmail API should be used
-            $useGmailApi = config('gmail.enabled', false) &&
-                          (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
-
-            if ($useGmailApi) {
-                // Send using Gmail API
-                $gmailService = new GmailApiService();
-                $gmailService->sendEmail(
-                    $recipientEmail,
-                    $subject,
-                    $emailBody,
-                    'Zap Zone'
-                );
-            } else {
-                // Send using Laravel Mail (SMTP)
-                \Illuminate\Support\Facades\Mail::send([], [], function ($message) use ($recipientEmail, $subject, $emailBody) {
-                    $message->to($recipientEmail)
-                        ->subject($subject)
-                        ->html($emailBody);
-                });
-            }
-
-            Log::info('Booking notification email sent successfully', [
-                'email' => $recipientEmail,
+            Log::info('Booking notification email sent via service', [
                 'booking_id' => $booking->id,
                 'action' => $action,
             ]);
-
         } catch (\Exception $e) {
             Log::error('Failed to send booking notification email', [
-                'email' => $recipientEmail,
                 'booking_id' => $booking->id,
                 'action' => $action,
                 'error' => $e->getMessage(),
@@ -2459,37 +2251,9 @@ class BookingController extends Controller
             }
 
             try {
-                // Check if Gmail API should be used
-                $useGmailApi = config('gmail.enabled', false) &&
-                    (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
-
-                $companyName = $booking->location?->company?->name ?? 'ZapZone';
-                $subject = "Reminder: Your Booking is Tomorrow - {$companyName}";
-
-                if ($useGmailApi) {
-                    Log::info('Using Gmail API for booking reminder', [
-                        'booking_id' => $booking->id,
-                        'recipient' => $recipientEmail,
-                    ]);
-
-                    $gmailService = new GmailApiService();
-                    $mailable = new BookingReminder($booking);
-                    $emailBody = $mailable->render();
-
-                    $gmailService->sendEmail(
-                        $recipientEmail,
-                        $subject,
-                        $emailBody,
-                        $companyName
-                    );
-                } else {
-                    Log::info('Using Laravel Mail (SMTP) for booking reminder', [
-                        'booking_id' => $booking->id,
-                        'recipient' => $recipientEmail,
-                    ]);
-
-                    Mail::to($recipientEmail)->send(new BookingReminder($booking));
-                }
+                // Send reminder via EmailNotificationService (uses editable DB template)
+                $emailService = app(EmailNotificationService::class);
+                $emailService->triggerBookingNotification($booking, EmailNotification::TRIGGER_BOOKING_REMINDER);
 
                 // Update booking to mark reminder as sent
                 $booking->update([
