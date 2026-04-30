@@ -266,6 +266,8 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // User routes
     Route::apiResource('users', UserController::class)->except(['store']);
+    Route::post('users/staff', [UserController::class, 'createWithCredentials']);
+    Route::post('users/{user}/resend-credentials', [UserController::class, 'resendCredentials']);
     Route::get('users/company/{companyId}', [UserController::class, 'getByCompany']);
     Route::get('users/location/{locationId}', [UserController::class, 'getByLocation']);
     Route::get('users/role/{role}', [UserController::class, 'getByRole']);

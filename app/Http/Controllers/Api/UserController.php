@@ -4,11 +4,16 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Http\Traits\ScopesByAuthUser;
+use App\Mail\StaffAccountCredentialsMail;
 use App\Models\ActivityLog;
+use App\Models\Location;
 use App\Models\User;
+use App\Services\GmailApiService;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
@@ -537,5 +542,310 @@ class UserController extends Controller
             'message' => "{$deletedCount} users deleted successfully",
             'data' => ['deleted_count' => $deletedCount],
         ]);
+    }
+
+    /**
+     * Create a staff user (location_manager / attendant / company_admin) with
+     * either a custom or auto-generated password and email the credentials
+     * to the new user.
+     *
+     * - Only company_admin (or a user with no scope, e.g. CLI) may call this.
+     * - location_id, when supplied, MUST belong to the caller's company.
+     * - If password is omitted (or password_mode = "generate"), a strong
+     *   12-char password is generated server-side and sent in the email.
+     * - The plain password is NEVER returned in the response unless the
+     *   caller explicitly opts in via `return_password=true` (intended for
+     *   admin UIs that want to show it on screen too).
+     */
+    public function createWithCredentials(Request $request): JsonResponse
+    {
+        $authUser = $request->user();
+
+        // Only company_admin may create staff accounts this way.
+        if (!$authUser || $authUser->role !== 'company_admin') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Forbidden: only company admins may create staff accounts',
+            ], 403);
+        }
+
+        $validated = $request->validate([
+            'first_name'    => 'required|string|max:255',
+            'last_name'     => 'required|string|max:255',
+            'email'         => 'required|email|max:255|unique:users,email',
+            'phone'         => 'nullable|string|max:20',
+            'role'          => ['required', Rule::in(['location_manager', 'attendant', 'company_admin'])],
+            'location_id'   => 'nullable|exists:locations,id',
+            'employee_id'   => 'nullable|string|unique:users,employee_id',
+            'department'    => 'nullable|string|max:255',
+            'position'      => 'nullable|string|max:255',
+            'shift'         => 'nullable|string|max:255',
+            'assigned_areas' => 'nullable|array',
+            'hire_date'     => 'nullable|date',
+            'status'        => ['sometimes', Rule::in(['active', 'inactive'])],
+            'password_mode' => ['sometimes', Rule::in(['custom', 'generate'])],
+            'password'      => 'required_if:password_mode,custom|nullable|string|min:8',
+            'send_email'    => 'sometimes|boolean',
+            'return_password' => 'sometimes|boolean',
+            'login_url'     => 'sometimes|url|max:500',
+        ]);
+
+        // location_manager / attendant must have a location.
+        if (in_array($validated['role'], ['location_manager', 'attendant'], true)
+            && empty($validated['location_id'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'location_id is required for location_manager and attendant roles',
+                'errors'  => ['location_id' => ['Required for the selected role.']],
+            ], 422);
+        }
+
+        // If a location is provided, ensure it belongs to the caller's company.
+        if (!empty($validated['location_id'])) {
+            $location = Location::find($validated['location_id']);
+            if (!$location || ($authUser->company_id && (int) $location->company_id !== (int) $authUser->company_id)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Forbidden: location does not belong to your company',
+                ], 403);
+            }
+        }
+
+        // Resolve password.
+        $passwordMode = $validated['password_mode'] ?? (empty($validated['password']) ? 'generate' : 'custom');
+        $plainPassword = $passwordMode === 'generate'
+            ? $this->generateStrongPassword(12)
+            : $validated['password'];
+
+        // Build user payload (force company_id from the caller, never from the request).
+        $payload = [
+            'company_id'     => $authUser->company_id,
+            'location_id'    => $validated['location_id'] ?? null,
+            'first_name'     => $validated['first_name'],
+            'last_name'      => $validated['last_name'],
+            'email'          => $validated['email'],
+            'phone'          => $validated['phone'] ?? null,
+            'password'       => $plainPassword, // User model casts to hashed
+            'role'           => $validated['role'],
+            'employee_id'    => $validated['employee_id'] ?? null,
+            'department'     => $validated['department'] ?? null,
+            'position'       => $validated['position'] ?? null,
+            'shift'          => $validated['shift'] ?? null,
+            'assigned_areas' => $validated['assigned_areas'] ?? null,
+            'hire_date'      => $validated['hire_date'] ?? null,
+            'status'         => $validated['status'] ?? 'active',
+        ];
+
+        $user = User::create($payload);
+        $user->load(['company', 'location']);
+
+        // Activity log.
+        ActivityLog::log(
+            action: 'Staff Account Created',
+            category: 'create',
+            description: "Staff account {$user->first_name} {$user->last_name} ({$user->role}) created with credentials email",
+            userId: $authUser->id,
+            locationId: $user->location_id,
+            entityType: 'user',
+            entityId: $user->id,
+            metadata: [
+                'created_by' => [
+                    'user_id' => $authUser->id,
+                    'name'    => $authUser->first_name . ' ' . $authUser->last_name,
+                    'email'   => $authUser->email,
+                ],
+                'password_mode' => $passwordMode,
+                'email_sent'    => false, // patched below
+            ]
+        );
+
+        // Send credentials email (best-effort: do not fail user creation if mail fails).
+        $emailSent = false;
+        $emailError = null;
+        $sendEmail = $validated['send_email'] ?? true;
+
+        if ($sendEmail) {
+            try {
+                $this->sendStaffCredentialsEmail(
+                    $user,
+                    $plainPassword,
+                    $validated['login_url'] ?? null,
+                    $authUser->first_name . ' ' . $authUser->last_name
+                );
+                $emailSent = true;
+            } catch (\Throwable $e) {
+                $emailError = $e->getMessage();
+                Log::error('Failed to send staff credentials email', [
+                    'user_id' => $user->id,
+                    'email'   => $user->email,
+                    'error'   => $emailError,
+                ]);
+            }
+        }
+
+        $response = [
+            'success' => true,
+            'message' => $sendEmail
+                ? ($emailSent ? 'Staff account created and credentials emailed' : 'Staff account created but email failed')
+                : 'Staff account created (email not sent)',
+            'data' => [
+                'user'       => $user,
+                'email_sent' => $emailSent,
+                'email_error' => $emailError,
+            ],
+        ];
+
+        if (!empty($validated['return_password']) && $validated['return_password']) {
+            $response['data']['generated_password'] = $plainPassword;
+        }
+
+        return response()->json($response, 201);
+    }
+
+    /**
+     * Resend credentials to an existing staff user using a freshly
+     * generated password. The old password is replaced.
+     */
+    public function resendCredentials(Request $request, User $user): JsonResponse
+    {
+        $authUser = $request->user();
+
+        if (!$authUser || $authUser->role !== 'company_admin') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Forbidden: only company admins may resend credentials',
+            ], 403);
+        }
+
+        // Caller must own the user (same company).
+        if ($authUser->company_id && (int) $user->company_id !== (int) $authUser->company_id) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Forbidden: user belongs to another company',
+            ], 403);
+        }
+
+        $validated = $request->validate([
+            'password_mode' => ['sometimes', Rule::in(['custom', 'generate'])],
+            'password'      => 'required_if:password_mode,custom|nullable|string|min:8',
+            'login_url'     => 'sometimes|url|max:500',
+            'return_password' => 'sometimes|boolean',
+        ]);
+
+        $passwordMode = $validated['password_mode'] ?? (empty($validated['password']) ? 'generate' : 'custom');
+        $plainPassword = $passwordMode === 'generate'
+            ? $this->generateStrongPassword(12)
+            : $validated['password'];
+
+        $user->update(['password' => $plainPassword]); // hashed cast applies
+        $user->load(['company', 'location']);
+
+        $emailSent = false;
+        $emailError = null;
+        try {
+            $this->sendStaffCredentialsEmail(
+                $user,
+                $plainPassword,
+                $validated['login_url'] ?? null,
+                $authUser->first_name . ' ' . $authUser->last_name
+            );
+            $emailSent = true;
+        } catch (\Throwable $e) {
+            $emailError = $e->getMessage();
+            Log::error('Failed to resend staff credentials email', [
+                'user_id' => $user->id,
+                'error'   => $emailError,
+            ]);
+        }
+
+        ActivityLog::log(
+            action: 'Staff Credentials Resent',
+            category: 'update',
+            description: "Credentials resent for {$user->first_name} {$user->last_name}",
+            userId: $authUser->id,
+            locationId: $user->location_id,
+            entityType: 'user',
+            entityId: $user->id,
+            metadata: [
+                'reset_by'      => $authUser->id,
+                'password_mode' => $passwordMode,
+                'email_sent'    => $emailSent,
+            ]
+        );
+
+        $response = [
+            'success' => $emailSent,
+            'message' => $emailSent ? 'Credentials regenerated and emailed' : 'Credentials regenerated but email failed',
+            'data' => [
+                'user'        => $user,
+                'email_sent'  => $emailSent,
+                'email_error' => $emailError,
+            ],
+        ];
+
+        if (!empty($validated['return_password']) && $validated['return_password']) {
+            $response['data']['generated_password'] = $plainPassword;
+        }
+
+        return response()->json($response, 200);
+    }
+
+    /**
+     * Generate a strong password containing upper, lower, digit and symbol.
+     */
+    protected function generateStrongPassword(int $length = 12): string
+    {
+        $upper  = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+        $lower  = 'abcdefghijkmnopqrstuvwxyz';
+        $digits = '23456789';
+        $symbols = '!@#$%^&*';
+        $all    = $upper . $lower . $digits . $symbols;
+
+        $password = [
+            $upper[random_int(0, strlen($upper) - 1)],
+            $lower[random_int(0, strlen($lower) - 1)],
+            $digits[random_int(0, strlen($digits) - 1)],
+            $symbols[random_int(0, strlen($symbols) - 1)],
+        ];
+
+        for ($i = count($password); $i < $length; $i++) {
+            $password[] = $all[random_int(0, strlen($all) - 1)];
+        }
+
+        // Shuffle deterministically with random_int based Fisher-Yates
+        for ($i = count($password) - 1; $i > 0; $i--) {
+            $j = random_int(0, $i);
+            [$password[$i], $password[$j]] = [$password[$j], $password[$i]];
+        }
+
+        return implode('', $password);
+    }
+
+    /**
+     * Send the credentials email using Gmail API when configured, else SMTP.
+     */
+    protected function sendStaffCredentialsEmail(User $user, string $plainPassword, ?string $loginUrl, ?string $createdByName): void
+    {
+        $mailable = new StaffAccountCredentialsMail($user, $plainPassword, $loginUrl, $createdByName);
+
+        $useGmailApi = config('gmail.enabled', false) &&
+            (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
+
+        if ($useGmailApi && class_exists(GmailApiService::class)) {
+            $gmail = new GmailApiService();
+            $gmail->sendEmail(
+                $user->email,
+                'Your Zap Zone Staff Account',
+                $mailable->render(),
+                'Zap Zone'
+            );
+            return;
+        }
+
+        Mail::send([], [], function ($message) use ($user, $mailable) {
+            $message->to($user->email)
+                ->subject('Your Zap Zone Staff Account')
+                ->html($mailable->render());
+        });
     }
 }

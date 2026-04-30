@@ -41,8 +41,18 @@ class LocationController extends Controller
      */
     public function store(Request $request): JsonResponse
     {
+        $authUser = $request->user();
+
+        // Only company_admin may create locations.
+        if (!$authUser || $authUser->role !== 'company_admin') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Forbidden: only company admins may create locations',
+            ], 403);
+        }
+
         $validated = $request->validate([
-            'company_id' => 'required|exists:companies,id',
+            'company_id' => 'sometimes|exists:companies,id',
             'name' => 'required|string|max:255',
             'address' => 'required|string',
             'city' => 'required|string|max:255',
@@ -53,6 +63,23 @@ class LocationController extends Controller
             'timezone' => 'string|max:50',
             'is_active' => 'boolean',
         ]);
+
+        // Force company_id from the auth user (cannot create for another company).
+        if ($authUser->company_id) {
+            if (isset($validated['company_id']) && (int) $validated['company_id'] !== (int) $authUser->company_id) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Forbidden: cannot create a location for another company',
+                ], 403);
+            }
+            $validated['company_id'] = $authUser->company_id;
+        } elseif (empty($validated['company_id'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'company_id is required',
+                'errors'  => ['company_id' => ['Required.']],
+            ], 422);
+        }
 
         $location = Location::create($validated);
         $location->load(['company', 'packages']);
