@@ -8,11 +8,14 @@ use App\Models\DayOff;
 use App\Models\Package;
 use App\Models\Room;
 use App\Models\User;
+use App\Http\Traits\ScopesByAuthUser;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 
 class DayOffController extends Controller
 {
+    use ScopesByAuthUser;
+
     /**
      * Display a listing of day offs.
      */
@@ -20,13 +23,8 @@ class DayOffController extends Controller
     {
         $query = DayOff::with('location');
 
-        // Role-based filtering
-        if ($request->has('user_id')) {
-            $authUser = User::where('id', $request->user_id)->first();
-            if ($authUser && $authUser->role === 'location_manager') {
-                $query->byLocation($authUser->location_id);
-            }
-        }
+        // Multi-tenant + role-based scoping (driven by Sanctum auth user)
+        $this->applyAuthScope($query, $request);
 
         // Filter by location
         if ($request->has('location_id')) {

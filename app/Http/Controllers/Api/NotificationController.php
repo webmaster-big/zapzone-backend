@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Traits\ScopesByAuthUser;
 use App\Models\ActivityLog;
 use App\Models\Notification;
 use App\Models\User;
@@ -12,9 +13,14 @@ use Illuminate\Validation\Rule;
 
 class NotificationController extends Controller
 {
+    use ScopesByAuthUser;
+
     public function index(Request $request): JsonResponse
     {
         $query = Notification::with('location');
+
+        // Multi-tenant + role-based scoping (driven by Sanctum auth user)
+        $this->applyAuthScope($query, $request);
 
         // Filter by location
         if ($request->has('location_id')) {

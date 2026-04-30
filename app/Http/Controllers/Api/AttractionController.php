@@ -8,6 +8,7 @@ use App\Models\Attraction;
 use App\Models\AttractionAddOn;
 use App\Models\SpecialPricing;
 use App\Models\User;
+use App\Http\Traits\ScopesByAuthUser;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Validation\Rule;
@@ -16,6 +17,8 @@ use Carbon\Carbon;
 // please fix can't store images of the file
 class AttractionController extends Controller
 {
+    use ScopesByAuthUser;
+
     /**
      * Display a listing of attractions.
      */
@@ -23,15 +26,8 @@ class AttractionController extends Controller
     {
         $query = Attraction::with(['location', 'packages', 'addOns']);
 
-        // Role-based filtering
-        if ($request->has('user_id')) {
-            $authUser = User::where('id', $request->user_id)->first();
-            // log the auth user info
-            Log::info('Auth User: ', ['user' => $authUser]);
-            if ($authUser->role === 'location_manager') {
-                $query->byLocation($authUser->location_id);
-            }
-        }
+        // Multi-tenant + role-based scoping (driven by Sanctum auth user)
+        $this->applyAuthScope($query, $request);
 
         // Filter by location
         if ($request->has('location_id')) {

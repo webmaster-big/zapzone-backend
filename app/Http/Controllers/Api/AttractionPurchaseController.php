@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Traits\ScopesByAuthUser;
 use App\Models\AttractionPurchase;
 use App\Models\AttractionPurchaseAddOn;
 use App\Models\Attraction;
@@ -22,6 +23,8 @@ use Illuminate\Support\Facades\Log;
 
 class AttractionPurchaseController extends Controller
 {
+    use ScopesByAuthUser;
+
     /**
      * Display a listing of attraction purchases.
      */
@@ -30,15 +33,17 @@ class AttractionPurchaseController extends Controller
         try {
             $query = AttractionPurchase::with(['attraction', 'customer', 'createdBy', 'addOns']);
 
-            // Role-based filtering
-            if ($request->has('user_id')) {
-                $authUser = User::where('id', $request->user_id)->first();
-                if ($authUser && $authUser->role === 'location_manager') {
-                    // Filter purchases to only show those from the manager's location
-                    $query->whereHas('attraction', function ($q) use ($authUser) {
-                        $q->where('location_id', $authUser->location_id);
-                    });
-                }
+            // Multi-tenant + role-based scoping (driven by Sanctum auth user)
+            $authUser = $this->resolveAuthUser($request);
+            if ($authUser && in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
+                $query->whereHas('attraction', function ($q) use ($authUser) {
+                    $q->where('location_id', $authUser->location_id);
+                });
+            }
+            if ($authUser && $authUser->company_id) {
+                $query->whereHas('attraction.location', function ($q) use ($authUser) {
+                    $q->where('company_id', $authUser->company_id);
+                });
             }
 
         // Filter by location
@@ -1147,18 +1152,16 @@ public function verify(Request $request, int $id): JsonResponse
         $purchase = AttractionPurchase::with(['attraction', 'customer'])
             ->findOrFail($id);
 
-        // Role-based filtering
-        if ($request->has('user_id')) {
-            $authUser = User::where('id', $request->user_id)->first();
-            if ($authUser && $authUser->role === 'location_manager') {
-                // Check if purchase attraction belongs to manager's location
-                if ($purchase->attraction && $purchase->attraction->location_id !== $authUser->location_id) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'Unauthorized to view this purchase',
-                    ], 403);
-                }
-            }
+        // Multi-tenant + role-based scoping (driven by Sanctum auth user)
+        $authUser = $this->resolveAuthUser($request);
+        if ($authUser && in_array($authUser->role, ['location_manager', 'attendant'], true)
+            && $authUser->location_id
+            && $purchase->attraction
+            && (int) $purchase->attraction->location_id !== (int) $authUser->location_id) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthorized to view this purchase',
+            ], 403);
         }
 
         return response()->json([
@@ -1390,14 +1393,12 @@ public function checkIn(Request $request, int $id): JsonResponse
         try {
             $query = AttractionPurchase::onlyTrashed()->with(['attraction', 'customer', 'createdBy', 'addOns']);
 
-            // Role-based filtering
-            if ($request->has('user_id')) {
-                $authUser = User::where('id', $request->user_id)->first();
-                if ($authUser && $authUser->role === 'location_manager') {
-                    $query->whereHas('attraction', function ($q) use ($authUser) {
-                        $q->where('location_id', $authUser->location_id);
-                    });
-                }
+            // Multi-tenant + role-based scoping (driven by Sanctum auth user)
+            $authUser = $this->resolveAuthUser($request);
+            if ($authUser && in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
+                $query->whereHas('attraction', function ($q) use ($authUser) {
+                    $q->where('location_id', $authUser->location_id);
+                });
             }
 
             // Filter by location

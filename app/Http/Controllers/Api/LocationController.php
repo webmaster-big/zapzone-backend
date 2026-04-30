@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Traits\ScopesByAuthUser;
 use App\Models\ActivityLog;
 use App\Models\Location;
 use Illuminate\Http\Request;
@@ -10,13 +11,24 @@ use Illuminate\Http\JsonResponse;
 
 class LocationController extends Controller
 {
+    use ScopesByAuthUser;
 
     public function index(): JsonResponse
     {
-        $locations = Location::with(['company', 'packages'])
-            ->active()
-            ->orderBy('name')
-            ->get();
+        $query = Location::with(['company', 'packages'])->active();
+
+        // Multi-tenant + role-based scoping (driven by Sanctum auth user)
+        $authUser = auth()->user();
+        if ($authUser) {
+            if ($authUser->company_id) {
+                $query->where('company_id', $authUser->company_id);
+            }
+            if (in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
+                $query->where('id', $authUser->location_id);
+            }
+        }
+
+        $locations = $query->orderBy('name')->get();
 
         return response()->json([
             'success' => true,
@@ -57,6 +69,10 @@ class LocationController extends Controller
      */
     public function show(Location $location): JsonResponse
     {
+        if (!$this->authorizeRecordScope($location, locationCol: 'id', companyCol: 'company_id')) {
+            return response()->json(['success' => false, 'message' => 'Forbidden'], 403);
+        }
+
         $location->load(['company', 'packages', 'users']);
 
         return response()->json([
@@ -70,6 +86,10 @@ class LocationController extends Controller
      */
     public function update(Request $request, Location $location): JsonResponse
     {
+        if (!$this->authorizeRecordScope($location, locationCol: 'id', companyCol: 'company_id')) {
+            return response()->json(['success' => false, 'message' => 'Forbidden'], 403);
+        }
+
         $validated = $request->validate([
             'company_id' => 'sometimes|exists:companies,id',
             'name' => 'sometimes|string|max:255',
@@ -98,6 +118,10 @@ class LocationController extends Controller
      */
     public function destroy(Location $location): JsonResponse
     {
+        if (!$this->authorizeRecordScope($location, locationCol: 'id', companyCol: 'company_id')) {
+            return response()->json(['success' => false, 'message' => 'Forbidden'], 403);
+        }
+
         $locationName = $location->name;
         $locationId = $location->id;
         $companyId = $location->company_id;
@@ -140,11 +164,21 @@ class LocationController extends Controller
      */
     public function getByCompany(int $companyId): JsonResponse
     {
-        $locations = Location::with(['packages'])
+        if ($scopeError = $this->guardCompanyAccess(null, $companyId)) {
+            return $scopeError;
+        }
+
+        $query = Location::with(['packages'])
             ->byCompany($companyId)
-            ->active()
-            ->orderBy('name')
-            ->get();
+            ->active();
+
+        // location_manager/attendant must only see their own location
+        $authUser = auth()->user();
+        if ($authUser && in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
+            $query->where('id', $authUser->location_id);
+        }
+
+        $locations = $query->orderBy('name')->get();
 
         return response()->json([
             'success' => true,
@@ -157,6 +191,10 @@ class LocationController extends Controller
      */
     public function toggleStatus(Location $location): JsonResponse
     {
+        if (!$this->authorizeRecordScope($location, locationCol: 'id', companyCol: 'company_id')) {
+            return response()->json(['success' => false, 'message' => 'Forbidden'], 403);
+        }
+
         $location->update(['is_active' => !$location->is_active]);
 
         return response()->json([
@@ -171,6 +209,10 @@ class LocationController extends Controller
      */
     public function statistics(Location $location): JsonResponse
     {
+        if (!$this->authorizeRecordScope($location, locationCol: 'id', companyCol: 'company_id')) {
+            return response()->json(['success' => false, 'message' => 'Forbidden'], 403);
+        }
+
         $stats = [
             'total_packages' => $location->packages()->count(),
             'active_packages' => $location->packages()->where('is_active', true)->count(),

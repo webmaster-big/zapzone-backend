@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Traits\ScopesByAuthUser;
 use App\Mail\BookingConfirmation;
 use App\Mail\BookingReminder;
 use App\Mail\StaffBookingNotification;
@@ -30,6 +31,8 @@ use Barryvdh\DomPDF\Facade\Pdf;
 
 class BookingController extends Controller
 {
+    use ScopesByAuthUser;
+
     /**
      * Display a listing of bookings.
      */
@@ -54,14 +57,8 @@ class BookingController extends Controller
                     'addOns:id,name',       // BelongsToMany - pivot data loaded automatically
                 ]);
 
-            // Role-based filtering
-            if ($request->has('user_id')) {
-                $authUser = User::where('id', $request->user_id)->first();
-                // log the auth user info
-                if ($authUser && $authUser->role === 'location_manager') {
-                    $query->byLocation($authUser->location_id);
-                }
-            }
+            // Multi-tenant + role-based scoping (driven by Sanctum auth user)
+            $this->applyAuthScope($query, $request);
 
             // Filter by location
             if ($request->has('location_id')) {
@@ -614,14 +611,8 @@ class BookingController extends Controller
                 'addOns:id,name',       // BelongsToMany - pivot data loaded automatically
             ]);
 
-        // Role-based filtering
-        if ($request->has('user_id')) {
-            $authUser = User::where('id', $request->user_id)->first();
-            // log the auth user info
-            if ($authUser && $authUser->role === 'location_manager') {
-                $query->byLocation($authUser->location_id);
-            }
-        }
+        // Multi-tenant + role-based scoping (driven by Sanctum auth user)
+        $this->applyAuthScope($query, $request);
 
         // Filter by location, what if multiple locations are provided as in checklist
         if ($request->has('location_id')) {
@@ -806,14 +797,11 @@ class BookingController extends Controller
     {
         $booking->load(['customer', 'package', 'location', 'room', 'creator', 'giftCard', 'promo', 'attractions', 'addOns', 'payments']);
 
-        if ($request->has('user_id')) {
-            $authUser = User::where('id', $request->user_id)->first();
-            if ($authUser->role !== "company_admin" && $booking->location_id !== $authUser->location_id) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Unauthorized to view this booking',
-                ], 403);
-            }
+        if (!$this->authorizeRecordScope($booking)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthorized to view this booking',
+            ], 403);
         }
 
         return response()->json([
@@ -1177,16 +1165,11 @@ class BookingController extends Controller
 
         $booking = Booking::where('reference_number', $validated['reference_number'])->first();
 
-        // Role-based filtering
-        $authUser = null;
-        if ($request->has('user_id')) {
-            $authUser = User::where('id', $request->user_id)->first();
-            if ($authUser->role !== "company_admin" && $booking->location_id !== $authUser->location_id) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Unauthorized to check in this booking',
-                ], 403);
-            }
+        if (!$this->authorizeRecordScope($booking)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthorized to check in this booking',
+            ], 403);
         }
 
         if ($booking->status !== 'confirmed') {
@@ -1877,13 +1860,11 @@ class BookingController extends Controller
             $location = \App\Models\Location::find($request->location_id);
         }
 
-        // Role-based filtering
-        if ($request->has('user_id')) {
-            $authUser = User::find($request->user_id);
-            if ($authUser && $authUser->role === 'location_manager') {
-                $query->where('location_id', $authUser->location_id);
-                $location = $location ?? \App\Models\Location::find($authUser->location_id);
-            }
+        // Multi-tenant + role-based scoping (driven by Sanctum auth user)
+        $this->applyAuthScope($query, $request);
+        $authUser = $this->resolveAuthUser($request);
+        if ($authUser && in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
+            $location = $location ?? \App\Models\Location::find($authUser->location_id);
         }
 
         // Filter by status
@@ -2082,13 +2063,8 @@ class BookingController extends Controller
             $query->where('location_id', $validated['location_id']);
         }
 
-        // Role-based filtering
-        if ($request->has('user_id')) {
-            $authUser = User::find($request->user_id);
-            if ($authUser && $authUser->role === 'location_manager') {
-                $query->where('location_id', $authUser->location_id);
-            }
-        }
+        // Multi-tenant + role-based scoping (driven by Sanctum auth user)
+        $this->applyAuthScope($query, $request);
 
         // Filter by status
         if (isset($validated['status'])) {
@@ -2287,13 +2263,8 @@ class BookingController extends Controller
         try {
             $query = Booking::onlyTrashed()->with(['customer', 'package', 'location', 'room', 'creator']);
 
-            // Role-based filtering
-            if ($request->has('user_id')) {
-                $authUser = User::where('id', $request->user_id)->first();
-                if ($authUser && $authUser->role === 'location_manager') {
-                    $query->where('location_id', $authUser->location_id);
-                }
-            }
+            // Multi-tenant + role-based scoping (driven by Sanctum auth user)
+            $this->applyAuthScope($query, $request);
 
             // Filter by location
             if ($request->has('location_id')) {

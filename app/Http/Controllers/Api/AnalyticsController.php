@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Traits\ScopesByAuthUser;
 use App\Models\Booking;
 use App\Models\AttractionPurchase;
 use App\Models\EventPurchase;
@@ -17,6 +18,8 @@ use Carbon\Carbon;
 
 class AnalyticsController extends Controller
 {
+    use ScopesByAuthUser;
+
     /**
      * Get comprehensive analytics for company-wide view
      * Includes all locations with aggregated data
@@ -35,6 +38,16 @@ class AnalyticsController extends Controller
         $companyId = $request->company_id;
         $dateRange = $request->date_range ?? '30d';
         $locationIds = $request->location_ids ?? [];
+
+        // Enforce multi-tenant + role scope
+        $authUser = $this->resolveAuthUser($request);
+        if ($authUser && $authUser->company_id && (int) $authUser->company_id !== (int) $companyId) {
+            return response()->json(['message' => 'Forbidden: cannot access another company analytics'], 403);
+        }
+        if ($authUser && in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
+            // Location managers are forced to their own location only
+            $locationIds = [$authUser->location_id];
+        }
 
         // Calculate date range - use custom dates if provided, otherwise use preset
         if ($dateRange === 'custom' && $request->filled('start_date') && $request->filled('end_date')) {
@@ -119,6 +132,14 @@ class AnalyticsController extends Controller
 
         $locationId = $request->location_id;
         $dateRange = $request->date_range ?? '30d';
+
+        // Enforce: a location_manager/attendant can only view their own location.
+        $authUser = $this->resolveAuthUser($request);
+        if ($authUser && in_array($authUser->role, ['location_manager', 'attendant'], true)
+            && $authUser->location_id
+            && (int) $authUser->location_id !== (int) $locationId) {
+            return response()->json(['message' => 'Forbidden: cannot access another location analytics'], 403);
+        }
 
         // Calculate date range - use custom dates if provided, otherwise use preset
         if ($dateRange === 'custom' && $request->filled('start_date') && $request->filled('end_date')) {

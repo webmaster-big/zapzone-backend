@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Traits\ScopesByAuthUser;
 use App\Models\ActivityLog;
 use App\Models\Promo;
 use Illuminate\Http\Request;
@@ -13,12 +14,32 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class PromoController extends Controller
 {
+    use ScopesByAuthUser;
+
     /**
      * Display a listing of promos.
      */
     public function index(Request $request): JsonResponse
     {
         $query = Promo::with(['creator', 'packages']);
+
+        // Multi-tenant + role-based scoping. Promos do not have a direct
+        // location_id/company_id, so we scope by creator and/or attached package's location.
+        $authUser = $this->resolveAuthUser($request);
+        if ($authUser) {
+            if (in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
+                $query->where(function ($q) use ($authUser) {
+                    $q->whereHas('packages', fn($p) => $p->where('location_id', $authUser->location_id))
+                      ->orWhereHas('creator', fn($u) => $u->where('location_id', $authUser->location_id));
+                });
+            } elseif ($authUser->company_id) {
+                $companyId = $authUser->company_id;
+                $query->where(function ($q) use ($companyId) {
+                    $q->whereHas('packages.location', fn($l) => $l->where('company_id', $companyId))
+                      ->orWhereHas('creator', fn($u) => $u->where('company_id', $companyId));
+                });
+            }
+        }
 
         // Filter by status
         if ($request->has('status')) {

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Traits\ScopesByAuthUser;
 use App\Models\Payment;
 use App\Models\Booking;
 use App\Models\AttractionPurchase;
@@ -39,9 +40,22 @@ use net\authorize\api\constants\ANetEnvironment;
 
 class PaymentController extends Controller
 {
+    use ScopesByAuthUser;
+
     public function index(Request $request): JsonResponse
     {
         $query = Payment::with(['customer', 'location', 'booking', 'attractionPurchase', 'eventPurchase']);
+
+        // Multi-tenant + role-based scoping. Payment has location_id (no company_id);
+        // company is enforced through the location relation.
+        $authUser = $this->resolveAuthUser($request);
+        if ($authUser) {
+            if (in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
+                $query->where('location_id', $authUser->location_id);
+            } elseif ($authUser->company_id) {
+                $query->whereHas('location', fn($q) => $q->where('company_id', $authUser->company_id));
+            }
+        }
 
         // Filter by payable_id (the ID of the booking or attraction purchase)
         if ($request->has('payable_id')) {

@@ -6,12 +6,15 @@ use App\Http\Controllers\Controller;
 use App\Models\ActivityLog;
 use App\Models\FeeSupport;
 use App\Models\User;
+use App\Http\Traits\ScopesByAuthUser;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Log;
 
 class FeeSupportController extends Controller
 {
+    use ScopesByAuthUser;
+
     /**
      * Display a listing of fee supports.
      */
@@ -22,15 +25,17 @@ class FeeSupportController extends Controller
 
             $query = FeeSupport::with(['company:id,company_name', 'location:id,name']);
 
-            // Role-based filtering
-            if ($request->has('user_id')) {
-                $authUser = User::where('id', $request->user_id)->first();
-                if ($authUser && $authUser->role === 'location_manager') {
-                    $query->where(function ($q) use ($authUser) {
-                        $q->where('location_id', $authUser->location_id)
-                          ->orWhereNull('location_id');
-                    });
-                }
+            // Multi-tenant scope by company (always)
+            $authUser = $this->resolveAuthUser($request);
+            if ($authUser && $authUser->company_id) {
+                $query->where('company_id', $authUser->company_id);
+            }
+            // Location managers can see fees scoped to their location OR company-wide (location_id = null)
+            if ($authUser && in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
+                $query->where(function ($q) use ($authUser) {
+                    $q->where('location_id', $authUser->location_id)
+                      ->orWhereNull('location_id');
+                });
             }
 
             // Filter by company

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Traits\ScopesByAuthUser;
 use App\Models\ActivityLog;
 use App\Models\User;
 use Illuminate\Http\Request;
@@ -14,6 +15,8 @@ use Illuminate\Validation\Rule;
 
 class UserController extends Controller
 {
+    use ScopesByAuthUser;
+
     /**
      * Display a listing of users.
      */
@@ -374,11 +377,20 @@ class UserController extends Controller
      */
     public function getByCompany(int $companyId): JsonResponse
     {
-        $users = User::with(['location'])
+        if ($scopeError = $this->guardCompanyAccess(null, $companyId)) {
+            return $scopeError;
+        }
+
+        $query = User::with(['location'])
             ->byCompany($companyId)
-            ->active()
-            ->orderBy('first_name')
-            ->get();
+            ->active();
+
+        $authUser = auth()->user();
+        if ($authUser && in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
+            $query->where('location_id', $authUser->location_id);
+        }
+
+        $users = $query->orderBy('first_name')->get();
 
         return response()->json([
             'success' => true,
@@ -391,11 +403,20 @@ class UserController extends Controller
      */
     public function getByLocation(int $locationId): JsonResponse
     {
-        $users = User::with(['company'])
+        if ($scopeError = $this->guardLocationAccess(null, $locationId)) {
+            return $scopeError;
+        }
+
+        $query = User::with(['company'])
             ->byLocation($locationId)
-            ->active()
-            ->orderBy('first_name')
-            ->get();
+            ->active();
+
+        $authUser = auth()->user();
+        if ($authUser && $authUser->company_id) {
+            $query->where('company_id', $authUser->company_id);
+        }
+
+        $users = $query->orderBy('first_name')->get();
 
         return response()->json([
             'success' => true,
@@ -408,11 +429,21 @@ class UserController extends Controller
      */
     public function getByRole(string $role): JsonResponse
     {
-        $users = User::with(['company', 'location'])
+        $query = User::with(['company', 'location'])
             ->byRole($role)
-            ->active()
-            ->orderBy('first_name')
-            ->get();
+            ->active();
+
+        $authUser = auth()->user();
+        if ($authUser) {
+            if ($authUser->company_id) {
+                $query->where('company_id', $authUser->company_id);
+            }
+            if (in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
+                $query->where('location_id', $authUser->location_id);
+            }
+        }
+
+        $users = $query->orderBy('first_name')->get();
 
         return response()->json([
             'success' => true,

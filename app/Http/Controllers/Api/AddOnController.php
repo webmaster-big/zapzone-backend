@@ -6,12 +6,15 @@ use App\Http\Controllers\Controller;
 use App\Models\ActivityLog;
 use App\Models\AddOn;
 use App\Models\User;
+use App\Http\Traits\ScopesByAuthUser;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Log;
 
 class AddOnController extends Controller
 {
+    use ScopesByAuthUser;
+
     /**
      * Display a listing of add-ons.
      */
@@ -23,14 +26,8 @@ class AddOnController extends Controller
 
             $query = AddOn::with(['location:id,name', 'packages:id,name']);
 
-            // Role-based filtering
-            if ($request->has('user_id')) {
-                $authUser = User::where('id', $request->user_id)->first();
-                // log the auth user info
-                if ($authUser && $authUser->role === 'location_manager') {
-                    $query->byLocation($authUser->location_id);
-                }
-            }
+            // Multi-tenant + role-based scoping (driven by Sanctum auth user)
+            $this->applyAuthScope($query, $request);
 
             // Filter by location
             if ($request->has('location_id')) {

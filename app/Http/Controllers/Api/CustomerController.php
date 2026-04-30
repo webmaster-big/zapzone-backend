@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Traits\ScopesByAuthUser;
 use App\Models\ActivityLog;
 use App\Models\AttractionPurchase;
 use App\Models\Booking;
@@ -17,12 +18,34 @@ use Illuminate\Validation\Rule;
 
 class CustomerController extends Controller
 {
+    use ScopesByAuthUser;
+
     /**
      * Display a listing of customers.
      */
     public function index(Request $request): JsonResponse
     {
         $query = Customer::with(['bookings', 'giftCards']);
+
+        // Multi-tenant + role-based scoping. Customers do not have a direct
+        // location_id/company_id, so we scope through their booking history.
+        $authUser = $this->resolveAuthUser($request);
+        if ($authUser) {
+            if (in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
+                $query->where(function ($q) use ($authUser) {
+                    $q->whereHas('bookings', fn($b) => $b->where('location_id', $authUser->location_id))
+                      ->orWhereHas('attractionPurchases.attraction', fn($a) => $a->where('location_id', $authUser->location_id))
+                      ->orWhereHas('eventPurchases', fn($e) => $e->where('location_id', $authUser->location_id));
+                });
+            } elseif ($authUser->company_id) {
+                $companyId = $authUser->company_id;
+                $query->where(function ($q) use ($companyId) {
+                    $q->whereHas('bookings.location', fn($l) => $l->where('company_id', $companyId))
+                      ->orWhereHas('attractionPurchases.attraction.location', fn($l) => $l->where('company_id', $companyId))
+                      ->orWhereHas('eventPurchases.location', fn($l) => $l->where('company_id', $companyId));
+                });
+            }
+        }
 
         // Filter by status
         if ($request->has('status')) {

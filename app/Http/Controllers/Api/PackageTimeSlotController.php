@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Traits\ScopesByAuthUser;
 use App\Models\ActivityLog;
 use App\Models\PackageTimeSlot;
 use App\Models\Package;
@@ -14,6 +15,7 @@ use Illuminate\Support\Facades\Log;
 class PackageTimeSlotController extends Controller
 {
     use GeneratesAvailableTimeSlots;
+    use ScopesByAuthUser;
 
     /**
      * Cleanup/buffer time in minutes between bookings.
@@ -27,6 +29,17 @@ class PackageTimeSlotController extends Controller
     public function index(Request $request): JsonResponse
     {
         $query = PackageTimeSlot::with(['package', 'room', 'booking', 'customer', 'user']);
+
+        // Multi-tenant + role-based scoping. PackageTimeSlot has no direct
+        // location/company column; scope through the related package's location.
+        $authUser = $this->resolveAuthUser($request);
+        if ($authUser) {
+            if (in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
+                $query->whereHas('package', fn($p) => $p->where('location_id', $authUser->location_id));
+            } elseif ($authUser->company_id) {
+                $query->whereHas('package.location', fn($l) => $l->where('company_id', $authUser->company_id));
+            }
+        }
 
         // Filter by package
         if ($request->has('package_id')) {

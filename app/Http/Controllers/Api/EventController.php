@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Traits\ScopesByAuthUser;
 use App\Models\Event;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -10,6 +11,8 @@ use Illuminate\Support\Facades\Log;
 
 class EventController extends Controller
 {
+    use ScopesByAuthUser;
+
     /**
      * List all events.
      */
@@ -17,6 +20,9 @@ class EventController extends Controller
     {
         try {
             $query = Event::with(['location:id,name', 'addOns']);
+
+            // Multi-tenant + role-based scoping (driven by Sanctum auth user)
+            $this->applyAuthScope($query, $request);
 
             if ($request->has('location_id')) {
                 $query->byLocation($request->location_id);

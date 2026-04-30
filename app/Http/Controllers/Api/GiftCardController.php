@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Traits\ScopesByAuthUser;
 use App\Models\GiftCard;
 use App\Models\ActivityLog;
 use App\Models\CustomerNotification;
@@ -13,12 +14,25 @@ use Illuminate\Validation\Rule;
 
 class GiftCardController extends Controller
 {
+    use ScopesByAuthUser;
+
     /**
      * Display a listing of gift cards.
      */
     public function index(Request $request): JsonResponse
     {
         $query = GiftCard::with(['creator', 'packages', 'customers', 'location']);
+
+        // Multi-tenant + role-based scoping (driven by Sanctum auth user).
+        // GiftCard has location_id but no company_id; scope company through the location relation.
+        $authUser = $this->resolveAuthUser($request);
+        if ($authUser) {
+            if (in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
+                $query->where('location_id', $authUser->location_id);
+            } elseif ($authUser->company_id) {
+                $query->whereHas('location', fn($q) => $q->where('company_id', $authUser->company_id));
+            }
+        }
 
         // Filter by location
         if ($request->has('location_id')) {

@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\StorePackageRequest;
 use App\Http\Requests\UpdatePackageRequest;
 use App\Http\Resources\PackageResource;
+use App\Http\Traits\ScopesByAuthUser;
 use App\Models\ActivityLog;
 use App\Models\Location;
 use App\Models\Package;
@@ -23,6 +24,8 @@ use Illuminate\Http\JsonResponse;
 
 class PackageController extends Controller
 {
+    use ScopesByAuthUser;
+
     /**
      * Display a listing of packages.
      * Note: Soft-deleted packages are automatically excluded by Laravel's SoftDeletes trait.
@@ -32,15 +35,8 @@ class PackageController extends Controller
         // SoftDeletes trait automatically excludes deleted packages
         $query = Package::with(['location', 'rooms', 'giftCards', 'promos', 'availabilitySchedules']);
 
-           // Role-based filtering
-        if ($request->has('user_id')) {
-            $authUser = User::where('id', $request->user_id)->first();
-            // log the auth user info
-            Log::info('Auth User: ', ['user' => $authUser]);
-            if ($authUser->role === 'location_manager') {
-                $query->byLocation($authUser->location_id);
-            }
-        }
+        // Multi-tenant + role-based scoping (driven by Sanctum auth user)
+        $this->applyAuthScope($query, $request);
 
         // Filter by location
         if ($request->has('location_id')) {

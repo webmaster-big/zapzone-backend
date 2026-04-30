@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Traits\ScopesByAuthUser;
 use App\Models\ActivityLog;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
@@ -10,12 +11,17 @@ use Illuminate\Validation\Rule;
 
 class ActivityLogController extends Controller
 {
+    use ScopesByAuthUser;
+
     /**
      * Display a listing of activity logs with comprehensive filtering
      */
     public function index(Request $request): JsonResponse
     {
         $query = ActivityLog::with(['user', 'location']);
+
+        // Multi-tenant + role-based scoping (driven by Sanctum auth user)
+        $this->applyAuthScope($query, $request);
 
         // Filter by user
         if ($request->has('user_id')) {

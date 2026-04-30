@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Traits\ScopesByAuthUser;
 use App\Models\ActivityLog;
 use App\Models\Company;
 use Illuminate\Http\Request;
@@ -11,11 +12,19 @@ use Illuminate\Support\Facades\Log;
 
 class CompanyController extends Controller
 {
+    use ScopesByAuthUser;
 
     public function index(): JsonResponse
     {
-        $companies = Company::orderBy('company_name')
-            ->get();
+        $query = Company::query();
+
+        // Restrict to caller's company unless they have no company (super_admin)
+        $authUser = auth()->user();
+        if ($authUser && $authUser->company_id) {
+            $query->where('id', $authUser->company_id);
+        }
+
+        $companies = $query->orderBy('company_name')->get();
 
         return response()->json([
             'success' => true,
@@ -70,6 +79,9 @@ class CompanyController extends Controller
      */
     public function show(Company $company): JsonResponse
     {
+        if ($scopeError = $this->guardCompanyAccess(null, $company->id)) {
+            return $scopeError;
+        }
         $company->load(['locations', 'users']);
 
         return response()->json([
@@ -83,6 +95,9 @@ class CompanyController extends Controller
      */
     public function update(Request $request, Company $company): JsonResponse
     {
+        if ($scopeError = $this->guardCompanyAccess($request, $company->id)) {
+            return $scopeError;
+        }
         $validated = $request->validate([
             'company_name' => 'sometimes|string|max:255|unique:companies,company_name,' . $company->id,
             'logo_path' => 'sometimes|nullable|max:27262976', // 20MB in base64 is ~27MB

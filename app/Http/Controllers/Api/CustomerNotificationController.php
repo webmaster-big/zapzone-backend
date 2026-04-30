@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Traits\ScopesByAuthUser;
 use App\Models\ActivityLog;
 use App\Models\CustomerNotification;
 use Illuminate\Http\Request;
@@ -11,12 +12,17 @@ use Illuminate\Validation\Rule;
 
 class CustomerNotificationController extends Controller
 {
+    use ScopesByAuthUser;
+
     /**
      * Display a listing of customer notifications
      */
     public function index(Request $request): JsonResponse
     {
         $query = CustomerNotification::with(['customer', 'location']);
+
+        // Multi-tenant + role-based scoping (driven by Sanctum auth user)
+        $this->applyAuthScope($query, $request);
 
         // Filter by customer
         if ($request->has('customer_id')) {

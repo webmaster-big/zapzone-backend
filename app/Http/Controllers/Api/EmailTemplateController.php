@@ -21,6 +21,15 @@ class EmailTemplateController extends Controller
         $query = EmailTemplate::with(['company', 'location', 'creator'])
             ->where('company_id', $user->company_id);
 
+        // Location managers/attendants can only see their own location templates
+        // (or company-wide templates with location_id = null).
+        if (in_array($user->role, ['location_manager', 'attendant'], true) && $user->location_id) {
+            $query->where(function ($q) use ($user) {
+                $q->where('location_id', $user->location_id)
+                  ->orWhereNull('location_id');
+            });
+        }
+
         // Filter by location if specified
         if ($request->has('location_id')) {
             $query->where(function ($q) use ($request) {

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Traits\ScopesByAuthUser;
 use App\Models\ActivityLog;
 use App\Models\GoogleCalendarSetting;
 use App\Services\GoogleCalendarService;
@@ -12,6 +13,8 @@ use Illuminate\Support\Facades\Log;
 
 class GoogleCalendarController extends Controller
 {
+    use ScopesByAuthUser;
+
     /**
      * Resolve the GoogleCalendarService for a specific location.
      */
@@ -34,6 +37,11 @@ class GoogleCalendarController extends Controller
     public function status(Request $request): JsonResponse
     {
         $locationId = $request->query('location_id') ? (int) $request->query('location_id') : null;
+
+        if ($locationId && ($scopeError = $this->guardLocationAccess($request, $locationId))) {
+            return $scopeError;
+        }
+
         $settings = GoogleCalendarSetting::getSettings($locationId);
         $credentialsConfigured = $this->credentialsConfigured();
 

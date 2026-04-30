@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Traits\ScopesByAuthUser;
 use App\Models\Location;
 use App\Models\Payment;
 use Carbon\Carbon;
@@ -14,6 +15,8 @@ use Illuminate\Validation\Rule;
 
 class AccountingAnalyticsController extends Controller
 {
+    use ScopesByAuthUser;
+
     /**
      * Category constants for grouping
      */
@@ -52,6 +55,12 @@ class AccountingAnalyticsController extends Controller
         ]);
 
         $locationId = $request->location_id;
+
+        // Enforce: a location_manager/attendant can only see their own location's accounting.
+        if ($scopeError = $this->guardLocationAccess($request, $locationId)) {
+            return $scopeError;
+        }
+
         $startDate = Carbon::parse($request->start_date)->startOfDay();
         $endDate = $request->filled('end_date')
             ? Carbon::parse($request->end_date)->startOfDay()
@@ -863,6 +872,10 @@ class AccountingAnalyticsController extends Controller
         $endDate = Carbon::parse($request->end_date)->startOfDay();
         $viewMode = $request->get('view_mode', 'booked_for');
 
+        if ($scopeError = $this->guardLocationAccess($request, $locationId)) {
+            return $scopeError;
+        }
+
         $location = Location::with('company')->findOrFail($locationId);
 
         try {
@@ -954,6 +967,10 @@ class AccountingAnalyticsController extends Controller
             : $startDate->copy();
         $viewMode = $request->get('view_mode', 'booked_for');
         $format = $request->format;
+
+        if ($scopeError = $this->guardLocationAccess($request, $locationId)) {
+            return $scopeError;
+        }
 
         $location = Location::findOrFail($locationId);
         $reportData = $this->buildReportData($locationId, $startDate, $endDate, $viewMode);

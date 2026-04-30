@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\ActivityLog;
 use App\Models\Contact;
 use App\Models\User;
+use App\Http\Traits\ScopesByAuthUser;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
@@ -13,6 +14,8 @@ use Illuminate\Validation\Rule;
 
 class ContactController extends Controller
 {
+    use ScopesByAuthUser;
+
     /**
      * Display a listing of contacts.
      */
@@ -20,17 +23,12 @@ class ContactController extends Controller
     {
         $query = Contact::with(['company', 'location', 'creator']);
 
-        // Get company_id from authenticated user or request
+        // Multi-tenant + role-based scoping (driven by Sanctum auth user)
+        $this->applyAuthScope($query, $request);
+
+        // Optional explicit company filter (still scoped by auth above)
         if ($request->has('company_id')) {
             $query->byCompany($request->company_id);
-        }
-
-        // Role-based filtering for location managers
-        if ($request->has('user_id')) {
-            $authUser = User::find($request->user_id);
-            if ($authUser && $authUser->role === 'location_manager') {
-                $query->byLocation($authUser->location_id);
-            }
         }
 
         // Filter by location

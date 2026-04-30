@@ -33,6 +33,15 @@ class EmailCampaignController extends Controller
         $query = EmailCampaign::with(['company', 'location', 'template', 'sender'])
             ->where('company_id', $user->company_id);
 
+        // Location managers/attendants can only see their own location campaigns
+        // (or company-wide ones with location_id = null).
+        if (in_array($user->role, ['location_manager', 'attendant'], true) && $user->location_id) {
+            $query->where(function ($q) use ($user) {
+                $q->where('location_id', $user->location_id)
+                  ->orWhereNull('location_id');
+            });
+        }
+
         // Filter by location if specified
         if ($request->has('location_id')) {
             $query->where('location_id', $request->location_id);

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Traits\ScopesByAuthUser;
 use App\Mail\EventPurchaseConfirmation;
 use App\Models\ActivityLog;
 use App\Models\Contact;
@@ -21,6 +22,8 @@ use Illuminate\Validation\Rule;
 
 class EventPurchaseController extends Controller
 {
+    use ScopesByAuthUser;
+
     /**
      * List event purchases.
      */
@@ -33,6 +36,9 @@ class EventPurchaseController extends Controller
                 'location:id,name',
                 'addOns:id,name',
             ]);
+
+            // Multi-tenant + role-based scoping (driven by Sanctum auth user)
+            $this->applyAuthScope($query, $request);
 
             if ($request->has('event_id')) {
                 $query->byEvent($request->event_id);

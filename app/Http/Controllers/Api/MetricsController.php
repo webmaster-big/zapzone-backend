@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Traits\ScopesByAuthUser;
 use App\Models\Booking;
 use App\Models\AttractionPurchase;
 use App\Models\EventPurchase;
@@ -15,6 +16,8 @@ use Illuminate\Support\Facades\Log;
 
 class MetricsController extends Controller
 {
+    use ScopesByAuthUser;
+
     /**
      * Get dashboard metrics based on authenticated user's role and location
      * - company_admin: All locations (no location filter)
@@ -27,7 +30,13 @@ class MetricsController extends Controller
     public function dashboard(Request $request, $id)
     {
         try {
-            $user = User::findOrFail($id);
+            // SECURITY: always use the authenticated user, NOT the route param.
+            // The {user} path segment is preserved for backwards-compat only.
+            $authUser = auth()->user();
+            if (!$authUser) {
+                return response()->json(['success' => false, 'message' => 'Unauthenticated'], 401);
+            }
+            $user = $authUser;
 
             // Log incoming request for debugging
             Log::info('=== Dashboard Metrics API Called ===', [
