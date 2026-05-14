@@ -944,9 +944,10 @@ class EmailNotificationController extends Controller
     protected function replaceVariables(string $content, array $variables): string
     {
         foreach ($variables as $key => $value) {
-            $content = preg_replace(
+            $safeValue = $value ?? '';
+            $content = preg_replace_callback(
                 '/\{\{\s*' . preg_quote($key, '/') . '\s*\}\}/',
-                $value ?? '',
+                fn() => $safeValue,
                 $content
             );
         }

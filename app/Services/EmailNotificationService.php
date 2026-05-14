@@ -510,7 +510,7 @@ class EmailNotificationService
             'booking_id' => (string) $booking->id,
             'booking_reference' => $booking->reference_number ?? '',
             'booking_date' => $booking->booking_date?->format('F j, Y') ?? '',
-            'booking_time' => $booking->booking_time ?? '',
+            'booking_time' => $booking->booking_time?->format('g:i A') ?? '',
             'booking_status' => ucfirst($booking->status ?? ''),
             'booking_participants' => (string) ($booking->participants ?? 0),
             'booking_total' => '$' . number_format($booking->total_amount ?? 0, 2),
@@ -685,9 +685,10 @@ class EmailNotificationService
     protected function replaceVariables(string $content, array $variables): string
     {
         foreach ($variables as $key => $value) {
-            $content = preg_replace(
+            $safeValue = $value ?? '';
+            $content = preg_replace_callback(
                 '/\{\{\s*' . preg_quote($key, '/') . '\s*\}\}/',
-                $value ?? '',
+                fn() => $safeValue,
                 $content
             );
         }
