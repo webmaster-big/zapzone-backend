@@ -561,20 +561,25 @@ class UserController extends Controller
     {
         $authUser = $request->user();
 
-        // Only company_admin may create staff accounts this way.
-        if (!$authUser || $authUser->role !== 'company_admin') {
+        // Only company_admin and location_manager may create staff accounts.
+        if (!$authUser || !in_array($authUser->role, ['company_admin', 'location_manager'], true)) {
             return response()->json([
                 'success' => false,
-                'message' => 'Forbidden: only company admins may create staff accounts',
+                'message' => 'Forbidden: only company admins or location managers may create staff accounts',
             ], 403);
         }
+
+        // Determine which roles the caller is allowed to create.
+        $allowedRoles = $authUser->role === 'company_admin'
+            ? ['location_manager', 'attendant', 'company_admin']
+            : ['location_manager', 'attendant']; // location_manager can create managers and attendants within their location
 
         $validated = $request->validate([
             'first_name'    => 'required|string|max:255',
             'last_name'     => 'required|string|max:255',
             'email'         => 'required|email|max:255|unique:users,email',
             'phone'         => 'nullable|string|max:20',
-            'role'          => ['required', Rule::in(['location_manager', 'attendant', 'company_admin'])],
+            'role'          => ['required', Rule::in($allowedRoles)],
             'location_id'   => 'nullable|exists:locations,id',
             'employee_id'   => 'nullable|string|unique:users,employee_id',
             'department'    => 'nullable|string|max:255',
@@ -589,6 +594,11 @@ class UserController extends Controller
             'return_password' => 'sometimes|boolean',
             'login_url'     => 'sometimes|url|max:500',
         ]);
+
+        // location_manager callers: force location_id to their own location.
+        if ($authUser->role === 'location_manager') {
+            $validated['location_id'] = $authUser->location_id;
+        }
 
         // location_manager / attendant must have a location.
         if (in_array($validated['role'], ['location_manager', 'attendant'], true)
