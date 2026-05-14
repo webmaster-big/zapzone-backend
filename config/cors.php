@@ -38,6 +38,10 @@ return [
         'Accept',
         'Origin',
         'X-CSRF-TOKEN',
+        'X-Visitor-Id',
+        'X-Session-Id',
+        'X-Analytics-Source',
+        'X-Tracking-Id',
     ],
 
     'exposed_headers' => ['Authorization'],
