@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Traits\RecordsPageAnalytics;
 use App\Models\BookingInvitation;
 use App\Services\InvitationService;
 use Illuminate\Http\JsonResponse;
@@ -12,6 +13,8 @@ use Illuminate\Validation\Rule;
 
 class RsvpController extends Controller
 {
+    use RecordsPageAnalytics;
+
     /**
      * Get party details for an RSVP token (public - no auth required).
      */
@@ -123,6 +126,17 @@ class RsvpController extends Controller
                     // Don't fail the RSVP response for this
                 }
             }
+
+            // Server-side RSVP conversion (idempotent per invitation).
+            $this->recordConversion(
+                'rsvp_submitted',
+                $invitation->fresh(),
+                0.0,
+                [
+                    'tracking_id' => 'srv:rsvp:'.$invitation->id.':'.$invitation->rsvp_status,
+                    'metadata'    => ['rsvp_status' => $invitation->rsvp_status],
+                ]
+            );
 
             return response()->json([
                 'message' => $validated['rsvp_status'] === 'attending'

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Traits\RecordsPageAnalytics;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Models\GiftCard;
 use App\Models\ActivityLog;
@@ -15,6 +16,7 @@ use Illuminate\Validation\Rule;
 class GiftCardController extends Controller
 {
     use ScopesByAuthUser;
+    use RecordsPageAnalytics;
 
     /**
      * Display a listing of gift cards.
@@ -351,6 +353,18 @@ class GiftCardController extends Controller
                     'previous_balance' => $giftCard->balance + $validated['amount'],
                     'remaining_balance' => $newBalance,
                 ],
+            ]
+        );
+
+        // Engagement event — gift card redeemed.
+        $this->pageAnalyticsRecorder()->recordConversion(
+            'gift_card_redeemed',
+            $giftCard,
+            (float) $validated['amount'],
+            request(),
+            [
+                'event_type' => 'engagement',
+                'metadata'   => ['remaining_balance' => $newBalance],
             ]
         );
 

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Traits\RecordsPageAnalytics;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Models\ActivityLog;
 use App\Models\Promo;
@@ -15,6 +16,7 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 class PromoController extends Controller
 {
     use ScopesByAuthUser;
+    use RecordsPageAnalytics;
 
     /**
      * Display a listing of promos.
@@ -266,6 +268,19 @@ class PromoController extends Controller
         if ($promo->usage_limit_total && $promo->current_usage >= $promo->usage_limit_total) {
             $promo->update(['status' => 'exhausted']);
         }
+
+        // Engagement event — promo applied. We do NOT mark this as a
+        // conversion (the booking/purchase that follows will be).
+        $this->pageAnalyticsRecorder()->recordConversion(
+            'promo_applied',
+            $promo->fresh(),
+            (float) ($promo->value ?? 0),
+            request(),
+            [
+                'event_type' => 'engagement',
+                'metadata'   => ['discount_type' => $promo->type, 'value' => $promo->value],
+            ]
+        );
 
         return response()->json([
             'success' => true,

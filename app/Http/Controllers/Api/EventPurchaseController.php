@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Traits\RecordsPageAnalytics;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Mail\EventPurchaseConfirmation;
 use App\Models\ActivityLog;
@@ -23,6 +24,7 @@ use Illuminate\Validation\Rule;
 class EventPurchaseController extends Controller
 {
     use ScopesByAuthUser;
+    use RecordsPageAnalytics;
 
     /**
      * List event purchases.
@@ -325,6 +327,9 @@ class EventPurchaseController extends Controller
                 }
             }
 
+            // Fire server-side conversion (idempotent via tracking_id).
+            $this->recordConversion('event_purchase_completed', $purchase, (float) ($purchase->total_amount ?? 0));
+
             return response()->json($purchase, 201);
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json(['message' => 'Validation failed', 'errors' => $e->errors()], 422);
@@ -528,6 +533,14 @@ class EventPurchaseController extends Controller
             'status' => 'cancelled',
             'cancelled_at' => now(),
         ]);
+
+        // Negative conversion so net revenue dashboards stay accurate.
+        $this->recordConversion(
+            'event_purchase_cancelled',
+            $eventPurchase,
+            -1 * (float) ($eventPurchase->total_amount ?? 0),
+            ['tracking_id' => 'srv:event_purchase:'.$eventPurchase->id.':cancelled']
+        );
 
         return response()->json($eventPurchase->fresh()->load(['event:id,name', 'addOns']));
     }

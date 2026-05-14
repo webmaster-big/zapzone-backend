@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Traits\RecordsPageAnalytics;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Models\Payment;
 use App\Models\Booking;
@@ -41,6 +42,7 @@ use net\authorize\api\constants\ANetEnvironment;
 class PaymentController extends Controller
 {
     use ScopesByAuthUser;
+    use RecordsPageAnalytics;
 
     public function index(Request $request): JsonResponse
     {
@@ -799,6 +801,14 @@ class PaymentController extends Controller
                         'notes' => trim(($payment->notes ?? '') . "\nRefund of $" . number_format($refundAmount, 2) . " issued → Refund Payment #{$refundPayment->id} (TXN: {$refundTransactionId})"),
                     ]);
 
+                    // Negative conversion so net revenue dashboards stay accurate.
+                    $this->recordConversion(
+                        'refund_issued',
+                        $refundPayment,
+                        -1 * (float) $refundAmount,
+                        ['tracking_id' => 'srv:payment:'.$refundPayment->id.':refund']
+                    );
+
                     Log::info('💰 Authorize.Net refund successful', [
                         'original_payment_id' => $payment->id,
                         'original_transaction_id' => $payment->transaction_id,
@@ -1291,6 +1301,14 @@ class PaymentController extends Controller
         $payment->update([
             'notes' => trim(($payment->notes ?? '') . "\nManual refund of $" . number_format($refundAmount, 2) . " issued → Refund Payment #{$refundPayment->id}"),
         ]);
+
+        // Negative conversion so net revenue dashboards stay accurate.
+        $this->recordConversion(
+            'refund_issued',
+            $refundPayment,
+            -1 * (float) $refundAmount,
+            ['tracking_id' => 'srv:payment:'.$refundPayment->id.':manual_refund']
+        );
 
         Log::info('💰 Manual refund processed', [
             'original_payment_id' => $payment->id,

@@ -17,6 +17,9 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withSchedule(function (Schedule $schedule): void {
         // Send booking reminders daily at 9:00 AM
         $schedule->command('bookings:send-reminders')->dailyAt('09:00');
+
+        // Prune raw page-view rows older than 365 days nightly (keeps conversions).
+        $schedule->command('analytics:prune')->dailyAt('03:30');
     })
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->use([

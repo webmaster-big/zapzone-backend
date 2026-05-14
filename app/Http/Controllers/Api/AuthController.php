@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Http\Traits\RecordsPageAnalytics;
 use App\Models\ActivityLog;
 use App\Models\Customer;
 use App\Models\User;
@@ -12,6 +13,8 @@ use Illuminate\Support\Facades\Log;
 
 class AuthController extends RoutingController
 {
+    use RecordsPageAnalytics;
+
     public function login(Request $request)
     {
         $request->validate([
@@ -132,6 +135,9 @@ class AuthController extends RoutingController
                 'customer_id' => $customer->id,
                 'email' => $customer->email,
             ]);
+
+            // Fire server-side signup conversion (no monetary value).
+            $this->recordConversion('signup', $customer, 0.0);
 
             // Return the customer with auth token
             return response()->json([

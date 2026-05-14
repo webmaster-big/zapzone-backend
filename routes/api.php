@@ -30,6 +30,7 @@ use App\Http\Controllers\Api\MetricsController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\PackageController;
 use App\Http\Controllers\Api\PackageTimeSlotController;
+use App\Http\Controllers\Api\PageAnalyticsController;
 use App\Http\Controllers\Api\PaymentController;
 use App\Http\Controllers\Api\PromoController;
 use App\Http\Controllers\Api\RoomController;
@@ -47,6 +48,14 @@ use Illuminate\Support\Facades\Route;
 Route::post('login', [ApiAuthController::class, 'login']);
 Route::post('customer-login', [ApiAuthController::class, 'customerLogin']);
 Route::post('customer-register', [ApiAuthController::class, 'customerRegister']);
+
+// Public Page Analytics ingest (called from customer browser).
+// Throttled to mitigate spam from open endpoints.
+Route::middleware('throttle:120,1')->group(function () {
+    Route::post('analytics/track',       [PageAnalyticsController::class, 'track']);
+    Route::post('analytics/track/batch', [PageAnalyticsController::class, 'trackBatch']);
+    Route::post('analytics/duration',    [PageAnalyticsController::class, 'patchDuration']);
+});
 
 // Public endpoint for Accept.js integration (get API Login ID only)
 Route::get('authorize-net/public-key/{locationId}', [AuthorizeNetAccountController::class, 'getPublicKey']);
@@ -252,6 +261,27 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('accounting-analytics/report', [AccountingAnalyticsController::class, 'getReport']);
     Route::get('accounting-analytics/summary-trend', [AccountingAnalyticsController::class, 'getSummaryTrend']);
     Route::get('accounting-analytics/export', [AccountingAnalyticsController::class, 'exportReport']);
+
+    // Page Analytics (page views, conversions, marketing — scoped per role)
+    Route::get('page-analytics/overview',          [PageAnalyticsController::class, 'overview']);
+    Route::get('page-analytics/timeseries',        [PageAnalyticsController::class, 'timeseries']);
+    Route::get('page-analytics/top-pages',         [PageAnalyticsController::class, 'topPages']);
+    Route::get('page-analytics/top-entities',      [PageAnalyticsController::class, 'topEntities']);
+    Route::get('page-analytics/sources',           [PageAnalyticsController::class, 'sources']);
+    Route::get('page-analytics/devices',           [PageAnalyticsController::class, 'devices']);
+    Route::get('page-analytics/funnel',            [PageAnalyticsController::class, 'funnel']);
+    Route::get('page-analytics/conversions',       [PageAnalyticsController::class, 'conversions']);
+    Route::get('page-analytics/events',            [PageAnalyticsController::class, 'events']);
+    Route::get('page-analytics/live',              [PageAnalyticsController::class, 'live']);
+    Route::get('page-analytics/landing-pages',     [PageAnalyticsController::class, 'landingPages']);
+    Route::get('page-analytics/searches',          [PageAnalyticsController::class, 'searches']);
+    Route::get('page-analytics/promo-performance', [PageAnalyticsController::class, 'promoPerformance']);
+    Route::get('page-analytics/attribution',       [PageAnalyticsController::class, 'attribution']);
+    Route::get('page-analytics/entities-leaderboard', [PageAnalyticsController::class, 'entitiesLeaderboard']);
+    Route::get('page-analytics/entities/{type}/{id}', [PageAnalyticsController::class, 'entityDetail'])
+        ->whereIn('type', ['package', 'attraction', 'event', 'booking', 'attraction_purchase', 'event_purchase', 'gift_card', 'promo'])
+        ->whereNumber('id');
+    Route::get('page-analytics/sessions/{sessionId}', [PageAnalyticsController::class, 'session']);
 
     // Company routes
     Route::apiResource('companies', CompanyController::class);

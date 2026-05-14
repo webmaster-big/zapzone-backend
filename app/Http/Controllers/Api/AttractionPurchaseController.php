@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Traits\RecordsPageAnalytics;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Models\AttractionPurchase;
 use App\Models\AttractionPurchaseAddOn;
@@ -24,6 +25,7 @@ use Illuminate\Support\Facades\Log;
 class AttractionPurchaseController extends Controller
 {
     use ScopesByAuthUser;
+    use RecordsPageAnalytics;
 
     /**
      * Display a listing of attraction purchases.
@@ -478,6 +480,9 @@ class AttractionPurchaseController extends Controller
                 'purchase_id' => $purchase->id,
             ]);
         }
+
+        // Fire server-side conversion (idempotent via tracking_id).
+        $this->recordConversion('purchase_completed', $purchase, (float) ($purchase->total_amount ?? 0));
 
         return response()->json([
             'success' => true,
@@ -954,6 +959,14 @@ class AttractionPurchaseController extends Controller
 
         $attractionPurchase->update(['status' => AttractionPurchase::STATUS_CANCELLED]);
         $attractionPurchase->load(['attraction', 'customer', 'createdBy', 'addOns']);
+
+        // Negative conversion so net revenue dashboards stay accurate.
+        $this->recordConversion(
+            'purchase_cancelled',
+            $attractionPurchase,
+            -1 * (float) ($attractionPurchase->total_amount ?? 0),
+            ['tracking_id' => 'srv:attraction_purchase:'.$attractionPurchase->id.':cancelled']
+        );
 
         return response()->json([
             'success' => true,

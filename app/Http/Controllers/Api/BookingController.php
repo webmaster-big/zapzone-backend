@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Traits\RecordsPageAnalytics;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Mail\BookingConfirmation;
 use App\Mail\BookingReminder;
@@ -32,6 +33,7 @@ use Barryvdh\DomPDF\Facade\Pdf;
 class BookingController extends Controller
 {
     use ScopesByAuthUser;
+    use RecordsPageAnalytics;
 
     /**
      * Display a listing of bookings.
@@ -582,6 +584,9 @@ class BookingController extends Controller
                 ]);
             }
         }
+
+        // Fire server-side conversion (idempotent via tracking_id).
+        $this->recordConversion('booking_completed', $booking, (float) ($booking->total_amount ?? 0));
 
         return response()->json([
             'success' => true,
@@ -1144,6 +1149,14 @@ class BookingController extends Controller
                 'error' => $e->getMessage(),
             ]);
         }
+
+        // Negative conversion so net revenue dashboards stay accurate.
+        $this->recordConversion(
+            'booking_cancelled',
+            $booking,
+            -1 * (float) ($booking->total_amount ?? 0),
+            ['tracking_id' => 'srv:booking:'.$booking->id.':cancelled']
+        );
 
         return response()->json([
             'success' => true,
