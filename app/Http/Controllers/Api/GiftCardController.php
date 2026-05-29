@@ -48,6 +48,11 @@ class GiftCardController extends Controller
             $query->active();
         }
 
+        // Filter by customer (customer-facing: show only gift cards linked to this customer)
+        if ($request->filled('customer_id')) {
+            $query->whereHas('customers', fn($q) => $q->where('customers.id', $request->customer_id));
+        }
+
         // Filter by type
         if ($request->has('type')) {
             $query->byType($request->type);

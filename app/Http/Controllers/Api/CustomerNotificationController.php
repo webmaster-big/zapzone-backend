@@ -228,7 +228,9 @@ class CustomerNotificationController extends Controller
      */
     public function getUnreadCount(Request $request): JsonResponse
     {
-        $customerId = $request->get('customer_id');
+        // Accept customer ID from the route segment (/unread-count/{customerId})
+        // or as a query parameter (?customer_id=X) for backwards compatibility.
+        $customerId = $request->route('customerId') ?? $request->get('customer_id');
 
         if (!$customerId) {
             return response()->json([
