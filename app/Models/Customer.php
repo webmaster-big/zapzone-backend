@@ -77,6 +77,16 @@ class Customer extends Model
         return $this->hasMany(CustomerNotification::class);
     }
 
+    public function memberships(): HasMany
+    {
+        return $this->hasMany(Membership::class);
+    }
+
+    public function activeMembership()
+    {
+        return $this->hasOne(Membership::class)->whereIn('status', ['active', 'past_due', 'frozen']);
+    }
+
     // Scopes
     public function scopeActive($query)
     {

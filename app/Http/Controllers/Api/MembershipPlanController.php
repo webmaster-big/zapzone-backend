@@ -1,0 +1,211 @@
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Http\Traits\ScopesByAuthUser;
+use App\Models\MembershipPlan;
+use App\Support\CompanyLocations;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
+
+class MembershipPlanController extends Controller
+{
+    use ScopesByAuthUser;
+
+    public function index(Request $request): JsonResponse
+    {
+        $query = MembershipPlan::with('approvedLocations:id,name')
+            ->withCount('memberships');
+
+        $this->applyAuthScope($query, $request);
+
+        if ($request->boolean('active_only', false)) {
+            $query->where('is_active', true);
+        }
+        if ($request->filled('location_id')) {
+            $locId = (int) $request->location_id;
+            $query->where(function ($q) use ($locId) {
+                $q->where('location_id', $locId)
+                  ->orWhere('location_access_mode', 'all')
+                  ->orWhereHas('approvedLocations', fn($x) => $x->where('locations.id', $locId));
+            });
+        }
+        if ($request->filled('search')) {
+            $s = $request->search;
+            $query->where('name', 'like', "%{$s}%");
+        }
+
+        return response()->json([
+            'success' => true,
+            'data' => $query->orderBy('price')->paginate((int) $request->get('per_page', 25)),
+        ]);
+    }
+
+    public function publicIndex(Request $request): JsonResponse
+    {
+        // Load approvedLocations (for multi-mode) and the plan's own location (for single-mode)
+        // so we can build a self-contained valid_locations list without an extra API call.
+        $query = MembershipPlan::with(['approvedLocations:id,name', 'location:id,name'])
+            ->where('is_active', true);
+
+        if ($request->filled('location_id')) {
+            $locId = (int) $request->location_id;
+            $query->where(function ($q) use ($locId) {
+                $q->where('location_id', $locId)
+                  ->orWhere('location_access_mode', 'all')
+                  ->orWhereHas('approvedLocations', fn($x) => $x->where('locations.id', $locId));
+            });
+        }
+
+        $plans = $query->orderBy('price')->get();
+
+        $data = $plans->map(function (MembershipPlan $plan) {
+            $arr = $plan->toArray();
+
+            // Transparent valid-locations list for customer-facing display.
+            $arr['valid_locations'] = $this->resolveValidLocations($plan);
+            $arr['location_access_label'] = match ($plan->location_access_mode) {
+                'all'    => 'Valid at all locations',
+                'multi'  => 'Valid at selected locations',
+                'single' => 'Valid at your selected home location',
+                default  => null,
+            };
+
+            return $arr;
+        });
+
+        return response()->json([
+            'success' => true,
+            'data'    => $data,
+        ]);
+    }
+
+    public function store(Request $request): JsonResponse
+    {
+        $authUser = $this->resolveAuthUser($request);
+        abort_unless($authUser && in_array($authUser->role, ['company_admin', 'location_manager']), 403);
+
+        $data = $this->validateData($request);
+        $data['company_id'] = $authUser->company_id;
+        if (! isset($data['slug'])) {
+            $data['slug'] = Str::slug($data['name']) . '-' . Str::random(5);
+        }
+
+        $approved = $data['approved_location_ids'] ?? [];
+        unset($data['approved_location_ids']);
+        // Also accept approved_location_names (resolved by name when IDs are not sent)
+        $approvedNames = $data['approved_location_names'] ?? [];
+        unset($data['approved_location_names']);
+        if (empty($approved) && !empty($approvedNames)) {
+            $approved = \App\Models\Location::whereIn('name', $approvedNames)->pluck('id')->all();
+        }
+
+        $plan = MembershipPlan::create($data);
+        if (! empty($approved)) {
+            $plan->approvedLocations()->sync($approved);
+        }
+
+        return response()->json(['success' => true, 'data' => $plan->load('approvedLocations')], 201);
+    }
+
+    public function show(MembershipPlan $membershipPlan): JsonResponse
+    {
+        return response()->json([
+            'success' => true,
+            'data' => $membershipPlan->load('approvedLocations'),
+        ]);
+    }
+
+    public function update(Request $request, MembershipPlan $membershipPlan): JsonResponse
+    {
+        $authUser = $this->resolveAuthUser($request);
+        abort_unless($authUser && in_array($authUser->role, ['company_admin', 'location_manager']), 403);
+
+        $data = $this->validateData($request, $membershipPlan->id);
+        $approved = $data['approved_location_ids'] ?? null;
+        unset($data['approved_location_ids']);
+        $approvedNames = $data['approved_location_names'] ?? null;
+        unset($data['approved_location_names']);
+        if ($approved === null && $approvedNames !== null) {
+            $approved = \App\Models\Location::whereIn('name', $approvedNames)->pluck('id')->all();
+        }
+
+        $membershipPlan->update($data);
+        if ($approved !== null) {
+            $membershipPlan->approvedLocations()->sync($approved);
+        }
+
+        return response()->json(['success' => true, 'data' => $membershipPlan->fresh()->load('approvedLocations')]);
+    }
+
+    public function destroy(Request $request, MembershipPlan $membershipPlan): JsonResponse
+    {
+        $authUser = $this->resolveAuthUser($request);
+        abort_unless($authUser && $authUser->role === 'company_admin', 403);
+        $membershipPlan->delete();
+        return response()->json(['success' => true]);
+    }
+
+    public function toggleStatus(MembershipPlan $membershipPlan): JsonResponse
+    {
+        $membershipPlan->is_active = ! $membershipPlan->is_active;
+        $membershipPlan->save();
+        return response()->json(['success' => true, 'data' => $membershipPlan]);
+    }
+
+    private function validateData(Request $request, ?int $id = null): array
+    {
+        return $request->validate([
+            'name'                          => 'required|string|max:150',
+            'slug'                          => 'nullable|string|max:160',
+            'description'                   => 'nullable|string',
+            'benefits'                      => 'nullable|array',
+            'tier'                          => ['nullable', Rule::in(['basic','premium','unlimited','family','discounted','comped','custom'])],
+            'price'                         => 'required|numeric|min:0',
+            'billing_cycle'                 => ['required', Rule::in(['monthly','annual','custom'])],
+            'custom_billing_days'           => 'nullable|integer|min:1',
+            'usage_type'                    => ['required', Rule::in(['limited','unlimited'])],
+            'uses_per_term'                 => 'nullable|integer|min:0',
+            'visits_per_term'               => 'nullable|integer|min:0',
+            'services_per_term'             => 'nullable|integer|min:0',
+            'unlimited_uses_per_term'       => 'boolean',
+            'unlimited_visits_per_term'     => 'boolean',
+            'max_visits_per_day'            => 'nullable|integer|min:1',
+            'member_only_booking'           => 'boolean',
+            'advance_booking_days'          => 'nullable|integer|min:0',
+            'late_cancel_counts_as_visit'   => 'boolean',
+            'no_show_counts_as_visit'       => 'boolean',
+            'location_id'                   => 'nullable|exists:locations,id',
+            'location_access_mode'          => ['required', Rule::in(['single','multi','all'])],
+            'approved_location_ids'         => 'nullable|array',
+            'approved_location_ids.*'       => 'exists:locations,id',
+            'approved_location_names'       => 'nullable|array',
+            'approved_location_names.*'     => 'string|max:150',
+            'grace_period_days'             => 'nullable|integer|min:0',
+            'failed_payment_retry_days'     => 'nullable|integer|min:0',
+            'failed_payment_max_retries'    => 'nullable|integer|min:0',
+            'cancellation_mode'             => ['required', Rule::in(['immediate','end_of_term','staff_only'])],
+            'renewable'                     => 'boolean',
+            'discount_percent'              => 'nullable|numeric|min:0|max:100',
+            'is_active'                     => 'boolean',
+        ]);
+    }
+
+    /**
+     * Build the transparent list of location names for a plan.
+     * 'all'    → hard-coded canonical locations list (no extra DB query needed).
+     * 'multi'  → the plan's explicitly approved locations.
+     * 'single' → the plan's own default location (customer will pick their home location at signup).
+     */
+    private function resolveValidLocations(MembershipPlan $plan): array
+    {
+        return match ($plan->location_access_mode) {
+            'all'   => CompanyLocations::NAMES,
+            'multi' => $plan->approvedLocations->pluck('name')->filter()->sort()->values()->all(),
+            default => array_filter([$plan->location?->name ?? null]),
+        };
+    }
+}

@@ -328,9 +328,25 @@ class PageAnalyticsController extends Controller
             ->orderByDesc('created_at')
             ->paginate($perPage);
 
+        // Hydrate entity names so the dashboard can show e.g. "Unlimited Wristband"
+        // instead of just "Package #7".
+        $items = collect($rows->items());
+        $byType = $items->whereNotNull('entity_type')->groupBy('entity_type');
+        foreach ($byType as $type => $group) {
+            $cls = PageAnalyticsRecorder::ENTITY_MAP[$type] ?? null;
+            if (!$cls) continue;
+            $ids = $group->pluck('entity_id')->filter()->unique()->values()->all();
+            if (empty($ids)) continue;
+            $named = $cls::whereIn('id', $ids)->get(['id', 'name', 'title', 'code'])->keyBy('id');
+            foreach ($group as $item) {
+                $m = $named[$item->entity_id] ?? null;
+                $item->entity_name = $m?->name ?? $m?->title ?? $m?->code ?? null;
+            }
+        }
+
         return response()->json([
             'success'    => true,
-            'data'       => $rows->items(),
+            'data'       => $items->values(),
             'pagination' => $this->paginationMeta($rows),
         ]);
     }
@@ -417,17 +433,32 @@ class PageAnalyticsController extends Controller
             ->groupBy('session_id')
             ->pluck('c', 'session_id');
 
+        // Also count conversions + revenue per session so landing pages can
+        // show their contribution to revenue (not just bounce rate).
+        $convBySession = PageView::whereIn('session_id', $sessionIds->all())
+            ->where('event_type', 'conversion')
+            ->select('session_id')
+            ->selectRaw('COUNT(*) as conv_count')
+            ->selectRaw('COALESCE(SUM(conversion_value), 0) as conv_revenue')
+            ->groupBy('session_id')
+            ->get()
+            ->keyBy('session_id');
+
         $rows = $landings
             ->groupBy(fn ($r) => $r->page_path.'|'.$r->page_type)
-            ->map(function ($group) use ($pvCounts) {
-                $sessions = $group->count();
-                $bounces  = $group->filter(fn ($r) => ($pvCounts[$r->session_id] ?? 0) <= 1)->count();
+            ->map(function ($group) use ($pvCounts, $convBySession) {
+                $sessions    = $group->count();
+                $bounces     = $group->filter(fn ($r) => ($pvCounts[$r->session_id] ?? 0) <= 1)->count();
+                $convCount   = (int) $group->sum(fn ($r) => $convBySession[$r->session_id]?->conv_count   ?? 0);
+                $convRevenue = (float) $group->sum(fn ($r) => $convBySession[$r->session_id]?->conv_revenue ?? 0.0);
                 return (object) [
                     'page_path'   => $group->first()->page_path,
                     'page_type'   => $group->first()->page_type,
                     'sessions'    => $sessions,
                     'bounces'     => $bounces,
                     'bounce_rate' => $sessions > 0 ? round(($bounces / $sessions) * 100, 2) : 0,
+                    'conversions' => $convCount,
+                    'revenue'     => round($convRevenue, 2),
                 ];
             })
             ->sortByDesc('sessions')

@@ -84,6 +84,16 @@ class PageAnalyticsRecorder
         if ($entity) {
             $payload['entity_type'] = $payload['entity_type'] ?? $this->classToEntityType($entity);
             $payload['entity_id']   = $payload['entity_id']   ?? $entity->getKey();
+
+            // For completion entities (Booking / AttractionPurchase / EventPurchase),
+            // link the conversion to the underlying offer (Package / Attraction / Event)
+            // so that topPages(), entitiesLeaderboard() and related queries, which all
+            // filter/group by entity_type='package' etc., can credit this conversion.
+            [$offerType, $offerId] = $this->resolveOfferEntity($entity);
+            if ($offerType && $offerId) {
+                $payload['entity_type'] = $offerType;
+                $payload['entity_id']   = $offerId;
+            }
         }
 
         // Dedupe — if a row with this tracking_id already exists, return it.
@@ -117,6 +127,27 @@ class PageAnalyticsRecorder
         $sessionId = $payload['session_id'] ?? $request->header('X-Session-Id');
         $payload['visitor_id'] = $visitorId ?: null;
         $payload['session_id'] = $sessionId ?: null;
+
+        // ---- Page context for server-side conversions -------------------
+        // The backend doesn't know the browser URL, so conversion rows land
+        // with page_path=null, breaking topPages() and landingPages() attribution.
+        // If we have a session_id, inherit the most-recent page_view's path so
+        // that the conversion is counted on the correct page/offer.
+        if (($payload['event_type'] ?? null) === 'conversion'
+            && empty($payload['page_path'])
+            && !empty($sessionId)) {
+            $lastView = PageView::where('session_id', $sessionId)
+                ->where('event_type', 'page_view')
+                ->whereNotNull('page_path')
+                ->latest()
+                ->first(['page_path', 'page_type']);
+            if ($lastView) {
+                $payload['page_path'] = $lastView->page_path;
+                if (empty($payload['page_type'])) {
+                    $payload['page_type'] = $lastView->page_type;
+                }
+            }
+        }
 
         // ---- Tech / device ----------------------------------------------
         $ua = (string) $request->header('User-Agent', '');
@@ -216,6 +247,26 @@ class PageAnalyticsRecorder
             }
         }
         return null;
+    }
+
+    /**
+     * For a completion entity (Booking / AttractionPurchase / EventPurchase)
+     * return the underlying bookable offer entity type + id so that analytics
+     * queries can attribute conversions to the correct package/attraction/event.
+     * Returns [null, null] when the entity is already an offer entity.
+     */
+    protected function resolveOfferEntity(Model $entity): array
+    {
+        if ($entity instanceof Booking && !empty($entity->package_id)) {
+            return ['package', (int) $entity->package_id];
+        }
+        if ($entity instanceof AttractionPurchase && !empty($entity->attraction_id)) {
+            return ['attraction', (int) $entity->attraction_id];
+        }
+        if ($entity instanceof EventPurchase && !empty($entity->event_id)) {
+            return ['event', (int) $entity->event_id];
+        }
+        return [null, null];
     }
 
     protected function resolveTenancy(?string $entityType, $entityId, $explicitLocationId): array

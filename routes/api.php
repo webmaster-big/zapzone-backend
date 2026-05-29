@@ -27,6 +27,10 @@ use App\Http\Controllers\Api\GlobalNoteController;
 use App\Http\Controllers\Api\GoogleCalendarController;
 use App\Http\Controllers\Api\LocationController;
 use App\Http\Controllers\Api\MetricsController;
+use App\Http\Controllers\Api\MembershipController;
+use App\Http\Controllers\Api\MembershipPlanController;
+use App\Http\Controllers\Api\MembershipCheckInController;
+use App\Http\Controllers\Api\MembershipReportController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\PackageController;
 use App\Http\Controllers\Api\PackageTimeSlotController;
@@ -147,6 +151,9 @@ Route::get('attractions/popular', [AttractionController::class, 'getPopular']);
 Route::get('attractions/location/{locationId}', [AttractionController::class, 'getByLocation']);
 Route::get('attractions/{id}', [AttractionController::class, 'show']);
 Route::get('packages/location/{locationId}', [PackageController::class, 'getByLocation']);
+
+// Public membership plan browsing (for customer signup page)
+Route::get('membership-plans/public', [MembershipPlanController::class, 'publicIndex']);
 
 // Public customer search
 Route::get('customers/search', [CustomerController::class, 'search']);
@@ -606,5 +613,39 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/sync/{bookingId}', [GoogleCalendarController::class, 'syncSingleBooking']);
         Route::delete('/bookings/{bookingId}/event', [GoogleCalendarController::class, 'removeBookingEvent']);
     });
+
+    // ---------------------------------------------------------------
+    // Membership routes
+    // ---------------------------------------------------------------
+
+    // Customer-side (authenticated customer)
+    Route::get('memberships/me',        [MembershipController::class, 'myMembership']);
+    Route::post('memberships/purchase', [MembershipController::class, 'purchase']);
+
+    // Plan management
+    Route::apiResource('membership-plans', MembershipPlanController::class);
+    Route::patch('membership-plans/{membershipPlan}/toggle-status', [MembershipPlanController::class, 'toggleStatus']);
+
+    // Reports
+    Route::get('membership-reports/summary', [MembershipReportController::class, 'summary']);
+
+    // Check-in & QR scan (static routes BEFORE apiResource)
+    Route::post('memberships/scan', [MembershipCheckInController::class, 'scan']);
+
+    // Main memberships resource (admin-side list/show/store)
+    Route::get('memberships',                  [MembershipController::class, 'index']);
+    Route::post('memberships',                 [MembershipController::class, 'store']);
+    Route::get('memberships/{membership}',     [MembershipController::class, 'show']);
+
+    Route::patch('memberships/{membership}/status',         [MembershipController::class, 'updateStatus']);
+    Route::patch('memberships/{membership}/freeze',         [MembershipController::class, 'freeze']);
+    Route::patch('memberships/{membership}/cancel',         [MembershipController::class, 'cancel']);
+    Route::patch('memberships/{membership}/change-plan',    [MembershipController::class, 'changePlan']);
+    Route::patch('memberships/{membership}/payment-method', [MembershipController::class, 'updatePaymentMethod']);
+    Route::post('memberships/{membership}/retry-payment',   [MembershipController::class, 'retryPayment']);
+    Route::post('memberships/{membership}/photo',           [MembershipController::class, 'uploadPhoto']);
+    Route::post('memberships/{membership}/notes',           [MembershipController::class, 'addNote']);
+    Route::get('memberships/{membership}/eligibility',      [MembershipController::class, 'eligibility']);
+    Route::post('memberships/{membership}/check-in',        [MembershipCheckInController::class, 'checkIn']);
 });
 
