@@ -79,12 +79,14 @@ class MembershipReportController extends Controller
             ->get(['id', 'customer_id', 'membership_plan_id', 'visits_remaining']);
 
         return response()->json(['success' => true, 'data' => [
-            'active'               => $active,
-            'past_due'             => $pastDue,
-            'suspended'            => $suspended,
-            'frozen'               => $frozen,
-            'canceled_in_range'    => $canceled,
-            'new_in_range'         => $newMembers,
+            'counts' => [
+                'active'             => $active,
+                'past_due'           => $pastDue,
+                'suspended'          => $suspended,
+                'frozen'             => $frozen,
+                'canceled_in_range'  => $canceled,
+                'new_in_range'       => $newMembers,
+            ],
             'mrr'                  => round((float) $mrr, 2),
             'arr'                  => round((float) $arr, 2),
             'failed_payments'      => $failedPayments,
@@ -92,7 +94,7 @@ class MembershipReportController extends Controller
             'visits_by_location'   => $visitsByLocation,
             'top_plans'            => $topPlans,
             'underused_sample'     => $underused,
-            'range'                => ['from' => $from->toIso8601String(), 'to' => $to->toIso8601String()],
+            'date_range'           => ['from' => $from->toIso8601String(), 'to' => $to->toIso8601String()],
         ]]);
     }
 }
