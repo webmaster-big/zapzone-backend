@@ -17,7 +17,7 @@ class MembershipPlanController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        $query = MembershipPlan::with('approvedLocations:id,name')
+        $query = MembershipPlan::with(['approvedLocations:id,name', 'location:id,name'])
             ->withCount('memberships');
 
         $this->applyAuthScope($query, $request);
@@ -103,19 +103,25 @@ class MembershipPlanController extends Controller
             $approved = \App\Models\Location::whereIn('name', $approvedNames)->pluck('id')->all();
         }
 
+        // Resolve single-mode location by name if no location_id provided
+        if (empty($data['location_id']) && !empty($data['location_name'])) {
+            $data['location_id'] = \App\Models\Location::where('name', $data['location_name'])->value('id');
+        }
+        unset($data['location_name']);
+
         $plan = MembershipPlan::create($data);
         if (! empty($approved)) {
             $plan->approvedLocations()->sync($approved);
         }
 
-        return response()->json(['success' => true, 'data' => $plan->load('approvedLocations')], 201);
+        return response()->json(['success' => true, 'data' => $plan->load(['approvedLocations', 'location:id,name'])], 201);
     }
 
     public function show(MembershipPlan $membershipPlan): JsonResponse
     {
         return response()->json([
             'success' => true,
-            'data' => $membershipPlan->load('approvedLocations'),
+            'data' => $membershipPlan->load(['approvedLocations', 'location:id,name']),
         ]);
     }
 
@@ -133,12 +139,18 @@ class MembershipPlanController extends Controller
             $approved = \App\Models\Location::whereIn('name', $approvedNames)->pluck('id')->all();
         }
 
+        // Resolve single-mode location by name if no location_id provided
+        if (empty($data['location_id']) && !empty($data['location_name'])) {
+            $data['location_id'] = \App\Models\Location::where('name', $data['location_name'])->value('id');
+        }
+        unset($data['location_name']);
+
         $membershipPlan->update($data);
         if ($approved !== null) {
             $membershipPlan->approvedLocations()->sync($approved);
         }
 
-        return response()->json(['success' => true, 'data' => $membershipPlan->fresh()->load('approvedLocations')]);
+        return response()->json(['success' => true, 'data' => $membershipPlan->fresh()->load(['approvedLocations', 'location:id,name'])]);
     }
 
     public function destroy(Request $request, MembershipPlan $membershipPlan): JsonResponse
@@ -179,6 +191,7 @@ class MembershipPlanController extends Controller
             'late_cancel_counts_as_visit'   => 'boolean',
             'no_show_counts_as_visit'       => 'boolean',
             'location_id'                   => 'nullable|exists:locations,id',
+            'location_name'                 => 'nullable|string|max:150', // resolved to location_id if ID not given
             'location_access_mode'          => ['required', Rule::in(['single','multi','all'])],
             'approved_location_ids'         => 'nullable|array',
             'approved_location_ids.*'       => 'exists:locations,id',
