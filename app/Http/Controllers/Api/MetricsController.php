@@ -162,8 +162,8 @@ class MetricsController extends Controller
         // Revenue from completed purchases only
         $purchaseRevenue = (clone $purchaseQuery)->where('status', 'completed')->sum('amount_paid') ?? 0;
 
-        // All non-cancelled purchases revenue
-        $allPurchaseRevenue = (clone $purchaseQuery)->whereNotIn('status', ['cancelled'])->sum('amount_paid') ?? 0;
+        // All non-cancelled purchases revenue (use total_amount so pending/in-store sales are counted)
+        $allPurchaseRevenue = (clone $purchaseQuery)->whereNotIn('status', ['cancelled'])->sum('total_amount') ?? 0;
 
         Log::info('Purchase metrics calculated', [
             'total_purchases' => $totalPurchases,
@@ -174,7 +174,7 @@ class MetricsController extends Controller
 
         // Calculate event purchase metrics
         $totalEventPurchases = (clone $eventPurchaseQuery)->count();
-        $eventPurchaseRevenue = (clone $eventPurchaseQuery)->whereNotIn('status', ['cancelled', 'refunded'])->sum('amount_paid') ?? 0;
+        $eventPurchaseRevenue = (clone $eventPurchaseQuery)->whereNotIn('status', ['cancelled', 'refunded'])->sum('total_amount') ?? 0;
         $totalEventTickets = (clone $eventPurchaseQuery)->whereNotIn('status', ['cancelled', 'refunded'])->sum('quantity') ?? 0;
 
         // Calculate total revenue (using all non-cancelled purchases)
@@ -554,12 +554,12 @@ class MetricsController extends Controller
         // Revenue from completed purchases only
         $purchaseRevenue = (clone $purchaseQuery)->where('status', 'completed')->sum('amount_paid') ?? 0;
 
-        // All non-cancelled purchases revenue
-        $allPurchaseRevenue = (clone $purchaseQuery)->whereNotIn('status', ['cancelled'])->sum('amount_paid') ?? 0;
+        // All non-cancelled purchases revenue (use total_amount so pending/in-store sales are counted)
+        $allPurchaseRevenue = (clone $purchaseQuery)->whereNotIn('status', ['cancelled'])->sum('total_amount') ?? 0;
 
         // Calculate event purchase metrics
         $totalEventPurchases = (clone $eventPurchaseQuery)->count();
-        $eventPurchaseRevenue = (clone $eventPurchaseQuery)->whereNotIn('status', ['cancelled', 'refunded'])->sum('amount_paid') ?? 0;
+        $eventPurchaseRevenue = (clone $eventPurchaseQuery)->whereNotIn('status', ['cancelled', 'refunded'])->sum('total_amount') ?? 0;
         $totalEventTickets = (clone $eventPurchaseQuery)->whereNotIn('status', ['cancelled', 'refunded'])->sum('quantity') ?? 0;
 
         // Calculate total revenue (using all non-cancelled purchases)
@@ -923,10 +923,10 @@ class MetricsController extends Controller
                 ->where('status', 'completed')
                 ->sum('amount_paid') ?? 0;
 
-            // Include pending purchases (all non-cancelled)
+            // Include pending purchases (all non-cancelled, use total_amount so unpaid records count)
             $locationPurchaseRevenue = (clone $locationPurchaseQuery)
                 ->whereIn('status', ['completed', 'pending'])
-                ->sum('amount_paid') ?? 0;
+                ->sum('total_amount') ?? 0;
 
             // Event purchase stats for this location
             $locationEventPurchaseQuery = EventPurchase::where('location_id', $location->id);
@@ -940,7 +940,7 @@ class MetricsController extends Controller
             $locationEventPurchases = (clone $locationEventPurchaseQuery)->count();
             $locationEventPurchaseRevenue = (clone $locationEventPurchaseQuery)
                 ->whereNotIn('status', ['cancelled', 'refunded'])
-                ->sum('amount_paid') ?? 0;
+                ->sum('total_amount') ?? 0;
             $locationEventTickets = (clone $locationEventPurchaseQuery)
                 ->whereNotIn('status', ['cancelled', 'refunded'])
                 ->sum('quantity') ?? 0;
