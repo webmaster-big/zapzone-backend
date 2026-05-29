@@ -918,14 +918,9 @@ class MetricsController extends Controller
                 ->groupBy('status')
                 ->get();
 
-            // Revenue from completed purchases only
-            $locationPurchaseRevenueCompleted = (clone $locationPurchaseQuery)
-                ->where('status', 'completed')
-                ->sum('amount_paid') ?? 0;
-
-            // Include pending purchases (all non-cancelled, use total_amount so unpaid records count)
+            // All non-cancelled purchases — mirrors global allPurchaseRevenue logic
             $locationPurchaseRevenue = (clone $locationPurchaseQuery)
-                ->whereIn('status', ['completed', 'pending'])
+                ->whereNotIn('status', ['cancelled'])
                 ->sum('total_amount') ?? 0;
 
             // Event purchase stats for this location
