@@ -639,10 +639,12 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::patch('memberships/{membership}/status',         [MembershipController::class, 'updateStatus']);
     Route::patch('memberships/{membership}/freeze',         [MembershipController::class, 'freeze']);
+    Route::patch('memberships/{membership}/unfreeze',       [MembershipController::class, 'unfreeze']);
     Route::patch('memberships/{membership}/cancel',         [MembershipController::class, 'cancel']);
     Route::patch('memberships/{membership}/change-plan',    [MembershipController::class, 'changePlan']);
     Route::patch('memberships/{membership}/payment-method', [MembershipController::class, 'updatePaymentMethod']);
     Route::post('memberships/{membership}/retry-payment',   [MembershipController::class, 'retryPayment']);
+    Route::get('memberships/{membership}/payments',         [MembershipController::class, 'payments']);
     Route::post('memberships/{membership}/photo',           [MembershipController::class, 'uploadPhoto']);
     Route::post('memberships/{membership}/notes',           [MembershipController::class, 'addNote']);
     Route::get('memberships/{membership}/eligibility',      [MembershipController::class, 'eligibility']);

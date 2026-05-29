@@ -170,6 +170,30 @@ class MembershipPlanController extends Controller
 
     private function validateData(Request $request, ?int $id = null): array
     {
+        // --- Normalize frontend field aliases → DB column names ---
+        // Frontend sends: billing_interval, unlimited_uses, unlimited_visits, included_visits_per_term
+        // DB stores:       billing_cycle,   unlimited_uses_per_term, unlimited_visits_per_term, visits_per_term
+        $merge = [];
+        if ($request->has('billing_interval') && !$request->has('billing_cycle')) {
+            $merge['billing_cycle'] = $request->billing_interval;
+        }
+        // Map frontend usage_type aliases: 'limited_visits' → 'limited' (for DB compat with old enum)
+        if ($request->has('usage_type') && $request->usage_type === 'limited_visits') {
+            $merge['usage_type'] = 'limited_visits'; // kept as-is; migration adds this enum value
+        }
+        if ($request->has('unlimited_uses') && !$request->has('unlimited_uses_per_term')) {
+            $merge['unlimited_uses_per_term'] = $request->unlimited_uses;
+        }
+        if ($request->has('unlimited_visits') && !$request->has('unlimited_visits_per_term')) {
+            $merge['unlimited_visits_per_term'] = $request->unlimited_visits;
+        }
+        if ($request->has('included_visits_per_term') && !$request->has('visits_per_term')) {
+            $merge['visits_per_term'] = $request->included_visits_per_term;
+        }
+        if (!empty($merge)) {
+            $request->merge($merge);
+        }
+
         return $request->validate([
             'name'                          => 'required|string|max:150',
             'slug'                          => 'nullable|string|max:160',
@@ -177,12 +201,15 @@ class MembershipPlanController extends Controller
             'benefits'                      => 'nullable|array',
             'tier'                          => ['nullable', Rule::in(['basic','premium','unlimited','family','discounted','comped','custom'])],
             'price'                         => 'required|numeric|min:0',
-            'billing_cycle'                 => ['required', Rule::in(['monthly','annual','custom'])],
+            'billing_cycle'                 => ['required', Rule::in(['monthly','quarterly','annual','one_time','custom'])],
             'custom_billing_days'           => 'nullable|integer|min:1',
-            'usage_type'                    => ['required', Rule::in(['limited','unlimited'])],
+            'term_length_months'            => 'nullable|integer|min:1',
+            'trial_days'                    => 'nullable|integer|min:0',
+            'usage_type'                    => ['required', Rule::in(['limited','unlimited','limited_visits','punch_card'])],
             'uses_per_term'                 => 'nullable|integer|min:0',
             'visits_per_term'               => 'nullable|integer|min:0',
             'services_per_term'             => 'nullable|integer|min:0',
+            'punch_card_total'              => 'nullable|integer|min:1',
             'unlimited_uses_per_term'       => 'boolean',
             'unlimited_visits_per_term'     => 'boolean',
             'max_visits_per_day'            => 'nullable|integer|min:1',
@@ -191,7 +218,7 @@ class MembershipPlanController extends Controller
             'late_cancel_counts_as_visit'   => 'boolean',
             'no_show_counts_as_visit'       => 'boolean',
             'location_id'                   => 'nullable|exists:locations,id',
-            'location_name'                 => 'nullable|string|max:150', // resolved to location_id if ID not given
+            'location_name'                 => 'nullable|string|max:150',
             'location_access_mode'          => ['required', Rule::in(['single','multi','all'])],
             'approved_location_ids'         => 'nullable|array',
             'approved_location_ids.*'       => 'exists:locations,id',
@@ -203,6 +230,9 @@ class MembershipPlanController extends Controller
             'cancellation_mode'             => ['required', Rule::in(['immediate','end_of_term','staff_only'])],
             'renewable'                     => 'boolean',
             'discount_percent'              => 'nullable|numeric|min:0|max:100',
+            'requires_photo'                => 'boolean',
+            'is_family_or_group'            => 'boolean',
+            'max_family_size'               => 'nullable|integer|min:2',
             'is_active'                     => 'boolean',
         ]);
     }

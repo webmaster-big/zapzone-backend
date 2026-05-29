@@ -382,6 +382,43 @@ class MembershipController extends Controller
         return response()->json(['success' => true, 'data' => $payment]);
     }
 
+    /**
+     * List payment history for a membership (paginated, newest first).
+     * Accessible by staff and by the owning customer.
+     */
+    public function payments(Request $request, Membership $membership): JsonResponse
+    {
+        $customer = $this->resolveCustomer();
+        $authUser = $this->resolveAuthUser($request);
+
+        $ownsIt = $customer && (int) $customer->id === (int) $membership->customer_id;
+        abort_unless($ownsIt || $authUser, 403);
+
+        $payments = $membership->membershipPayments()
+            ->latest()
+            ->paginate((int) $request->get('per_page', 20));
+
+        return response()->json(['success' => true, 'data' => $payments]);
+    }
+
+    /**
+     * Unfreeze a membership — restores it to active and clears frozen_until.
+     * Dedicated endpoint so staff don't need to know to call /status.
+     */
+    public function unfreeze(Request $request, Membership $membership): JsonResponse
+    {
+        $authUser = $this->resolveAuthUser($request);
+        abort_unless($authUser && in_array($authUser->role, ['company_admin', 'location_manager']), 403);
+
+        $data = $request->validate(['note' => 'nullable|string']);
+
+        $membership->frozen_until = null;
+        $membership->save();
+        $this->service->changeStatus($membership, 'active', $data['note'] ?? null);
+
+        return response()->json(['success' => true, 'data' => $membership->fresh()]);
+    }
+
     private function resolveCustomer(): ?Customer
     {
         $user = Auth::guard('sanctum')->user();

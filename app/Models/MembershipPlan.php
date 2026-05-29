@@ -15,15 +15,19 @@ class MembershipPlan extends Model
 
     protected $fillable = [
         'company_id', 'location_id', 'name', 'slug', 'description', 'benefits',
-        'tier', 'price', 'billing_cycle', 'custom_billing_days',
+        'tier', 'price', 'billing_cycle', 'custom_billing_days', 'term_length_months',
+        'trial_days',
         'usage_type', 'uses_per_term', 'visits_per_term', 'services_per_term',
+        'punch_card_total',
         'unlimited_uses_per_term', 'unlimited_visits_per_term', 'max_visits_per_day',
         'member_only_booking', 'advance_booking_days',
         'late_cancel_counts_as_visit', 'no_show_counts_as_visit',
         'location_access_mode',
         'grace_period_days', 'failed_payment_retry_days', 'failed_payment_max_retries',
         'cancellation_mode', 'renewable',
-        'discount_percent', 'is_active',
+        'discount_percent',
+        'requires_photo', 'is_family_or_group', 'max_family_size',
+        'is_active',
     ];
 
     protected $casts = [
@@ -37,7 +41,42 @@ class MembershipPlan extends Model
         'no_show_counts_as_visit' => 'boolean',
         'renewable' => 'boolean',
         'is_active' => 'boolean',
+        'requires_photo' => 'boolean',
+        'is_family_or_group' => 'boolean',
     ];
+
+    /**
+     * Append frontend-friendly aliases for fields that have different DB column names.
+     * This ensures the API always returns both the DB name and the frontend alias.
+     */
+    protected $appends = [
+        'billing_interval',
+        'unlimited_uses',
+        'unlimited_visits',
+        'included_visits_per_term',
+    ];
+
+    // --- Frontend-alias accessors ---
+
+    public function getBillingIntervalAttribute(): string
+    {
+        return $this->billing_cycle ?? 'monthly';
+    }
+
+    public function getUnlimitedUsesAttribute(): bool
+    {
+        return (bool) $this->unlimited_uses_per_term;
+    }
+
+    public function getUnlimitedVisitsAttribute(): bool
+    {
+        return (bool) $this->unlimited_visits_per_term;
+    }
+
+    public function getIncludedVisitsPerTermAttribute(): ?int
+    {
+        return $this->visits_per_term;
+    }
 
     public function company(): BelongsTo
     {
