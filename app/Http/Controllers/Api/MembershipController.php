@@ -839,7 +839,11 @@ class MembershipController extends Controller
         if (! $plan) return [];
 
         return match ($plan->location_access_mode) {
-            'all'   => CompanyLocations::NAMES,
+            // Query the actual DB so names always match what the app shows in dropdowns.
+            'all'   => \App\Models\Location::where('company_id', $plan->company_id)
+                            ->orderBy('name')
+                            ->pluck('name')
+                            ->all(),
             'multi' => $plan->approvedLocations->pluck('name')->filter()->sort()->values()->all(),
             // single — valid only at the membership's own home location (or the plan's default)
             default => array_filter([

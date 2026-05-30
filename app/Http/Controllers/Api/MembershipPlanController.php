@@ -246,7 +246,11 @@ class MembershipPlanController extends Controller
     private function resolveValidLocations(MembershipPlan $plan): array
     {
         return match ($plan->location_access_mode) {
-            'all'   => CompanyLocations::NAMES,
+            // Query the actual DB so names always match what the app shows in dropdowns.
+            'all'   => \App\Models\Location::where('company_id', $plan->company_id)
+                            ->orderBy('name')
+                            ->pluck('name')
+                            ->all(),
             'multi' => $plan->approvedLocations->pluck('name')->filter()->sort()->values()->all(),
             default => array_filter([$plan->location?->name ?? null]),
         };
