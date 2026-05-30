@@ -15,8 +15,10 @@ use App\Support\CompanyLocations;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use net\authorize\api\contract\v1 as AnetAPI;
 use net\authorize\api\controller as AnetController;
@@ -92,6 +94,15 @@ class MembershipController extends Controller
 
     /**
      * Staff-side create (e.g. comped, manual signup at desk).
+     *
+     * Accepts either:
+     *   (a) customer_id — link to an existing customer account, OR
+     *   (b) first_name + last_name + email + phone — create a new customer on-the-fly.
+     *
+     * When a new customer is created a temporary random password is set and the
+     * membership activation email (with QR code) is sent to their email address
+     * by the normal activate() flow.  They can use "Forgot Password" from the
+     * customer login page to set their own password afterwards.
      */
     public function store(Request $request): JsonResponse
     {
@@ -99,7 +110,14 @@ class MembershipController extends Controller
         abort_unless($authUser, 403);
 
         $data = $request->validate([
-            'customer_id'          => 'required|exists:customers,id',
+            // Existing customer — supply one or the other block, not both.
+            'customer_id'          => 'nullable|exists:customers,id',
+            // New customer fields (required when customer_id is omitted)
+            'first_name'           => 'required_without:customer_id|string|max:100',
+            'last_name'            => 'required_without:customer_id|string|max:100',
+            'email'                => 'required_without:customer_id|email|max:255',
+            'phone'                => 'nullable|string|max:30',
+            // Membership fields
             'membership_plan_id'   => 'required|exists:membership_plans,id',
             'home_location_id'     => 'nullable|exists:locations,id',
             'sold_at_location_id'  => 'nullable|exists:locations,id',
@@ -111,12 +129,41 @@ class MembershipController extends Controller
             'payment_profile_token'=> 'nullable|string|max:120',
         ]);
 
-        $plan = MembershipPlan::findOrFail($data['membership_plan_id']);
-        $data['billing_amount'] = $plan->price;
-        if (! empty($data['terms_accepted'])) $data['terms_accepted_at'] = now();
-        if (! empty($data['recurring_billing_authorized'])) $data['recurring_billing_authorized_at'] = now();
+        // Resolve or create the customer account.
+        if (empty($data['customer_id'])) {
+            // Check if a customer with this email already exists.
+            $existing = Customer::where('email', $data['email'])->first();
+            if ($existing) {
+                $customerId = $existing->id;
+            } else {
+                $customer = Customer::create([
+                    'first_name' => $data['first_name'],
+                    'last_name'  => $data['last_name'],
+                    'email'      => $data['email'],
+                    'phone'      => $data['phone'] ?? null,
+                    'password'   => Hash::make(Str::random(32)),
+                    'status'     => 'active',
+                ]);
+                $customerId = $customer->id;
+            }
+        } else {
+            $customerId = (int) $data['customer_id'];
+        }
 
-        $membership = Membership::create($data);
+        // Strip the new-customer fields before creating the membership.
+        $membershipData = array_intersect_key($data, array_flip([
+            'membership_plan_id', 'home_location_id', 'sold_at_location_id',
+            'is_comped', 'discount_amount', 'recurring_billing_authorized',
+            'terms_accepted', 'payment_method_label', 'payment_profile_token',
+        ]));
+        $membershipData['customer_id'] = $customerId;
+
+        $plan = MembershipPlan::findOrFail($membershipData['membership_plan_id']);
+        $membershipData['billing_amount'] = $plan->price;
+        if (! empty($membershipData['terms_accepted'])) $membershipData['terms_accepted_at'] = now();
+        if (! empty($membershipData['recurring_billing_authorized'])) $membershipData['recurring_billing_authorized_at'] = now();
+
+        $membership = Membership::create($membershipData);
         $this->service->activate($membership, ['note' => 'Created by staff']);
 
         return response()->json(['success' => true, 'data' => $membership->fresh()->load('plan', 'customer')], 201);
