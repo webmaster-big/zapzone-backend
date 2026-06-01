@@ -54,8 +54,9 @@ return new class extends Migration
             $table->id();
             $table->foreignId('membership_id')->constrained()->cascadeOnDelete();
             $table->foreignId('customer_id')->constrained()->cascadeOnDelete();
-            $table->foreignId('membership_plan_benefit_id')->nullable()
-                  ->constrained('membership_plan_benefits')->nullOnDelete();
+            $table->foreignId('membership_plan_benefit_id')->nullable();
+            $table->foreign('membership_plan_benefit_id', 'mbr_redemptions_plan_benefit_fk')
+                  ->references('id')->on('membership_plan_benefits')->nullOnDelete();
 
             $table->foreignId('location_id')->nullable()->constrained('locations')->nullOnDelete();
 
