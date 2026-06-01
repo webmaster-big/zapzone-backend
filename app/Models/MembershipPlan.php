@@ -15,7 +15,7 @@ class MembershipPlan extends Model
 
     protected $fillable = [
         'company_id', 'location_id', 'name', 'slug', 'description', 'benefits',
-        'tier', 'price', 'billing_cycle', 'custom_billing_days', 'term_length_months',
+        'tier', 'inherits_plan_id', 'price', 'billing_cycle', 'custom_billing_days', 'term_length_months',
         'trial_days',
         'usage_type', 'uses_per_term', 'visits_per_term', 'services_per_term',
         'punch_card_total',
@@ -45,10 +45,6 @@ class MembershipPlan extends Model
         'is_family_or_group' => 'boolean',
     ];
 
-    /**
-     * Append frontend-friendly aliases for fields that have different DB column names.
-     * This ensures the API always returns both the DB name and the frontend alias.
-     */
     protected $appends = [
         'billing_interval',
         'unlimited_uses',
@@ -56,7 +52,6 @@ class MembershipPlan extends Model
         'included_visits_per_term',
     ];
 
-    // --- Frontend-alias accessors ---
 
     public function getBillingIntervalAttribute(): string
     {
@@ -96,5 +91,25 @@ class MembershipPlan extends Model
     public function memberships(): HasMany
     {
         return $this->hasMany(Membership::class);
+    }
+
+    public function planBenefits(): HasMany
+    {
+        return $this->hasMany(MembershipPlanBenefit::class);
+    }
+
+    public function inheritsPlan(): BelongsTo
+    {
+        return $this->belongsTo(MembershipPlan::class, 'inherits_plan_id');
+    }
+
+    public function resolvedBenefits()
+    {
+        $own = $this->planBenefits()->where('is_active', true)->get();
+        if ($this->inherits_plan_id && $this->relationLoaded('inheritsPlan') === false) {
+            $this->load('inheritsPlan.planBenefits');
+        }
+        $inherited = $this->inheritsPlan?->planBenefits?->where('is_active', true) ?? collect();
+        return $inherited->concat($own);
     }
 }

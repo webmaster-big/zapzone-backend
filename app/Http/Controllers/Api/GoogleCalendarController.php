@@ -15,25 +15,16 @@ class GoogleCalendarController extends Controller
 {
     use ScopesByAuthUser;
 
-    /**
-     * Resolve the GoogleCalendarService for a specific location.
-     */
     protected function resolveService(?int $locationId): GoogleCalendarService
     {
         return new GoogleCalendarService($locationId);
     }
 
-    /**
-     * Check if the app's Google Calendar credentials are configured in config.
-     */
     protected function credentialsConfigured(): bool
     {
         return !empty(config('google_calendar.client_id')) && !empty(config('google_calendar.client_secret'));
     }
 
-    /**
-     * Get the current Google Calendar connection status for a location.
-     */
     public function status(Request $request): JsonResponse
     {
         $locationId = $request->query('location_id') ? (int) $request->query('location_id') : null;
@@ -77,10 +68,6 @@ class GoogleCalendarController extends Controller
         ]);
     }
 
-    /**
-     * Get the Google OAuth2 authorization URL.
-     * Frontend redirects user to this URL to start Google login.
-     */
     public function getAuthUrl(Request $request): JsonResponse
     {
         $request->validate([
@@ -120,24 +107,17 @@ class GoogleCalendarController extends Controller
         }
     }
 
-    /**
-     * Handle the OAuth2 callback from Google.
-     * Google redirects here after user authorizes access.
-     * The location_id is passed via the OAuth state parameter.
-     */
     public function handleCallback(Request $request)
     {
         $code = $request->get('code');
         $state = $request->get('state');
         $locationId = null;
 
-        // Decode location_id from state parameter
         if ($state) {
             $stateData = json_decode(base64_decode($state), true);
             $locationId = $stateData['location_id'] ?? null;
         }
 
-        // Frontend redirect URL from config
         $frontendUrl = config('google_calendar.frontend_redirect_url', 'http://localhost:3000/settings/google-calendar');
 
         if (!$code) {
@@ -157,7 +137,6 @@ class GoogleCalendarController extends Controller
             $service = $this->resolveService($locationId);
             $settings = $service->handleCallback($code);
 
-            // Log the connection
             ActivityLog::log(
                 action: 'Google Calendar Connected',
                 category: 'update',
@@ -190,9 +169,6 @@ class GoogleCalendarController extends Controller
         }
     }
 
-    /**
-     * Disconnect Google Calendar for a location.
-     */
     public function disconnect(Request $request): JsonResponse
     {
         $request->validate([
@@ -208,7 +184,6 @@ class GoogleCalendarController extends Controller
             $service = $this->resolveService($locationId);
             $service->disconnect();
 
-            // Log the disconnection
             $currentUser = auth()->user();
             ActivityLog::log(
                 action: 'Google Calendar Disconnected',
@@ -245,9 +220,6 @@ class GoogleCalendarController extends Controller
         }
     }
 
-    /**
-     * Get list of calendars available on the connected Google account.
-     */
     public function getCalendars(Request $request): JsonResponse
     {
         $request->validate([
@@ -284,9 +256,6 @@ class GoogleCalendarController extends Controller
         }
     }
 
-    /**
-     * Update which calendar to use for booking events.
-     */
     public function updateCalendar(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -316,10 +285,6 @@ class GoogleCalendarController extends Controller
         ]);
     }
 
-    /**
-     * Sync existing bookings to Google Calendar for a location.
-     * Only syncs bookings from the given date onwards that haven't been synced yet.
-     */
     public function syncBookings(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -341,7 +306,6 @@ class GoogleCalendarController extends Controller
             $fromDate = new \DateTime($validated['from_date']);
             $results = $service->syncExistingBookings($fromDate, $locationId);
 
-            // Log the sync
             $currentUser = auth()->user();
             ActivityLog::log(
                 action: 'Google Calendar Sync',
@@ -380,15 +344,11 @@ class GoogleCalendarController extends Controller
         }
     }
 
-    /**
-     * Manually create a Google Calendar event for a specific booking.
-     */
     public function syncSingleBooking(int $bookingId): JsonResponse
     {
         $booking = \App\Models\Booking::with(['package', 'location', 'customer', 'room', 'attractions', 'addOns'])
             ->findOrFail($bookingId);
 
-        // Resolve service for the booking's location
         $service = $this->resolveService($booking->location_id);
 
         if (!$service->isConnected()) {
@@ -439,14 +399,10 @@ class GoogleCalendarController extends Controller
         }
     }
 
-    /**
-     * Remove a booking's event from Google Calendar.
-     */
     public function removeBookingEvent(int $bookingId): JsonResponse
     {
         $booking = \App\Models\Booking::findOrFail($bookingId);
 
-        // Resolve service for the booking's location
         $service = $this->resolveService($booking->location_id);
 
         if (!$service->isConnected()) {
@@ -473,10 +429,6 @@ class GoogleCalendarController extends Controller
         ]);
     }
 
-    /**
-     * Full resync: Delete all existing Google Calendar events and re-create them.
-     * Use this to eliminate duplicates and ensure all events are fresh.
-     */
     public function resyncBookings(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -498,7 +450,6 @@ class GoogleCalendarController extends Controller
             $fromDate = new \DateTime($validated['from_date']);
             $results = $service->resyncAllBookings($fromDate);
 
-            // Log the resync
             $currentUser = auth()->user();
             ActivityLog::log(
                 action: 'Google Calendar Resync',

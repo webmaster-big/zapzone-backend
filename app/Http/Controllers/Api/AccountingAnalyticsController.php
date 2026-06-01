@@ -17,28 +17,13 @@ class AccountingAnalyticsController extends Controller
 {
     use ScopesByAuthUser;
 
-    /**
-     * Category constants for grouping
-     */
     const CATEGORY_PARTIES = 'Parties';
     const CATEGORY_ATTRACTIONS = 'Attractions';
     const CATEGORY_EVENTS = 'Events';
     const CATEGORY_ADDONS = 'Add-ons';
 
-    /**
-     * Tax-related keywords for fee identification (case-insensitive)
-     */
     const TAX_KEYWORDS = ['tax', 'vat', 'gst', 'hst', 'pst', 'sales tax', 'state tax', 'local tax'];
 
-    /**
-     * Get comprehensive accounting analytics report.
-     *
-     * This report provides detailed, categorized sales data for accounting purposes.
-     * It supports filtering by date and toggling between "Booked On" (created_at) vs "Booked For" (event date).
-     *
-     * @param Request $request
-     * @return JsonResponse
-     */
     public function getReport(Request $request): JsonResponse
     {
         $request->validate([
@@ -48,7 +33,6 @@ class AccountingAnalyticsController extends Controller
             'compare_start_date' => 'nullable|date',
             'compare_end_date' => 'nullable|date|after_or_equal:compare_start_date',
             'view_mode' => ['nullable', Rule::in(['booked_on', 'booked_for'])],
-            // Note: payment_status only exists on Bookings and EventPurchases, not AttractionPurchases
             'payment_status' => ['nullable', Rule::in(['paid', 'partial', 'pending', 'all'])],
             'include_addons_breakdown' => 'nullable|boolean',
             'category_filter' => 'nullable|string', // Filter by specific package/attraction category
@@ -56,7 +40,6 @@ class AccountingAnalyticsController extends Controller
 
         $locationId = $request->location_id;
 
-        // Enforce: a location_manager/attendant can only see their own location's accounting.
         if ($scopeError = $this->guardLocationAccess($request, $locationId)) {
             return $scopeError;
         }
@@ -72,27 +55,22 @@ class AccountingAnalyticsController extends Controller
             ? Carbon::parse($request->compare_end_date)->startOfDay()
             : $compareStartDate?->copy();
 
-        // Default to 'booked_for' (shows events scheduled for this date)
         $viewMode = $request->get('view_mode', 'booked_for');
         $paymentStatus = $request->get('payment_status', 'all');
         $includeAddonsBreakdown = $request->boolean('include_addons_breakdown', true);
         $categoryFilter = $request->get('category_filter');
 
-        // Get location details
         $location = Location::with('company')->findOrFail($locationId);
 
         try {
-            // Build filter options
             $filters = [
                 'payment_status' => $paymentStatus,
                 'include_addons_breakdown' => $includeAddonsBreakdown,
                 'category_filter' => $categoryFilter,
             ];
 
-            // Get primary date range data
             $primaryData = $this->buildReportData($locationId, $startDate, $endDate, $viewMode, $filters);
 
-            // Get comparison data if requested
             $comparisonData = null;
             if ($compareStartDate) {
                 $comparisonData = $this->buildReportData($locationId, $compareStartDate, $compareEndDate, $viewMode, $filters);
@@ -136,39 +114,23 @@ class AccountingAnalyticsController extends Controller
         }
     }
 
-    /**
-     * Build comprehensive report data for a date range.
-     *
-     * @param int $locationId
-     * @param Carbon $startDate
-     * @param Carbon $endDate
-     * @param string $viewMode 'booked_on' or 'booked_for'
-     * @param array $filters Additional filter options
-     * @return array
-     */
     private function buildReportData(int $locationId, Carbon $startDate, Carbon $endDate, string $viewMode, array $filters = []): array
     {
-        // Get categorized data using memory-efficient queries
         $partiesData = $this->getPartiesData($locationId, $startDate, $endDate, $viewMode, $filters);
         $attractionsData = $this->getAttractionsData($locationId, $startDate, $endDate, $viewMode, $filters);
         $eventsData = $this->getEventsData($locationId, $startDate, $endDate, $viewMode, $filters);
 
-        // Build categories array
         $categories = [
             $partiesData,
             $attractionsData,
             $eventsData,
         ];
 
-        // Add-ons breakdown is separate (they're already counted in parent totals)
-        // This provides visibility into what add-ons were sold
         if ($filters['include_addons_breakdown'] ?? true) {
             $addOnsData = $this->getAddOnsData($locationId, $startDate, $endDate, $viewMode, $filters);
             $categories[] = $addOnsData;
         }
 
-        // Calculate overall summary (excluding add-ons to avoid double-counting)
-        // Add-ons revenue is already included in Parties/Attractions/Events totals
         $summaryCategories = array_filter($categories, fn($cat) => $cat['name'] !== self::CATEGORY_ADDONS);
         $summary = $this->calculateOverallSummary($summaryCategories);
 
@@ -179,17 +141,6 @@ class AccountingAnalyticsController extends Controller
         ];
     }
 
-    /**
-     * Get parties (package bookings) data grouped by package category.
-     * Uses DB::table() for lightweight queries and payments table for accurate gateway tracking.
-     *
-     * @param int $locationId
-     * @param Carbon $startDate
-     * @param Carbon $endDate
-     * @param string $viewMode
-     * @param array $filters
-     * @return array
-     */
     private function getPartiesData(int $locationId, Carbon $startDate, Carbon $endDate, string $viewMode, array $filters = []): array
     {
         $query = DB::table('bookings')
@@ -198,7 +149,6 @@ class AccountingAnalyticsController extends Controller
             ->whereNotIn('bookings.status', ['cancelled'])
             ->whereNull('bookings.deleted_at');
 
-        // Apply date filter based on view mode
         if ($viewMode === 'booked_on') {
             $query->whereDate('bookings.created_at', '>=', $startDate->toDateString())
                   ->whereDate('bookings.created_at', '<=', $endDate->toDateString());
@@ -207,17 +157,14 @@ class AccountingAnalyticsController extends Controller
                   ->whereDate('bookings.booking_date', '<=', $endDate->toDateString());
         }
 
-        // Apply payment status filter
         if (isset($filters['payment_status']) && $filters['payment_status'] !== 'all') {
             $query->where('bookings.payment_status', $filters['payment_status']);
         }
 
-        // Apply category filter if specified
         if (!empty($filters['category_filter'])) {
             $query->where('packages.category', $filters['category_filter']);
         }
 
-        // Select only needed columns (lightweight stdClass, no Eloquent overhead)
         $bookings = $query->select(
             'bookings.id',
             'packages.category as sub_category',
@@ -229,11 +176,9 @@ class AccountingAnalyticsController extends Controller
             'bookings.payment_method'
         )->get();
 
-        // Get accurate gateway amounts from the payments table
         $bookingIds = $bookings->pluck('id')->all();
         $gatewayAmounts = $this->getGatewayAmounts($bookingIds, Payment::TYPE_BOOKING);
 
-        // Group and calculate in a single pass
         $grouped = [];
         foreach ($bookings as $booking) {
             $key = ($booking->sub_category ?? 'Uncategorized') . '|||' . ($booking->package_name ?? 'Unknown Package');
@@ -247,7 +192,6 @@ class AccountingAnalyticsController extends Controller
             }
 
             $totals = &$grouped[$key]['totals'];
-            // In-store payments should not count as gateway collected
             $gatewayAmount = ($booking->payment_method === 'in-store') ? 0 : ($gatewayAmounts[$booking->id] ?? 0);
             $this->accumulateRecordTotals($totals, $booking, $gatewayAmount);
             unset($totals);
@@ -256,17 +200,6 @@ class AccountingAnalyticsController extends Controller
         return $this->buildCategoryResult(self::CATEGORY_PARTIES, $grouped);
     }
 
-    /**
-     * Get attractions (ticket purchases) data grouped by attraction category.
-     * Uses DB::table() for lightweight queries and payments table for accurate gateway tracking.
-     *
-     * @param int $locationId
-     * @param Carbon $startDate
-     * @param Carbon $endDate
-     * @param string $viewMode
-     * @param array $filters
-     * @return array
-     */
     private function getAttractionsData(int $locationId, Carbon $startDate, Carbon $endDate, string $viewMode, array $filters = []): array
     {
         $query = DB::table('attraction_purchases')
@@ -275,7 +208,6 @@ class AccountingAnalyticsController extends Controller
             ->whereNotIn('attraction_purchases.status', ['cancelled', 'refunded'])
             ->whereNull('attraction_purchases.deleted_at');
 
-        // Apply date filter based on view mode
         if ($viewMode === 'booked_on') {
             $query->whereDate('attraction_purchases.created_at', '>=', $startDate->toDateString())
                   ->whereDate('attraction_purchases.created_at', '<=', $endDate->toDateString());
@@ -286,7 +218,6 @@ class AccountingAnalyticsController extends Controller
             );
         }
 
-        // Apply category filter if specified
         if (!empty($filters['category_filter'])) {
             $query->where('attractions.category', $filters['category_filter']);
         }
@@ -303,11 +234,9 @@ class AccountingAnalyticsController extends Controller
             'attraction_purchases.payment_method'
         )->get();
 
-        // Get accurate gateway amounts from the payments table
         $purchaseIds = $purchases->pluck('id')->all();
         $gatewayAmounts = $this->getGatewayAmounts($purchaseIds, Payment::TYPE_ATTRACTION_PURCHASE);
 
-        // Group and calculate in a single pass
         $grouped = [];
         foreach ($purchases as $purchase) {
             $key = ($purchase->sub_category ?? 'Uncategorized') . '|||' . ($purchase->attraction_name ?? 'Unknown Attraction');
@@ -321,7 +250,6 @@ class AccountingAnalyticsController extends Controller
             }
 
             $totals = &$grouped[$key]['totals'];
-            // In-store payments should not count as gateway collected
             $gatewayAmount = ($purchase->payment_method === 'in-store') ? 0 : ($gatewayAmounts[$purchase->id] ?? 0);
             $this->accumulateRecordTotals($totals, $purchase, $gatewayAmount);
             unset($totals);
@@ -330,17 +258,6 @@ class AccountingAnalyticsController extends Controller
         return $this->buildCategoryResult(self::CATEGORY_ATTRACTIONS, $grouped);
     }
 
-    /**
-     * Get events data grouped by event name.
-     * Uses DB::table() for lightweight queries and payments table for accurate gateway tracking.
-     *
-     * @param int $locationId
-     * @param Carbon $startDate
-     * @param Carbon $endDate
-     * @param string $viewMode
-     * @param array $filters
-     * @return array
-     */
     private function getEventsData(int $locationId, Carbon $startDate, Carbon $endDate, string $viewMode, array $filters = []): array
     {
         $query = DB::table('event_purchases')
@@ -349,7 +266,6 @@ class AccountingAnalyticsController extends Controller
             ->whereNotIn('event_purchases.status', ['cancelled', 'refunded'])
             ->whereNull('event_purchases.deleted_at');
 
-        // Apply date filter based on view mode
         if ($viewMode === 'booked_on') {
             $query->whereDate('event_purchases.created_at', '>=', $startDate->toDateString())
                   ->whereDate('event_purchases.created_at', '<=', $endDate->toDateString());
@@ -358,7 +274,6 @@ class AccountingAnalyticsController extends Controller
                   ->whereDate('event_purchases.purchase_date', '<=', $endDate->toDateString());
         }
 
-        // Apply payment status filter (EventPurchase has payment_status field)
         if (isset($filters['payment_status']) && $filters['payment_status'] !== 'all') {
             $query->where('event_purchases.payment_status', $filters['payment_status']);
         }
@@ -374,11 +289,9 @@ class AccountingAnalyticsController extends Controller
             'event_purchases.payment_method'
         )->get();
 
-        // Get accurate gateway amounts from the payments table
         $purchaseIds = $purchases->pluck('id')->all();
         $gatewayAmounts = $this->getGatewayAmounts($purchaseIds, Payment::TYPE_EVENT_PURCHASE);
 
-        // Group and calculate in a single pass
         $grouped = [];
         foreach ($purchases as $purchase) {
             $eventName = $purchase->event_name ?? 'Unknown Event';
@@ -392,7 +305,6 @@ class AccountingAnalyticsController extends Controller
             }
 
             $totals = &$grouped[$eventName]['totals'];
-            // In-store payments should not count as gateway collected
             $gatewayAmount = ($purchase->payment_method === 'in-store') ? 0 : ($gatewayAmounts[$purchase->id] ?? 0);
             $this->accumulateRecordTotals($totals, $purchase, $gatewayAmount);
             unset($totals);
@@ -401,24 +313,10 @@ class AccountingAnalyticsController extends Controller
         return $this->buildCategoryResult(self::CATEGORY_EVENTS, $grouped);
     }
 
-    /**
-     * Get add-ons data aggregated from all purchase types.
-     * NOTE: Add-on revenue is already included in parent booking/purchase totals.
-     * This section provides VISIBILITY into add-on sales, not additional revenue counting.
-     *
-     * @param int $locationId
-     * @param Carbon $startDate
-     * @param Carbon $endDate
-     * @param string $viewMode
-     * @param array $filters
-     * @return array
-     */
     private function getAddOnsData(int $locationId, Carbon $startDate, Carbon $endDate, string $viewMode, array $filters = []): array
     {
         $addOnsSummary = [];
 
-        // Collect add-ons from bookings using efficient join query
-        // collected_revenue: only sum revenue from bookings that are fully paid (amount_paid >= total_amount)
         $bookingAddOns = DB::table('booking_add_ons')
             ->join('bookings', 'booking_add_ons.booking_id', '=', 'bookings.id')
             ->join('add_ons', 'booking_add_ons.add_on_id', '=', 'add_ons.id')
@@ -456,8 +354,6 @@ class AccountingAnalyticsController extends Controller
             $addOnsSummary[$addOn->id]['collected'] += (float) $addOn->collected_revenue;
         }
 
-        // Collect add-ons from attraction purchases
-        // collected_revenue: only sum revenue from purchases that are fully paid
         $attractionAddOnsQuery = DB::table('attraction_purchase_add_ons')
             ->join('attraction_purchases', 'attraction_purchase_add_ons.attraction_purchase_id', '=', 'attraction_purchases.id')
             ->join('attractions', 'attraction_purchases.attraction_id', '=', 'attractions.id')
@@ -501,8 +397,6 @@ class AccountingAnalyticsController extends Controller
             $addOnsSummary[$addOn->id]['collected'] += (float) $addOn->collected_revenue;
         }
 
-        // Collect add-ons from event purchases
-        // collected_revenue: only sum revenue from purchases that are fully paid
         $eventAddOns = DB::table('event_purchase_add_ons')
             ->join('event_purchases', 'event_purchase_add_ons.event_purchase_id', '=', 'event_purchases.id')
             ->join('add_ons', 'event_purchase_add_ons.add_on_id', '=', 'add_ons.id')
@@ -540,7 +434,6 @@ class AccountingAnalyticsController extends Controller
             $addOnsSummary[$addOn->id]['collected'] += (float) $addOn->collected_revenue;
         }
 
-        // Format items
         $items = [];
         $categoryTotals = [
             'quantity' => 0,
@@ -595,11 +488,6 @@ class AccountingAnalyticsController extends Controller
         ];
     }
 
-    /**
-     * Initialize totals array.
-     *
-     * @return array
-     */
     private function initializeTotals(): array
     {
         return [
@@ -617,26 +505,6 @@ class AccountingAnalyticsController extends Controller
         ];
     }
 
-    /**
-     * Accumulate totals from a single record (booking or purchase) into group totals.
-     * Uses the payments table gateway amount for accurate gateway tracking.
-     *
-     * ACCOUNTING DEFINITIONS:
-     * - Gross Sales = total_amount + discount_amount (original price before discount)
-     * - Net Sales = total_amount (price after discount but before separating fees)
-     * - Fee Amount = sum of all applied_fees, excluding taxes
-     * - Tax Amount = sum of applied_fees matching TAX_KEYWORDS
-     * - Discount = discount_amount field
-     * - Total Billed = total_amount (the full expected amount to be collected)
-     * - Grand Total = amount_paid (what customer actually paid so far)
-     * - Balance Due = total_amount - amount_paid (outstanding amount still owed)
-     * - Collected Via Gateway = actual payments from Authorize.Net (from payments table)
-     * - Collected Via Gateway Net = gateway minus proportional fees/taxes
-     *
-     * @param array &$totals Reference to group totals array
-     * @param object $record A stdClass row from DB::table()
-     * @param float $gatewayAmount Actual gateway amount from the payments table
-     */
     private function accumulateRecordTotals(array &$totals, object $record, float $gatewayAmount): void
     {
         $quantity = (int) ($record->quantity ?? 1);
@@ -644,7 +512,6 @@ class AccountingAnalyticsController extends Controller
         $amountPaid = (float) ($record->amount_paid ?? 0);
         $discountAmount = (float) ($record->discount_amount ?? 0);
 
-        // Parse applied_fees JSON and separate taxes from other fees
         $appliedFees = $this->ensureArray($record->applied_fees);
         $feeAmount = 0;
         $taxAmount = 0;
@@ -668,21 +535,12 @@ class AccountingAnalyticsController extends Controller
         $totals['balance_due'] += ($totalAmount - $amountPaid);
         $totals['collected_via_gateway'] += $gatewayAmount;
 
-        // Gateway net: proportionally attribute fees/taxes to gateway portion
         if ($gatewayAmount > 0 && $amountPaid > 0) {
             $ratio = min($gatewayAmount / $amountPaid, 1.0);
             $totals['collected_via_gateway_net'] += $gatewayAmount - (($feeAmount + $taxAmount) * $ratio);
         }
     }
 
-    /**
-     * Get actual gateway payment amounts from the payments table.
-     * This is the authoritative source for money collected through Authorize.Net.
-     *
-     * @param array $payableIds IDs of the payable records
-     * @param string $payableType Payment::TYPE_BOOKING, TYPE_ATTRACTION_PURCHASE, or TYPE_EVENT_PURCHASE
-     * @return array Keyed by payable_id => gateway_amount
-     */
     private function getGatewayAmounts(array $payableIds, string $payableType): array
     {
         if (empty($payableIds)) {
@@ -701,13 +559,6 @@ class AccountingAnalyticsController extends Controller
             ->all();
     }
 
-    /**
-     * Build the final category result array from grouped data.
-     *
-     * @param string $categoryName
-     * @param array $grouped
-     * @return array
-     */
     private function buildCategoryResult(string $categoryName, array $grouped): array
     {
         $items = [];
@@ -745,12 +596,6 @@ class AccountingAnalyticsController extends Controller
         ];
     }
 
-    /**
-     * Check if a fee name indicates it's a tax.
-     *
-     * @param string $feeName
-     * @return bool
-     */
     private function isTaxFee(string $feeName): bool
     {
         foreach (self::TAX_KEYWORDS as $keyword) {
@@ -761,12 +606,6 @@ class AccountingAnalyticsController extends Controller
         return false;
     }
 
-    /**
-     * Ensure value is an array (handles JSON strings and null).
-     *
-     * @param mixed $value
-     * @return array
-     */
     private function ensureArray($value): array
     {
         if (is_array($value)) {
@@ -779,12 +618,6 @@ class AccountingAnalyticsController extends Controller
         return [];
     }
 
-    /**
-     * Accumulate totals into category totals.
-     *
-     * @param array &$categoryTotals
-     * @param array $itemTotals
-     */
     private function accumulateTotals(array &$categoryTotals, array $itemTotals): void
     {
         $categoryTotals['quantity'] += $itemTotals['quantity'];
@@ -800,12 +633,6 @@ class AccountingAnalyticsController extends Controller
         $categoryTotals['collected_via_gateway_net'] += $itemTotals['collected_via_gateway_net'];
     }
 
-    /**
-     * Format totals with proper rounding.
-     *
-     * @param array $totals
-     * @return array
-     */
     private function formatTotals(array $totals): array
     {
         return [
@@ -823,12 +650,6 @@ class AccountingAnalyticsController extends Controller
         ];
     }
 
-    /**
-     * Calculate overall summary from all categories.
-     *
-     * @param array $categories
-     * @return array
-     */
     private function calculateOverallSummary(array $categories): array
     {
         $totals = $this->initializeTotals();
@@ -851,13 +672,6 @@ class AccountingAnalyticsController extends Controller
         return $this->formatTotals($totals);
     }
 
-    /**
-     * Get summary statistics for a date range.
-     * Useful for trend analysis.
-     *
-     * @param Request $request
-     * @return JsonResponse
-     */
     public function getSummaryTrend(Request $request): JsonResponse
     {
         $request->validate([
@@ -894,7 +708,6 @@ class AccountingAnalyticsController extends Controller
                 $currentDate->addDay();
             }
 
-            // Calculate overall totals for the range
             $rangeTotals = $this->initializeTotals();
             foreach ($dailyData as $day) {
                 $summary = $day['summary'];
@@ -944,12 +757,6 @@ class AccountingAnalyticsController extends Controller
         }
     }
 
-    /**
-     * Export accounting report data in various formats.
-     *
-     * @param Request $request
-     * @return JsonResponse|\Symfony\Component\HttpFoundation\BinaryFileResponse
-     */
     public function exportReport(Request $request)
     {
         $request->validate([
@@ -988,7 +795,6 @@ class AccountingAnalyticsController extends Controller
             ]);
         }
 
-        // CSV export
         $dateLabel = $startDate->eq($endDate)
             ? $startDate->format('Y-m-d')
             : $startDate->format('Y-m-d') . '_to_' . $endDate->format('Y-m-d');
@@ -1002,7 +808,6 @@ class AccountingAnalyticsController extends Controller
         $callback = function () use ($reportData, $location, $startDate, $endDate, $viewMode) {
             $file = fopen('php://output', 'w');
 
-            // Header info
             fputcsv($file, ['Accounting Report']);
             fputcsv($file, ['Location:', $location->name]);
             fputcsv($file, ['Start Date:', $startDate->toDateString()]);
@@ -1011,7 +816,6 @@ class AccountingAnalyticsController extends Controller
             fputcsv($file, ['Generated:', now()->format('Y-m-d H:i:s')]);
             fputcsv($file, []);
 
-            // Overall summary
             fputcsv($file, ['OVERALL SUMMARY']);
             fputcsv($file, ['Metric', 'Value']);
             fputcsv($file, ['Quantity Sold', $reportData['summary']['quantity_sold']]);
@@ -1025,7 +829,6 @@ class AccountingAnalyticsController extends Controller
             fputcsv($file, ['Balance Due', '$' . number_format($reportData['summary']['balance_due'], 2)]);
             fputcsv($file, []);
 
-            // Category breakdown
             foreach ($reportData['categories'] as $category) {
                 fputcsv($file, [strtoupper($category['name'])]);
                 fputcsv($file, ['Item', 'Sub-Category', 'Qty', 'Gross Sales', 'Discounts', 'Net Sales', 'Fees', 'Tax', 'Amount Due', 'Collected', 'Balance Due']);
@@ -1046,7 +849,6 @@ class AccountingAnalyticsController extends Controller
                     ]);
                 }
 
-                // Category subtotal
                 fputcsv($file, [
                     'SUBTOTAL',
                     '',

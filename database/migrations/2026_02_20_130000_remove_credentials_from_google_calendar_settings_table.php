@@ -6,11 +6,6 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     * Removes credential columns — app credentials are now in config/google_calendar.php.
-     * Only per-location OAuth tokens remain in the database.
-     */
     public function up(): void
     {
         Schema::table('google_calendar_settings', function (Blueprint $table) {
@@ -22,9 +17,6 @@ return new class extends Migration
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::table('google_calendar_settings', function (Blueprint $table) {

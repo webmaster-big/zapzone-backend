@@ -30,7 +30,6 @@ class ActivityLog extends Model
         'updated_at' => 'datetime',
     ];
 
-    // Relationships
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
@@ -41,11 +40,7 @@ class ActivityLog extends Model
         return $this->belongsTo(Location::class);
     }
 
-    // Polymorphic relationship for entity (optional, if you want to load the actual entity)
-    // This would require changing entity_type and entity_id to morphs in migration
-    // For now, we keep them as regular columns for flexibility
 
-    // Scopes
     public function scopeByUser($query, $userId)
     {
         return $query->where('user_id', $userId);
@@ -82,7 +77,6 @@ class ActivityLog extends Model
         return $query->where('created_at', '>=', now()->subDays($days));
     }
 
-    // Helper method to log activity
     public static function log(
         string $action,
         string $category,

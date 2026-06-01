@@ -6,9 +6,6 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
         if (!Schema::hasTable('email_notifications')) {
@@ -18,8 +15,6 @@ return new class extends Migration
                 $table->foreignId('location_id')->nullable()->constrained()->onDelete('cascade');
                 $table->string('name'); // Friendly name for the notification
 
-                // Trigger type - stored as string to allow flexibility for future additions
-                // See EmailNotification::TRIGGER_TYPES for full list
                 $table->string('trigger_type')->default('booking_created');
 
                 $table->enum('entity_type', ['package', 'attraction', 'all'])->default('all'); // What entity type this applies to
@@ -32,20 +27,17 @@ return new class extends Migration
                 $table->boolean('include_qr_code')->default(true); // Whether to include QR code in email
                 $table->boolean('is_active')->default(true);
 
-                // Timing settings for reminder-type notifications
                 $table->integer('send_before_hours')->nullable(); // For reminders: how many hours before
                 $table->integer('send_after_hours')->nullable(); // For follow-ups: how many hours after
 
                 $table->timestamps();
 
-                // Indexes
                 $table->index(['company_id', 'is_active']);
                 $table->index(['trigger_type', 'entity_type']);
                 $table->index('trigger_type');
             });
         }
 
-        // Log table for tracking sent notifications
         if (!Schema::hasTable('email_notification_logs')) {
             Schema::create('email_notification_logs', function (Blueprint $table) {
             $table->id();
@@ -64,9 +56,6 @@ return new class extends Migration
         }
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::dropIfExists('email_notification_logs');

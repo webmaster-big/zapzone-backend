@@ -6,12 +6,6 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     * Adds scheduled_date and scheduled_time columns to attraction_purchases table
-     * so customers can select when they want to use their tickets based on the
-     * attraction's availability schedule.
-     */
     public function up(): void
     {
         Schema::table('attraction_purchases', function (Blueprint $table) {
@@ -20,9 +14,6 @@ return new class extends Migration
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::table('attraction_purchases', function (Blueprint $table) {

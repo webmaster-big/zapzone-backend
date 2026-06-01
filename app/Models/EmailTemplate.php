@@ -28,9 +28,6 @@ class EmailTemplate extends Model
         'available_variables' => 'array',
     ];
 
-    /**
-     * Default available variables for email templates
-     */
     public const DEFAULT_VARIABLES = [
         'recipient_email' => 'The recipient\'s email address',
         'recipient_name' => 'The recipient\'s full name',
@@ -48,9 +45,6 @@ class EmailTemplate extends Model
         'current_year' => 'Current year',
     ];
 
-    /**
-     * Customer-specific variables
-     */
     public const CUSTOMER_VARIABLES = [
         'customer_email' => 'Customer\'s email address',
         'customer_name' => 'Customer\'s full name',
@@ -63,9 +57,6 @@ class EmailTemplate extends Model
         'customer_last_visit' => 'Customer\'s last visit date',
     ];
 
-    /**
-     * User (Attendant/Admin) specific variables
-     */
     public const USER_VARIABLES = [
         'user_email' => 'User\'s email address',
         'user_name' => 'User\'s full name',
@@ -76,7 +67,6 @@ class EmailTemplate extends Model
         'user_position' => 'User\'s position',
     ];
 
-    // Relationships
     public function company(): BelongsTo
     {
         return $this->belongsTo(Company::class);
@@ -97,7 +87,6 @@ class EmailTemplate extends Model
         return $this->hasMany(EmailCampaign::class);
     }
 
-    // Scopes
     public function scopeActive($query)
     {
         return $query->where('status', 'active');
@@ -123,9 +112,6 @@ class EmailTemplate extends Model
         return $query->where('category', $category);
     }
 
-    /**
-     * Get all available variables for this template based on recipient types
-     */
     public function getAllVariables(): array
     {
         return array_merge(
@@ -135,9 +121,6 @@ class EmailTemplate extends Model
         );
     }
 
-    /**
-     * Extract variables used in the body
-     */
     public function extractUsedVariables(): array
     {
         preg_match_all('/\{\{\s*([a-zA-Z_]+)\s*\}\}/', $this->body . ' ' . $this->subject, $matches);

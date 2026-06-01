@@ -6,10 +6,6 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     * Adds location_id to support per-location Google Calendar connections.
-     */
     public function up(): void
     {
         Schema::table('google_calendar_settings', function (Blueprint $table) {
@@ -19,14 +15,10 @@ return new class extends Migration
                 ->constrained('locations')
                 ->cascadeOnDelete();
 
-            // Remove the singleton constraint — now unique per location
             $table->unique('location_id');
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::table('google_calendar_settings', function (Blueprint $table) {

@@ -11,19 +11,10 @@ use Illuminate\Support\Facades\Log;
 
 class SendBookingReminders extends Command
 {
-    /**
-     * The name and signature of the console command.
-     */
     protected $signature = 'bookings:send-reminders';
 
-    /**
-     * The console command description.
-     */
     protected $description = 'Send booking reminder emails for bookings scheduled for tomorrow';
 
-    /**
-     * Execute the console command.
-     */
     public function handle(): int
     {
         $today = Carbon::now()->toDateString();
@@ -36,7 +27,6 @@ class SendBookingReminders extends Command
 
         $this->info("Checking for bookings on {$tomorrow}...");
 
-        // Get all bookings for tomorrow that haven't been reminded yet
         $bookingsToRemind = Booking::with(['customer', 'package', 'location.company', 'room'])
             ->where('booking_date', $tomorrow)
             ->where('reminder_sent', false)
@@ -68,10 +58,8 @@ class SendBookingReminders extends Command
             }
 
             try {
-                // Send reminder via EmailNotificationService (uses editable DB template)
                 $emailService->triggerBookingNotification($booking, EmailNotification::TRIGGER_BOOKING_REMINDER);
 
-                // Mark reminder as sent
                 $booking->update(['reminder_sent' => true]);
 
                 Log::info('Booking reminder sent successfully', [

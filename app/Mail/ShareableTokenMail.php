@@ -15,17 +15,11 @@ class ShareableTokenMail extends Mailable
 
     public ShareableToken $token;
 
-    /**
-     * Create a new message instance.
-     */
     public function __construct(ShareableToken $token)
     {
         $this->token = $token;
     }
 
-    /**
-     * Get the message envelope.
-     */
     public function envelope(): Envelope
     {
         return new Envelope(
@@ -33,12 +27,8 @@ class ShareableTokenMail extends Mailable
         );
     }
 
-    /**
-     * Get the message content definition.
-     */
     public function content(): Content
     {
-        // Get company if available
         $company = null;
         if ($this->token->company_id) {
             $company = \App\Models\Company::find($this->token->company_id);

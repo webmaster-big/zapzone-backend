@@ -6,9 +6,6 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
         Schema::create('package_time_slots', function (Blueprint $table) {
@@ -26,21 +23,16 @@ return new class extends Migration
             $table->text('notes')->nullable();
             $table->timestamps();
 
-            // Indexes for quick lookups
             $table->index(['package_id', 'booked_date']);
             $table->index(['room_id', 'booked_date']);
             $table->index(['booking_id']);
             $table->index(['customer_id']);
             $table->index('status');
 
-            // Unique constraint to prevent double booking
             $table->unique(['room_id', 'booked_date', 'time_slot_start'], 'unique_room_date_time');
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::dropIfExists('package_time_slots');

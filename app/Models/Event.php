@@ -43,7 +43,6 @@ class Event extends Model
         'add_ons_order' => 'array',
     ];
 
-    // Relationships
     public function location(): BelongsTo
     {
         return $this->belongsTo(Location::class);
@@ -60,7 +59,6 @@ class Event extends Model
             ->withTimestamps();
     }
 
-    // Scopes
     public function scopeActive($query)
     {
         return $query->where('is_active', true);
@@ -71,9 +69,6 @@ class Event extends Model
         return $query->where('location_id', $locationId);
     }
 
-    /**
-     * Get available dates for this event.
-     */
     public function getAvailableDates(): array
     {
         if ($this->date_type === 'one_time') {
@@ -92,9 +87,6 @@ class Event extends Model
         return $dates;
     }
 
-    /**
-     * Generate time slots based on time_start, time_end, and interval_minutes.
-     */
     public function getTimeSlots(): array
     {
         $slots = [];
@@ -113,9 +105,6 @@ class Event extends Model
         return $slots;
     }
 
-    /**
-     * Get available time slots for a specific date, accounting for existing bookings.
-     */
     public function getAvailableTimeSlotsForDate(string $date): array
     {
         $allSlots = $this->getTimeSlots();
@@ -138,9 +127,6 @@ class Event extends Model
         }));
     }
 
-    /**
-     * Check if a specific date is valid for this event.
-     */
     public function isDateValid(string $date): bool
     {
         $date = Carbon::parse($date);

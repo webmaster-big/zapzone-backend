@@ -26,9 +26,6 @@ class ShareableToken extends Model
         'is_active' => 'boolean',
     ];
 
-    /**
-     * Boot the model.
-     */
     protected static function boot()
     {
         parent::boot();
@@ -41,9 +38,6 @@ class ShareableToken extends Model
         });
     }
 
-    /**
-     * Generate a unique token.
-     */
     public static function generateUniqueToken(): string
     {
         do {
@@ -53,9 +47,6 @@ class ShareableToken extends Model
         return $token;
     }
 
-    /**
-     * Relationships
-     */
     public function creator(): BelongsTo
     {
         return $this->belongsTo(User::class, 'created_by');
@@ -66,9 +57,6 @@ class ShareableToken extends Model
         return $this->belongsTo(User::class, 'used_by');
     }
 
-    /**
-     * Scopes
-     */
     public function scopeActive($query)
     {
         return $query->where('is_active', true);
@@ -94,9 +82,6 @@ class ShareableToken extends Model
         return $query->where('email', $email);
     }
 
-    /**
-     * Helper methods
-     */
     public function isValid(): bool
     {
         return $this->is_active
@@ -124,7 +109,6 @@ class ShareableToken extends Model
 
     public function getShareableLink(): string
     {
-        // Determine frontend URL based on environment
         if (app()->environment('production')) {
             $baseUrl = 'https://booking.zap-zone.com';
         } else {
@@ -133,7 +117,6 @@ class ShareableToken extends Model
 
         $url = "{$baseUrl}/admin/register?token={$this->token}&role={$this->role}&companyId={$this->company_id}";
 
-        // Only add locationId for location_manager and attendant roles
         if (in_array($this->role, ['location_manager', 'attendant']) && $this->location_id) {
             $url .= "&locationId={$this->location_id}";
         }

@@ -16,9 +16,6 @@ use PhpOffice\PhpSpreadsheet\IOFactory;
 
 class BookingCsvImportService
 {
-    /**
-     * Status mapping from Bookly CSV to our system.
-     */
     protected const STATUS_MAP = [
         'done' => 'completed',
         'approved' => 'confirmed',
@@ -30,14 +27,8 @@ class BookingCsvImportService
         'completed' => 'completed',
     ];
 
-    /**
-     * Valid payment methods in the database enum.
-     */
     protected const VALID_PAYMENT_METHODS = ['card', 'in-store', 'paylater', 'authorize.net'];
 
-    /**
-     * Parse a file (CSV or Excel) and return structured rows.
-     */
     public function parseFile(string $filePath, string $originalName = ''): array
     {
         $extension = strtolower(pathinfo($originalName ?: $filePath, PATHINFO_EXTENSION));
@@ -49,9 +40,6 @@ class BookingCsvImportService
         return $this->parseCsv($filePath);
     }
 
-    /**
-     * Parse a CSV file and return structured rows.
-     */
     public function parseCsv(string $filePath): array
     {
         $rows = [];
@@ -61,14 +49,12 @@ class BookingCsvImportService
             throw new \RuntimeException('Unable to open CSV file');
         }
 
-        // Read and normalize header
         $header = fgetcsv($handle);
         if ($header === false) {
             fclose($handle);
             throw new \RuntimeException('CSV file is empty or has no header row');
         }
 
-        // Remove BOM if present
         $header[0] = preg_replace('/^\x{FEFF}/u', '', $header[0]);
         $header = array_map('trim', $header);
 
@@ -84,9 +70,6 @@ class BookingCsvImportService
         return $rows;
     }
 
-    /**
-     * Parse an Excel file (xlsx/xls) and return structured rows.
-     */
     public function parseExcel(string $filePath): array
     {
         $spreadsheet = IOFactory::load($filePath);
@@ -99,13 +82,11 @@ class BookingCsvImportService
             throw new \RuntimeException('Excel file is empty');
         }
 
-        // First row is the header
         $header = array_map('trim', array_map('strval', $data[0]));
 
         for ($i = 1; $i < count($data); $i++) {
             $row = $data[$i];
 
-            // Skip empty rows
             if (empty(array_filter($row, fn($v) => $v !== null && $v !== ''))) {
                 continue;
             }
@@ -120,9 +101,6 @@ class BookingCsvImportService
         return $rows;
     }
 
-    /**
-     * Process parsed rows into booking data.
-     */
     public function processRows(array $rows, int $locationId, ?int $createdBy = null): array
     {
         $imported = 0;
@@ -158,14 +136,10 @@ class BookingCsvImportService
         ];
     }
 
-    /**
-     * Process a single CSV/Excel row into a booking.
-     */
     protected function processRow(array $row, int $index, int $locationId, ?int $createdBy): ?Booking
     {
 
 
-        // Parse appointment date and time
         $appointmentDate = $this->parseDateTime($row['Appointment date'] ?? $row['appointment_date'] ?? null);
         if (!$appointmentDate) {
             throw new \RuntimeException('Invalid or missing appointment date');
@@ -174,10 +148,8 @@ class BookingCsvImportService
         $bookingDate = $appointmentDate->format('Y-m-d');
         $bookingTime = $appointmentDate->format('H:i');
 
-        // Parse the original creation date from Bookly
         $createdDate = $this->parseDateTime($row['Created'] ?? $row['created'] ?? null);
 
-        // Parse customer info
         $customerName = trim($row['Customer name'] ?? $row['customer_name'] ?? '');
         $customerEmail = trim($row['Customer email'] ?? $row['customer_email'] ?? '');
         $customerPhone = trim($row['Customer phone'] ?? $row['customer_phone'] ?? '');
@@ -187,7 +159,6 @@ class BookingCsvImportService
             throw new \RuntimeException('Customer name and email are both empty');
         }
 
-        // Add to contacts table (no customer account creation)
         $nameParts = $this->splitName($customerName);
         $addressParts = $this->parseAddress($customerAddress);
         $companyId = Location::find($locationId)?->company_id;
@@ -212,12 +183,10 @@ class BookingCsvImportService
             );
         }
 
-        // Parse service/package name (the CSV "Service" column may have add-ons in parentheses)
         $serviceRaw = trim((string) ($row['Service'] ?? $row['service'] ?? ''));
         $parsed = $this->parseServiceAndAddons($serviceRaw);
         $packageName = $parsed['package_name'];
 
-        // Match package
         $package = Package::where('name', $packageName)->first();
         if (!$package) {
             $package = Package::where('name', 'LIKE', '%' . $packageName . '%')->first();
@@ -229,7 +198,6 @@ class BookingCsvImportService
             }
         }
 
-        // Match room from "Party Area" column
         $roomName = trim((string) ($row['Party Area'] ?? $row['party_area'] ?? ''));
         $room = null;
         if (!empty($roomName) && strtolower($roomName) !== 'no area') {
@@ -252,37 +220,28 @@ class BookingCsvImportService
             }
         }
 
-        // Parse number of persons from CSV
         $csvPersons = trim((string) ($row['Number of Persons'] ?? $row['number_of_persons'] ?? $row['Persons'] ?? $row['persons'] ?? $row['Participants'] ?? $row['participants'] ?? ''));
         $csvPersonsInt = is_numeric($csvPersons) ? (int) $csvPersons : null;
 
-        // Parse staff from CSV
         $csvStaff = trim((string) ($row['Staff'] ?? $row['staff'] ?? $row['Staff Member'] ?? $row['staff_member'] ?? ''));
 
-        // Parse Bookly internal note (separate from customer-facing Notes)
         $csvInternalNote = trim((string) ($row['Internal Note'] ?? $row['internal_note'] ?? $row['Internal Notes'] ?? $row['internal_notes'] ?? ''));
 
-        // Parse duration
         $duration = (int) ($row['Duration'] ?? $row['duration'] ?? 0);
         $durationUnit = 'minutes';
 
-        // Parse payment info
         $paymentRaw = trim((string) ($row['Payment'] ?? $row['payment'] ?? ''));
         $paymentInfo = $this->parsePayment($paymentRaw);
 
-        // Parse status
         $statusRaw = strtolower(trim((string) ($row['Status'] ?? $row['status'] ?? 'pending')));
         $status = self::STATUS_MAP[$statusRaw] ?? 'pending';
 
-        // Parse notes
         $notes = trim((string) ($row['Notes'] ?? $row['notes'] ?? ''));
 
-        // Guest of honor
         $guestOfHonorName = trim((string) ($row["Guest of Honor's Name"] ?? $row['guest_of_honor_name'] ?? ''));
         $guestOfHonorAge = trim((string) ($row["Guest of Honor's Age (or General Age of Group)"] ?? $row['guest_of_honor_age'] ?? ''));
         $guestOfHonorAge = is_numeric($guestOfHonorAge) ? (int) $guestOfHonorAge : null;
 
-        // Check for duplicate - match by date, time, and guest email/name
         $externalId = trim((string) ($row['ID'] ?? $row['id'] ?? ''));
         $duplicateQuery = Booking::where('booking_date', $bookingDate)
             ->where('booking_time', $bookingTime)
@@ -296,41 +255,33 @@ class BookingCsvImportService
             return null; // Skip duplicate
         }
 
-        // Generate reference number
         do {
             $referenceNumber = 'BK' . now()->format('Ymd') . strtoupper(Str::random(6));
         } while (Booking::where('reference_number', $referenceNumber)->exists());
 
-        // Build internal notes - only store unmatched/not-found data from CSV import
         $internalNotesParts = [];
 
-        // Package not found in system
         if (!$package && !empty($packageName)) {
             $internalNotesParts[] = "Package not found: {$serviceRaw}";
         }
 
-        // Room/space not found in system
         if (!$room && !empty($roomName) && strtolower($roomName) !== 'no area') {
             $internalNotesParts[] = "Space not found: {$roomName}";
         }
 
-        // Staff info (we don't match staff, always store if present)
         if (!empty($csvStaff)) {
             $internalNotesParts[] = "Staff: {$csvStaff}";
         }
 
-        // Bookly internal note
         if (!empty($csvInternalNote)) {
             $internalNotesParts[] = "Bookly note: {$csvInternalNote}";
         }
 
-        // Build the final internal notes string
         $internalNotes = null;
         if (!empty($internalNotesParts)) {
             $internalNotes = "[CSV Import]\n" . implode("\n", $internalNotesParts);
         }
 
-        // Determine payment status
         $paymentStatus = 'pending';
         if ($paymentInfo['total_amount'] > 0) {
             if ($paymentInfo['amount_paid'] >= $paymentInfo['total_amount']) {
@@ -340,7 +291,6 @@ class BookingCsvImportService
             }
         }
 
-        // Map to completed_at / cancelled_at timestamps based on status
         $completedAt = $status === 'completed' ? now() : null;
         $cancelledAt = $status === 'cancelled' ? now() : null;
 
@@ -378,7 +328,6 @@ class BookingCsvImportService
             'cancelled_at' => $cancelledAt,
         ]);
 
-        // Create time slot if room is assigned
         if ($room && $package) {
             PackageTimeSlot::create([
                 'package_id' => $package->id,
@@ -395,11 +344,9 @@ class BookingCsvImportService
             ]);
         }
 
-        // Attach parsed add-ons (works with or without a matched package)
         if (!empty($parsed['addons'])) {
             $unmatchedAddons = $this->attachAddons($booking, $package, $parsed['addons']);
 
-            // If there were unmatched add-ons, append them to internal notes
             if (!empty($unmatchedAddons)) {
                 $addonLines = [];
                 foreach ($unmatchedAddons as $a) {
@@ -424,18 +371,12 @@ class BookingCsvImportService
         return $booking;
     }
 
-    /**
-     * Parse date/time from various CSV formats.
-     * Handles: "4/5/2026 13:00", "2026-04-05 13:00:00", "04/05/2026 1:00 PM", etc.
-     * Also handles numeric Excel serial date values.
-     */
     protected function parseDateTime($value): ?Carbon
     {
         if ($value === null || (is_string($value) && trim($value) === '')) {
             return null;
         }
 
-        // Handle numeric Excel serial dates (e.g., 46113.541666)
         if (is_numeric($value) && !is_string($value)) {
             try {
                 $unixTimestamp = ((float) $value - 25569) * 86400;
@@ -447,13 +388,11 @@ class BookingCsvImportService
 
         $value = trim((string) $value);
 
-        // Also handle string-numeric values from Excel
         if (is_numeric($value) && strpos($value, '/') === false && strpos($value, '-') === false) {
             try {
                 $unixTimestamp = ((float) $value - 25569) * 86400;
                 return Carbon::createFromTimestamp((int) $unixTimestamp);
             } catch (\Exception $e) {
-                // Fall through to format parsing
             }
         }
 
@@ -482,7 +421,6 @@ class BookingCsvImportService
             }
         }
 
-        // Last resort: let Carbon try to parse it
         try {
             return Carbon::parse($value);
         } catch (\Exception $e) {
@@ -490,35 +428,27 @@ class BookingCsvImportService
         }
     }
 
-    /**
-     * Parse "Service" column that may contain add-ons in parentheses.
-     * e.g. "Unlimited Activities + Arcade Party (2 × Additional 10-Slice Cheese Pizza, Cheesy Bread)"
-     */
     protected function parseServiceAndAddons(string $service): array
     {
         $addons = [];
         $packageName = $service;
 
-        // Match content in parentheses at the end
         if (preg_match('/^(.+?)\s*\((.+)\)\s*$/', $service, $matches)) {
             $packageName = trim($matches[1]);
             $addonString = $matches[2];
 
-            // Split by comma
             $addonParts = preg_split('/\s*,\s*/', $addonString);
 
             foreach ($addonParts as $part) {
                 $part = trim($part);
                 if (empty($part)) continue;
 
-                // Check for quantity prefix like "2 ×" or "2 x"
                 $quantity = 1;
                 if (preg_match('/^(\d+)\s*[×x]\s*(.+)$/i', $part, $qMatch)) {
                     $quantity = (int) $qMatch[1];
                     $part = trim($qMatch[2]);
                 }
 
-                // Decode HTML entities (e.g., &amp; → &)
                 $addons[] = [
                     'name' => html_entity_decode($part, ENT_QUOTES, 'UTF-8'),
                     'quantity' => $quantity,
@@ -532,15 +462,10 @@ class BookingCsvImportService
         ];
     }
 
-    /**
-     * Attach add-ons from CSV to the booking by matching names.
-     * Returns array of unmatched/fuzzy-matched add-ons so they can be logged in internal_notes.
-     */
     protected function attachAddons(Booking $booking, ?Package $package, array $addonList): array
     {
         $unmatchedAddons = [];
 
-        // Get package add-ons if a package was matched
         $packageAddons = $package ? $package->addOns()->get() : collect();
 
         foreach ($addonList as $addonInfo) {
@@ -548,7 +473,6 @@ class BookingCsvImportService
             $quantity = $addonInfo['quantity'];
             $matchType = 'none';
 
-            // Try to find add-on by name in package's add-ons first (case-insensitive)
             $addon = $packageAddons->first(function ($a) use ($addonName) {
                 return Str::lower($a->name) === Str::lower($addonName);
             });
@@ -556,7 +480,6 @@ class BookingCsvImportService
                 $matchType = 'exact';
             }
 
-            // Fallback: search all add-ons by exact name (case-insensitive)
             if (!$addon) {
                 $addon = \App\Models\AddOn::whereRaw('LOWER(name) = ?', [Str::lower($addonName)])->first();
                 if ($addon) {
@@ -564,7 +487,6 @@ class BookingCsvImportService
                 }
             }
 
-            // Fuzzy fallback: LIKE match
             if (!$addon) {
                 $addon = \App\Models\AddOn::where('name', 'LIKE', '%' . $addonName . '%')->first();
                 if ($addon) {
@@ -580,7 +502,6 @@ class BookingCsvImportService
                     'price_at_booking' => $addon->price ?? 0,
                 ]);
 
-                // Track fuzzy matches so they appear in internal notes
                 if ($matchType === 'fuzzy') {
                     $unmatchedAddons[] = [
                         'name' => $addonName,
@@ -600,10 +521,6 @@ class BookingCsvImportService
         return $unmatchedAddons;
     }
 
-    /**
-     * Parse payment string from Bookly.
-     * e.g. "$50.00 of $567.93 Authorize.Net Completed"
-     */
     protected function parsePayment(string $payment): array
     {
         $result = [
@@ -617,15 +534,12 @@ class BookingCsvImportService
             return $result;
         }
 
-        // Pattern: "$50.00 of $567.93 Authorize.Net Completed"
         if (preg_match('/\$?([\d,.]+)\s+of\s+\$?([\d,.]+)\s*(.*)/i', $payment, $matches)) {
             $result['amount_paid'] = (float) str_replace(',', '', $matches[1]);
             $result['total_amount'] = (float) str_replace(',', '', $matches[2]);
 
             $remainder = trim($matches[3]);
 
-            // Detect payment method — mapped to valid DB enum values
-            // DB enum: 'card', 'in-store', 'paylater', 'authorize.net'
             if (stripos($remainder, 'Authorize') !== false) {
                 $result['payment_method'] = 'authorize.net';
             } elseif (stripos($remainder, 'Stripe') !== false) {
@@ -633,14 +547,11 @@ class BookingCsvImportService
             } elseif (stripos($remainder, 'PayPal') !== false) {
                 $result['payment_method'] = 'card';
             } elseif (stripos($remainder, 'cash') !== false) {
-                // 'cash' was renamed to 'in-store' in the DB enum
                 $result['payment_method'] = 'in-store';
             } else {
-                // Default to paylater for unknown payment gateway names
                 $result['payment_method'] = 'paylater';
             }
 
-            // Detect payment status
             if (stripos($remainder, 'Completed') !== false) {
                 $result['payment_status_raw'] = 'completed';
             } elseif (stripos($remainder, 'Pending') !== false) {
@@ -651,9 +562,6 @@ class BookingCsvImportService
         return $result;
     }
 
-    /**
-     * Split a full name into first and last name.
-     */
     protected function splitName(string $fullName): array
     {
         $parts = preg_split('/\s+/', trim($fullName), 2);
@@ -664,13 +572,6 @@ class BookingCsvImportService
         ];
     }
 
-    /**
-     * Parse address string from Bookly CSV.
-     * Handles multiple formats:
-     *   "47083 Lyndon Ave, MI, 48187, Canton, "
-     *   "47083 Lyndon Ave, Canton, MI, 48187, "
-     *   "704 N. Congress St. #1, Ypsilanti, MI, 48197, "
-     */
     protected function parseAddress(string $address): array
     {
         $result = [
@@ -689,10 +590,8 @@ class BookingCsvImportService
         $parts = array_values($parts);
 
         if (count($parts) >= 3) {
-            // First part is always the street address
             $result['address'] = $parts[0];
 
-            // Identify state (2-letter), zip (5-digit), and city from remaining parts
             foreach ($parts as $i => $part) {
                 if ($i === 0) continue;
 
@@ -711,24 +610,17 @@ class BookingCsvImportService
         return $result;
     }
 
-    /**
-     * Clean phone number - keep digits only.
-     */
     protected function cleanPhone(string $phone): string
     {
         if (empty($phone)) {
             return '';
         }
 
-        // Remove everything except digits
         $cleaned = preg_replace('/[^\d]/', '', $phone);
 
         return $cleaned;
     }
 
-    /**
-     * Sanitize row data for logging (include enough context to debug).
-     */
     protected function sanitizeRowForLog(array $row): array
     {
         return [

@@ -11,9 +11,6 @@ use Illuminate\Validation\Rule;
 
 class EmailTemplateController extends Controller
 {
-    /**
-     * Display a listing of email templates.
-     */
     public function index(Request $request): JsonResponse
     {
         $user = Auth::user();
@@ -21,8 +18,6 @@ class EmailTemplateController extends Controller
         $query = EmailTemplate::with(['company', 'location', 'creator'])
             ->where('company_id', $user->company_id);
 
-        // Location managers/attendants can only see their own location templates
-        // (or company-wide templates with location_id = null).
         if (in_array($user->role, ['location_manager', 'attendant'], true) && $user->location_id) {
             $query->where(function ($q) use ($user) {
                 $q->where('location_id', $user->location_id)
@@ -30,7 +25,6 @@ class EmailTemplateController extends Controller
             });
         }
 
-        // Filter by location if specified
         if ($request->has('location_id')) {
             $query->where(function ($q) use ($request) {
                 $q->where('location_id', $request->location_id)
@@ -38,17 +32,14 @@ class EmailTemplateController extends Controller
             });
         }
 
-        // Filter by status
         if ($request->has('status')) {
             $query->where('status', $request->status);
         }
 
-        // Filter by category
         if ($request->has('category')) {
             $query->where('category', $request->category);
         }
 
-        // Search by name or subject
         if ($request->has('search')) {
             $search = $request->search;
             $query->where(function ($q) use ($search) {
@@ -66,9 +57,6 @@ class EmailTemplateController extends Controller
         ]);
     }
 
-    /**
-     * Store a newly created email template.
-     */
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -104,14 +92,10 @@ class EmailTemplateController extends Controller
         ], 201);
     }
 
-    /**
-     * Display the specified email template.
-     */
     public function show(EmailTemplate $emailTemplate): JsonResponse
     {
         $user = Auth::user();
 
-        // Ensure user can only access their company's templates
         if ($emailTemplate->company_id !== $user->company_id) {
             return response()->json([
                 'success' => false,
@@ -127,14 +111,10 @@ class EmailTemplateController extends Controller
         ]);
     }
 
-    /**
-     * Update the specified email template.
-     */
     public function update(Request $request, EmailTemplate $emailTemplate): JsonResponse
     {
         $user = Auth::user();
 
-        // Ensure user can only update their company's templates
         if ($emailTemplate->company_id !== $user->company_id) {
             return response()->json([
                 'success' => false,
@@ -162,14 +142,10 @@ class EmailTemplateController extends Controller
         ]);
     }
 
-    /**
-     * Remove the specified email template.
-     */
     public function destroy(EmailTemplate $emailTemplate): JsonResponse
     {
         $user = Auth::user();
 
-        // Ensure user can only delete their company's templates
         if ($emailTemplate->company_id !== $user->company_id) {
             return response()->json([
                 'success' => false,
@@ -185,14 +161,10 @@ class EmailTemplateController extends Controller
         ]);
     }
 
-    /**
-     * Duplicate an email template.
-     */
     public function duplicate(EmailTemplate $emailTemplate): JsonResponse
     {
         $user = Auth::user();
 
-        // Ensure user can only duplicate their company's templates
         if ($emailTemplate->company_id !== $user->company_id) {
             return response()->json([
                 'success' => false,
@@ -215,9 +187,6 @@ class EmailTemplateController extends Controller
         ], 201);
     }
 
-    /**
-     * Get all available variables for email templates.
-     */
     public function getAvailableVariables(): JsonResponse
     {
         return response()->json([
@@ -230,14 +199,10 @@ class EmailTemplateController extends Controller
         ]);
     }
 
-    /**
-     * Preview email template with sample data.
-     */
     public function preview(Request $request, EmailTemplate $emailTemplate): JsonResponse
     {
         $user = Auth::user();
 
-        // Ensure user can only preview their company's templates
         if ($emailTemplate->company_id !== $user->company_id) {
             return response()->json([
                 'success' => false,
@@ -245,10 +210,8 @@ class EmailTemplateController extends Controller
             ], 404);
         }
 
-        // Get sample data for preview
         $sampleVariables = $this->getSampleVariables($user);
 
-        // Replace variables in subject and body
         $processedSubject = $this->replaceVariables($emailTemplate->subject, $sampleVariables);
         $processedBody = $this->replaceVariables($emailTemplate->body, $sampleVariables);
 
@@ -263,9 +226,6 @@ class EmailTemplateController extends Controller
         ]);
     }
 
-    /**
-     * Preview with custom body and subject (for unsaved templates).
-     */
     public function previewCustom(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -279,7 +239,6 @@ class EmailTemplateController extends Controller
         $processedSubject = $this->replaceVariables($validated['subject'], $sampleVariables);
         $processedBody = $this->replaceVariables($validated['body'], $sampleVariables);
 
-        // Extract used variables
         preg_match_all('/\{\{\s*([a-zA-Z_]+)\s*\}\}/', $validated['body'] . ' ' . $validated['subject'], $matches);
         $usedVariables = array_unique($matches[1] ?? []);
 
@@ -294,9 +253,6 @@ class EmailTemplateController extends Controller
         ]);
     }
 
-    /**
-     * Update template status (draft/active/archived).
-     */
     public function updateStatus(Request $request, EmailTemplate $emailTemplate): JsonResponse
     {
         $user = Auth::user();
@@ -321,16 +277,12 @@ class EmailTemplateController extends Controller
         ]);
     }
 
-    /**
-     * Get sample variables for preview.
-     */
     protected function getSampleVariables($user): array
     {
         $company = $user->company;
         $location = $user->location;
 
         return [
-            // Default variables
             'recipient_email' => 'customer@example.com',
             'recipient_name' => 'John Doe',
             'recipient_first_name' => 'John',
@@ -346,7 +298,6 @@ class EmailTemplateController extends Controller
             'current_date' => now()->format('F j, Y'),
             'current_year' => now()->year,
 
-            // Customer variables
             'customer_email' => 'customer@example.com',
             'customer_name' => 'Jane Smith',
             'customer_first_name' => 'Jane',
@@ -357,7 +308,6 @@ class EmailTemplateController extends Controller
             'customer_total_spent' => '$500.00',
             'customer_last_visit' => now()->subDays(7)->format('F j, Y'),
 
-            // User variables
             'user_email' => 'staff@company.com',
             'user_name' => 'Staff Member',
             'user_first_name' => 'Staff',
@@ -368,9 +318,6 @@ class EmailTemplateController extends Controller
         ];
     }
 
-    /**
-     * Replace template variables with actual values.
-     */
     protected function replaceVariables(string $content, array $variables): string
     {
         foreach ($variables as $key => $value) {

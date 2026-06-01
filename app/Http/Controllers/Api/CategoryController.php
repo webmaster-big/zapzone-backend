@@ -10,14 +10,10 @@ use Illuminate\Support\Str;
 
 class CategoryController extends Controller
 {
-    /**
-     * Display a listing of categories.
-     */
     public function index(Request $request): JsonResponse
     {
         $query = Category::query();
 
-        // Search
         if ($request->has('search')) {
             $search = $request->search;
             $query->where(function ($q) use ($search) {
@@ -26,7 +22,6 @@ class CategoryController extends Controller
             });
         }
 
-        // Sort
         $sortBy = $request->get('sort_by', 'name');
         $sortOrder = $request->get('sort_order', 'asc');
         $query->orderBy($sortBy, $sortOrder);
@@ -39,9 +34,6 @@ class CategoryController extends Controller
         ]);
     }
 
-    /**
-     * Store a newly created category.
-     */
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -58,9 +50,6 @@ class CategoryController extends Controller
         ], 201);
     }
 
-    /**
-     * Display the specified category.
-     */
     public function show(Category $category): JsonResponse
     {
         return response()->json([
@@ -69,9 +58,6 @@ class CategoryController extends Controller
         ]);
     }
 
-    /**
-     * Update the specified category.
-     */
     public function update(Request $request, Category $category): JsonResponse
     {
         $validated = $request->validate([
@@ -88,9 +74,6 @@ class CategoryController extends Controller
         ]);
     }
 
-    /**
-     * Remove the specified category.
-     */
     public function destroy(Category $category): JsonResponse
     {
         $category->delete();

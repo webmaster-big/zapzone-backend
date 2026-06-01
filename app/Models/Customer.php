@@ -46,7 +46,6 @@ class Customer extends Model
         'password' => 'hashed',
     ];
 
-    // Relationships
     public function bookings(): HasMany
     {
         return $this->hasMany(Booking::class);
@@ -87,7 +86,6 @@ class Customer extends Model
         return $this->hasOne(Membership::class)->whereIn('status', ['active', 'past_due', 'frozen']);
     }
 
-    // Scopes
     public function scopeActive($query)
     {
         return $query->where('status', 'active');
@@ -106,12 +104,6 @@ class Customer extends Model
         });
     }
 
-    // Helper Methods
-    /**
-     * Get customer billing data formatted for Authorize.Net
-     *
-     * @return array
-     */
     public function getBillingData(): array
     {
         return [
@@ -127,11 +119,6 @@ class Customer extends Model
         ];
     }
 
-    /**
-     * Get customer full name
-     *
-     * @return string
-     */
     public function getFullNameAttribute(): string
     {
         return "{$this->first_name} {$this->last_name}";

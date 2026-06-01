@@ -7,11 +7,6 @@ use Illuminate\Http\Resources\Json\JsonResource;
 
 class AuthorizeNetAccountResource extends JsonResource
 {
-    /**
-     * Transform the resource into an array.
-     *
-     * @return array<string, mixed>
-     */
     public function toArray(Request $request): array
     {
         return [
@@ -27,8 +22,6 @@ class AuthorizeNetAccountResource extends JsonResource
                 'city' => $this->location->city,
                 'state' => $this->location->state,
             ],
-            // Note: Never expose api_login_id or transaction_key
-            // These are hidden in the model and should never be returned
         ];
     }
 }

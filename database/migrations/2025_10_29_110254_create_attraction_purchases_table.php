@@ -6,9 +6,6 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
         Schema::create('attraction_purchases', function (Blueprint $table) {
@@ -26,7 +23,6 @@ return new class extends Migration
             $table->text('notes')->nullable();
             $table->timestamps();
 
-            // Indexes
             $table->index('attraction_id');
             $table->index('customer_id');
             $table->index('status');
@@ -34,9 +30,6 @@ return new class extends Migration
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::dropIfExists('attraction_purchases');

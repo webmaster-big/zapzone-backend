@@ -11,11 +11,7 @@ class EmailNotification extends Model
 {
     use HasFactory;
 
-    // ============================================
-    // TRIGGER TYPES
-    // ============================================
 
-    // Booking Triggers
     const TRIGGER_BOOKING_CREATED = 'booking_created';
     const TRIGGER_BOOKING_CONFIRMED = 'booking_confirmed';
     const TRIGGER_BOOKING_UPDATED = 'booking_updated';
@@ -27,14 +23,12 @@ class EmailNotification extends Model
     const TRIGGER_BOOKING_FOLLOWUP = 'booking_followup'; // Uses send_after_hours
     const TRIGGER_BOOKING_NO_SHOW = 'booking_no_show';
 
-    // Payment Triggers (for bookings)
     const TRIGGER_PAYMENT_RECEIVED = 'payment_received';
     const TRIGGER_PAYMENT_FAILED = 'payment_failed';
     const TRIGGER_PAYMENT_REFUNDED = 'payment_refunded';
     const TRIGGER_PAYMENT_PARTIAL = 'payment_partial';
     const TRIGGER_PAYMENT_PENDING = 'payment_pending';
 
-    // Attraction Purchase Triggers
     const TRIGGER_PURCHASE_CREATED = 'purchase_created';
     const TRIGGER_PURCHASE_CONFIRMED = 'purchase_confirmed';
     const TRIGGER_PURCHASE_CANCELLED = 'purchase_cancelled';
@@ -44,13 +38,9 @@ class EmailNotification extends Model
     const TRIGGER_PURCHASE_REMINDER = 'purchase_reminder';
     const TRIGGER_PURCHASE_FOLLOWUP = 'purchase_followup';
 
-    // Invitation Triggers
     const TRIGGER_INVITATION_SENT = 'invitation_sent';
     const TRIGGER_INVITATION_RSVP_RECEIVED = 'invitation_rsvp_received';
 
-    // ============================================
-    // DEFAULT EMAIL KEYS
-    // ============================================
     const DEFAULT_BOOKING_CONFIRMATION_CUSTOMER = 'booking_confirmation_customer';
     const DEFAULT_BOOKING_CONFIRMATION_STAFF = 'booking_confirmation_staff';
     const DEFAULT_BOOKING_CANCELLATION_CUSTOMER = 'booking_cancellation_customer';
@@ -61,12 +51,10 @@ class EmailNotification extends Model
     const DEFAULT_PAYMENT_RECEIVED_CUSTOMER = 'payment_received_customer';
     const DEFAULT_PAYMENT_REFUNDED_CUSTOMER = 'payment_refunded_customer';
 
-    // Entity types
     const ENTITY_PACKAGE = 'package';
     const ENTITY_ATTRACTION = 'attraction';
     const ENTITY_ALL = 'all';
 
-    // Recipient types
     const RECIPIENT_CUSTOMER = 'customer';
     const RECIPIENT_STAFF = 'staff';
     const RECIPIENT_COMPANY_ADMIN = 'company_admin';
@@ -107,99 +95,64 @@ class EmailNotification extends Model
         'send_after_hours' => 'integer',
     ];
 
-    /**
-     * Get the company that owns this notification.
-     */
     public function company(): BelongsTo
     {
         return $this->belongsTo(Company::class);
     }
 
-    /**
-     * Get the location (optional).
-     */
     public function location(): BelongsTo
     {
         return $this->belongsTo(Location::class);
     }
 
-    /**
-     * Get the email template (optional).
-     */
     public function template(): BelongsTo
     {
         return $this->belongsTo(EmailTemplate::class, 'email_template_id');
     }
 
-    /**
-     * Get the notification logs.
-     */
     public function logs(): HasMany
     {
         return $this->hasMany(EmailNotificationLog::class);
     }
 
-    /**
-     * Scope to get active notifications.
-     */
     public function scopeActive($query)
     {
         return $query->where('is_active', true);
     }
 
-    /**
-     * Scope by trigger type.
-     */
     public function scopeForTrigger($query, string $triggerType)
     {
         return $query->where('trigger_type', $triggerType);
     }
 
-    /**
-     * Scope by entity type.
-     */
     public function scopeForEntityType($query, string $entityType)
     {
         return $query->where('entity_type', $entityType);
     }
 
-    /**
-     * Scope to get default notifications only.
-     */
     public function scopeDefaults($query)
     {
         return $query->where('is_default', true);
     }
 
-    /**
-     * Scope to get custom (non-default) notifications only.
-     */
     public function scopeCustom($query)
     {
         return $query->where('is_default', false);
     }
 
-    /**
-     * Scope by default key.
-     */
     public function scopeForDefaultKey($query, string $defaultKey)
     {
         return $query->where('default_key', $defaultKey);
     }
 
-    /**
-     * Check if this notification applies to a specific entity ID.
-     */
     public function appliesToEntity(?int $entityId): bool
     {
         $entityIds = $this->entity_ids ?? [];
 
-        // If entity_ids is empty or null, applies to all
         if (empty($entityIds)) {
             return true;
         }
 
-        // If entity type is 'all', applies to everything
         if ($this->entity_type === self::ENTITY_ALL) {
             return true;
         }
@@ -207,17 +160,12 @@ class EmailNotification extends Model
         return in_array($entityId, $entityIds);
     }
 
-    /**
-     * Get the subject (user-edited > template > default).
-     */
     public function getEffectiveSubject(): string
     {
-        // User-edited subject always takes priority
         if ($this->subject !== null) {
             return $this->subject;
         }
 
-        // Fall back to linked template if exists
         if ($this->template) {
             return $this->template->subject;
         }
@@ -225,17 +173,12 @@ class EmailNotification extends Model
         return $this->default_subject ?? 'Notification';
     }
 
-    /**
-     * Get the body (user-edited > template > default).
-     */
     public function getEffectiveBody(): string
     {
-        // User-edited body always takes priority
         if ($this->body !== null) {
             return $this->body;
         }
 
-        // Fall back to linked template if exists
         if ($this->template) {
             return $this->template->body;
         }
@@ -243,9 +186,6 @@ class EmailNotification extends Model
         return $this->default_body ?? '';
     }
 
-    /**
-     * Check if the body has been customized (differs from default).
-     */
     public function isBodyCustomized(): bool
     {
         if (!$this->is_default) {
@@ -255,9 +195,6 @@ class EmailNotification extends Model
         return $this->body !== null && $this->body !== $this->default_body;
     }
 
-    /**
-     * Check if the subject has been customized (differs from default).
-     */
     public function isSubjectCustomized(): bool
     {
         if (!$this->is_default) {
@@ -267,9 +204,6 @@ class EmailNotification extends Model
         return $this->subject !== null && $this->subject !== $this->default_subject;
     }
 
-    /**
-     * Reset body to default template.
-     */
     public function resetToDefault(): void
     {
         $this->update([
@@ -278,9 +212,6 @@ class EmailNotification extends Model
         ]);
     }
 
-    /**
-     * Get all available default email keys with labels.
-     */
     public static function getDefaultKeys(): array
     {
         return [
@@ -296,9 +227,6 @@ class EmailNotification extends Model
         ];
     }
 
-    /**
-     * Find a default notification by key for a company.
-     */
     public static function findDefault(int $companyId, string $defaultKey): ?self
     {
         return self::where('company_id', $companyId)
@@ -307,14 +235,10 @@ class EmailNotification extends Model
             ->first();
     }
 
-    /**
-     * Find matching notifications for a booking by trigger type.
-     */
     public static function findForBooking(Booking $booking, string $triggerType = self::TRIGGER_BOOKING_CREATED): \Illuminate\Support\Collection
     {
         $companyId = $booking->location?->company_id;
 
-        // Fail closed: without a company, never return any templates (prevent tenant leakage).
         if (!$companyId) {
             return collect();
         }
@@ -336,14 +260,10 @@ class EmailNotification extends Model
             });
     }
 
-    /**
-     * Find matching notifications for an attraction purchase by trigger type.
-     */
     public static function findForPurchase(AttractionPurchase $purchase, string $triggerType = self::TRIGGER_PURCHASE_CREATED): \Illuminate\Support\Collection
     {
         $companyId = $purchase->attraction?->location?->company_id;
 
-        // Fail closed: without a company, never return any templates (prevent tenant leakage).
         if (!$companyId) {
             return collect();
         }
@@ -365,15 +285,11 @@ class EmailNotification extends Model
             });
     }
 
-    /**
-     * Find matching notifications for a payment by trigger type.
-     */
     public static function findForPayment($payment, string $triggerType): \Illuminate\Support\Collection
     {
         $locationId = null;
         $companyId = null;
 
-        // Get location and company from payable entity
         if ($payment->payable_type === 'App\\Models\\Booking') {
             $locationId = $payment->payable?->location_id;
             $companyId = $payment->payable?->location?->company_id;
@@ -390,7 +306,6 @@ class EmailNotification extends Model
             ->when($companyId, function ($query) use ($companyId) {
                 $query->where('company_id', $companyId);
             }, function ($query) {
-                // Fail closed: if no company resolved, return no rows.
                 $query->whereRaw('1 = 0');
             })
             ->where(function ($query) use ($locationId) {
@@ -402,9 +317,6 @@ class EmailNotification extends Model
             ->get();
     }
 
-    /**
-     * Get all available trigger types organized by category.
-     */
     public static function getTriggerTypes(): array
     {
         return [
@@ -444,9 +356,6 @@ class EmailNotification extends Model
         ];
     }
 
-    /**
-     * Get flat list of all trigger types.
-     */
     public static function getAllTriggerTypes(): array
     {
         $types = [];
@@ -458,9 +367,6 @@ class EmailNotification extends Model
         return $types;
     }
 
-    /**
-     * Get trigger type category.
-     */
     public static function getTriggerCategory(string $triggerType): ?string
     {
         foreach (self::getTriggerTypes() as $category => $triggers) {
@@ -471,9 +377,6 @@ class EmailNotification extends Model
         return null;
     }
 
-    /**
-     * Check if trigger type is a reminder (uses send_before_hours).
-     */
     public function isReminderType(): bool
     {
         return in_array($this->trigger_type, [
@@ -482,9 +385,6 @@ class EmailNotification extends Model
         ]);
     }
 
-    /**
-     * Check if trigger type is a follow-up (uses send_after_hours).
-     */
     public function isFollowUpType(): bool
     {
         return in_array($this->trigger_type, [
@@ -493,9 +393,6 @@ class EmailNotification extends Model
         ]);
     }
 
-    /**
-     * Get all available entity types.
-     */
     public static function getEntityTypes(): array
     {
         return [
@@ -505,9 +402,6 @@ class EmailNotification extends Model
         ];
     }
 
-    /**
-     * Get all available recipient types.
-     */
     public static function getRecipientTypes(): array
     {
         return [

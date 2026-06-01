@@ -16,32 +16,24 @@ class ContactController extends Controller
 {
     use ScopesByAuthUser;
 
-    /**
-     * Display a listing of contacts.
-     */
     public function index(Request $request): JsonResponse
     {
         $query = Contact::with(['company', 'location', 'creator']);
 
-        // Multi-tenant + role-based scoping (driven by Sanctum auth user)
         $this->applyAuthScope($query, $request);
 
-        // Optional explicit company filter (still scoped by auth above)
         if ($request->has('company_id')) {
             $query->byCompany($request->company_id);
         }
 
-        // Filter by location
         if ($request->has('location_id')) {
             $query->byLocation($request->location_id);
         }
 
-        // Filter by status
         if ($request->has('status')) {
             $query->byStatus($request->status);
         }
 
-        // Filter by tag(s)
         if ($request->has('tag')) {
             $query->byTag($request->tag);
         }
@@ -51,22 +43,18 @@ class ContactController extends Controller
             $query->byTags($tags);
         }
 
-        // Filter by source
         if ($request->has('source')) {
             $query->bySource($request->source);
         }
 
-        // Filter active only
         if ($request->boolean('active_only')) {
             $query->active();
         }
 
-        // Search
         if ($request->has('search')) {
             $query->search($request->search);
         }
 
-        // Sort
         $sortBy = $request->get('sort_by', 'created_at');
         $sortOrder = $request->get('sort_order', 'desc');
 
@@ -94,9 +82,6 @@ class ContactController extends Controller
         ]);
     }
 
-    /**
-     * Store a newly created contact.
-     */
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -132,7 +117,6 @@ class ContactController extends Controller
         $contact = Contact::create($validated);
         $contact->load(['company', 'location', 'creator']);
 
-        // Log activity
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Contact Created',
@@ -169,9 +153,6 @@ class ContactController extends Controller
         ], 201);
     }
 
-    /**
-     * Display the specified contact.
-     */
     public function show(Contact $contact): JsonResponse
     {
         $contact->load(['company', 'location', 'creator']);
@@ -182,9 +163,6 @@ class ContactController extends Controller
         ]);
     }
 
-    /**
-     * Update the specified contact.
-     */
     public function update(Request $request, Contact $contact): JsonResponse
     {
         $validated = $request->validate([
@@ -217,7 +195,6 @@ class ContactController extends Controller
         $contact->update($validated);
         $contact->load(['company', 'location', 'creator']);
 
-        // Log activity
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Contact Updated',
@@ -250,9 +227,6 @@ class ContactController extends Controller
         ]);
     }
 
-    /**
-     * Remove the specified contact.
-     */
     public function destroy(Contact $contact): JsonResponse
     {
         $email = $contact->email;
@@ -261,7 +235,6 @@ class ContactController extends Controller
 
         $contact->delete();
 
-        // Log activity
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Contact Deleted',
@@ -292,9 +265,6 @@ class ContactController extends Controller
         ]);
     }
 
-    /**
-     * Bulk import contacts.
-     */
     public function bulkImport(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -326,7 +296,6 @@ class ContactController extends Controller
 
         try {
             foreach ($validated['contacts'] as $index => $contactData) {
-                // Check for duplicate
                 $exists = Contact::where('company_id', $companyId)
                     ->where('email', $contactData['email'])
                     ->exists();
@@ -345,7 +314,6 @@ class ContactController extends Controller
                     }
                 }
 
-                // Merge tags
                 $tags = array_unique(array_merge(
                     $globalTags,
                     $contactData['tags'] ?? []
@@ -372,7 +340,6 @@ class ContactController extends Controller
 
             DB::commit();
 
-            // Log activity
             $currentUser = auth()->user();
             ActivityLog::log(
                 action: 'Contacts Bulk Import',
@@ -419,9 +386,6 @@ class ContactController extends Controller
         }
     }
 
-    /**
-     * Bulk delete contacts.
-     */
     public function bulkDelete(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -431,7 +395,6 @@ class ContactController extends Controller
 
         $deletedCount = Contact::whereIn('id', $validated['ids'])->delete();
 
-        // Log activity
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Contacts Bulk Delete',
@@ -457,9 +420,6 @@ class ContactController extends Controller
         ]);
     }
 
-    /**
-     * Bulk update contacts (e.g., add/remove tags, change status).
-     */
     public function bulkUpdate(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -499,7 +459,6 @@ class ContactController extends Controller
             $updatedCount++;
         }
 
-        // Log activity
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Contacts Bulk Update',
@@ -531,9 +490,6 @@ class ContactController extends Controller
         ]);
     }
 
-    /**
-     * Get all unique tags used in contacts.
-     */
     public function getTags(Request $request): JsonResponse
     {
         $query = Contact::query();
@@ -564,9 +520,6 @@ class ContactController extends Controller
         ]);
     }
 
-    /**
-     * Get contact statistics.
-     */
     public function statistics(Request $request): JsonResponse
     {
         $query = Contact::query();
@@ -604,9 +557,6 @@ class ContactController extends Controller
         ]);
     }
 
-    /**
-     * Deactivate a contact (public endpoint for email unsubscribe links).
-     */
     public function deactivate(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -633,9 +583,6 @@ class ContactController extends Controller
         ]);
     }
 
-    /**
-     * Export contacts for email campaign integration.
-     */
     public function exportForCampaign(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -684,9 +631,6 @@ class ContactController extends Controller
         ]);
     }
 
-    /**
-     * Add a tag to a contact.
-     */
     public function addTag(Request $request, Contact $contact): JsonResponse
     {
         $validated = $request->validate([
@@ -712,9 +656,6 @@ class ContactController extends Controller
         ]);
     }
 
-    /**
-     * Remove a tag from a contact.
-     */
     public function removeTag(Request $request, Contact $contact): JsonResponse
     {
         $validated = $request->validate([

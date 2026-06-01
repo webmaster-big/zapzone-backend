@@ -6,9 +6,6 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
    {
         Schema::create('companies', function (Blueprint $table) {
@@ -19,15 +16,10 @@ return new class extends Migration
             $table->text('address');
             $table->integer('total_locations')->default(0);
             $table->integer('total_employees')->default(0);
-            // $table->enum('subscription_plan', ['basic', 'premium', 'enterprise'])->default('basic');
-            // $table->enum('subscription_status', ['active', 'inactive', 'trial'])->default('trial');
             $table->timestamps();
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::dropIfExists('companies');

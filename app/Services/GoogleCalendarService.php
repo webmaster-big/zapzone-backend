@@ -17,21 +17,12 @@ class GoogleCalendarService
     protected ?GoogleCalendarSetting $settings = null;
     protected ?int $locationId = null;
 
-    /**
-     * Initialize the Google Client with stored OAuth tokens.
-     * Pass a location_id to scope to a specific location's settings.
-     */
     public function __construct(?int $locationId = null)
     {
         $this->locationId = $locationId;
         $this->settings = GoogleCalendarSetting::getSettings($locationId);
     }
 
-    /**
-     * Get the Google Client configured for OAuth2.
-     * App credentials come from config (set once in config/google_calendar.php).
-     * Per-location tokens (access_token/refresh_token) come from the database.
-     */
     public function getClient(): Client
     {
         if ($this->client) {
@@ -45,7 +36,6 @@ class GoogleCalendarService
             throw new \Exception('Google Calendar app credentials not configured. Update config/google_calendar.php with your Client ID and Secret from Google Cloud Console.');
         }
 
-        // Auto-detect redirect URI from the current app URL
         $redirectUri = rtrim(config('app.url', 'http://localhost:8000'), '/') . '/api/google-calendar/callback';
 
         $this->client = new Client();
@@ -58,13 +48,11 @@ class GoogleCalendarService
         $this->client->addScope(Calendar::CALENDAR);
         $this->client->addScope(Calendar::CALENDAR_EVENTS);
 
-        // Encode location_id in state so the callback knows which location this is for
         if ($this->locationId) {
             $state = base64_encode(json_encode(['location_id' => $this->locationId]));
             $this->client->setState($state);
         }
 
-        // Set stored tokens if available
         if ($this->settings && $this->settings->is_connected) {
             $token = [
                 'access_token' => $this->settings->access_token,
@@ -77,7 +65,6 @@ class GoogleCalendarService
 
             $this->client->setAccessToken($token);
 
-            // Refresh if expired
             if ($this->client->isAccessTokenExpired() && $this->settings->refresh_token) {
                 $this->refreshToken();
             }
@@ -86,9 +73,6 @@ class GoogleCalendarService
         return $this->client;
     }
 
-    /**
-     * Get the Calendar service instance.
-     */
     public function getCalendarService(): Calendar
     {
         if ($this->service) {
@@ -99,17 +83,11 @@ class GoogleCalendarService
         return $this->service;
     }
 
-    /**
-     * Generate the OAuth2 authorization URL.
-     */
     public function getAuthUrl(): string
     {
         return $this->getClient()->createAuthUrl();
     }
 
-    /**
-     * Handle the OAuth2 callback and store tokens.
-     */
     public function handleCallback(string $code): GoogleCalendarSetting
     {
         $client = $this->getClient();
@@ -122,14 +100,11 @@ class GoogleCalendarService
 
         $client->setAccessToken($token);
 
-        // Get the authenticated user's email
         $oauth2 = new \Google\Service\Oauth2($client);
-        // We'll use the calendar service to get the calendar info instead
         $calendarService = new Calendar($client);
         $calendarInfo = $calendarService->calendars->get('primary');
         $email = $calendarInfo->getSummary() ?: ($token['id_token'] ?? 'connected');
 
-        // Try to get email from token
         $accountEmail = null;
         if (isset($token['id_token'])) {
             $payload = $client->verifyIdToken($token['id_token']);
@@ -138,12 +113,10 @@ class GoogleCalendarService
             }
         }
 
-        // If we still don't have an email, add the email scope temporarily
         if (!$accountEmail) {
             $accountEmail = $calendarInfo->getId() ?: 'connected@google.com';
         }
 
-        // Store or update OAuth tokens for this location
         $settings = $this->locationId
             ? GoogleCalendarSetting::getOrCreateForLocation($this->locationId)
             : (GoogleCalendarSetting::first() ?? new GoogleCalendarSetting());
@@ -171,9 +144,6 @@ class GoogleCalendarService
         return $settings;
     }
 
-    /**
-     * Refresh the access token using the stored refresh token.
-     */
     protected function refreshToken(): void
     {
         if (!$this->settings || !$this->settings->refresh_token) {
@@ -203,21 +173,14 @@ class GoogleCalendarService
         }
     }
 
-    /**
-     * Check if Google Calendar is connected and ready.
-     */
     public function isConnected(): bool
     {
         return $this->settings && $this->settings->is_connected && $this->settings->refresh_token;
     }
 
-    /**
-     * Disconnect Google Calendar (revoke tokens).
-     */
     public function disconnect(): void
     {
         if ($this->settings) {
-            // Delete all synced Google Calendar events BEFORE revoking the token
             $this->deleteAllEvents();
 
             try {
@@ -239,9 +202,6 @@ class GoogleCalendarService
         }
     }
 
-    /**
-     * Delete all synced Google Calendar events for this location.
-     */
     public function deleteAllEvents(): int
     {
         $deleted = 0;
@@ -252,8 +212,6 @@ class GoogleCalendarService
 
         $calendarId = $this->settings->calendar_id ?? 'primary';
 
-        // Find all bookings that have a synced Google Calendar event for this location
-        // Include soft-deleted bookings so their orphaned calendar events get cleaned up too
         $query = Booking::withTrashed()->whereNotNull('google_calendar_event_id');
         if ($this->locationId) {
             $query->where('location_id', $this->locationId);
@@ -266,7 +224,6 @@ class GoogleCalendarService
                 $this->getCalendarService()->events->delete($calendarId, $booking->google_calendar_event_id);
                 $deleted++;
             } catch (\Google\Service\Exception $e) {
-                // Event may already be deleted externally (404/410), that's fine
                 if ($e->getCode() !== 404 && $e->getCode() !== 410) {
                     Log::warning('Failed to delete Google Calendar event during disconnect', [
                         'booking_id' => $booking->id,
@@ -282,7 +239,6 @@ class GoogleCalendarService
                 ]);
             }
 
-            // Clear the event ID regardless
             $booking->update(['google_calendar_event_id' => null]);
         }
 
@@ -295,10 +251,6 @@ class GoogleCalendarService
         return $deleted;
     }
 
-    /**
-     * Create a Google Calendar event from a booking.
-     * If the booking already has a synced event, update it instead (prevents duplicates).
-     */
     public function createEventFromBooking(Booking $booking): ?string
     {
         if (!$this->isConnected()) {
@@ -308,7 +260,6 @@ class GoogleCalendarService
             return null;
         }
 
-        // Guard: if booking already has a Google Calendar event, update instead of creating a duplicate
         if ($booking->google_calendar_event_id) {
             Log::info('Booking already has Google Calendar event, updating instead of creating duplicate', [
                 'booking_id' => $booking->id,
@@ -326,7 +277,6 @@ class GoogleCalendarService
             $createdEvent = $this->getCalendarService()->events->insert($calendarId, $event);
             $eventId = $createdEvent->getId();
 
-            // Store the event ID on the booking
             $booking->update(['google_calendar_event_id' => $eventId]);
 
             Log::info('Google Calendar event created', [
@@ -346,9 +296,6 @@ class GoogleCalendarService
         }
     }
 
-    /**
-     * Update Google Calendar event when a booking is updated.
-     */
     public function updateEventFromBooking(Booking $booking): ?string
     {
         if (!$this->isConnected()) {
@@ -360,7 +307,6 @@ class GoogleCalendarService
 
             $calendarId = $this->settings->calendar_id ?? 'primary';
 
-            // If booking already has an event, update it
             if ($booking->google_calendar_event_id) {
                 try {
                     $event = $this->buildEventFromBooking($booking);
@@ -377,7 +323,6 @@ class GoogleCalendarService
 
                     return $updatedEvent->getId();
                 } catch (\Google\Service\Exception $e) {
-                    // Event may have been deleted externally, create a new one
                     if ($e->getCode() === 404 || $e->getCode() === 410) {
                         Log::info('Google Calendar event not found, creating new one', [
                             'booking_id' => $booking->id,
@@ -390,7 +335,6 @@ class GoogleCalendarService
                 }
             }
 
-            // No event exists yet, create one
             return $this->createEventFromBooking($booking);
 
         } catch (\Exception $e) {
@@ -402,9 +346,6 @@ class GoogleCalendarService
         }
     }
 
-    /**
-     * Delete a Google Calendar event when a booking is cancelled.
-     */
     public function deleteEvent(Booking $booking): bool
     {
         if (!$this->isConnected() || !$booking->google_calendar_event_id) {
@@ -425,7 +366,6 @@ class GoogleCalendarService
             return true;
 
         } catch (\Google\Service\Exception $e) {
-            // Event may already be deleted
             if ($e->getCode() === 404 || $e->getCode() === 410) {
                 $booking->update(['google_calendar_event_id' => null]);
                 return true;
@@ -439,10 +379,6 @@ class GoogleCalendarService
         }
     }
 
-    /**
-     * Sync existing bookings from a given date to Google Calendar.
-     * Returns counts of created, skipped, and failed events.
-     */
     public function syncExistingBookings(\DateTime $fromDate, ?int $locationId = null): array
     {
         if (!$this->isConnected()) {
@@ -451,11 +387,8 @@ class GoogleCalendarService
 
         $results = ['created' => 0, 'skipped' => 0, 'failed' => 0, 'errors' => []];
 
-        // Use provided locationId or fall back to the service's locationId
         $syncLocationId = $locationId ?? $this->locationId;
 
-        // Get bookings from the given date onwards that don't have a Google event yet
-        // Exclude cancelled bookings, scoped to location
         $query = Booking::with(['package', 'location', 'customer', 'room', 'attractions', 'addOns'])
             ->where('booking_date', '>=', $fromDate->format('Y-m-d'))
             ->whereNull('google_calendar_event_id')
@@ -497,11 +430,9 @@ class GoogleCalendarService
                 ]);
             }
 
-            // Small delay to avoid rate limiting
             usleep(100000); // 100ms
         }
 
-        // Update last synced timestamp
         $this->settings->update([
             'last_synced_at' => now(),
             'sync_from_date' => $fromDate->format('Y-m-d'),
@@ -512,9 +443,6 @@ class GoogleCalendarService
         return $results;
     }
 
-    /**
-     * Build a Google Calendar Event object from a Booking.
-     */
     protected function buildEventFromBooking(Booking $booking): Event
     {
         $customerName = $booking->customer_name ?? $booking->guest_name ?? 'Guest';
@@ -522,13 +450,11 @@ class GoogleCalendarService
         $locationName = $booking->location?->name ?? 'Unknown Location';
         $roomName = $booking->room?->name ?? null;
 
-        // Build the event title
         $title = "{$packageName} - {$customerName}";
         if ($booking->reference_number) {
             $title .= " ({$booking->reference_number})";
         }
 
-        // Build the description
         $descriptionParts = [];
         $descriptionParts[] = "Booking Reference: {$booking->reference_number}";
         $descriptionParts[] = "Customer: {$customerName}";
@@ -555,7 +481,6 @@ class GoogleCalendarService
         $descriptionParts[] = "Status: " . ucfirst($booking->status);
         $descriptionParts[] = "Payment: " . ucfirst($booking->payment_status);
 
-        // Attractions
         if ($booking->attractions && $booking->attractions->count() > 0) {
             $descriptionParts[] = "";
             $descriptionParts[] = "Attractions:";
@@ -565,7 +490,6 @@ class GoogleCalendarService
             }
         }
 
-        // Add-ons
         if ($booking->addOns && $booking->addOns->count() > 0) {
             $descriptionParts[] = "";
             $descriptionParts[] = "Add-ons:";
@@ -575,7 +499,6 @@ class GoogleCalendarService
             }
         }
 
-        // Guest of honor
         if ($booking->guest_of_honor_name) {
             $descriptionParts[] = "";
             $descriptionParts[] = "Guest of Honor: {$booking->guest_of_honor_name}";
@@ -584,7 +507,6 @@ class GoogleCalendarService
             }
         }
 
-        // Notes
         if ($booking->notes) {
             $descriptionParts[] = "";
             $descriptionParts[] = "Notes: {$booking->notes}";
@@ -595,34 +517,24 @@ class GoogleCalendarService
 
         $description = implode("\n", $descriptionParts);
 
-        // Calculate start and end times
-        // booking_date is cast as 'date' (Carbon) and booking_time as 'datetime:H:i' (Carbon)
-        // Extract just the date portion and time portion to avoid "Double time specification" errors
         $datePart = \Carbon\Carbon::parse($booking->booking_date)->toDateString(); // 'Y-m-d'
         $timePart = \Carbon\Carbon::parse($booking->booking_time)->format('H:i:s'); // 'H:i:s'
         $startDateTime = $datePart . 'T' . $timePart;
 
-        // Calculate end time based on duration
-        // Both 'hours' and 'hours and minutes' store duration as decimal hours (e.g., 2.5 = 2h 30m)
-        // 'minutes' stores duration as minutes directly
         $duration = (float) $booking->duration;
         $unit = $booking->duration_unit;
 
         if ($unit === 'hours' || $unit === 'hours and minutes') {
             $durationMinutes = (int) round($duration * 60);
         } else {
-            // 'minutes' or any other unit - treat as minutes
             $durationMinutes = (int) round($duration);
         }
 
-        // Ensure minimum duration of 15 minutes to avoid nearly invisible calendar events
         $durationMinutes = max($durationMinutes, 15);
 
-        // Parse without timezone — we just need to calculate end time
         $startCarbon = \Carbon\Carbon::parse($startDateTime);
         $endCarbon = $startCarbon->copy()->addMinutes($durationMinutes);
 
-        // Build location string
         $locationParts = [$locationName];
         if ($booking->location?->address) {
             $locationParts[] = $booking->location->address;
@@ -636,7 +548,6 @@ class GoogleCalendarService
         }
         $eventLocation = implode(', ', $locationParts);
 
-        // Build the event
         $event = new Event();
         $event->setSummary($title);
         $event->setDescription($description);
@@ -652,8 +563,6 @@ class GoogleCalendarService
         $end->setTimeZone('America/Detroit');
         $event->setEnd($end);
 
-        // Set color based on status
-        // Google Calendar color IDs: https://developers.google.com/calendar/api/v3/reference/colors
         $colorMap = [
             'pending' => '5',    // Banana (yellow)
             'booked' => '10',    // Basil (green) - same as confirmed
@@ -663,11 +572,9 @@ class GoogleCalendarService
             'cancelled' => '11', // Tomato (red)
         ];
 
-        // Default to green if status not in map (to avoid purple default)
         $colorId = $colorMap[$booking->status] ?? '10';
         $event->setColorId($colorId);
 
-        // Add reminder
         $reminders = new \Google\Service\Calendar\EventReminders();
         $reminders->setUseDefault(false);
         $override = new \Google\Service\Calendar\EventReminder();
@@ -679,9 +586,6 @@ class GoogleCalendarService
         return $event;
     }
 
-    /**
-     * Get list of calendars for the connected account.
-     */
     public function getCalendarList(): array
     {
         if (!$this->isConnected()) {
@@ -710,9 +614,6 @@ class GoogleCalendarService
         }
     }
 
-    /**
-     * Update the calendar ID used for syncing events.
-     */
     public function setCalendarId(string $calendarId): void
     {
         if ($this->settings) {
@@ -720,14 +621,6 @@ class GoogleCalendarService
         }
     }
 
-    /**
-     * Full resync: Delete all existing Google Calendar events for this location,
-     * clear event IDs from bookings, and re-create events from a given date.
-     * This eliminates duplicates and ensures all events are fresh.
-     *
-     * @param \DateTime $fromDate Only resync bookings from this date onwards
-     * @return array Results with deleted, created, skipped, and failed counts
-     */
     public function resyncAllBookings(\DateTime $fromDate): array
     {
         if (!$this->isConnected()) {
@@ -744,8 +637,6 @@ class GoogleCalendarService
 
         $calendarId = $this->settings->calendar_id ?? 'primary';
 
-        // Step 1a: Delete ALL events directly from Google Calendar via API
-        // This catches orphaned events that no booking points to anymore
         try {
             $pageToken = null;
             do {
@@ -779,7 +670,6 @@ class GoogleCalendarService
             ]);
         }
 
-        // Step 1b: Clear google_calendar_event_id on all bookings for this location
         $clearQuery = Booking::withTrashed()->whereNotNull('google_calendar_event_id');
         if ($this->locationId) {
             $clearQuery->where('location_id', $this->locationId);
@@ -791,14 +681,11 @@ class GoogleCalendarService
             'deleted' => $results['deleted'],
         ]);
 
-        // Step 2: Re-create events for all active bookings from the given date
-        // Exclude cancelled and soft-deleted bookings
         $bookingsToSync = Booking::with(['package', 'location', 'customer', 'room', 'attractions', 'addOns'])
             ->where('booking_date', '>=', $fromDate->format('Y-m-d'))
             ->whereNotIn('status', ['cancelled'])
             ->whereNull('google_calendar_event_id');
 
-        // Note: withoutTrashed is the default, so soft-deleted bookings are already excluded
 
         if ($this->locationId) {
             $bookingsToSync->where('location_id', $this->locationId);
@@ -836,11 +723,9 @@ class GoogleCalendarService
                 ]);
             }
 
-            // Small delay to avoid rate limiting
             usleep(100000); // 100ms
         }
 
-        // Update last synced timestamp
         $this->settings->update([
             'last_synced_at' => now(),
             'sync_from_date' => $fromDate->format('Y-m-d'),

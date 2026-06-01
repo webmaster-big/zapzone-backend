@@ -7,11 +7,6 @@ use Illuminate\Http\Resources\Json\JsonResource;
 
 class PackageResource extends JsonResource
 {
-    /**
-     * Transform the resource into an array.
-     *
-     * @return array<string, mixed>
-     */
     public function toArray(Request $request): array
     {
         return [
@@ -43,7 +38,6 @@ class PackageResource extends JsonResource
             'updated_at' => $this->updated_at,
             'package_type' => $this->package_type,
 
-            // Relationships
             'location' => $this->whenLoaded('location'),
             'attractions' => $this->whenLoaded('attractions'),
             'add_ons' => $this->whenLoaded('addOns'),

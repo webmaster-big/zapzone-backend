@@ -44,25 +44,18 @@ class EmailCampaign extends Model
         'completed_at' => 'datetime',
     ];
 
-    /**
-     * Recipient type constants
-     */
     public const RECIPIENT_TYPE_CUSTOMERS = 'customers';
     public const RECIPIENT_TYPE_ATTENDANTS = 'attendants';
     public const RECIPIENT_TYPE_COMPANY_ADMIN = 'company_admin';
     public const RECIPIENT_TYPE_LOCATION_MANAGERS = 'location_managers';
     public const RECIPIENT_TYPE_CUSTOM = 'custom';
 
-    /**
-     * Status constants
-     */
     public const STATUS_PENDING = 'pending';
     public const STATUS_SENDING = 'sending';
     public const STATUS_COMPLETED = 'completed';
     public const STATUS_FAILED = 'failed';
     public const STATUS_CANCELLED = 'cancelled';
 
-    // Relationships
     public function company(): BelongsTo
     {
         return $this->belongsTo(Company::class);
@@ -88,7 +81,6 @@ class EmailCampaign extends Model
         return $this->hasMany(EmailCampaignLog::class);
     }
 
-    // Scopes
     public function scopePending($query)
     {
         return $query->where('status', self::STATUS_PENDING);
@@ -130,9 +122,6 @@ class EmailCampaign extends Model
             });
     }
 
-    /**
-     * Mark campaign as sending
-     */
     public function markAsSending(): void
     {
         $this->update([
@@ -141,9 +130,6 @@ class EmailCampaign extends Model
         ]);
     }
 
-    /**
-     * Mark campaign as completed
-     */
     public function markAsCompleted(): void
     {
         $this->update([
@@ -152,9 +138,6 @@ class EmailCampaign extends Model
         ]);
     }
 
-    /**
-     * Mark campaign as failed
-     */
     public function markAsFailed(string $errorMessage): void
     {
         $this->update([
@@ -164,25 +147,16 @@ class EmailCampaign extends Model
         ]);
     }
 
-    /**
-     * Increment sent count
-     */
     public function incrementSent(): void
     {
         $this->increment('sent_count');
     }
 
-    /**
-     * Increment failed count
-     */
     public function incrementFailed(): void
     {
         $this->increment('failed_count');
     }
 
-    /**
-     * Get success rate
-     */
     public function getSuccessRateAttribute(): float
     {
         if ($this->total_recipients === 0) {

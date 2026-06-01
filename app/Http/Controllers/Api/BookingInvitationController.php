@@ -21,22 +21,16 @@ class BookingInvitationController extends Controller
         $this->invitationService = new InvitationService();
     }
 
-    /**
-     * Verify the authenticated customer owns the booking.
-     * Matches by customer_id OR by guest_email (for guest-checkout bookings).
-     */
     private function customerOwnsBooking($customer, Booking $booking): bool
     {
         if (!$customer) {
             return false;
         }
 
-        // Direct customer_id match
         if ($booking->customer_id && $booking->customer_id === $customer->id) {
             return true;
         }
 
-        // Guest-checkout bookings: match by email
         if ($booking->guest_email && $booking->guest_email === $customer->email) {
             return true;
         }
@@ -44,13 +38,9 @@ class BookingInvitationController extends Controller
         return false;
     }
 
-    /**
-     * List all invitations for a booking with summary stats.
-     */
     public function index(Request $request, Booking $booking): JsonResponse
     {
         try {
-            // Verify ownership: the authenticated customer must own this booking
             $customer = $request->user();
             if (!$this->customerOwnsBooking($customer, $booking)) {
                 return response()->json(['message' => 'Unauthorized'], 403);
@@ -78,14 +68,9 @@ class BookingInvitationController extends Controller
         }
     }
 
-    /**
-     * Send invitations for a booking.
-     * Accepts an array of guests to invite.
-     */
     public function store(Request $request, Booking $booking): JsonResponse
     {
         try {
-            // Verify ownership
             $customer = $request->user();
             if (!$this->customerOwnsBooking($customer, $booking)) {
                 return response()->json(['message' => 'Unauthorized'], 403);
@@ -99,7 +84,6 @@ class BookingInvitationController extends Controller
                 'guests.*.send_via' => ['required', Rule::in(['email', 'text', 'both'])],
             ]);
 
-            // Validate that each guest has at least one contact method based on send_via
             foreach ($validated['guests'] as $i => $guest) {
                 if (in_array($guest['send_via'], ['email', 'both']) && empty($guest['email'])) {
                     return response()->json([
@@ -115,7 +99,6 @@ class BookingInvitationController extends Controller
                 }
             }
 
-            // Check participant capacity
             $existingCount = BookingInvitation::where('booking_id', $booking->id)->count();
             $maxParticipants = $booking->participants ?? 0;
             $newCount = count($validated['guests']);
@@ -130,7 +113,6 @@ class BookingInvitationController extends Controller
             $booking->load(['customer', 'package', 'location']);
 
             foreach ($validated['guests'] as $guest) {
-                // Check for duplicate email
                 if (!empty($guest['email'])) {
                     $existing = BookingInvitation::where('booking_id', $booking->id)
                         ->where('guest_email', $guest['email'])
@@ -146,7 +128,6 @@ class BookingInvitationController extends Controller
                     }
                 }
 
-                // Create invitation record
                 $invitation = BookingInvitation::create([
                     'booking_id' => $booking->id,
                     'guest_name' => $guest['name'],
@@ -156,7 +137,6 @@ class BookingInvitationController extends Controller
                     'rsvp_status' => 'pending',
                 ]);
 
-                // Send the invitation
                 $sendResult = $this->invitationService->sendInvitation($invitation);
 
                 $results[] = [
@@ -167,7 +147,6 @@ class BookingInvitationController extends Controller
                 ];
             }
 
-            // Refresh summary
             $summary = BookingInvitation::getSummaryForBooking(
                 $booking->id,
                 $booking->participants ?? 0
@@ -194,19 +173,14 @@ class BookingInvitationController extends Controller
         }
     }
 
-    /**
-     * Resend a specific invitation.
-     */
     public function resend(Request $request, Booking $booking, BookingInvitation $invitation): JsonResponse
     {
         try {
-            // Verify ownership
             $customer = $request->user();
             if (!$this->customerOwnsBooking($customer, $booking)) {
                 return response()->json(['message' => 'Unauthorized'], 403);
             }
 
-            // Verify invitation belongs to booking
             if ($invitation->booking_id !== $booking->id) {
                 return response()->json(['message' => 'Invitation not found for this booking'], 404);
             }
@@ -227,26 +201,20 @@ class BookingInvitationController extends Controller
         }
     }
 
-    /**
-     * Delete/cancel a pending invitation.
-     */
     public function destroy(Request $request, Booking $booking, BookingInvitation $invitation): JsonResponse
     {
         try {
-            // Verify ownership
             $customer = $request->user();
             if (!$this->customerOwnsBooking($customer, $booking)) {
                 return response()->json(['message' => 'Unauthorized'], 403);
             }
 
-            // Verify invitation belongs to booking
             if ($invitation->booking_id !== $booking->id) {
                 return response()->json(['message' => 'Invitation not found for this booking'], 404);
             }
 
             $invitation->delete();
 
-            // Refresh summary
             $summary = BookingInvitation::getSummaryForBooking(
                 $booking->id,
                 $booking->participants ?? 0
@@ -265,13 +233,9 @@ class BookingInvitationController extends Controller
         }
     }
 
-    /**
-     * Preview the invitation email for a booking (returns HTML).
-     */
     public function preview(Request $request, Booking $booking): JsonResponse
     {
         try {
-            // Verify ownership
             $customer = $request->user();
             if (!$this->customerOwnsBooking($customer, $booking)) {
                 return response()->json(['message' => 'Unauthorized'], 403);
@@ -279,7 +243,6 @@ class BookingInvitationController extends Controller
 
             $booking->load(['customer', 'package', 'location']);
 
-            // Create a dummy invitation for preview
             $dummyInvitation = new BookingInvitation([
                 'guest_name' => 'Sample Guest',
                 'guest_email' => 'guest@example.com',
@@ -288,14 +251,12 @@ class BookingInvitationController extends Controller
             $dummyInvitation->booking_id = $booking->id;
             $dummyInvitation->setRelation('booking', $booking);
 
-            // Build variables via reflection (method is protected)
             $service = new InvitationService();
             $reflection = new \ReflectionClass($service);
             $buildVars = $reflection->getMethod('buildInvitationVariables');
             $buildVars->setAccessible(true);
             $variables = $buildVars->invoke($service, $dummyInvitation, $booking);
 
-            // Use the same Mailable as actual emails for accurate preview
             $mailable = new PartyInvitation($booking, $dummyInvitation, $variables);
             $mailable->build();
 

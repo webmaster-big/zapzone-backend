@@ -20,10 +20,6 @@ class AnalyticsController extends Controller
 {
     use ScopesByAuthUser;
 
-    /**
-     * Get comprehensive analytics for company-wide view
-     * Includes all locations with aggregated data
-     */
     public function getCompanyAnalytics(Request $request)
     {
         $request->validate([
@@ -39,17 +35,14 @@ class AnalyticsController extends Controller
         $dateRange = $request->date_range ?? '30d';
         $locationIds = $request->location_ids ?? [];
 
-        // Enforce multi-tenant + role scope
         $authUser = $this->resolveAuthUser($request);
         if ($authUser && $authUser->company_id && (int) $authUser->company_id !== (int) $companyId) {
             return response()->json(['message' => 'Forbidden: cannot access another company analytics'], 403);
         }
         if ($authUser && in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
-            // Location managers are forced to their own location only
             $locationIds = [$authUser->location_id];
         }
 
-        // Calculate date range - use custom dates if provided, otherwise use preset
         if ($dateRange === 'custom' && $request->filled('start_date') && $request->filled('end_date')) {
             $startDate = Carbon::parse($request->start_date)->startOfDay();
             $endDate = Carbon::parse($request->end_date)->endOfDay();
@@ -58,10 +51,8 @@ class AnalyticsController extends Controller
             $endDate = now();
         }
 
-        // Get company details
         $company = Company::with('locations')->findOrFail($companyId);
 
-        // Filter locations if specific ones are selected
         $locations = $company->locations;
         if (!empty($locationIds)) {
             $locations = $locations->whereIn('id', $locationIds);
@@ -69,7 +60,6 @@ class AnalyticsController extends Controller
 
         $locationIdList = $locations->pluck('id')->toArray();
 
-        // If no locations after filtering, return empty response
         if (empty($locationIdList)) {
             return response()->json([
                 'message' => 'No locations found for the specified criteria',
@@ -81,7 +71,6 @@ class AnalyticsController extends Controller
             ], 404);
         }
 
-        // Get all company locations for the filter dropdown (unfiltered)
         $allCompanyLocations = $company->locations->map(function ($location) {
             return [
                 'id' => $location->id,
@@ -89,7 +78,6 @@ class AnalyticsController extends Controller
             ];
         })->values();
 
-        // Compile all analytics data
         $analytics = [
             'company' => [
                 'id' => $company->id,
@@ -117,10 +105,6 @@ class AnalyticsController extends Controller
         return response()->json($analytics);
     }
 
-    /**
-     * Get comprehensive analytics for a location manager
-     * Includes package bookings and attraction ticket sales
-     */
     public function getLocationAnalytics(Request $request)
     {
         $request->validate([
@@ -133,7 +117,6 @@ class AnalyticsController extends Controller
         $locationId = $request->location_id;
         $dateRange = $request->date_range ?? '30d';
 
-        // Enforce: a location_manager/attendant can only view their own location.
         $authUser = $this->resolveAuthUser($request);
         if ($authUser && in_array($authUser->role, ['location_manager', 'attendant'], true)
             && $authUser->location_id
@@ -141,7 +124,6 @@ class AnalyticsController extends Controller
             return response()->json(['message' => 'Forbidden: cannot access another location analytics'], 403);
         }
 
-        // Calculate date range - use custom dates if provided, otherwise use preset
         if ($dateRange === 'custom' && $request->filled('start_date') && $request->filled('end_date')) {
             $startDate = Carbon::parse($request->start_date)->startOfDay();
             $endDate = Carbon::parse($request->end_date)->endOfDay();
@@ -150,10 +132,8 @@ class AnalyticsController extends Controller
             $endDate = now();
         }
 
-        // Get location details
         $location = Location::with('company')->findOrFail($locationId);
 
-        // Compile all analytics data
         $analytics = [
             'location' => [
                 'id' => $location->id,
@@ -182,9 +162,6 @@ class AnalyticsController extends Controller
         return response()->json($analytics);
     }
 
-    /**
-     * Calculate start date based on date range
-     */
     private function getStartDate($dateRange)
     {
         return match($dateRange) {
@@ -196,13 +173,8 @@ class AnalyticsController extends Controller
         };
     }
 
-    /**
-     * Get key metrics summary
-     * Uses booking_date for bookings and scheduled_date/purchase_date for attractions
-     */
     private function getKeyMetrics($locationId, $startDate, $endDate)
     {
-        // Get bookings data - filter by booking_date (actual event date, not creation date)
         $bookings = Booking::where('location_id', $locationId)
             ->whereBetween('booking_date', [$startDate->toDateString(), $endDate->toDateString()])
             ->whereNotIn('status', ['cancelled'])
@@ -212,7 +184,6 @@ class AnalyticsController extends Controller
         $totalBookings = $bookings->count();
         $totalParticipants = $bookings->sum('participants');
 
-        // Get attraction purchases data - filter by scheduled_date (fallback to purchase_date)
         $attractionPurchases = AttractionPurchase::byLocation($locationId)
             ->whereRaw('COALESCE(scheduled_date, purchase_date) BETWEEN ? AND ?', [$startDate->toDateString(), $endDate->toDateString()])
             ->whereNotIn('status', ['cancelled', 'refunded'])
@@ -221,7 +192,6 @@ class AnalyticsController extends Controller
         $totalAttractionRevenue = $attractionPurchases->sum('amount_paid');
         $totalTicketsSold = $attractionPurchases->sum('quantity');
 
-        // Get event purchases data - filter by purchase_date
         $eventPurchases = EventPurchase::where('location_id', $locationId)
             ->whereBetween('purchase_date', [$startDate->toDateString(), $endDate->toDateString()])
             ->whereNotIn('status', ['cancelled', 'refunded'])
@@ -230,10 +200,8 @@ class AnalyticsController extends Controller
         $totalEventRevenue = $eventPurchases->sum('amount_paid');
         $totalEventTicketsSold = $eventPurchases->sum('quantity');
 
-        // Combined totals
         $totalRevenue = $totalBookingRevenue + $totalAttractionRevenue + $totalEventRevenue;
 
-        // Active counts
         $activePackages = Package::where('location_id', $locationId)
             ->where('is_active', true)
             ->count();
@@ -252,7 +220,6 @@ class AnalyticsController extends Controller
 
         $totalEvents = Event::where('location_id', $locationId)->count();
 
-        // Calculate previous period for comparison
         $periodDays = $endDate->diffInDays($startDate);
         $prevStartDate = $startDate->copy()->subDays($periodDays);
         $prevEndDate = $startDate->copy()->subDay();
@@ -278,7 +245,6 @@ class AnalyticsController extends Controller
         $prevTotalEventTickets = $prevEventPurchases->sum('quantity');
         $prevTotalParticipants = $prevBookings->sum('participants');
 
-        // Determine operational status messages
         $packageStatus = $activePackages === $totalPackages ? 'All operational' :
                          ($activePackages === 0 ? 'None operational' :
                          ($totalPackages - $activePackages) . ' inactive');
@@ -338,14 +304,10 @@ class AnalyticsController extends Controller
         ];
     }
 
-    /**
-     * Get hourly revenue pattern based on actual booking_time / scheduled_time
-     */
     private function getHourlyRevenue($locationId, $startDate, $endDate)
     {
         $hourlyData = [];
 
-        // Get bookings grouped by actual booking hour (not creation time)
         $bookingsByHour = Booking::where('location_id', $locationId)
             ->whereBetween('booking_date', [$startDate->toDateString(), $endDate->toDateString()])
             ->whereNotIn('status', ['cancelled'])
@@ -358,7 +320,6 @@ class AnalyticsController extends Controller
             ->get()
             ->keyBy('hour');
 
-        // Get attraction purchases grouped by scheduled_time
         $attractionsByHour = AttractionPurchase::byLocation($locationId)
             ->whereRaw('COALESCE(scheduled_date, purchase_date) BETWEEN ? AND ?', [$startDate->toDateString(), $endDate->toDateString()])
             ->whereNotIn('status', ['cancelled', 'refunded'])
@@ -372,7 +333,6 @@ class AnalyticsController extends Controller
             ->get()
             ->keyBy('hour');
 
-        // Get event purchases grouped by purchase_time
         $eventsByHour = EventPurchase::where('location_id', $locationId)
             ->whereBetween('purchase_date', [$startDate->toDateString(), $endDate->toDateString()])
             ->whereNotIn('status', ['cancelled', 'refunded'])
@@ -386,7 +346,6 @@ class AnalyticsController extends Controller
             ->get()
             ->keyBy('hour');
 
-        // Generate data for each hour (9 AM to 9 PM)
         for ($hour = 9; $hour <= 21; $hour++) {
             $bookingData = $bookingsByHour->get($hour);
             $attractionData = $attractionsByHour->get($hour);
@@ -396,7 +355,6 @@ class AnalyticsController extends Controller
             $attractionRev = $attractionData ? round($attractionData->revenue, 2) : 0;
             $eventRev = $eventData ? round($eventData->revenue, 2) : 0;
 
-            // Format hour label
             $period = $hour < 12 ? 'AM' : 'PM';
             $displayHour = $hour <= 12 ? $hour : $hour - 12;
 
@@ -413,15 +371,10 @@ class AnalyticsController extends Controller
         return $hourlyData;
     }
 
-    /**
-     * Get daily revenue within the specified date range
-     * Optimized: uses grouped queries instead of per-day iteration
-     */
     private function getDailyRevenue($locationId, $startDate, $endDate)
     {
         $days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
-        // Get all bookings grouped by booking_date in a single query
         $bookingsByDate = Booking::where('location_id', $locationId)
             ->whereBetween('booking_date', [$startDate->toDateString(), $endDate->toDateString()])
             ->whereNotIn('status', ['cancelled'])
@@ -435,7 +388,6 @@ class AnalyticsController extends Controller
             ->get()
             ->keyBy(fn($item) => $item->booking_date->toDateString());
 
-        // Get all attraction purchases grouped by visit date in a single query
         $attractionsByDate = AttractionPurchase::byLocation($locationId)
             ->whereRaw('COALESCE(scheduled_date, purchase_date) BETWEEN ? AND ?', [$startDate->toDateString(), $endDate->toDateString()])
             ->whereNotIn('status', ['cancelled', 'refunded'])
@@ -449,7 +401,6 @@ class AnalyticsController extends Controller
             ->get()
             ->keyBy('visit_date');
 
-        // Get all event purchases grouped by purchase_date in a single query
         $eventsByDate = EventPurchase::where('location_id', $locationId)
             ->whereBetween('purchase_date', [$startDate->toDateString(), $endDate->toDateString()])
             ->whereNotIn('status', ['cancelled', 'refunded'])
@@ -497,38 +448,29 @@ class AnalyticsController extends Controller
         return $dailyData;
     }
 
-    /**
-     * Get weekly trend within the specified date range
-     * Uses booking_date for bookings, scheduled_date/purchase_date for attractions
-     */
     private function getWeeklyTrend($locationId, $startDate, $endDate)
     {
         $weeklyData = [];
         $weekNumber = 1;
 
-        // Start from the beginning of the first week in the range
         $currentWeekStart = $startDate->copy()->startOfWeek();
 
         while ($currentWeekStart->lte($endDate)) {
             $currentWeekEnd = $currentWeekStart->copy()->endOfWeek();
 
-            // Adjust week boundaries to stay within the date range
             $effectiveStart = $currentWeekStart->lt($startDate) ? $startDate->copy() : $currentWeekStart->copy();
             $effectiveEnd = $currentWeekEnd->gt($endDate) ? $endDate->copy() : $currentWeekEnd->copy();
 
-            // Bookings for this week - use booking_date
             $weekBookings = Booking::where('location_id', $locationId)
                 ->whereBetween('booking_date', [$effectiveStart->toDateString(), $effectiveEnd->toDateString()])
                 ->whereNotIn('status', ['cancelled'])
                 ->get();
 
-            // Attraction purchases for this week - use scheduled_date/purchase_date
             $weekAttractions = AttractionPurchase::byLocation($locationId)
                 ->whereRaw('COALESCE(scheduled_date, purchase_date) BETWEEN ? AND ?', [$effectiveStart->toDateString(), $effectiveEnd->toDateString()])
                 ->whereNotIn('status', ['cancelled', 'refunded'])
                 ->get();
 
-            // Event purchases for this week - use purchase_date
             $weekEvents = EventPurchase::where('location_id', $locationId)
                 ->whereBetween('purchase_date', [$effectiveStart->toDateString(), $effectiveEnd->toDateString()])
                 ->whereNotIn('status', ['cancelled', 'refunded'])
@@ -551,12 +493,8 @@ class AnalyticsController extends Controller
         return $weeklyData;
     }
 
-    /**
-     * Get package performance
-     */
     private function getPackagePerformance($locationId, $startDate, $endDate)
     {
-        // Get active packages for this location
         $packages = Package::where('location_id', $locationId)
             ->where('is_active', true)
             ->get();
@@ -567,7 +505,6 @@ class AnalyticsController extends Controller
 
         $packageIds = $packages->pluck('id')->toArray();
 
-        // Get aggregated booking stats in a single efficient query
         $bookingStats = Booking::whereIn('package_id', $packageIds)
             ->whereBetween('booking_date', [$startDate->toDateString(), $endDate->toDateString()])
             ->whereNotIn('status', ['cancelled'])
@@ -582,11 +519,9 @@ class AnalyticsController extends Controller
             ->get()
             ->keyBy('package_id');
 
-        // Combine package data with booking stats
         return $packages->map(function ($package) use ($bookingStats) {
             $stats = $bookingStats->get($package->id);
 
-            // Skip packages with no bookings
             if (!$stats || $stats->bookings_count == 0) {
                 return null;
             }
@@ -604,10 +539,6 @@ class AnalyticsController extends Controller
         })->filter()->sortByDesc('revenue')->values();
     }
 
-    /**
-     * Get attraction performance (ticket sales)
-     * Uses scheduled_date/purchase_date for date filtering, excludes refunded
-     */
     private function getAttractionPerformance($locationId, $startDate, $endDate)
     {
         $attractions = Attraction::where('location_id', $locationId)
@@ -620,7 +551,6 @@ class AnalyticsController extends Controller
 
         $attractionIds = $attractions->pluck('id')->toArray();
 
-        // Get aggregated purchase stats in a single efficient query
         $purchaseStats = AttractionPurchase::whereIn('attraction_id', $attractionIds)
             ->whereRaw('COALESCE(scheduled_date, purchase_date) BETWEEN ? AND ?', [$startDate->toDateString(), $endDate->toDateString()])
             ->whereNotIn('status', ['cancelled', 'refunded'])
@@ -643,7 +573,6 @@ class AnalyticsController extends Controller
             $ticketsSold = $stats ? (int) $stats->total_tickets : 0;
             $revenue = $stats ? round((float) $stats->total_revenue, 2) : 0;
 
-            // Calculate utilization: tickets sold vs max_capacity per day over the period
             $maxPossible = ($attraction->max_capacity ?? 0) * $daysInPeriod;
             $utilization = $maxPossible > 0
                 ? min(100, round(($ticketsSold / $maxPossible) * 100, 1))
@@ -663,15 +592,10 @@ class AnalyticsController extends Controller
         })->sortByDesc('revenue')->values();
     }
 
-    /**
-     * Get time slot performance (hourly breakdown)
-     * Uses booking_time for bookings, scheduled_time for attractions
-     */
     private function getTimeSlotPerformance($locationId, $startDate, $endDate)
     {
         $slotData = [];
 
-        // Get bookings grouped by actual booking hour (not creation time)
         $bookingsByHour = Booking::where('location_id', $locationId)
             ->whereBetween('booking_date', [$startDate->toDateString(), $endDate->toDateString()])
             ->whereNotIn('status', ['cancelled'])
@@ -685,7 +609,6 @@ class AnalyticsController extends Controller
             ->get()
             ->keyBy('hour');
 
-        // Get attraction purchases grouped by scheduled_time
         $attractionsByHour = AttractionPurchase::byLocation($locationId)
             ->whereRaw('COALESCE(scheduled_date, purchase_date) BETWEEN ? AND ?', [$startDate->toDateString(), $endDate->toDateString()])
             ->whereNotIn('status', ['cancelled', 'refunded'])
@@ -700,7 +623,6 @@ class AnalyticsController extends Controller
             ->get()
             ->keyBy('hour');
 
-        // Get event purchases grouped by purchase_time
         $eventsByHour = EventPurchase::where('location_id', $locationId)
             ->whereBetween('purchase_date', [$startDate->toDateString(), $endDate->toDateString()])
             ->whereNotIn('status', ['cancelled', 'refunded'])
@@ -715,7 +637,6 @@ class AnalyticsController extends Controller
             ->get()
             ->keyBy('hour');
 
-        // Generate data for each hour (9 AM to 9 PM)
         for ($hour = 9; $hour <= 21; $hour++) {
             $bookingData = $bookingsByHour->get($hour);
             $attractionData = $attractionsByHour->get($hour);
@@ -734,7 +655,6 @@ class AnalyticsController extends Controller
             $totalRevenue = round($bookingsRevenue + $attractionRevenue + $eventRevenue, 2);
             $totalTransactions = $bookingsCount + ($attractionData ? (int) $attractionData->purchases_count : 0) + ($eventData ? (int) $eventData->purchases_count : 0);
 
-            // Format hour label (e.g., "9 AM", "12 PM", "5 PM")
             $period = $hour < 12 ? 'AM' : 'PM';
             $displayHour = $hour <= 12 ? $hour : $hour - 12;
             $label = "{$displayHour} {$period}";
@@ -758,9 +678,6 @@ class AnalyticsController extends Controller
         return $slotData;
     }
 
-    /**
-     * Calculate percentage change between current and previous values
-     */
     private function calculatePercentageChange($current, $previous)
     {
         if ($previous == 0) {
@@ -773,12 +690,8 @@ class AnalyticsController extends Controller
         return $sign . number_format($change, 1) . '%';
     }
 
-    /**
-     * Get company-wide key metrics
-     */
     private function getCompanyKeyMetrics($locationIds, $startDate, $endDate)
     {
-        // Get bookings data for all locations
         $bookings = Booking::whereIn('location_id', $locationIds)
             ->whereBetween('created_at', [$startDate, $endDate])
             ->whereNotIn('status', ['cancelled'])
@@ -788,7 +701,6 @@ class AnalyticsController extends Controller
         $totalBookings = $bookings->count();
         $totalParticipants = $bookings->sum('participants');
 
-        // Get attraction purchases for all locations
         $attractionPurchases = AttractionPurchase::whereHas('attraction', function ($query) use ($locationIds) {
                 $query->whereIn('location_id', $locationIds);
             })
@@ -799,7 +711,6 @@ class AnalyticsController extends Controller
         $totalAttractionRevenue = $attractionPurchases->sum('amount_paid');
         $totalTicketsSold = $attractionPurchases->sum('quantity');
 
-        // Get event purchases for all locations
         $eventPurchases = EventPurchase::whereIn('location_id', $locationIds)
             ->whereBetween('created_at', [$startDate, $endDate])
             ->whereNotIn('status', ['cancelled', 'refunded'])
@@ -808,11 +719,9 @@ class AnalyticsController extends Controller
         $totalEventRevenue = $eventPurchases->sum('amount_paid');
         $totalEventTicketsSold = $eventPurchases->sum('quantity');
 
-        // Combined totals
         $totalRevenue = $totalBookingRevenue + $totalAttractionRevenue + $totalEventRevenue;
         $totalLocations = count($locationIds);
 
-        // Active counts
         $activePackages = Package::whereIn('location_id', $locationIds)
             ->where('is_active', true)
             ->count();
@@ -821,7 +730,6 @@ class AnalyticsController extends Controller
             ->where('is_active', true)
             ->count();
 
-        // Previous period comparison
         $periodDays = $endDate->diffInDays($startDate);
         $prevStartDate = $startDate->copy()->subDays($periodDays);
         $prevEndDate = $startDate->copy();
@@ -849,7 +757,6 @@ class AnalyticsController extends Controller
         $prevTotalEventTickets = $prevEventPurchases->sum('quantity');
         $prevTotalParticipants = $prevBookings->sum('participants');
 
-        // New locations/packages in period
         $newPackages = Package::whereIn('location_id', $locationIds)
             ->where('is_active', true)
             ->whereBetween('created_at', [$startDate, $endDate])
@@ -904,12 +811,8 @@ class AnalyticsController extends Controller
         ];
     }
 
-    /**
-     * Get revenue trend over time (monthly for long periods, daily for short)
-     */
     private function getRevenueTrend($locationIds, $startDate, $endDate)
     {
-        // Handle empty location IDs
         if (empty($locationIds)) {
             return [];
         }
@@ -917,7 +820,6 @@ class AnalyticsController extends Controller
         $daysDiff = $endDate->diffInDays($startDate);
         $trendData = [];
 
-        // If more than 60 days, show monthly data within the specified range
         if ($daysDiff > 60) {
             $currentMonth = $startDate->copy()->startOfMonth();
             $endMonth = $endDate->copy()->endOfMonth();
@@ -926,12 +828,10 @@ class AnalyticsController extends Controller
                 $monthStart = $currentMonth->copy();
                 $monthEnd = $currentMonth->copy()->endOfMonth();
 
-                // Don't go beyond the specified end date
                 if ($monthEnd->gt($endDate)) {
                     $monthEnd = $endDate->copy();
                 }
 
-                // Don't start before the specified start date
                 if ($monthStart->lt($startDate)) {
                     $monthStart = $startDate->copy();
                 }
@@ -967,7 +867,6 @@ class AnalyticsController extends Controller
                 $currentMonth->addMonth();
             }
         } else {
-            // Show daily data for the specified date range
             $currentDate = $startDate->copy();
 
             while ($currentDate->lte($endDate)) {
@@ -1006,12 +905,8 @@ class AnalyticsController extends Controller
         return $trendData;
     }
 
-    /**
-     * Get performance comparison across locations
-     */
     private function getLocationPerformance($locationIds, $startDate, $endDate)
     {
-        // Handle empty location IDs
         if (empty($locationIds)) {
             return [];
         }
@@ -1052,9 +947,6 @@ class AnalyticsController extends Controller
         })->sortByDesc('revenue')->values();
     }
 
-    /**
-     * Get package distribution (percentage breakdown by category)
-     */
     private function getPackageDistribution($locationIds, $startDate, $endDate)
     {
         $bookings = Booking::whereIn('location_id', $locationIds)
@@ -1063,13 +955,11 @@ class AnalyticsController extends Controller
             ->with('package')
             ->get();
 
-        // If no bookings, return empty array
         if ($bookings->isEmpty()) {
             return [];
         }
 
         $categoryGroups = $bookings->groupBy(function ($booking) {
-            // Handle null package or category
             if (!$booking->package) {
                 return 'Other';
             }
@@ -1096,9 +986,6 @@ class AnalyticsController extends Controller
         return $distribution;
     }
 
-    /**
-     * Get peak hours across all locations
-     */
     private function getCompanyPeakHours($locationIds, $startDate, $endDate)
     {
         $hourlyData = [];
@@ -1139,15 +1026,11 @@ class AnalyticsController extends Controller
         return $hourlyData;
     }
 
-    /**
-     * Get daily performance within the specified date range
-     */
     private function getCompanyDailyPerformance($locationIds, $startDate, $endDate)
     {
         $days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
         $dailyData = [];
 
-        // Iterate through each day in the date range
         $currentDate = $startDate->copy();
         while ($currentDate->lte($endDate)) {
             $dayOfWeek = $days[$currentDate->dayOfWeekIso - 1];
@@ -1199,12 +1082,8 @@ class AnalyticsController extends Controller
         return $dailyData;
     }
 
-    /**
-     * Get booking status distribution
-     */
     private function getBookingStatus($locationIds, $startDate, $endDate)
     {
-        // Handle empty location IDs
         if (empty($locationIds)) {
             return [];
         }
@@ -1215,7 +1094,6 @@ class AnalyticsController extends Controller
             ->groupBy('status')
             ->get();
 
-        // If no bookings, return empty array
         if ($bookings->isEmpty()) {
             return [];
         }
@@ -1237,9 +1115,6 @@ class AnalyticsController extends Controller
         })->values();
     }
 
-    /**
-     * Get top attractions by ticket sales across all locations
-     */
     private function getTopAttractions($locationIds, $startDate, $endDate)
     {
         $attractions = Attraction::whereIn('location_id', $locationIds)
@@ -1259,16 +1134,12 @@ class AnalyticsController extends Controller
                 'revenue' => round($purchases->sum('amount_paid') ?? 0, 2),
             ];
         })->filter(function ($item) {
-            // Only include attractions with sales
             return $item['revenue'] > 0 || $item['tickets_sold'] > 0;
         })->sortByDesc('revenue')->take(10)->values();
 
         return $attractionData;
     }
 
-    /**
-     * Get top events by ticket sales across all locations
-     */
     private function getTopEvents($locationIds, $startDate, $endDate)
     {
         $events = Event::whereIn('location_id', $locationIds)
@@ -1294,10 +1165,6 @@ class AnalyticsController extends Controller
         return $eventData;
     }
 
-    /**
-     * Get event performance (ticket sales per event)
-     * Uses purchase_date for date filtering
-     */
     private function getEventPerformance($locationId, $startDate, $endDate)
     {
         $events = Event::where('location_id', $locationId)
@@ -1310,7 +1177,6 @@ class AnalyticsController extends Controller
 
         $eventIds = $events->pluck('id')->toArray();
 
-        // Get aggregated purchase stats in a single efficient query
         $purchaseStats = EventPurchase::whereIn('event_id', $eventIds)
             ->whereBetween('purchase_date', [$startDate->toDateString(), $endDate->toDateString()])
             ->whereNotIn('status', ['cancelled', 'refunded'])
@@ -1343,9 +1209,6 @@ class AnalyticsController extends Controller
         })->sortByDesc('revenue')->values();
     }
 
-    /**
-     * Export analytics data
-     */
     public function exportAnalytics(Request $request)
     {
         $request->validate([
@@ -1358,7 +1221,6 @@ class AnalyticsController extends Controller
             'sections.*' => 'in:metrics,revenue,packages,attractions,events,timeslots',
         ]);
 
-        // Get the full analytics data
         $analyticsRequest = new Request([
             'location_id' => $request->location_id,
             'date_range' => $request->date_range ?? '30d',
@@ -1368,7 +1230,6 @@ class AnalyticsController extends Controller
 
         $analytics = json_decode($this->getLocationAnalytics($analyticsRequest)->getContent(), true);
 
-        // Filter sections if specified
         if ($request->has('sections') && !empty($request->sections)) {
             $filteredAnalytics = [
                 'location' => $analytics['location'],
@@ -1410,14 +1271,10 @@ class AnalyticsController extends Controller
         return response()->json($analytics);
     }
 
-    /**
-     * Export analytics as CSV
-     */
     private function exportAsCsv($analytics)
     {
         $csv = [];
 
-        // Add header
         $csv[] = ['Location Analytics Export'];
         $csv[] = ['Generated At', $analytics['generated_at']];
         $csv[] = ['Location', $analytics['location']['name']];
@@ -1427,7 +1284,6 @@ class AnalyticsController extends Controller
         $csv[] = ['End Date', $analytics['date_range']['end_date']];
         $csv[] = [];
 
-        // Key Metrics
         if (isset($analytics['key_metrics'])) {
             $csv[] = ['Key Metrics'];
             $csv[] = ['Metric', 'Value', 'Change', 'Trend'];
@@ -1442,7 +1298,6 @@ class AnalyticsController extends Controller
             $csv[] = [];
         }
 
-        // Package Performance
         if (isset($analytics['package_performance'])) {
             $csv[] = ['Package Performance'];
             $csv[] = ['Package', 'Category', 'Bookings', 'Revenue', 'Participants', 'Avg Party Size'];
@@ -1459,7 +1314,6 @@ class AnalyticsController extends Controller
             $csv[] = [];
         }
 
-        // Attraction Performance
         if (isset($analytics['attraction_performance'])) {
             $csv[] = ['Attraction Performance'];
             $csv[] = ['Attraction', 'Category', 'Sessions', 'Tickets Sold', 'Revenue', 'Utilization %'];
@@ -1476,7 +1330,6 @@ class AnalyticsController extends Controller
             $csv[] = [];
         }
 
-        // Event Performance
         if (isset($analytics['event_performance'])) {
             $csv[] = ['Event Performance'];
             $csv[] = ['Event', 'Date Type', 'Purchases', 'Tickets Sold', 'Revenue', 'Price'];
@@ -1493,7 +1346,6 @@ class AnalyticsController extends Controller
             $csv[] = [];
         }
 
-        // Convert to CSV string
         $output = fopen('php://temp', 'r+');
         foreach ($csv as $row) {
             fputcsv($output, $row);

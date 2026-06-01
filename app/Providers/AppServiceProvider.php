@@ -7,17 +7,10 @@ use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
 {
-    /**
-     * Register any application services.
-     */
     public function register(): void
     {
-        //
     }
 
-    /**
-     * Bootstrap any application services.
-     */
     public function boot(): void
     {
         Relation::morphMap([
@@ -26,7 +19,6 @@ class AppServiceProvider extends ServiceProvider
             'event_purchase' => \App\Models\EventPurchase::class,
         ]);
 
-        // Auto-seed default email notifications when a new company is created.
         \App\Models\Company::created(function (\App\Models\Company $company) {
             try {
                 \Database\Seeders\DefaultEmailNotificationSeeder::seedForCompany($company);

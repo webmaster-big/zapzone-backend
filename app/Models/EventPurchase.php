@@ -17,6 +17,7 @@ class EventPurchase extends Model
         'reference_number',
         'event_id',
         'customer_id',
+        'membership_id',
         'location_id',
         'guest_name',
         'guest_email',
@@ -53,7 +54,6 @@ class EventPurchase extends Model
         'cancelled_at' => 'datetime',
     ];
 
-    // Relationships
     public function event(): BelongsTo
     {
         return $this->belongsTo(Event::class)->withTrashed();
@@ -62,6 +62,11 @@ class EventPurchase extends Model
     public function customer(): BelongsTo
     {
         return $this->belongsTo(Customer::class);
+    }
+
+    public function membership(): BelongsTo
+    {
+        return $this->belongsTo(Membership::class);
     }
 
     public function location(): BelongsTo
@@ -81,7 +86,6 @@ class EventPurchase extends Model
         return $this->morphMany(Payment::class, 'payable');
     }
 
-    // Scopes
     public function scopeByStatus($query, $status)
     {
         return $query->where('status', $status);
@@ -107,7 +111,6 @@ class EventPurchase extends Model
         return $query->where('purchase_date', $date);
     }
 
-    // Helpers
     public function getRemainingBalance(): float
     {
         return $this->total_amount - $this->amount_paid;

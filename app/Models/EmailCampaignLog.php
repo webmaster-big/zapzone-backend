@@ -30,9 +30,6 @@ class EmailCampaignLog extends Model
         'clicked_at' => 'datetime',
     ];
 
-    /**
-     * Status constants
-     */
     public const STATUS_PENDING = 'pending';
     public const STATUS_SENT = 'sent';
     public const STATUS_FAILED = 'failed';
@@ -40,13 +37,11 @@ class EmailCampaignLog extends Model
     public const STATUS_OPENED = 'opened';
     public const STATUS_CLICKED = 'clicked';
 
-    // Relationships
     public function campaign(): BelongsTo
     {
         return $this->belongsTo(EmailCampaign::class, 'email_campaign_id');
     }
 
-    // Scopes
     public function scopeSent($query)
     {
         return $query->where('status', self::STATUS_SENT);
@@ -67,9 +62,6 @@ class EmailCampaignLog extends Model
         return $query->where('recipient_type', $type);
     }
 
-    /**
-     * Mark as sent
-     */
     public function markAsSent(): void
     {
         $this->update([
@@ -78,9 +70,6 @@ class EmailCampaignLog extends Model
         ]);
     }
 
-    /**
-     * Mark as failed
-     */
     public function markAsFailed(string $errorMessage): void
     {
         $this->update([

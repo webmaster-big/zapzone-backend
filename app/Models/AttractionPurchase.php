@@ -11,9 +11,6 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 class AttractionPurchase extends Model
 {
     use SoftDeletes;
-    /**
-     * Status constants
-     */
     public const STATUS_PENDING = 'pending';
     public const STATUS_CONFIRMED = 'confirmed';
     public const STATUS_CHECKED_IN = 'checked-in';
@@ -31,6 +28,7 @@ class AttractionPurchase extends Model
     protected $fillable = [
         'attraction_id',
         'customer_id',
+        'membership_id',
         'created_by',
         'guest_name',
         'guest_email',
@@ -69,9 +67,6 @@ class AttractionPurchase extends Model
         'checked_in_at' => 'datetime',
     ];
 
-    /**
-     * Get customer name (from customer or guest)
-     */
     public function getCustomerNameAttribute(): string
     {
         if ($this->customer) {
@@ -80,9 +75,6 @@ class AttractionPurchase extends Model
         return $this->guest_name ?? 'Guest';
     }
 
-    /**
-     * Get customer email (from customer or guest)
-     */
     public function getCustomerEmailAttribute(): ?string
     {
         if ($this->customer) {
@@ -91,9 +83,6 @@ class AttractionPurchase extends Model
         return $this->guest_email;
     }
 
-    /**
-     * Get customer phone (from customer or guest)
-     */
     public function getCustomerPhoneAttribute(): ?string
     {
         if ($this->customer) {
@@ -112,6 +101,11 @@ class AttractionPurchase extends Model
         return $this->belongsTo(Customer::class);
     }
 
+    public function membership(): BelongsTo
+    {
+        return $this->belongsTo(Membership::class);
+    }
+
     public function createdBy()
     {
         return $this->belongsTo(User::class, 'created_by');
@@ -122,9 +116,6 @@ class AttractionPurchase extends Model
         return $this->belongsTo(User::class, 'checked_in_by');
     }
 
-    /**
-     * Get all add-ons for this attraction purchase.
-     */
     public function addOns(): BelongsToMany
     {
         return $this->belongsToMany(AddOn::class, 'attraction_purchase_add_ons', 'attraction_purchase_id', 'add_on_id')
@@ -132,16 +123,11 @@ class AttractionPurchase extends Model
             ->withTimestamps();
     }
 
-    /**
-     * Get all payments for this attraction purchase.
-     * Uses polymorphic relationship with payable_type = 'attraction_purchase'
-     */
     public function payments(): MorphMany
     {
         return $this->morphMany(Payment::class, 'payable');
     }
 
-    // by location
     public function scopeByLocation($query, $locationId)
     {
         return $query->whereHas('attraction', function ($q) use ($locationId) {

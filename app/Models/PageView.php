@@ -12,10 +12,6 @@ class PageView extends Model
 
     public const EVENT_TYPES = ['page_view', 'conversion', 'engagement'];
 
-    // Mirrors the actual customer-facing routes in the React frontend
-    // (see web app `App.tsx`). ZapZone has no cart and no list/index
-    // pages — customers go straight from the landing into the
-    // book/purchase page which doubles as the detail screen.
     public const PAGE_TYPES = [
         'home',                  // /  and /home
         'package_book',          // /book/package/:location/:slug
@@ -112,7 +108,6 @@ class PageView extends Model
         return $this->belongsTo(Customer::class);
     }
 
-    // ---- Scopes -----------------------------------------------------------
 
     public function scopeBetween($query, $from, $to)
     {

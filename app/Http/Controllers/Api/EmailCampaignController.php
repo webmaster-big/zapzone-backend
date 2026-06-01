@@ -23,9 +23,6 @@ use Illuminate\Validation\Rule;
 
 class EmailCampaignController extends Controller
 {
-    /**
-     * Display a listing of email campaigns.
-     */
     public function index(Request $request): JsonResponse
     {
         $user = Auth::user();
@@ -33,8 +30,6 @@ class EmailCampaignController extends Controller
         $query = EmailCampaign::with(['company', 'location', 'template', 'sender'])
             ->where('company_id', $user->company_id);
 
-        // Location managers/attendants can only see their own location campaigns
-        // (or company-wide ones with location_id = null).
         if (in_array($user->role, ['location_manager', 'attendant'], true) && $user->location_id) {
             $query->where(function ($q) use ($user) {
                 $q->where('location_id', $user->location_id)
@@ -42,17 +37,14 @@ class EmailCampaignController extends Controller
             });
         }
 
-        // Filter by location if specified
         if ($request->has('location_id')) {
             $query->where('location_id', $request->location_id);
         }
 
-        // Filter by status
         if ($request->has('status')) {
             $query->where('status', $request->status);
         }
 
-        // Search by name
         if ($request->has('search')) {
             $search = $request->search;
             $query->where(function ($q) use ($search) {
@@ -73,9 +65,6 @@ class EmailCampaignController extends Controller
         ]);
     }
 
-    /**
-     * Store and send a new email campaign.
-     */
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -97,7 +86,6 @@ class EmailCampaignController extends Controller
             'location_id' => 'nullable|exists:locations,id',
         ]);
 
-        // Handle file attachments
         $attachments = [];
         if ($request->hasFile('attachments')) {
             foreach ($request->file('attachments') as $file) {
@@ -116,7 +104,6 @@ class EmailCampaignController extends Controller
         try {
             DB::beginTransaction();
 
-            // Create the campaign
             $campaign = EmailCampaign::create([
                 'company_id' => $user->company_id,
                 'location_id' => $validated['location_id'] ?? $user->location_id,
@@ -133,11 +120,9 @@ class EmailCampaignController extends Controller
                 'status' => EmailCampaign::STATUS_PENDING,
             ]);
 
-            // Get recipients
             $recipients = $this->getRecipients($campaign, $user);
             $campaign->update(['total_recipients' => count($recipients)]);
 
-            // Create log entries for each recipient
             foreach ($recipients as $recipient) {
                 EmailCampaignLog::create([
                     'email_campaign_id' => $campaign->id,
@@ -151,7 +136,6 @@ class EmailCampaignController extends Controller
 
             DB::commit();
 
-            // Send immediately if requested and not scheduled
             if (($validated['send_now'] ?? true) && empty($validated['scheduled_at'])) {
                 $this->sendCampaign($campaign);
             }
@@ -178,9 +162,6 @@ class EmailCampaignController extends Controller
         }
     }
 
-    /**
-     * Display the specified email campaign.
-     */
     public function show(EmailCampaign $emailCampaign): JsonResponse
     {
         $user = Auth::user();
@@ -194,7 +175,6 @@ class EmailCampaignController extends Controller
 
         $emailCampaign->load(['company', 'location', 'template', 'sender', 'logs']);
 
-        // Get statistics
         $stats = [
             'total' => $emailCampaign->total_recipients,
             'sent' => $emailCampaign->logs()->where('status', 'sent')->count(),
@@ -211,9 +191,6 @@ class EmailCampaignController extends Controller
         ]);
     }
 
-    /**
-     * Cancel a scheduled campaign.
-     */
     public function cancel(EmailCampaign $emailCampaign): JsonResponse
     {
         $user = Auth::user();
@@ -241,9 +218,6 @@ class EmailCampaignController extends Controller
         ]);
     }
 
-    /**
-     * Resend a campaign or resend to failed recipients.
-     */
     public function resend(Request $request, EmailCampaign $emailCampaign): JsonResponse
     {
         $user = Auth::user();
@@ -259,10 +233,8 @@ class EmailCampaignController extends Controller
 
         try {
             if ($resendType === 'failed') {
-                // Only resend to failed recipients
                 $logs = $emailCampaign->logs()->where('status', 'failed')->get();
             } else {
-                // Resend to all recipients
                 $logs = $emailCampaign->logs;
             }
 
@@ -291,9 +263,6 @@ class EmailCampaignController extends Controller
         }
     }
 
-    /**
-     * Get recipient count preview before sending.
-     */
     public function previewRecipients(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -309,7 +278,6 @@ class EmailCampaignController extends Controller
 
         $user = Auth::user();
 
-        // Create a temporary campaign object for counting
         $tempCampaign = new EmailCampaign([
             'company_id' => $user->company_id,
             'location_id' => $validated['location_id'] ?? $user->location_id,
@@ -320,7 +288,6 @@ class EmailCampaignController extends Controller
 
         $recipients = $this->getRecipients($tempCampaign, $user);
 
-        // Group by type for summary
         $summary = [];
         foreach ($recipients as $recipient) {
             $type = $recipient['type'];
@@ -340,9 +307,6 @@ class EmailCampaignController extends Controller
         ]);
     }
 
-    /**
-     * Delete a campaign.
-     */
     public function destroy(EmailCampaign $emailCampaign): JsonResponse
     {
         $user = Auth::user();
@@ -362,9 +326,6 @@ class EmailCampaignController extends Controller
         ]);
     }
 
-    /**
-     * Get campaign statistics.
-     */
     public function statistics(Request $request): JsonResponse
     {
         $user = Auth::user();
@@ -375,7 +336,6 @@ class EmailCampaignController extends Controller
             $query->where('location_id', $request->location_id);
         }
 
-        // Date range filter
         if ($request->has('start_date')) {
             $query->whereDate('created_at', '>=', $request->start_date);
         }
@@ -413,9 +373,6 @@ class EmailCampaignController extends Controller
         ]);
     }
 
-    /**
-     * Send a test email before sending the actual campaign.
-     */
     public function sendTest(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -426,7 +383,6 @@ class EmailCampaignController extends Controller
             'attachments.*' => 'file|max:10240|mimes:pdf,doc,docx,xls,xlsx,csv,txt,zip,png,jpg,jpeg,gif',
         ]);
 
-        // Handle file attachments
         $attachments = [];
         if ($request->hasFile('attachments')) {
             foreach ($request->file('attachments') as $file) {
@@ -451,19 +407,15 @@ class EmailCampaignController extends Controller
                 $user->location
             );
 
-            // Replace variables in subject and body
             $processedSubject = $this->replaceVariables($validated['subject'], $variables);
             $processedBody = $this->replaceVariables($validated['body'], $variables);
 
-            // Generate HTML email body
             $htmlBody = $this->generateHtmlEmail($processedBody, $variables);
 
-            // Check if Gmail API should be used
             $useGmailApi = config('gmail.enabled', false) &&
                 (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
 
             if ($useGmailApi) {
-                // Prepare attachments for Gmail API
                 $emailAttachments = $this->prepareAttachments($attachments);
 
                 Log::info('Using Gmail API for test campaign email', [
@@ -481,7 +433,6 @@ class EmailCampaignController extends Controller
                     $emailAttachments
                 );
             } else {
-                // Fallback to Laravel Mail
                 Mail::to($validated['test_email'])
                     ->send(new DynamicCampaignMail(
                         $validated['subject'],
@@ -508,9 +459,6 @@ class EmailCampaignController extends Controller
         }
     }
 
-    /**
-     * Get all recipients based on campaign settings.
-     */
     protected function getRecipients(EmailCampaign $campaign, $user): array
     {
         $recipients = [];
@@ -557,7 +505,6 @@ class EmailCampaignController extends Controller
             }
         }
 
-        // Remove duplicates by email
         $uniqueRecipients = [];
         $seenEmails = [];
         foreach ($recipients as $recipient) {
@@ -570,35 +517,26 @@ class EmailCampaignController extends Controller
         return $uniqueRecipients;
     }
 
-    /**
-     * Get customer recipients from contacts table.
-     * Returns distinct emails from the contacts table with optional filtering.
-     */
     protected function getCustomerRecipients($company, $location, array $filters): array
     {
         $recipients = [];
 
-        // Query contacts table
         $contactQuery = Contact::query();
 
-        // Apply location filter if specified
         if (!empty($filters['location_id'])) {
             $contactQuery->where('location_id', $filters['location_id']);
         } elseif ($location) {
             $contactQuery->where('location_id', $location->id);
         }
 
-        // Apply status filter (default to active)
         if (!empty($filters['status'])) {
             $contactQuery->where('status', $filters['status']);
         } else {
             $contactQuery->where('status', 'active');
         }
 
-        // Ensure we only get contacts with valid emails
         $contactQuery->whereNotNull('email')->where('email', '!=', '');
 
-        // Get all matching contacts
         $contacts = $contactQuery->get();
 
         foreach ($contacts as $contact) {
@@ -620,14 +558,10 @@ class EmailCampaignController extends Controller
         return $recipients;
     }
 
-    /**
-     * Get user recipients by role.
-     */
     protected function getUserRecipients($company, $location, string $role, array $filters): array
     {
         $query = User::where('company_id', $company->id);
 
-        // Filter by role
         if ($role === 'admin') {
             $query->whereIn('role', ['company_admin', 'owner']);
         } elseif ($role === 'location_manager') {
@@ -636,17 +570,14 @@ class EmailCampaignController extends Controller
             $query->where('role', $role);
         }
 
-        // Apply location filter if specified
         if (!empty($filters['location_id'])) {
             $query->where('location_id', $filters['location_id']);
         } elseif ($location) {
-            // If no specific filter but we have a location, filter by it for attendants/managers
             if (in_array($role, ['attendant', 'location_manager'])) {
                 $query->where('location_id', $location->id);
             }
         }
 
-        // Only active users with valid emails
         $query->where('status', 'active')
             ->whereNotNull('email')
             ->where('email', '!=', '');
@@ -666,9 +597,6 @@ class EmailCampaignController extends Controller
         return $recipients;
     }
 
-    /**
-     * Build variables for a guest (from bookings or attraction purchases).
-     */
     protected function buildVariablesForGuest(string $name, string $email, ?string $phone, $company, $location): array
     {
         $nameParts = explode(' ', $name, 2);
@@ -687,9 +615,6 @@ class EmailCampaignController extends Controller
         );
     }
 
-    /**
-     * Build variables for a customer.
-     */
     protected function buildVariablesForCustomer($customer, $company, $location): array
     {
         $fullName = trim($customer->first_name . ' ' . $customer->last_name);
@@ -716,9 +641,6 @@ class EmailCampaignController extends Controller
         );
     }
 
-    /**
-     * Build variables for a user (attendant/admin).
-     */
     protected function buildVariablesForUser($userRecord, $company, $location): array
     {
         $fullName = trim($userRecord->first_name . ' ' . $userRecord->last_name);
@@ -737,9 +659,6 @@ class EmailCampaignController extends Controller
         );
     }
 
-    /**
-     * Build base variables.
-     */
     protected function buildVariables(string $name, string $email, string $type, $company, $location, ?string $phone = null): array
     {
         $locationAddress = $location
@@ -770,9 +689,6 @@ class EmailCampaignController extends Controller
         ];
     }
 
-    /**
-     * Send the campaign emails.
-     */
     protected function sendCampaign(EmailCampaign $campaign): void
     {
         $campaign->markAsSending();
@@ -786,27 +702,20 @@ class EmailCampaignController extends Controller
         $campaign->markAsCompleted();
     }
 
-    /**
-     * Send a single email.
-     */
     protected function sendSingleEmail(EmailCampaign $campaign, EmailCampaignLog $log): void
     {
         try {
             $variables = $log->variables_used ?? [];
 
-            // Replace variables in subject and body
             $processedSubject = $this->replaceVariables($campaign->subject, $variables);
             $processedBody = $this->replaceVariables($campaign->body, $variables);
 
-            // Generate HTML email body
             $htmlBody = $this->generateHtmlEmail($processedBody, $variables);
 
-            // Check if Gmail API should be used
             $useGmailApi = config('gmail.enabled', false) &&
                 (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
 
             if ($useGmailApi) {
-                // Prepare attachments for Gmail API
                 $emailAttachments = $this->prepareAttachments($campaign->attachments ?? []);
 
                 $gmailService = new GmailApiService();
@@ -818,7 +727,6 @@ class EmailCampaignController extends Controller
                     $emailAttachments
                 );
             } else {
-                // Fallback to Laravel Mail
                 Mail::to($log->recipient_email)
                     ->send(new DynamicCampaignMail(
                         $campaign->subject,
@@ -837,9 +745,6 @@ class EmailCampaignController extends Controller
         }
     }
 
-    /**
-     * Replace template variables with actual values.
-     */
     protected function replaceVariables(string $content, array $variables): string
     {
         foreach ($variables as $key => $value) {
@@ -853,9 +758,6 @@ class EmailCampaignController extends Controller
         return $content;
     }
 
-    /**
-     * Generate HTML email from body content.
-     */
     protected function generateHtmlEmail(string $body, array $variables): string
     {
         return <<<HTML
@@ -872,10 +774,6 @@ class EmailCampaignController extends Controller
 HTML;
     }
 
-    /**
-     * Upload an image for use in email body.
-     * Returns a public URL that can be embedded in the email content.
-     */
     public function uploadImage(Request $request): JsonResponse
     {
         $request->validate([
@@ -887,7 +785,6 @@ HTML;
             $filename = uniqid('email_img_') . '.' . $file->getClientOriginalExtension();
             $path = $file->storeAs('email-images', $filename, 'public');
 
-            // Generate full URL for the image
             $url = asset('storage/' . $path);
 
             return response()->json([
@@ -911,9 +808,6 @@ HTML;
         }
     }
 
-    /**
-     * Prepare attachments for email sending.
-     */
     protected function prepareAttachments(array $storedAttachments): array
     {
         $emailAttachments = [];

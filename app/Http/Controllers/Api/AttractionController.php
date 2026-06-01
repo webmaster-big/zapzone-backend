@@ -14,38 +14,29 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Validation\Rule;
 use Illuminate\Support\Facades\Log;
 use Carbon\Carbon;
-// please fix can't store images of the file
 class AttractionController extends Controller
 {
     use ScopesByAuthUser;
 
-    /**
-     * Display a listing of attractions.
-     */
     public function index(Request $request): JsonResponse
     {
         $query = Attraction::with(['location', 'packages', 'addOns']);
 
-        // Multi-tenant + role-based scoping (driven by Sanctum auth user)
         $this->applyAuthScope($query, $request);
 
-        // Filter by location
         if ($request->has('location_id')) {
             $query->byLocation($request->location_id);
         }
 
-        // Filter by category
         if ($request->has('category')) {
             $query->byCategory($request->category);
         }
 
-        // Filter by pricing type
         if ($request->has('pricing_type')) {
             $query->byPricingType($request->pricing_type);
         }
 
 
-        // Price range filter
         if ($request->has('min_price')) {
             $query->where('price', '>=', $request->min_price);
         }
@@ -53,7 +44,6 @@ class AttractionController extends Controller
             $query->where('price', '<=', $request->max_price);
         }
 
-        // Search by name or description
         if ($request->has('search')) {
             $search = $request->search;
             $query->where(function ($q) use ($search) {
@@ -62,7 +52,6 @@ class AttractionController extends Controller
             });
         }
 
-        // Sort
         $sortBy = $request->get('sort_by', 'name');
         $sortOrder = $request->get('sort_order', 'asc');
 
@@ -89,17 +78,11 @@ class AttractionController extends Controller
         ]);
     }
 
-    /**
-     * Get public attractions grouped by name with location-based purchase links
-     * Groups attractions by name and shows all locations where they're available
-     */
     public function attractionsGroupedByName(Request $request): JsonResponse
     {
-        // search query
         $search = $request->get('search', null);
         $date = $request->get('date') ? Carbon::parse($request->get('date')) : Carbon::today();
 
-        // Exclude 'image' from SELECT to avoid MySQL sort buffer overflow on large columns
         $query = Attraction::with(['location', 'packages', 'addOns'])
             ->select(['id', 'name', 'description', 'price', 'pricing_type', 'category', 'max_capacity', 'display_capacity_to_customers', 'duration', 'duration_unit', 'rating', 'min_age', 'availability', 'display_order', 'location_id', 'is_active'])
             ->where('is_active', true);
@@ -115,17 +98,14 @@ class AttractionController extends Controller
             ->orderBy('name')
             ->get();
 
-        // Fetch images separately (no ORDER BY = no sort buffer issue)
         $attractionImages = Attraction::whereIn('id', $attractions->pluck('id'))
             ->pluck('image', 'id');
 
-        // Group attractions by name
         $groupedAttractions = [];
 
         foreach ($attractions as $attraction) {
             $attractionName = $attraction->name;
 
-            // Get special pricing for this attraction on the requested date
             $priceBreakdown = SpecialPricing::getFullPriceBreakdown(
                 'attraction',
                 $attraction->id,
@@ -135,7 +115,6 @@ class AttractionController extends Controller
             );
 
             if (!isset($groupedAttractions[$attractionName])) {
-                // Initialize the group with the first attraction's data
                 $groupedAttractions[$attractionName] = [
                     'name' => $attraction->name,
                     'description' => $attraction->description,
@@ -157,7 +136,6 @@ class AttractionController extends Controller
                 ];
             }
 
-            // Add this location's information
             $locationSlug = str_replace(' ', '', $attraction->location->name); // Remove spaces for URL
 
             $groupedAttractions[$attractionName]['locations'][] = [
@@ -172,7 +150,6 @@ class AttractionController extends Controller
                 'special_pricing' => $priceBreakdown,
             ];
 
-            // Create purchase link for this location
             $groupedAttractions[$attractionName]['purchase_links'][] = [
                 'location' => $attraction->location->name,
                 'url' => "/purchase/attraction/{$locationSlug}/{$attraction->id}",
@@ -181,7 +158,6 @@ class AttractionController extends Controller
             ];
         }
 
-        // Convert to indexed array
         $result = array_values($groupedAttractions);
 
         return response()->json([
@@ -192,12 +168,8 @@ class AttractionController extends Controller
     }
 
 
-    /**
-     * Store a newly created attraction.
-     */
     public function store(Request $request): JsonResponse
     {
-        // Convert empty duration to null
         if ($request->has('duration') && $request->duration === '') {
             $request->merge(['duration' => null]);
         }
@@ -228,13 +200,11 @@ class AttractionController extends Controller
 
         $validated['pricing_type'] = $validated['pricing_type'] ?? 'per_person';
 
-        // Handle file uploads from request
         $uploadedImages = [];
 
         if ($request->hasFile('image')) {
             $files = $request->file('image');
 
-            // Handle single file or array of files
             if (!is_array($files)) {
                 $files = [$files];
             }
@@ -245,12 +215,10 @@ class AttractionController extends Controller
                 }
             }
         } elseif (isset($validated['image'])) {
-            // Handle base64 strings or filenames
             $images = is_array($validated['image']) ? $validated['image'] : [$validated['image']];
 
             foreach ($images as $image) {
                 if (!empty($image)) {
-                    // Check if it's a base64 string
                     if (is_string($image) && strpos($image, 'data:image') === 0) {
                         $uploadedImages[] = $this->handleBase64Upload($image);
                     } else {
@@ -264,7 +232,6 @@ class AttractionController extends Controller
 
         $attraction = Attraction::create($validated);
 
-        // Handle add-on IDs
         if (isset($validated['addon_ids']) && is_array($validated['addon_ids'])) {
             foreach ($validated['addon_ids'] as $addonId) {
                 AttractionAddOn::create([
@@ -283,9 +250,6 @@ class AttractionController extends Controller
         ], 201);
     }
 
-    /**
-     * Display the specified attraction.
-     */
     public function show($id): JsonResponse
     {
         $attraction = Attraction::findOrFail($id);
@@ -298,12 +262,8 @@ class AttractionController extends Controller
         ]);
     }
 
-    /**
-     * Update the specified attraction.
-     */
     public function update(Request $request, Attraction $attraction): JsonResponse
     {
-        // Convert empty duration to null
         if ($request->has('duration') && $request->duration === '') {
             $request->merge(['duration' => null]);
         }
@@ -334,9 +294,7 @@ class AttractionController extends Controller
 
         $validated['pricing_type'] = $validated['pricing_type'] ?? 'per_person';
 
-        // Handle image upload
         if ($request->hasFile('image') || isset($validated['image'])) {
-            // Delete old images if they exist
             if ($attraction->image && is_array($attraction->image)) {
                 foreach ($attraction->image as $oldImage) {
                     $imagePath = public_path($oldImage);
@@ -351,7 +309,6 @@ class AttractionController extends Controller
             if ($request->hasFile('image')) {
                 $files = $request->file('image');
 
-                // Handle single file or array of files
                 if (!is_array($files)) {
                     $files = [$files];
                 }
@@ -362,12 +319,10 @@ class AttractionController extends Controller
                     }
                 }
             } elseif (isset($validated['image'])) {
-                // Handle base64 strings or filenames
                 $images = is_array($validated['image']) ? $validated['image'] : [$validated['image']];
 
                 foreach ($images as $image) {
                     if (!empty($image)) {
-                        // Check if it's a base64 string
                         if (is_string($image) && strpos($image, 'data:image') === 0) {
                             $uploadedImages[] = $this->handleBase64Upload($image);
                         } else {
@@ -382,12 +337,9 @@ class AttractionController extends Controller
 
         $attraction->update($validated);
 
-        // Handle add-on IDs sync
         if (isset($validated['addon_ids'])) {
-            // Delete existing relationships
             AttractionAddOn::where('attraction_id', $attraction->id)->delete();
 
-            // Create new relationships
             foreach ($validated['addon_ids'] as $addonId) {
                 AttractionAddOn::create([
                     'attraction_id' => $attraction->id,
@@ -405,16 +357,12 @@ class AttractionController extends Controller
         ]);
     }
 
-    /**
-     * Remove the specified attraction.
-     */
     public function destroy($id): JsonResponse
     {
         $attraction = Attraction::findOrFail($id);
 
         $deletedBy = User::findOrFail(auth()->id());
 
-        // Delete images if they exist
         if ($attraction->image && is_array($attraction->image)) {
             foreach ($attraction->image as $image) {
                 $imagePath = public_path($image);
@@ -430,7 +378,6 @@ class AttractionController extends Controller
 
         $attraction->delete();
 
-        // Log attraction deletion
         ActivityLog::log(
             action: 'Attraction Deleted',
             category: 'delete',
@@ -460,9 +407,6 @@ class AttractionController extends Controller
         ]);
     }
 
-    /**
-     * Get attractions by location.
-     */
     public function getByLocation(int $locationId): JsonResponse
     {
         $attractions = Attraction::with(['packages', 'addOns'])
@@ -478,9 +422,6 @@ class AttractionController extends Controller
         ]);
     }
 
-    /**
-     * Get attractions by category.
-     */
     public function getByCategory(string $category): JsonResponse
     {
         $attractions = Attraction::with(['location', 'packages', 'addOns'])
@@ -496,9 +437,6 @@ class AttractionController extends Controller
         ]);
     }
 
-    /**
-     * Toggle attraction active status.
-     */
     public function toggleStatus(Attraction $attraction): JsonResponse
     {
         $attraction->update(['is_active' => !$attraction->is_active]);
@@ -510,9 +448,6 @@ class AttractionController extends Controller
         ]);
     }
 
-    /**
-     * Activate an attraction.
-     */
     public function activate(Attraction $attraction): JsonResponse
     {
         if ($attraction->is_active) {
@@ -532,9 +467,6 @@ class AttractionController extends Controller
         ]);
     }
 
-    /**
-     * Deactivate an attraction.
-     */
     public function deactivate(Attraction $attraction): JsonResponse
     {
         if (!$attraction->is_active) {
@@ -554,9 +486,6 @@ class AttractionController extends Controller
         ]);
     }
 
-    /**
-     * Get attraction statistics.
-     */
     public function statistics(Attraction $attraction): JsonResponse
     {
         $stats = [
@@ -573,9 +502,6 @@ class AttractionController extends Controller
         ]);
     }
 
-    /**
-     * Get popular attractions.
-     */
     public function getPopular(Request $request): JsonResponse
     {
         $limit = $request->get('limit', 10);
@@ -594,14 +520,10 @@ class AttractionController extends Controller
         ]);
     }
 
-        /**
-         * Bulk import attractions
-         */
         public function bulkImport(Request $request): JsonResponse
         {
             $validated = $request->validate([
                 'attractions' => 'required|array|min:1',
-                // Support both snake_case and camelCase field names
                 'attractions.*.location_id' => 'nullable|exists:locations,id',
                 'attractions.*.locationId' => 'nullable|exists:locations,id',
                 'attractions.*.name' => 'required|string|max:255',
@@ -631,7 +553,6 @@ class AttractionController extends Controller
 
             foreach ($validated['attractions'] as $index => $attractionData) {
                 try {
-                    // Map camelCase to snake_case fields
                     $mappedData = [
                         'name' => $attractionData['name'],
                         'description' => $attractionData['description'],
@@ -648,7 +569,6 @@ class AttractionController extends Controller
                         'unit' => $attractionData['unit'] ?? null,
                     ];
 
-                    // Handle is_active from status or is_active field
                     if (isset($attractionData['status'])) {
                         $mappedData['is_active'] = $attractionData['status'] === 'active';
                     } elseif (isset($attractionData['is_active'])) {
@@ -657,7 +577,6 @@ class AttractionController extends Controller
                         $mappedData['is_active'] = true;
                     }
 
-                    // Handle image - support both 'image' and 'images' fields
                     $imageData = $attractionData['images'] ?? $attractionData['image'] ?? null;
 
                     if ($imageData) {
@@ -665,18 +584,15 @@ class AttractionController extends Controller
                             $uploadedImages = [];
                             foreach ($imageData as $image) {
                                 if (!empty($image)) {
-                                    // Check if it's a base64 string
                                     if (is_string($image) && strpos($image, 'data:image') === 0) {
                                         $uploadedImages[] = $this->handleBase64Upload($image);
                                     } else {
-                                        // Keep existing path as-is
                                         $uploadedImages[] = $image;
                                     }
                                 }
                             }
                             $mappedData['image'] = !empty($uploadedImages) ? $uploadedImages : [];
                         } elseif (is_string($imageData) && !empty($imageData)) {
-                            // If single image string is provided
                             if (strpos($imageData, 'data:image') === 0) {
                                 $uploadedImage = $this->handleBase64Upload($imageData);
                             } else {
@@ -690,10 +606,8 @@ class AttractionController extends Controller
                         $mappedData['image'] = [];
                     }
 
-                    // Create the attraction
                     $attraction = Attraction::create($mappedData);
 
-                    // Load relationships
                     $attraction->load(['location', 'packages']);
                     $importedAttractions[] = $attraction;
 
@@ -730,79 +644,54 @@ class AttractionController extends Controller
             return response()->json($response, count($errors) > 0 ? 207 : 201);
         }
 
-    /**
-     * Handle actual file upload from request
-     */
     private function handleFileUpload($file): string
     {
-        // Generate unique filename
         $filename = uniqid() . '.' . $file->getClientOriginalExtension();
         $path = 'images/attractions';
         $fullPath = storage_path('app/public/' . $path);
 
-        // Create directory if it doesn't exist
         if (!file_exists($fullPath)) {
             mkdir($fullPath, 0755, true);
         }
 
-        // Move the uploaded file
         $file->move($fullPath, $filename);
 
-        // Return the relative path (for storage URL)
         return $path . '/' . $filename;
     }
 
-    /**
-     * Handle base64 image upload
-     */
     private function handleBase64Upload($base64String): string
     {
-        // Check if it's a base64 string
         if (is_string($base64String) && strpos($base64String, 'data:image') === 0) {
-            // Extract base64 data
             preg_match('/data:image\/(\w+);base64,/', $base64String, $matches);
             $imageType = $matches[1] ?? 'png';
             $imageData = substr($base64String, strpos($base64String, ',') + 1);
             $imageData = base64_decode($imageData);
 
-            // Generate shorter filename
             $filename = uniqid() . '.' . $imageType;
             $path = 'images/attractions';
             $fullPath = storage_path('app/public/' . $path);
 
-            // Create directory if it doesn't exist
             if (!file_exists($fullPath)) {
                 mkdir($fullPath, 0755, true);
             }
 
-            // Save the file
             file_put_contents($fullPath . '/' . $filename, $imageData);
 
-            // Return the relative path (for storage URL)
             return $path . '/' . $filename;
         }
 
-        // If it's already a file path or URL, return as is
         return $base64String;
     }
 
-    /**
-     * Handle image upload - stores the filename with path (for string filenames)
-     */
     private function handleImageUpload($image): string
     {
-        // Remove any surrounding quotes from the image filename
         if (is_string($image)) {
             $image = trim($image, '"');
         }
 
-        // Return the clean path: images/attractions/filename.ext
         return 'images/attractions/' . basename($image);
     }
 
-    /**
-     * Bulk delete attractions
-     */
     public function bulkDelete(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -815,7 +704,6 @@ class AttractionController extends Controller
         $locationIds = [];
 
         foreach ($attractions as $attraction) {
-            // Delete images if they exist
             if ($attraction->image && is_array($attraction->image)) {
                 foreach ($attraction->image as $imagePath) {
                     if (file_exists(storage_path('app/public/' . $imagePath))) {
@@ -829,7 +717,6 @@ class AttractionController extends Controller
             $deletedCount++;
         }
 
-        // Log bulk deletion
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Bulk Attractions Deleted',
@@ -858,10 +745,6 @@ class AttractionController extends Controller
         ]);
     }
 
-    /**
-     * Reorder attractions (for drag-and-drop).
-     * Accepts an array of { id, display_order } objects.
-     */
     public function reorder(Request $request): JsonResponse
     {
         $validated = $request->validate([

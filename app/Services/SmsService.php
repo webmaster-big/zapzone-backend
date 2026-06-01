@@ -20,9 +20,6 @@ class SmsService
         }
     }
 
-    /**
-     * Check if Twilio SMS is configured and the SDK is installed.
-     */
     public static function isConfigured(): bool
     {
         return !empty(config('twilio.sid'))
@@ -31,21 +28,12 @@ class SmsService
             && class_exists(\Twilio\Rest\Client::class);
     }
 
-    /**
-     * Send an SMS message.
-     *
-     * @param string $to Phone number in E.164 format (e.g., +15551234567)
-     * @param string $message The SMS body text
-     * @return string|null The message SID on success
-     * @throws \Exception If SMS service is not configured or sending fails
-     */
     public function sendSms(string $to, string $message): ?string
     {
         if (!$this->client) {
             throw new \Exception('Twilio SMS service is not configured. Set TWILIO_SID, TWILIO_AUTH_TOKEN, and TWILIO_FROM_NUMBER in your environment.');
         }
 
-        // Clean phone number - ensure E.164 format
         $to = $this->formatPhoneNumber($to);
 
         try {
@@ -70,32 +58,23 @@ class SmsService
         }
     }
 
-    /**
-     * Format a phone number to E.164 format.
-     * Assumes US numbers if no country code prefix.
-     */
     protected function formatPhoneNumber(string $phone): string
     {
-        // Strip all non-numeric characters except leading +
         $hasPlus = str_starts_with($phone, '+');
         $digits = preg_replace('/[^0-9]/', '', $phone);
 
-        // If already has +, keep it
         if ($hasPlus) {
             return '+' . $digits;
         }
 
-        // If 10 digits (US), prepend +1
         if (strlen($digits) === 10) {
             return '+1' . $digits;
         }
 
-        // If 11 digits starting with 1 (US with country code), prepend +
         if (strlen($digits) === 11 && str_starts_with($digits, '1')) {
             return '+' . $digits;
         }
 
-        // Otherwise prepend + and hope for the best
         return '+' . $digits;
     }
 }

@@ -16,57 +16,44 @@ class DayOffController extends Controller
 {
     use ScopesByAuthUser;
 
-    /**
-     * Display a listing of day offs.
-     */
     public function index(Request $request): JsonResponse
     {
         $query = DayOff::with('location');
 
-        // Multi-tenant + role-based scoping (driven by Sanctum auth user)
         $this->applyAuthScope($query, $request);
 
-        // Filter by location
         if ($request->has('location_id')) {
             $query->byLocation($request->location_id);
         }
 
-        // Filter by date
         if ($request->has('date')) {
             $query->byDate($request->date);
         }
 
-        // Filter by date range
         if ($request->has('start_date') && $request->has('end_date')) {
             $query->byDateRange($request->start_date, $request->end_date);
         }
 
-        // Filter by recurring
         if ($request->has('is_recurring')) {
             $query->where('is_recurring', $request->boolean('is_recurring'));
         }
 
-        // Filter by package
         if ($request->has('package_id')) {
             $query->forPackage($request->package_id);
         }
 
-        // Filter by room
         if ($request->has('room_id')) {
             $query->forRoom($request->room_id);
         }
 
-        // Filter location-wide only
         if ($request->boolean('location_wide_only')) {
             $query->locationWide();
         }
 
-        // Filter upcoming only
         if ($request->boolean('upcoming_only')) {
             $query->upcoming();
         }
 
-        // Sort
         $sortBy = $request->get('sort_by', 'date');
         $sortOrder = $request->get('sort_order', 'asc');
 
@@ -93,9 +80,6 @@ class DayOffController extends Controller
         ]);
     }
 
-    /**
-     * Store a newly created day off.
-     */
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -111,21 +95,16 @@ class DayOffController extends Controller
             'room_ids.*' => 'integer|exists:rooms,id',
         ]);
 
-        // Ensure package_ids and room_ids are arrays or null
         $validated['package_ids'] = !empty($validated['package_ids']) ? array_map('intval', $validated['package_ids']) : null;
         $validated['room_ids'] = !empty($validated['room_ids']) ? array_map('intval', $validated['room_ids']) : null;
 
-        // Check for overlapping day offs with similar scope
-        // We allow multiple day offs on same date for different resources
         $existingDayOffs = DayOff::where('location_id', $validated['location_id'])
             ->where('date', $validated['date'])
             ->get();
 
         foreach ($existingDayOffs as $existing) {
-            // Check for duplicate location-wide blocks
             if (empty($validated['package_ids']) && empty($validated['room_ids']) &&
                 empty($existing->package_ids) && empty($existing->room_ids)) {
-                // Both are location-wide, check time overlap
                 if ($this->hasTimeOverlap($existing, $validated)) {
                     return response()->json([
                         'success' => false,
@@ -134,7 +113,6 @@ class DayOffController extends Controller
                 }
             }
 
-            // Check for duplicate package-specific blocks
             if (!empty($validated['package_ids']) && !empty($existing->package_ids)) {
                 $overlappingPackages = array_intersect($validated['package_ids'], $existing->package_ids);
                 if (!empty($overlappingPackages) && $this->hasTimeOverlap($existing, $validated)) {
@@ -145,7 +123,6 @@ class DayOffController extends Controller
                 }
             }
 
-            // Check for duplicate room-specific blocks
             if (!empty($validated['room_ids']) && !empty($existing->room_ids)) {
                 $overlappingRooms = array_intersect($validated['room_ids'], $existing->room_ids);
                 if (!empty($overlappingRooms) && $this->hasTimeOverlap($existing, $validated)) {
@@ -160,7 +137,6 @@ class DayOffController extends Controller
         $dayOff = DayOff::create($validated);
         $dayOff->load('location');
 
-        // Build description for activity log
         $scope = $dayOff->isLocationWide() ? 'location-wide' : '';
         if (!empty($dayOff->package_ids)) {
             $packageNames = Package::whereIn('id', $dayOff->package_ids)->pluck('name')->implode(', ');
@@ -171,7 +147,6 @@ class DayOffController extends Controller
             $scope .= (!empty($scope) ? ', ' : '') . "rooms: {$roomNames}";
         }
 
-        // Log activity
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Day Off Created',
@@ -212,9 +187,6 @@ class DayOffController extends Controller
         ], 201);
     }
 
-    /**
-     * Display the specified day off.
-     */
     public function show(DayOff $dayOff): JsonResponse
     {
         $dayOff->load('location');
@@ -225,9 +197,6 @@ class DayOffController extends Controller
         ]);
     }
 
-    /**
-     * Update the specified day off.
-     */
     public function update(Request $request, DayOff $dayOff): JsonResponse
     {
         $validated = $request->validate([
@@ -243,7 +212,6 @@ class DayOffController extends Controller
             'room_ids.*' => 'integer|exists:rooms,id',
         ]);
 
-        // Process package_ids and room_ids
         if (array_key_exists('package_ids', $validated)) {
             $validated['package_ids'] = !empty($validated['package_ids']) ? array_map('intval', $validated['package_ids']) : null;
         }
@@ -254,7 +222,6 @@ class DayOffController extends Controller
         $dayOff->update($validated);
         $dayOff->load('location');
 
-        // Log activity
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Day Off Updated',
@@ -290,9 +257,6 @@ class DayOffController extends Controller
         ]);
     }
 
-    /**
-     * Remove the specified day off.
-     */
     public function destroy(DayOff $dayOff): JsonResponse
     {
         $dayOffDate = $dayOff->date->format('Y-m-d');
@@ -301,7 +265,6 @@ class DayOffController extends Controller
 
         $dayOff->delete();
 
-        // Log activity
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Day Off Deleted',
@@ -332,9 +295,6 @@ class DayOffController extends Controller
         ]);
     }
 
-    /**
-     * Get day offs by location.
-     */
     public function getByLocation(int $locationId): JsonResponse
     {
         $dayOffs = DayOff::byLocation($locationId)
@@ -348,9 +308,6 @@ class DayOffController extends Controller
         ]);
     }
 
-    /**
-     * Check if a specific date/time is blocked.
-     */
     public function checkDate(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -360,7 +317,6 @@ class DayOffController extends Controller
             'time_end' => 'nullable|date_format:H:i',
         ]);
 
-        // If time is provided, check specific time slot
         if (isset($validated['time_start'])) {
             $isBlocked = DayOff::isTimeSlotBlocked(
                 $validated['location_id'],
@@ -376,7 +332,6 @@ class DayOffController extends Controller
                 $validated['time_end'] ?? null
             ) : null;
         } else {
-            // Check for full day block only (legacy behavior)
             $isBlocked = DayOff::isDateBlocked($validated['location_id'], $validated['date']);
 
             $dayOff = null;
@@ -389,7 +344,6 @@ class DayOffController extends Controller
             }
         }
 
-        // Also get all day offs for this date (for full visibility)
         $allDayOffs = DayOff::where('location_id', $validated['location_id'])
             ->where('date', $validated['date'])
             ->get();
@@ -404,9 +358,6 @@ class DayOffController extends Controller
         ]);
     }
 
-    /**
-     * Bulk delete day offs.
-     */
     public function bulkDelete(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -426,7 +377,6 @@ class DayOffController extends Controller
                 $dayOff->delete();
                 $deletedCount++;
 
-                // Log each deletion
                 $currentUser = auth()->user();
                 ActivityLog::log(
                     action: 'Day Off Bulk Deleted',
@@ -454,7 +404,6 @@ class DayOffController extends Controller
             }
         }
 
-        // Log bulk operation summary
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Day Offs Bulk Delete',
@@ -480,9 +429,6 @@ class DayOffController extends Controller
         ]);
     }
 
-    /**
-     * Helper method to check if two day offs have overlapping time ranges.
-     */
     private function hasTimeOverlap(DayOff $existing, array $new): bool
     {
         $existingStart = $existing->time_start;
@@ -490,33 +436,26 @@ class DayOffController extends Controller
         $newStart = $new['time_start'] ?? null;
         $newEnd = $new['time_end'] ?? null;
 
-        // Both are full day blocks
         if (is_null($existingStart) && is_null($existingEnd) && is_null($newStart) && is_null($newEnd)) {
             return true;
         }
 
-        // If either is a full day block, they overlap
         if ((is_null($existingStart) && is_null($existingEnd)) || (is_null($newStart) && is_null($newEnd))) {
             return true;
         }
 
-        // Both have close early (from time_start until end of day)
         if (!is_null($existingStart) && is_null($existingEnd) && !is_null($newStart) && is_null($newEnd)) {
             return true; // Both close early, overlap from whichever is earlier
         }
 
-        // Both have delayed opening (from start of day until time_end)
         if (is_null($existingStart) && !is_null($existingEnd) && is_null($newStart) && !is_null($newEnd)) {
             return true; // Both delayed opening, overlap from start until whichever is later
         }
 
-        // For specific time ranges, check actual overlap
         if (!is_null($existingStart) && !is_null($existingEnd) && !is_null($newStart) && !is_null($newEnd)) {
-            // Time ranges overlap if new starts before existing ends AND new ends after existing starts
             return $newStart < $existingEnd && $newEnd > $existingStart;
         }
 
-        // Mixed cases (one is a range, other is partial) - assume overlap for safety
         return true;
     }
 }

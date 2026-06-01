@@ -13,49 +13,38 @@ class ActivityLogController extends Controller
 {
     use ScopesByAuthUser;
 
-    /**
-     * Display a listing of activity logs with comprehensive filtering
-     */
     public function index(Request $request): JsonResponse
     {
         $query = ActivityLog::with(['user', 'location']);
 
-        // Multi-tenant + role-based scoping (driven by Sanctum auth user)
         $this->applyAuthScope($query, $request);
 
-        // Filter by user
         if ($request->has('user_id')) {
             $query->byUser($request->user_id);
         }
 
-        // Filter by location, multiple locations support but also accept 1 location
         if ($request->has('location_id')) {
             $locationIds = is_array($request->location_id) ? $request->location_id : explode(',', $request->location_id);
             $query->byLocation($locationIds);
         }
 
-        // user entity type and optional entity id, multiple ids support
         if ($request->has('entity_type')) {
             $entityIds = $request->has('entity_id') ? (is_array($request->entity_id) ? $request->entity_id : explode(',', $request->entity_id)) : null;
             $query->byEntity($request->entity_type, $entityIds);
         }
 
-        // Filter by category
         if ($request->has('category')) {
             $query->byCategory($request->category);
         }
 
-        // Filter by entity type
         if ($request->has('entity_type')) {
             $query->byEntity($request->entity_type, $request->entity_id ?? null);
         }
 
-        // Filter by action (partial match)
         if ($request->has('action')) {
             $query->byAction($request->action);
         }
 
-        // Filter by date range
         if ($request->has('date_from')) {
             $dateFrom = $request->date_from;
             $query->whereDate('created_at', '>=', $dateFrom);
@@ -65,7 +54,6 @@ class ActivityLogController extends Controller
             $query->whereDate('created_at', '<=', $dateTo);
         }
 
-        // start date and end date range
         if ($request->has('start_date')) {
             $startDate = $request->start_date;
             $query->whereDate('created_at', '>=', $startDate);
@@ -75,12 +63,10 @@ class ActivityLogController extends Controller
             $query->whereDate('created_at', '<=', $endDate);
         }
 
-        // Filter recent logs (last N days)
         if ($request->has('recent_days')) {
             $query->recent($request->recent_days);
         }
 
-        // Search in description
         if ($request->has('search')) {
             $search = $request->search;
             $query->where(function ($q) use ($search) {
@@ -89,7 +75,6 @@ class ActivityLogController extends Controller
             });
         }
 
-        // Sort
         $sortBy = $request->get('sort_by', 'created_at');
         $sortOrder = $request->get('sort_order', 'desc');
 
@@ -116,9 +101,6 @@ class ActivityLogController extends Controller
         ]);
     }
 
-    /**
-     * Store a new activity log
-     */
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -134,7 +116,6 @@ class ActivityLogController extends Controller
             'metadata' => 'nullable|array',
         ]);
 
-        // Auto-fill IP and user agent if not provided
         if (!isset($validated['ip_address'])) {
             $validated['ip_address'] = $request->ip();
         }
@@ -152,9 +133,6 @@ class ActivityLogController extends Controller
         ], 201);
     }
 
-    /**
-     * Display the specified activity log
-     */
     public function show(ActivityLog $activityLog): JsonResponse
     {
         $activityLog->load(['user', 'location']);

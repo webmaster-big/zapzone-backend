@@ -65,7 +65,6 @@ class Membership extends Model
         return $token;
     }
 
-    // Relationships
     public function customer(): BelongsTo
     {
         return $this->belongsTo(Customer::class);
@@ -116,7 +115,11 @@ class Membership extends Model
         return $this->hasMany(MembershipAuditLog::class);
     }
 
-    // Convenience
+    public function benefitRedemptions(): HasMany
+    {
+        return $this->hasMany(MembershipBenefitRedemption::class);
+    }
+
     public function isUsable(): bool
     {
         if ($this->status === 'active') return true;

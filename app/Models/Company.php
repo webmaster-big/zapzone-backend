@@ -36,7 +36,6 @@ class Company extends Model
         'founded_date' => 'date',
     ];
 
-    // Relationships
     public function locations(): HasMany
     {
         return $this->hasMany(Location::class);
@@ -47,7 +46,6 @@ class Company extends Model
         return $this->hasMany(User::class);
     }
 
-    // Scopes
     public function scopeByName($query, $name)
     {
         return $query->where('company_name', 'like', "%{$name}%");

@@ -6,13 +6,9 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
         Schema::table('packages', function (Blueprint $table) {
-            // Drop old availability columns - now handled by package_availability_schedules table
             $table->dropColumn([
                 'availability_type',
                 'available_days',
@@ -25,13 +21,9 @@ return new class extends Migration
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::table('packages', function (Blueprint $table) {
-            // Restore columns if rollback is needed
             $table->enum('availability_type', ['daily', 'weekly', 'monthly'])->default('daily');
             $table->json('available_days')->nullable();
             $table->json('available_week_days')->nullable();

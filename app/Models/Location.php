@@ -29,7 +29,6 @@ class Location extends Model
         'is_active' => 'boolean',
     ];
 
-    // Relationships
     public function company(): BelongsTo
     {
         return $this->belongsTo(Company::class);
@@ -65,7 +64,6 @@ class Location extends Model
         return $this->hasMany(GiftCard::class);
     }
 
-    // Scopes
     public function scopeActive($query)
     {
         return $query->where('is_active', true);

@@ -30,25 +30,16 @@ class EmailNotificationLog extends Model
         'sent_at' => 'datetime',
     ];
 
-    /**
-     * Get the email notification.
-     */
     public function emailNotification(): BelongsTo
     {
         return $this->belongsTo(EmailNotification::class);
     }
 
-    /**
-     * Get the notifiable entity (Booking or AttractionPurchase).
-     */
     public function notifiable(): MorphTo
     {
         return $this->morphTo();
     }
 
-    /**
-     * Mark as sent.
-     */
     public function markAsSent(): void
     {
         $this->update([
@@ -58,9 +49,6 @@ class EmailNotificationLog extends Model
         ]);
     }
 
-    /**
-     * Mark as failed.
-     */
     public function markAsFailed(string $errorMessage): void
     {
         $this->update([
@@ -69,25 +57,16 @@ class EmailNotificationLog extends Model
         ]);
     }
 
-    /**
-     * Scope for pending logs.
-     */
     public function scopePending($query)
     {
         return $query->where('status', self::STATUS_PENDING);
     }
 
-    /**
-     * Scope for sent logs.
-     */
     public function scopeSent($query)
     {
         return $query->where('status', self::STATUS_SENT);
     }
 
-    /**
-     * Scope for failed logs.
-     */
     public function scopeFailed($query)
     {
         return $query->where('status', self::STATUS_FAILED);

@@ -14,42 +14,32 @@ class CustomerNotificationController extends Controller
 {
     use ScopesByAuthUser;
 
-    /**
-     * Display a listing of customer notifications
-     */
     public function index(Request $request): JsonResponse
     {
         $query = CustomerNotification::with(['customer', 'location']);
 
-        // Multi-tenant + role-based scoping (driven by Sanctum auth user)
         $this->applyAuthScope($query, $request);
 
-        // Filter by customer
         if ($request->has('customer_id')) {
             $query->byCustomer($request->customer_id);
         }
 
-        // Filter by location
         if ($request->has('location_id')) {
             $query->byLocation($request->location_id);
         }
 
-        // Filter by status
         if ($request->has('status')) {
             $query->where('status', $request->status);
         }
 
-        // Filter by type
         if ($request->has('type')) {
             $query->byType($request->type);
         }
 
-        // Filter by priority
         if ($request->has('priority')) {
             $query->byPriority($request->priority);
         }
 
-        // Filter unread/read
         if ($request->has('unread')) {
             $query->unread();
         } elseif ($request->has('read')) {
@@ -73,9 +63,6 @@ class CustomerNotificationController extends Controller
         ]);
     }
 
-    /**
-     * Store a newly created customer notification
-     */
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -103,18 +90,12 @@ class CustomerNotificationController extends Controller
         ], 201);
     }
 
-    /**
-     * Display the specified customer notification
-     */
     public function show(CustomerNotification $customerNotification): JsonResponse
     {
         $customerNotification->load(['customer', 'location']);
         return response()->json(['success' => true, 'data' => $customerNotification]);
     }
 
-    /**
-     * Update the specified customer notification
-     */
     public function update(Request $request, CustomerNotification $customerNotification): JsonResponse
     {
         $validated = $request->validate([
@@ -135,9 +116,6 @@ class CustomerNotificationController extends Controller
         ]);
     }
 
-    /**
-     * Remove the specified customer notification
-     */
     public function destroy(CustomerNotification $customerNotification): JsonResponse
     {
         $notificationId = $customerNotification->id;
@@ -147,7 +125,6 @@ class CustomerNotificationController extends Controller
 
         $customerNotification->delete();
 
-        // Log notification deletion
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Customer Notification Deleted',
@@ -179,9 +156,6 @@ class CustomerNotificationController extends Controller
         ]);
     }
 
-    /**
-     * Mark a customer notification as read
-     */
     public function markAsRead(CustomerNotification $customerNotification): JsonResponse
     {
         $customerNotification->update([
@@ -196,9 +170,6 @@ class CustomerNotificationController extends Controller
         ]);
     }
 
-    /**
-     * Mark all customer notifications as read for a specific customer
-     */
     public function markAllAsRead(Request $request): JsonResponse
     {
         $customerId = $request->get('customer_id');
@@ -223,13 +194,8 @@ class CustomerNotificationController extends Controller
         ]);
     }
 
-    /**
-     * Get unread count for a customer
-     */
     public function getUnreadCount(Request $request): JsonResponse
     {
-        // Accept customer ID from the route segment (/unread-count/{customerId})
-        // or as a query parameter (?customer_id=X) for backwards compatibility.
         $customerId = $request->route('customerId') ?? $request->get('customer_id');
 
         if (!$customerId) {

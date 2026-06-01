@@ -15,9 +15,6 @@ class RsvpController extends Controller
 {
     use RecordsPageAnalytics;
 
-    /**
-     * Get party details for an RSVP token (public - no auth required).
-     */
     public function show(string $token): JsonResponse
     {
         try {
@@ -37,7 +34,6 @@ class RsvpController extends Controller
 
             $booking = $invitation->booking;
 
-            // Build public-safe response (no sensitive data)
             return response()->json([
                 'invitation' => [
                     'guest_name' => $invitation->guest_name,
@@ -88,9 +84,6 @@ class RsvpController extends Controller
         }
     }
 
-    /**
-     * Submit an RSVP response (public - no auth required).
-     */
     public function store(Request $request, string $token): JsonResponse
     {
         try {
@@ -110,10 +103,8 @@ class RsvpController extends Controller
                 'marketing_opt_in' => 'boolean',
             ]);
 
-            // Submit the RSVP
             $invitation->submitRsvp($validated);
 
-            // If marketing opt-in is checked, create/update marketing contact
             if (!empty($validated['marketing_opt_in'])) {
                 try {
                     $service = new InvitationService();
@@ -123,11 +114,9 @@ class RsvpController extends Controller
                         'invitation_id' => $invitation->id,
                         'error' => $e->getMessage(),
                     ]);
-                    // Don't fail the RSVP response for this
                 }
             }
 
-            // Server-side RSVP conversion (idempotent per invitation).
             $this->recordConversion(
                 'rsvp_submitted',
                 $invitation->fresh(),

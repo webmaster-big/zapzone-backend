@@ -46,8 +46,6 @@ class MembershipPlanController extends Controller
 
     public function publicIndex(Request $request): JsonResponse
     {
-        // Load approvedLocations (for multi-mode) and the plan's own location (for single-mode)
-        // so we can build a self-contained valid_locations list without an extra API call.
         $query = MembershipPlan::with(['approvedLocations:id,name', 'location:id,name'])
             ->where('is_active', true);
 
@@ -65,7 +63,6 @@ class MembershipPlanController extends Controller
         $data = $plans->map(function (MembershipPlan $plan) {
             $arr = $plan->toArray();
 
-            // Transparent valid-locations list for customer-facing display.
             $arr['valid_locations'] = $this->resolveValidLocations($plan);
             $arr['location_access_label'] = match ($plan->location_access_mode) {
                 'all'    => 'Valid at all locations',
@@ -96,14 +93,12 @@ class MembershipPlanController extends Controller
 
         $approved = $data['approved_location_ids'] ?? [];
         unset($data['approved_location_ids']);
-        // Also accept approved_location_names (resolved by name when IDs are not sent)
         $approvedNames = $data['approved_location_names'] ?? [];
         unset($data['approved_location_names']);
         if (empty($approved) && !empty($approvedNames)) {
             $approved = \App\Models\Location::whereIn('name', $approvedNames)->pluck('id')->all();
         }
 
-        // Resolve single-mode location by name if no location_id provided
         if (empty($data['location_id']) && !empty($data['location_name'])) {
             $data['location_id'] = \App\Models\Location::where('name', $data['location_name'])->value('id');
         }
@@ -139,7 +134,6 @@ class MembershipPlanController extends Controller
             $approved = \App\Models\Location::whereIn('name', $approvedNames)->pluck('id')->all();
         }
 
-        // Resolve single-mode location by name if no location_id provided
         if (empty($data['location_id']) && !empty($data['location_name'])) {
             $data['location_id'] = \App\Models\Location::where('name', $data['location_name'])->value('id');
         }
@@ -170,14 +164,10 @@ class MembershipPlanController extends Controller
 
     private function validateData(Request $request, ?int $id = null): array
     {
-        // --- Normalize frontend field aliases → DB column names ---
-        // Frontend sends: billing_interval, unlimited_uses, unlimited_visits, included_visits_per_term
-        // DB stores:       billing_cycle,   unlimited_uses_per_term, unlimited_visits_per_term, visits_per_term
         $merge = [];
         if ($request->has('billing_interval') && !$request->has('billing_cycle')) {
             $merge['billing_cycle'] = $request->billing_interval;
         }
-        // Map frontend usage_type aliases: 'limited_visits' → 'limited' (for DB compat with old enum)
         if ($request->has('usage_type') && $request->usage_type === 'limited_visits') {
             $merge['usage_type'] = 'limited_visits'; // kept as-is; migration adds this enum value
         }
@@ -237,16 +227,9 @@ class MembershipPlanController extends Controller
         ]);
     }
 
-    /**
-     * Build the transparent list of location names for a plan.
-     * 'all'    → hard-coded canonical locations list (no extra DB query needed).
-     * 'multi'  → the plan's explicitly approved locations.
-     * 'single' → the plan's own default location (customer will pick their home location at signup).
-     */
     private function resolveValidLocations(MembershipPlan $plan): array
     {
         return match ($plan->location_access_mode) {
-            // Query the actual DB so names always match what the app shows in dropdowns.
             'all'   => \App\Models\Location::where('company_id', $plan->company_id)
                             ->orderBy('name')
                             ->pluck('name')

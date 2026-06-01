@@ -6,10 +6,6 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     * Adds soft delete support to attraction_purchases and bookings tables.
-     */
     public function up(): void
     {
         Schema::table('attraction_purchases', function (Blueprint $table) {
@@ -21,9 +17,6 @@ return new class extends Migration
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::table('attraction_purchases', function (Blueprint $table) {

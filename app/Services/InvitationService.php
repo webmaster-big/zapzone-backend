@@ -21,16 +21,12 @@ class InvitationService
         $this->smsService = SmsService::isConfigured() ? new SmsService() : null;
     }
 
-    /**
-     * Send an invitation email and/or SMS for a booking invitation.
-     */
     public function sendInvitation(BookingInvitation $invitation): array
     {
         $invitation->load('booking.customer', 'booking.package', 'booking.location');
         $booking = $invitation->booking;
         $results = ['email' => null, 'sms' => null];
 
-        // Send email
         if (in_array($invitation->send_via, ['email', 'both']) && $invitation->guest_email) {
             try {
                 $this->sendInvitationEmail($invitation, $booking);
@@ -49,7 +45,6 @@ class InvitationService
             }
         }
 
-        // Send SMS
         if (in_array($invitation->send_via, ['text', 'both']) && $invitation->guest_phone) {
             if ($this->smsService) {
                 try {
@@ -78,15 +73,11 @@ class InvitationService
         return $results;
     }
 
-    /**
-     * Send the invitation email using the same pattern as BookingConfirmation.
-     */
     protected function sendInvitationEmail(BookingInvitation $invitation, Booking $booking): void
     {
         $variables = $this->buildInvitationVariables($invitation, $booking);
         $attachments = $this->getInvitationAttachments($booking);
 
-        // Build the Mailable (same approach as BookingConfirmation)
         $mailable = new PartyInvitation($booking, $invitation, $variables);
         $mailable->build();
 
@@ -97,9 +88,6 @@ class InvitationService
             $emailBody = $mailable->render();
             $subject = $mailable->subject;
 
-            // skipInlineImages=true: keeps <img src="URL"> as-is.
-            // Without this, processInlineImages() converts every <img> to a
-            // CID MIME part which Gmail shows as a downloadable attachment.
             $this->gmailService->sendEmail(
                 $invitation->guest_email,
                 $subject,
@@ -110,7 +98,6 @@ class InvitationService
                 true   // skipInlineImages — logo stays as URL, not CID
             );
         } else {
-            // Fallback to Laravel Mail - attach files manually
             foreach ($attachments as $attachment) {
                 $mailable->attachData(
                     base64_decode($attachment['data']),
@@ -123,9 +110,6 @@ class InvitationService
         }
     }
 
-    /**
-     * Send the invitation SMS.
-     */
     protected function sendInvitationSms(BookingInvitation $invitation, Booking $booking): void
     {
         $hostName = $booking->guest_of_honor_name
@@ -143,7 +127,6 @@ class InvitationService
 
         $message = "Hi {$guestFirst}! You're invited by {$hostName} to a celebration at Zap Zone {$locationName} on {$bookingDate} at {$bookingTime}. Confirm your attendance here: {$rsvpUrl}";
 
-        // Truncate if over 320 chars (2 SMS segments)
         if (strlen($message) > 320) {
             $message = "Hi {$guestFirst}! You're invited to a celebration at Zap Zone {$locationName} on {$bookingDate}. Confirm your attendance: {$rsvpUrl}";
         }
@@ -151,9 +134,6 @@ class InvitationService
         $this->smsService->sendSms($invitation->guest_phone, $message);
     }
 
-    /**
-     * Build template variables for invitation email.
-     */
     protected function buildInvitationVariables(BookingInvitation $invitation, Booking $booking): array
     {
         $customer = $booking->customer;
@@ -171,16 +151,13 @@ class InvitationService
             : '';
 
         return [
-            // Host info
             'host_name' => $customer ? trim($customer->first_name . ' ' . $customer->last_name) : ($booking->guest_name ?? 'Your Host'),
             'host_first_name' => $customer?->first_name ?? explode(' ', $booking->guest_name ?? 'Your Host')[0],
 
-            // Guest info
             'guest_name' => $invitation->guest_name ?? 'Guest',
             'guest_first_name' => explode(' ', trim($invitation->guest_name ?? 'Guest'))[0],
             'guest_email' => $invitation->guest_email ?? '',
 
-            // Party / Booking info
             'package_name' => $package?->name ?? 'Party',
             'booking_date' => $booking->booking_date?->format('F j, Y') ?? '',
             'booking_time' => $booking->booking_time ? $booking->booking_time->format('g:i A') : '',
@@ -188,28 +165,21 @@ class InvitationService
             'guest_of_honor_name' => $booking->guest_of_honor_name ?? '',
             'guest_of_honor_age' => $booking->guest_of_honor_age ?? '',
 
-            // Location info
             'location_name' => $location?->name ?? '',
             'location_address' => $locationAddress,
             'location_phone' => $location?->phone ?? '',
             'location_email' => $location?->email ?? '',
 
-            // Company info
             'company_name' => $company?->company_name ?? '',
 
-            // RSVP link
             'rsvp_link' => $invitation->getRsvpUrl(),
             'rsvp_url' => $invitation->getRsvpUrl(),
 
-            // Date/time
             'current_date' => now()->format('F j, Y'),
             'current_year' => (string) now()->year,
         ];
     }
 
-    /**
-     * Build email subject.
-     */
     protected function buildEmailSubject(array $variables): string
     {
         $companyName = $variables['company_name'] ?: 'Zap Zone';
@@ -217,9 +187,6 @@ class InvitationService
         return "Party Invitation - {$companyName}";
     }
 
-    /**
-     * Build the invitation email HTML body.
-     */
     protected function buildEmailHtml(array $variables): string
     {
         $guestName = htmlspecialchars($variables['guest_first_name']);
@@ -332,9 +299,6 @@ LOCATION;
 HTML;
     }
 
-    /**
-     * Get invitation file attachments from the booking's package.
-     */
     protected function getInvitationAttachments(Booking $booking): array
     {
         $attachments = [];
@@ -347,7 +311,6 @@ HTML;
         $invitationFile = $package->invitation_file;
 
         try {
-            // Handle base64 data URI
             if (str_starts_with($invitationFile, 'data:')) {
                 $parts = explode(',', $invitationFile, 2);
                 $meta = $parts[0]; // e.g. data:application/pdf;base64
@@ -363,7 +326,6 @@ HTML;
                     'data' => $data,
                 ];
             }
-            // Handle URL
             elseif (str_starts_with($invitationFile, 'http://') || str_starts_with($invitationFile, 'https://')) {
                 $fileContent = file_get_contents($invitationFile);
                 if ($fileContent !== false) {
@@ -377,7 +339,6 @@ HTML;
                     ];
                 }
             }
-            // Handle storage path
             elseif (Storage::exists($invitationFile)) {
                 $fileContent = Storage::get($invitationFile);
                 $extension = pathinfo($invitationFile, PATHINFO_EXTENSION) ?: 'pdf';
@@ -399,9 +360,6 @@ HTML;
         return $attachments;
     }
 
-    /**
-     * Create a marketing contact from RSVP data if opted in.
-     */
     public function createContactFromRsvp(BookingInvitation $invitation): void
     {
         if (!$invitation->marketing_opt_in) {
@@ -454,9 +412,6 @@ HTML;
         }
     }
 
-    /**
-     * MIME type to file extension helper.
-     */
     protected function mimeToExtension(string $mime): string
     {
         $map = [
@@ -470,9 +425,6 @@ HTML;
         return $map[$mime] ?? 'pdf';
     }
 
-    /**
-     * File extension to MIME type helper.
-     */
     protected function extensionToMime(string $ext): string
     {
         $map = [

@@ -20,15 +20,10 @@ class CustomerController extends Controller
 {
     use ScopesByAuthUser;
 
-    /**
-     * Display a listing of customers.
-     */
     public function index(Request $request): JsonResponse
     {
         $query = Customer::with(['bookings', 'giftCards']);
 
-        // Multi-tenant + role-based scoping. Customers do not have a direct
-        // location_id/company_id, so we scope through their booking history.
         $authUser = $this->resolveAuthUser($request);
         if ($authUser) {
             if (in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
@@ -47,14 +42,12 @@ class CustomerController extends Controller
             }
         }
 
-        // Filter by status
         if ($request->has('status')) {
             $query->where('status', $request->status);
         } else {
             $query->active();
         }
 
-        // Search by name or email
         if ($request->has('search')) {
             $search = $request->search;
             $query->where(function ($q) use ($search) {
@@ -65,7 +58,6 @@ class CustomerController extends Controller
             });
         }
 
-        // Sort
         $sortBy = $request->get('sort_by', 'first_name');
         $sortOrder = $request->get('sort_order', 'asc');
 
@@ -92,13 +84,10 @@ class CustomerController extends Controller
         ]);
     }
 
-    // customer fetch list using booking data and purchase data, including both registered and guest customers
     public function fetchCustomerList(Request $request, $userId): JsonResponse
     {
-        // Get the user by ID
         $user = User::find($userId);
 
-        // Collect all unique customer identifiers from bookings
         $bookingCustomers = Booking::query()
             ->when($user && $user->role !== 'company_admin', function ($query) use ($user) {
                 $query->where('location_id', $user->location_id);
@@ -112,7 +101,6 @@ class CustomerController extends Controller
                 'guest_phone' => $record->guest_phone,
             ]);
 
-        // Collect all unique customer identifiers from purchases
         $purchaseCustomers = AttractionPurchase::query()
             ->when($user && $user->role !== 'company_admin', function ($query) use ($user) {
                 $query->whereHas('attraction', function ($q) use ($user) {
@@ -128,7 +116,6 @@ class CustomerController extends Controller
                 'guest_phone' => $record->guest_phone,
             ]);
 
-        // Collect all unique customer identifiers from event purchases
         $eventPurchaseCustomers = EventPurchase::query()
             ->when($user && $user->role !== 'company_admin', function ($query) use ($user) {
                 $query->where('location_id', $user->location_id);
@@ -142,28 +129,23 @@ class CustomerController extends Controller
                 'guest_phone' => $record->guest_phone,
             ]);
 
-        // Merge all records
         $allRecords = $bookingCustomers->concat($purchaseCustomers)->concat($eventPurchaseCustomers);
 
-        // Build customer list
         $allCustomers = collect();
         $processedEmails = [];
 
         foreach ($allRecords as $record) {
             $emailToCheck = strtolower(trim($record->guest_email));
 
-            // Skip if we already processed this email
             if (in_array($emailToCheck, $processedEmails)) {
                 continue;
             }
 
             $processedEmails[] = $emailToCheck;
 
-            // Check if this email exists in the customers table
             $registeredCustomer = Customer::where('email', $record->guest_email)->first();
 
             if ($registeredCustomer) {
-                // Use registered customer data
                 $customer = (object) [
                     'id' => $registeredCustomer->id,
                     'first_name' => $registeredCustomer->first_name,
@@ -175,10 +157,8 @@ class CustomerController extends Controller
                     'last_visit' => $registeredCustomer->last_visit,
                 ];
             } else {
-                // Parse guest_name into first and last name
                 $nameParts = explode(' ', trim($record->guest_name ?? ''), 2);
 
-                // Create customer object from booking/purchase data
                 $customer = (object) [
                     'id' => null,
                     'first_name' => $nameParts[0] ?? 'Guest',
@@ -194,7 +174,6 @@ class CustomerController extends Controller
             $allCustomers->push($customer);
         }
 
-        // Apply search filter
         if ($request->has('search')) {
             $search = strtolower($request->search);
             $allCustomers = $allCustomers->filter(function ($customer) use ($search) {
@@ -205,23 +184,19 @@ class CustomerController extends Controller
             });
         }
 
-        // Calculate totals for each customer
         $customersWithTotals = $allCustomers->map(function ($customer) use ($user) {
-            // Calculate total bookings
             $totalBookings = Booking::where('guest_email', $customer->email)
                 ->when($user && $user->role !== 'company_admin', function ($query) use ($user) {
                     $query->where('location_id', $user->location_id);
                 })
                 ->count();
 
-            // Calculate total spent from bookings
             $totalSpentBookings = Booking::where('guest_email', $customer->email)
                 ->when($user && $user->role !== 'company_admin', function ($query) use ($user) {
                     $query->where('location_id', $user->location_id);
                 })
                 ->sum('amount_paid');
 
-            // Calculate total purchase tickets
             $totalPurchaseTickets = AttractionPurchase::where('guest_email', $customer->email)
                 ->when($user && $user->role !== 'company_admin', function ($query) use ($user) {
                     $query->whereHas('attraction', function ($q) use ($user) {
@@ -230,7 +205,6 @@ class CustomerController extends Controller
                 })
                 ->count();
 
-            // Calculate total spent from purchases
             $totalSpentPurchases = AttractionPurchase::where('guest_email', $customer->email)
                 ->when($user && $user->role !== 'company_admin', function ($query) use ($user) {
                     $query->whereHas('attraction', function ($q) use ($user) {
@@ -239,7 +213,6 @@ class CustomerController extends Controller
                 })
                 ->sum('amount_paid');
 
-            // Calculate total quantity of tickets purchased
             $totalTicketQuantity = AttractionPurchase::where('guest_email', $customer->email)
                 ->when($user && $user->role !== 'company_admin', function ($query) use ($user) {
                     $query->whereHas('attraction', function ($q) use ($user) {
@@ -248,7 +221,6 @@ class CustomerController extends Controller
                 })
                 ->sum('quantity');
 
-            // Calculate event purchase metrics
             $totalEventPurchases = EventPurchase::where('guest_email', $customer->email)
                 ->when($user && $user->role !== 'company_admin', function ($query) use ($user) {
                     $query->where('location_id', $user->location_id);
@@ -267,7 +239,6 @@ class CustomerController extends Controller
                 })
                 ->sum('quantity');
 
-            // Add calculated fields to customer object
             $customer->total_bookings = $totalBookings;
             $customer->total_spent = $totalSpentBookings + $totalSpentPurchases + $totalSpentEventPurchases;
             $customer->total_purchase_tickets = $totalPurchaseTickets;
@@ -278,7 +249,6 @@ class CustomerController extends Controller
             return $customer;
         });
 
-        // Sort
         $sortBy = $request->get('sort_by', 'first_name');
         $sortOrder = $request->get('sort_order', 'asc');
 
@@ -288,7 +258,6 @@ class CustomerController extends Controller
                 : $customersWithTotals->sortBy($sortBy);
         }
 
-        // Paginate manually
         $perPage = $request->get('per_page', 15);
         $page = $request->get('page', 1);
         $total = $customersWithTotals->count();
@@ -314,9 +283,6 @@ class CustomerController extends Controller
         ]);
     }
 
-    /**
-     * Store a newly created customer.
-     */
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -333,14 +299,12 @@ class CustomerController extends Controller
             'status' => ['sometimes', Rule::in(['active', 'inactive'])],
         ]);
 
-        // Only hash password if provided
         if (!empty($validated['password'])) {
             $validated['password'] = Hash::make($validated['password']);
         } else {
             unset($validated['password']);
         }
 
-        // Set default status if not provided
         if (!isset($validated['status'])) {
             $validated['status'] = 'active';
         }
@@ -354,9 +318,6 @@ class CustomerController extends Controller
         ], 201);
     }
 
-    /**
-     * Display the specified customer.
-     */
     public function show(Customer $customer): JsonResponse
     {
         $customer->load(['bookings.package', 'giftCards', 'payments']);
@@ -367,9 +328,6 @@ class CustomerController extends Controller
         ]);
     }
 
-    /**
-     * Update the specified customer.
-     */
     public function update(Request $request, Customer $customer): JsonResponse
     {
         $validated = $request->validate([
@@ -393,7 +351,6 @@ class CustomerController extends Controller
         $customer->update($validated);
         $customer->load(['bookings', 'giftCards']);
 
-        // Log customer update
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Customer Updated',
@@ -427,9 +384,6 @@ class CustomerController extends Controller
         ]);
     }
 
-    /**
-     * Remove the specified customer.
-     */
     public function destroy($id): JsonResponse
     {
         $customer = Customer::findOrFail($id);
@@ -440,7 +394,6 @@ class CustomerController extends Controller
 
         $customer->delete();
 
-        // Log customer deletion
         ActivityLog::log(
             action: 'Customer Deleted',
             category: 'delete',
@@ -469,9 +422,6 @@ class CustomerController extends Controller
         ]);
     }
 
-    /**
-     * Toggle customer status.
-     */
     public function toggleStatus(Customer $customer): JsonResponse
     {
         $newStatus = $customer->status === 'active' ? 'inactive' : 'active';
@@ -484,9 +434,6 @@ class CustomerController extends Controller
         ]);
     }
 
-    /**
-     * Get customer statistics.
-     */
     public function statistics(Customer $customer): JsonResponse
     {
         $stats = [
@@ -519,9 +466,6 @@ class CustomerController extends Controller
 
 
 
-    /**
-     * Update customer's last visit.
-     */
     public function updateLastVisit(Customer $customer): JsonResponse
     {
         $customer->update(['last_visit' => now()]);
@@ -532,9 +476,6 @@ class CustomerController extends Controller
         ]);
     }
 
-    /**
-     * Search customers by email or name.
-     */
     public function search(Request $request): JsonResponse
     {
         $query = $request->get('q') ?? $request->get('query');
@@ -561,24 +502,17 @@ class CustomerController extends Controller
         ]);
     }
 
-    /**
-     * Get comprehensive customer analytics.
-     */
     public function analytics(Request $request): JsonResponse
     {
-        // Get user from frontend parameter or auth
         $userId = $request->get('user_id') ?? auth()->id();
         $user = User::find($userId);
 
-        // Get date range filter
         $dateRange = $request->get('date_range', '30d');
 
-        // Support custom date range
         if ($dateRange === 'custom' && $request->has('start_date') && $request->has('end_date')) {
             $startDate = Carbon::parse($request->get('start_date'))->startOfDay();
             $endDate = Carbon::parse($request->get('end_date'))->endOfDay();
         } elseif ($request->has('start_date') && $request->has('end_date')) {
-            // Also support passing start_date/end_date without setting date_range to 'custom'
             $startDate = Carbon::parse($request->get('start_date'))->startOfDay();
             $endDate = Carbon::parse($request->get('end_date'))->endOfDay();
             $dateRange = 'custom';
@@ -594,11 +528,8 @@ class CustomerController extends Controller
             $endDate = now();
         }
 
-        // Determine if we should filter by location
         $isCompanyAdmin = $user && $user->role === 'company_admin';
 
-        // If company admin and location_id is provided in request, use it
-        // If not company admin, always use their assigned location
         $locationId = null;
         if ($isCompanyAdmin) {
             $locationId = $request->get('location_id') ? (int)$request->get('location_id') : null;
@@ -606,7 +537,6 @@ class CustomerController extends Controller
             $locationId = $user ? $user->location_id : null;
         }
 
-        // 1. Key Metrics
         $bookingEmails = Booking::query()
             ->when($locationId, fn($q) => $q->where('location_id', $locationId))
             ->whereNotNull('guest_email')
@@ -669,9 +599,7 @@ class CustomerController extends Controller
             ->distinct('guest_email')
             ->count();
 
-        // Calculate previous period metrics for comparison
         if ($dateRange === 'custom') {
-            // For custom range, calculate the same duration before the start date
             $periodDays = $startDate->diffInDays($endDate);
             $previousPeriodStart = $startDate->copy()->subDays($periodDays + 1);
             $previousPeriodEnd = $startDate->copy()->subDay();
@@ -695,7 +623,6 @@ class CustomerController extends Controller
             };
         }
 
-        // Previous period total customers
         $prevTotalCustomers = Booking::query()
             ->when($locationId, fn($q) => $q->where('location_id', $locationId))
             ->when($previousPeriodStart && $previousPeriodEnd, fn($q) => $q->whereBetween('created_at', [$previousPeriodStart, $previousPeriodEnd]))
@@ -703,7 +630,6 @@ class CustomerController extends Controller
             ->distinct('guest_email')
             ->count();
 
-        // Previous period active customers
         $prevActiveCustomers = Booking::query()
             ->when($locationId, fn($q) => $q->where('location_id', $locationId))
             ->whereBetween('created_at', [now()->subDays(60), now()->subDays(30)])
@@ -711,7 +637,6 @@ class CustomerController extends Controller
             ->distinct('guest_email')
             ->count();
 
-        // Previous period revenue
         $prevTotalRevenue = Booking::query()
             ->when($locationId, fn($q) => $q->where('location_id', $locationId))
             ->whereNotIn('status', ['cancelled'])
@@ -734,10 +659,8 @@ class CustomerController extends Controller
 
         $prevTotalRevenueSum = $prevTotalRevenue + $prevPurchaseRevenue + $prevEventPurchaseRevenue;
 
-        // Previous period avg revenue per customer
         $prevAvgRevenuePerCustomer = $prevTotalCustomers > 0 ? round($prevTotalRevenueSum / $prevTotalCustomers, 2) : 0;
 
-        // Previous period new customers
         $prevNewCustomers = Booking::query()
             ->when($locationId, fn($q) => $q->where('location_id', $locationId))
             ->whereBetween('created_at', [now()->subDays(60), now()->subDays(30)])
@@ -745,7 +668,6 @@ class CustomerController extends Controller
             ->distinct('guest_email')
             ->count();
 
-        // Calculate percentage changes
         $totalCustomersChange = $prevTotalCustomers > 0
             ? round((($totalCustomers - $prevTotalCustomers) / $prevTotalCustomers) * 100, 1)
             : 0;
@@ -766,7 +688,6 @@ class CustomerController extends Controller
             ? round((($newCustomers - $prevNewCustomers) / $prevNewCustomers) * 100, 1)
             : 0;
 
-        // 2. Customer Growth (last 9 months)
         $customerGrowth = [];
         for ($i = 8; $i >= 0; $i--) {
             $monthStart = now()->subMonths($i)->startOfMonth();
@@ -805,7 +726,6 @@ class CustomerController extends Controller
             ];
         }
 
-        // 3. Revenue Trend (last 9 months)
         $revenueTrend = [];
         for ($i = 8; $i >= 0; $i--) {
             $monthStart = now()->subMonths($i)->startOfMonth();
@@ -841,7 +761,6 @@ class CustomerController extends Controller
             ];
         }
 
-        // 4. Booking Time Distribution
         $bookingTimeDistribution = Booking::query()
             ->when($locationId, fn($q) => $q->where('location_id', $locationId))
             ->when($startDate && $endDate, fn($q) => $q->whereBetween('created_at', [$startDate, $endDate]))
@@ -855,7 +774,6 @@ class CustomerController extends Controller
                 'count' => $item->count,
             ]);
 
-        // 5. Top Bookings per Customer
         $topBookingCustomers = Booking::query()
             ->when($locationId, fn($q) => $q->where('location_id', $locationId))
             ->when($startDate && $endDate, fn($q) => $q->whereBetween('created_at', [$startDate, $endDate]))
@@ -871,7 +789,6 @@ class CustomerController extends Controller
                 'bookings' => $item->bookings,
             ]);
 
-        // 6. Customer Status Distribution
         $activeCount = Booking::query()
             ->when($locationId, fn($q) => $q->where('location_id', $locationId))
             ->where('created_at', '>=', now()->subDays(30))
@@ -892,7 +809,6 @@ class CustomerController extends Controller
             ['status' => 'new', 'count' => $newCustomers, 'color' => '#3b82f6'],
         ];
 
-        // 7. Activity Hours (hourly distribution)
         $activityHours = Booking::query()
             ->when($locationId, fn($q) => $q->where('location_id', $locationId))
             ->when($startDate && $endDate, fn($q) => $q->whereBetween('created_at', [$startDate, $endDate]))
@@ -906,7 +822,6 @@ class CustomerController extends Controller
                 'activity' => $item->activity,
             ]);
 
-        // 8. Customer Lifetime Value Segments
         $allCustomerEmails = Booking::query()
             ->when($locationId, fn($q) => $q->where('location_id', $locationId))
             ->whereNotNull('guest_email')
@@ -944,13 +859,11 @@ class CustomerController extends Controller
             ['segment' => 'Low Value', 'value' => round(($lowValue / $totalValues) * 100), 'color' => '#ef4444'],
         ];
 
-        // 9. Repeat Customers Rate (last 9 months)
         $repeatCustomers = [];
         for ($i = 8; $i >= 0; $i--) {
             $monthStart = now()->subMonths($i)->startOfMonth();
             $monthEnd = now()->subMonths($i)->endOfMonth();
 
-            // Get all customers who made bookings in this month
             $monthCustomerEmails = Booking::query()
                 ->when($locationId, fn($q) => $q->where('location_id', $locationId))
                 ->whereBetween('created_at', [$monthStart, $monthEnd])
@@ -960,7 +873,6 @@ class CustomerController extends Controller
 
             $allCustomers = $monthCustomerEmails->count();
 
-            // Count how many of these customers had previous bookings (before this month)
             $repeaters = 0;
             foreach ($monthCustomerEmails as $email) {
                 $previousBookings = Booking::query()
@@ -982,7 +894,6 @@ class CustomerController extends Controller
             ];
         }
 
-        // 10. Top 5 Most Purchased Activities by Customer
         $topActivities = AttractionPurchase::query()
             ->with('attraction')
             ->when($locationId, function($q) use ($locationId) {
@@ -1002,7 +913,6 @@ class CustomerController extends Controller
                 'purchases' => $item->purchases,
             ]);
 
-        // 10.5 Top 5 Most Purchased Events by Customer
         $topEvents = EventPurchase::query()
             ->with('event')
             ->when($locationId, fn($q) => $q->where('location_id', $locationId))
@@ -1020,7 +930,6 @@ class CustomerController extends Controller
                 'purchases' => $item->purchases,
             ]);
 
-        // 11. Top 5 Most Booked Packages by Customer
         $topPackages = Booking::query()
             ->with('package')
             ->when($locationId, fn($q) => $q->where('location_id', $locationId))
@@ -1039,7 +948,6 @@ class CustomerController extends Controller
                 'bookings' => $item->bookings,
             ]);
 
-        // 12. Recent Customers (from bookings and purchases)
         $recentBookings = Booking::query()
             ->when($locationId, fn($q) => $q->where('location_id', $locationId))
             ->whereNotNull('guest_email')
@@ -1083,7 +991,6 @@ class CustomerController extends Controller
             ];
         });
 
-        // Get previous repeat rate for comparison
         $prevRepeatRate = count($repeatCustomers) > 1 ? $repeatCustomers[count($repeatCustomers) - 2]['repeatRate'] : 0;
         $currentRepeatRate = $repeatCustomers[count($repeatCustomers) - 1]['repeatRate'];
         $repeatRateChange = $prevRepeatRate > 0
@@ -1149,9 +1056,6 @@ class CustomerController extends Controller
         ]);
     }
 
-    /**
-     * Export customer analytics data in various formats (CSV, PDF).
-     */
     public function exportAnalytics(Request $request)
     {
         $validated = $request->validate([
@@ -1170,11 +1074,9 @@ class CustomerController extends Controller
         $format = $validated['format'];
         $includeSections = $validated['include_sections'] ?? ['customers', 'revenue', 'bookings', 'activities', 'packages', 'events'];
 
-        // Get date range filter
         $dateRange = $request->get('date_range', '30d');
         $dateRangeDisplay = $dateRange;
 
-        // Support custom date range
         if ($dateRange === 'custom' && $request->has('start_date') && $request->has('end_date')) {
             $startDate = Carbon::parse($request->get('start_date'))->startOfDay();
             $endDate = Carbon::parse($request->get('end_date'))->endOfDay();
@@ -1195,7 +1097,6 @@ class CustomerController extends Controller
             $endDate = now();
         }
 
-        // Location filtering
         $isCompanyAdmin = $user && $user->role === 'company_admin';
         $locationId = null;
         if ($isCompanyAdmin) {
@@ -1204,18 +1105,15 @@ class CustomerController extends Controller
             $locationId = $user ? $user->location_id : null;
         }
 
-        // Get location name for report
         $locationName = 'All Locations';
         if ($locationId) {
             $location = \App\Models\Location::find($locationId);
             $locationName = $location ? $location->name : 'Unknown Location';
         }
 
-        // Collect export data
         $exportData = [];
 
         if (in_array('customers', $includeSections)) {
-            // Get all customers with their details
             $bookingEmails = Booking::query()
                 ->when($locationId, fn($q) => $q->where('location_id', $locationId))
                 ->when($startDate && $endDate, fn($q) => $q->whereBetween('created_at', [$startDate, $endDate]))
@@ -1314,7 +1212,6 @@ class CustomerController extends Controller
         }
 
         if (in_array('revenue', $includeSections)) {
-            // Revenue by month
             $exportData['revenue_by_month'] = [];
             for ($i = 8; $i >= 0; $i--) {
                 $monthStart = now()->subMonths($i)->startOfMonth();
@@ -1349,7 +1246,6 @@ class CustomerController extends Controller
         }
 
         if (in_array('bookings', $includeSections)) {
-            // Top booking customers
             $exportData['top_customers'] = Booking::query()
                 ->when($locationId, fn($q) => $q->where('location_id', $locationId))
                 ->when($startDate && $endDate, fn($q) => $q->whereBetween('created_at', [$startDate, $endDate]))
@@ -1370,7 +1266,6 @@ class CustomerController extends Controller
         }
 
         if (in_array('activities', $includeSections)) {
-            // Top activities
             $exportData['top_activities'] = AttractionPurchase::query()
                 ->with('attraction')
                 ->when($locationId, function($q) use ($locationId) {
@@ -1393,7 +1288,6 @@ class CustomerController extends Controller
         }
 
         if (in_array('packages', $includeSections)) {
-            // Top packages
             $exportData['top_packages'] = Booking::query()
                 ->with('package')
                 ->when($locationId, fn($q) => $q->where('location_id', $locationId))
@@ -1415,7 +1309,6 @@ class CustomerController extends Controller
         }
 
         if (in_array('events', $includeSections)) {
-            // Top events
             $exportData['top_events'] = EventPurchase::query()
                 ->with('event')
                 ->when($locationId, fn($q) => $q->where('location_id', $locationId))
@@ -1436,7 +1329,6 @@ class CustomerController extends Controller
                 ->toArray();
         }
 
-        // Generate export based on format
         if ($format === 'csv') {
             return $this->generateCSVExport($exportData, $locationName, $dateRangeDisplay);
         } elseif ($format === 'receipt') {
@@ -1446,9 +1338,6 @@ class CustomerController extends Controller
         }
     }
 
-    /**
-     * Generate CSV export.
-     */
     private function generateCSVExport($data, $locationName, $dateRange)
     {
         $filename = 'customer_analytics_' . date('Y-m-d_His') . '.csv';
@@ -1461,14 +1350,12 @@ class CustomerController extends Controller
         $callback = function() use ($data, $locationName, $dateRange) {
             $file = fopen('php://output', 'w');
 
-            // Header information
             fputcsv($file, ['Customer Analytics Report']);
             fputcsv($file, ['Location:', $locationName]);
             fputcsv($file, ['Date Range:', $dateRange]);
             fputcsv($file, ['Generated:', now()->format('Y-m-d H:i:s')]);
             fputcsv($file, []);
 
-            // Customers section
             if (isset($data['customers'])) {
                 fputcsv($file, ['CUSTOMER LIST']);
                 fputcsv($file, ['Name', 'Email', 'Total Bookings', 'Total Purchases', 'Total Event Purchases', 'Total Spent', 'First Visit', 'Last Visit']);
@@ -1487,7 +1374,6 @@ class CustomerController extends Controller
                 fputcsv($file, []);
             }
 
-            // Revenue by month section
             if (isset($data['revenue_by_month'])) {
                 fputcsv($file, ['REVENUE BY MONTH']);
                 fputcsv($file, ['Month', 'Bookings Revenue', 'Purchases Revenue', 'Event Purchases Revenue', 'Total Revenue']);
@@ -1503,7 +1389,6 @@ class CustomerController extends Controller
                 fputcsv($file, []);
             }
 
-            // Top customers section
             if (isset($data['top_customers'])) {
                 fputcsv($file, ['TOP CUSTOMERS']);
                 fputcsv($file, ['Name', 'Email', 'Bookings', 'Total Spent']);
@@ -1518,7 +1403,6 @@ class CustomerController extends Controller
                 fputcsv($file, []);
             }
 
-            // Top activities section
             if (isset($data['top_activities'])) {
                 fputcsv($file, ['TOP ACTIVITIES']);
                 fputcsv($file, ['Activity', 'Purchases', 'Revenue']);
@@ -1532,7 +1416,6 @@ class CustomerController extends Controller
                 fputcsv($file, []);
             }
 
-            // Top packages section
             if (isset($data['top_packages'])) {
                 fputcsv($file, ['TOP PACKAGES']);
                 fputcsv($file, ['Package', 'Bookings', 'Revenue']);
@@ -1546,7 +1429,6 @@ class CustomerController extends Controller
                 fputcsv($file, []);
             }
 
-            // Top events section
             if (isset($data['top_events'])) {
                 fputcsv($file, ['TOP EVENTS']);
                 fputcsv($file, ['Event', 'Purchases', 'Tickets', 'Revenue']);
@@ -1567,9 +1449,6 @@ class CustomerController extends Controller
         return response()->stream($callback, 200, $headers);
     }
 
-    /**
-     * Generate PDF export using DomPDF.
-     */
     private function generatePDFExport($data, $locationName, $dateRange, $user)
     {
         $filename = 'customer_analytics_' . date('Y-m-d_His') . '.pdf';
@@ -1585,19 +1464,14 @@ class CustomerController extends Controller
         return $pdf->download($filename);
     }
 
-    /**
-     * Generate Receipt-style export as PNG image.
-     */
     private function generateReceiptExport($data, $locationName, $dateRange, $user)
     {
         $filename = 'customer_analytics_receipt_' . date('Y-m-d_His') . '.png';
 
-        // Create image with GD
         $width = 600;
         $lineHeight = 20;
         $padding = 20;
 
-        // Calculate height based on content
         $contentLines = 15; // Header lines
         if (isset($data['customers'])) $contentLines += min(count($data['customers']), 10) + 3;
         if (isset($data['revenue_by_month'])) $contentLines += min(count($data['revenue_by_month']), 9) + 3;
@@ -1607,21 +1481,17 @@ class CustomerController extends Controller
 
         $height = ($contentLines * $lineHeight) + ($padding * 2);
 
-        // Create image
         $image = imagecreate($width, $height);
 
-        // Colors
         $white = imagecolorallocate($image, 255, 255, 255);
         $black = imagecolorallocate($image, 0, 0, 0);
         $gray = imagecolorallocate($image, 100, 100, 100);
 
-        // Fill background
         imagefill($image, 0, 0, $white);
 
         $y = $padding;
         $font = 3; // Built-in font
 
-        // Helper function to draw text
         $drawText = function($text, $isBold = false) use ($image, &$y, $padding, $black, $lineHeight, $font) {
             imagestring($image, $font, $padding, $y, $text, $black);
             $y += $lineHeight;
@@ -1632,7 +1502,6 @@ class CustomerController extends Controller
             $y += $lineHeight;
         };
 
-        // Header
         $drawText('CUSTOMER ANALYTICS REPORT', true);
         $drawText('Location: ' . $locationName);
         $drawText('Date Range: ' . $dateRange);
@@ -1641,7 +1510,6 @@ class CustomerController extends Controller
         $drawText('By: ' . $generatedBy);
         $drawDivider();
 
-        // Customers section
         if (isset($data['customers']) && count($data['customers']) > 0) {
             $drawText('CUSTOMER LIST', true);
             $customers = array_slice($data['customers'], 0, 10);
@@ -1651,7 +1519,6 @@ class CustomerController extends Controller
             $drawDivider();
         }
 
-        // Revenue by month section
         if (isset($data['revenue_by_month']) && count($data['revenue_by_month']) > 0) {
             $drawText('REVENUE BY MONTH', true);
             $revenues = array_slice($data['revenue_by_month'], 0, 9);
@@ -1661,7 +1528,6 @@ class CustomerController extends Controller
             $drawDivider();
         }
 
-        // Top customers section
         if (isset($data['top_customers']) && count($data['top_customers']) > 0) {
             $drawText('TOP CUSTOMERS', true);
             $topCustomers = array_slice($data['top_customers'], 0, 5);
@@ -1671,7 +1537,6 @@ class CustomerController extends Controller
             $drawDivider();
         }
 
-        // Top activities section
         if (isset($data['top_activities']) && count($data['top_activities']) > 0) {
             $drawText('TOP ACTIVITIES', true);
             $topActivities = array_slice($data['top_activities'], 0, 5);
@@ -1681,7 +1546,6 @@ class CustomerController extends Controller
             $drawDivider();
         }
 
-        // Top packages section
         if (isset($data['top_packages']) && count($data['top_packages']) > 0) {
             $drawText('TOP PACKAGES', true);
             $topPackages = array_slice($data['top_packages'], 0, 5);
@@ -1690,7 +1554,6 @@ class CustomerController extends Controller
             }
         }
 
-        // Output image
         ob_start();
         imagepng($image);
         $imageData = ob_get_clean();

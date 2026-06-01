@@ -8,35 +8,21 @@ use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
-/**
- * Seeds three example membership plans for testing:
- *   1. Single-location  — "Local Explorer"      ($29.99 / month, Battle Creek only)
- *   2. Multi-location   — "Multi-Park Flex"     ($49.99 / month, 5 specific locations)
- *   3. All-locations    — "Unlimited All Parks" ($79.99 / month, every location)
- *
- * Run with:
- *   php artisan db:seed --class=MembershipPlanSeeder
- */
 class MembershipPlanSeeder extends Seeder
 {
     public function run(): void
     {
-        // Use the first company in the database
         $companyId = DB::table('companies')->value('id');
         if (! $companyId) {
             $this->command->warn('No company found. Skipping membership plan seeder.');
             return;
         }
 
-        // Look up locations by name (created during the normal location seeder)
         $locationByName = Location::whereIn('name', [
             'Battle Creek', 'Brighton', 'Canton', 'Farmington', 'Lansing',
             'Portage', 'Sterling Heights', 'Taylor', 'Warren', 'Waterford', 'Ypsilanti',
         ])->pluck('id', 'name');
 
-        // ---------------------------------------------------------------
-        // 1. SINGLE-LOCATION PLAN
-        // ---------------------------------------------------------------
         $singlePlan = MembershipPlan::updateOrCreate(
             ['company_id' => $companyId, 'slug' => 'local-explorer-brighton'],
             [
@@ -68,9 +54,6 @@ class MembershipPlanSeeder extends Seeder
             ]
         );
 
-        // ---------------------------------------------------------------
-        // 2. MULTI-LOCATION PLAN
-        // ---------------------------------------------------------------
         $multiPlan = MembershipPlan::updateOrCreate(
             ['company_id' => $companyId, 'slug' => 'multi-park-flex'],
             [
@@ -102,7 +85,6 @@ class MembershipPlanSeeder extends Seeder
             ]
         );
 
-        // Attach 5 approved locations for the multi plan
         $multiLocations = ['Battle Creek', 'Brighton', 'Canton', 'Farmington', 'Lansing'];
         $multiLocationIds = collect($multiLocations)
             ->map(fn($name) => $locationByName->get($name))
@@ -116,9 +98,6 @@ class MembershipPlanSeeder extends Seeder
             $this->command->warn('Multi-park locations not found in DB. The plan was created but has no approved locations.');
         }
 
-        // ---------------------------------------------------------------
-        // 3. ALL-LOCATIONS PLAN
-        // ---------------------------------------------------------------
         MembershipPlan::updateOrCreate(
             ['company_id' => $companyId, 'slug' => 'unlimited-all-parks'],
             [

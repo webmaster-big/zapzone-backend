@@ -6,9 +6,6 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
         Schema::create('customer_gift_cards', function (Blueprint $table) {
@@ -19,15 +16,11 @@ return new class extends Migration
             $table->timestamp('redeemed_at')->nullable();
             $table->timestamps();
 
-            // Indexes
             $table->index('customer_id');
             $table->index('gift_card_id');
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::dropIfExists('customer_gift_cards');

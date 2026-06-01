@@ -15,33 +15,25 @@ class AddOnController extends Controller
 {
     use ScopesByAuthUser;
 
-    /**
-     * Display a listing of add-ons.
-     */
     public function index(Request $request): JsonResponse
     {
         try {
-            // Limit per_page to prevent memory exhaustion
             $perPage = min($request->get('per_page', 15), 500);
 
             $query = AddOn::with(['location:id,name', 'packages:id,name']);
 
-            // Multi-tenant + role-based scoping (driven by Sanctum auth user)
             $this->applyAuthScope($query, $request);
 
-            // Filter by location
             if ($request->has('location_id')) {
                 $query->byLocation($request->location_id);
             }
 
-            // Filter by active status
             if ($request->has('is_active')) {
                 $query->where('is_active', $request->boolean('is_active'));
             } else {
                 $query->active();
             }
 
-            // Price range filter
             if ($request->has('min_price')) {
                 $query->where('price', '>=', $request->min_price);
             }
@@ -49,7 +41,6 @@ class AddOnController extends Controller
                 $query->where('price', '<=', $request->max_price);
             }
 
-            // Search by name or description
             if ($request->has('search')) {
                 $search = $request->search;
                 $query->where(function ($q) use ($search) {
@@ -58,7 +49,6 @@ class AddOnController extends Controller
                 });
             }
 
-            // Sort
             $sortBy = $request->get('sort_by', 'name');
             $sortOrder = $request->get('sort_order', 'asc');
 
@@ -96,9 +86,6 @@ class AddOnController extends Controller
         }
     }
 
-    /**
-     * Store a newly created add-on.
-     */
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -117,7 +104,6 @@ class AddOnController extends Controller
             'max_quantity' => 'sometimes|nullable|integer|min:1|gte:min_quantity',
         ]);
 
-        // Handle image upload
         if (isset($validated['image']) && !empty($validated['image'])) {
             $validated['image'] = $this->handleImageUpload($validated['image']);
         } else {
@@ -134,9 +120,6 @@ class AddOnController extends Controller
         ], 201);
     }
 
-    /**
-     * Display the specified add-on.
-     */
     public function show(AddOn $addOn): JsonResponse
     {
         $addOn->load(['location', 'packages', 'bookings']);
@@ -147,15 +130,10 @@ class AddOnController extends Controller
         ]);
     }
 
-    /**
-     * Update the specified add-on.
-     */
     public function update(Request $request, $id): JsonResponse
     {
-        // Find the add-on
         $addOn = AddOn::findOrFail($id);
 
-        // Store original name for logging
         $originalName = $addOn->name;
 
         $validated = $request->validate([
@@ -174,7 +152,6 @@ class AddOnController extends Controller
             'max_quantity' => 'sometimes|nullable|integer|min:1|gte:min_quantity',
         ]);
 
-        // Log what we're receiving
         Log::info('Update request received', [
             'addon_id' => $addOn->id,
             'addon_name' => $addOn->name,
@@ -182,9 +159,7 @@ class AddOnController extends Controller
             'has_image' => isset($validated['image'])
         ]);
 
-        // Handle image upload
         if (isset($validated['image']) && !empty($validated['image'])) {
-            // Delete old image if exists
             if ($addOn->image && file_exists(storage_path('app/public/' . $addOn->image))) {
                 unlink(storage_path('app/public/' . $addOn->image));
             }
@@ -196,10 +171,8 @@ class AddOnController extends Controller
         $addOn->refresh();
         $addOn->load(['location', 'packages']);
 
-        // log laravel log
         Log::info("Add-On '{$addOn->name}' (ID: {$addOn->id}) was updated from '{$originalName}'.");
 
-        // Log add-on update
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Add-On Updated',
@@ -237,16 +210,12 @@ class AddOnController extends Controller
         ]);
     }
 
-    /**
-     * Remove the specified add-on.
-     */
     public function destroy( $id): JsonResponse
     {
         $addOn = AddOn::findOrFail($id);
 
         $deletedBy = User::findOrFail(auth()->id());
 
-        // Delete image if exists
         if ($addOn->image && file_exists(storage_path('app/public/' . $addOn->image))) {
             unlink(storage_path('app/public/' . $addOn->image));
         }
@@ -257,7 +226,6 @@ class AddOnController extends Controller
 
         $addOn->delete();
 
-        // Log add-on deletion
         ActivityLog::log(
             action: 'Add-On Deleted',
             category: 'delete',
@@ -287,9 +255,6 @@ class AddOnController extends Controller
         ]);
     }
 
-    /**
-     * Get add-ons by location.
-     */
     public function getByLocation(int $locationId): JsonResponse
     {
         $addOns = AddOn::with(['packages'])
@@ -304,9 +269,6 @@ class AddOnController extends Controller
         ]);
     }
 
-    /**
-     * Toggle add-on active status.
-     */
     public function toggleStatus(AddOn $addOn): JsonResponse
     {
         $addOn->update(['is_active' => !$addOn->is_active]);
@@ -318,9 +280,6 @@ class AddOnController extends Controller
         ]);
     }
 
-    /**
-     * Get popular add-ons.
-     */
     public function getPopular(Request $request): JsonResponse
     {
         $limit = $request->get('limit', 10);
@@ -338,20 +297,14 @@ class AddOnController extends Controller
         ]);
     }
 
-    /**
-     * Handle image upload - base64 or file path
-     */
     private function handleImageUpload($image): string
     {
-        // Check if it's a base64 string
         if (is_string($image) && strpos($image, 'data:image') === 0) {
-            // Extract base64 data
             preg_match('/data:image\/(\w+);base64,/', $image, $matches);
             $imageType = $matches[1] ?? 'png';
             $imageData = substr($image, strpos($image, ',') + 1);
             $imageData = base64_decode($imageData);
 
-            // Generate unique filename
             $filename = uniqid() . '.' . $imageType;
             $path = 'images/addons';
             $fullPath = storage_path('app/public/' . $path);
@@ -363,28 +316,21 @@ class AddOnController extends Controller
                 'imageType' => $imageType
             ]);
 
-            // Create directory if it doesn't exist
             if (!file_exists($fullPath)) {
                 mkdir($fullPath, 0755, true);
                 Log::info('Created directory', ['path' => $fullPath]);
             }
 
-            // Save the file
             file_put_contents($fullPath . '/' . $filename, $imageData);
             Log::info('Image saved successfully', ['file' => $fullPath . '/' . $filename]);
 
-            // Return the relative path (for storage URL)
             return $path . '/' . $filename;
         }
 
-        // If it's already a file path or URL, return as is
         Log::info('Image path returned as-is', ['image' => $image]);
         return $image;
     }
 
-    /**
-     * Bulk delete add-ons
-     */
     public function bulkDelete(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -397,7 +343,6 @@ class AddOnController extends Controller
         $locationIds = [];
 
         foreach ($addOns as $addOn) {
-            // Delete image if exists
             if ($addOn->image && file_exists(storage_path('app/public/' . $addOn->image))) {
                 unlink(storage_path('app/public/' . $addOn->image));
             }
@@ -407,7 +352,6 @@ class AddOnController extends Controller
             $deletedCount++;
         }
 
-        // Log bulk deletion
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Bulk Add-Ons Deleted',
@@ -436,9 +380,6 @@ class AddOnController extends Controller
         ]);
     }
 
-    /**
-     * Bulk import add-ons
-     */
     public function bulkImport(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -466,7 +407,6 @@ class AddOnController extends Controller
 
         foreach ($validated['add_ons'] as $index => $addOnData) {
             try {
-                // Map camelCase to snake_case fields
                 $mappedData = [
                     'name' => $addOnData['name'],
                     'price' => $addOnData['price'] ?? null,
@@ -476,7 +416,6 @@ class AddOnController extends Controller
                     'max_quantity' => $addOnData['max_quantity'] ?? $addOnData['maxQuantity'] ?? null,
                 ];
 
-                // Handle is_active field
                 if (isset($addOnData['isActive'])) {
                     $mappedData['is_active'] = $addOnData['isActive'];
                 } elseif (isset($addOnData['is_active'])) {
@@ -485,7 +424,6 @@ class AddOnController extends Controller
                     $mappedData['is_active'] = true;
                 }
 
-                // Handle is_force_add_on field
                 if (isset($addOnData['isForceAddOn'])) {
                     $mappedData['is_force_add_on'] = $addOnData['isForceAddOn'];
                 } elseif (isset($addOnData['is_force_add_on'])) {
@@ -494,7 +432,6 @@ class AddOnController extends Controller
                     $mappedData['is_force_add_on'] = false;
                 }
 
-                // Handle price_each_packages field
                 if (isset($addOnData['priceEachPackages'])) {
                     $mappedData['price_each_packages'] = $addOnData['priceEachPackages'];
                 } elseif (isset($addOnData['price_each_packages'])) {
@@ -503,28 +440,22 @@ class AddOnController extends Controller
                     $mappedData['price_each_packages'] = null;
                 }
 
-                // Handle image upload if provided
                 if (isset($addOnData['image']) && !empty($addOnData['image'])) {
-                    // Check if it's a base64 string
                     if (is_string($addOnData['image']) && strpos($addOnData['image'], 'data:image') === 0) {
                         $mappedData['image'] = $this->handleImageUpload($addOnData['image']);
                     } else {
-                        // Keep existing path as-is
                         $mappedData['image'] = $addOnData['image'];
                     }
                 } else {
                     $mappedData['image'] = null;
                 }
 
-                // Validate max_quantity >= min_quantity
                 if ($mappedData['max_quantity'] !== null && $mappedData['max_quantity'] < $mappedData['min_quantity']) {
                     throw new \Exception('Max quantity must be greater than or equal to min quantity');
                 }
 
-                // Create the add-on
                 $addOn = AddOn::create($mappedData);
 
-                // Load relationships
                 $addOn->load(['location', 'packages']);
                 $importedAddOns[] = $addOn;
 
@@ -550,7 +481,6 @@ class AddOnController extends Controller
             }
         }
 
-        // Log bulk import
         if (count($importedAddOns) > 0) {
             $currentUser = auth()->user();
             ActivityLog::log(

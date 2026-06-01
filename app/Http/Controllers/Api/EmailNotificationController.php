@@ -20,15 +20,10 @@ use Illuminate\Validation\Rule;
 
 class EmailNotificationController extends Controller
 {
-    /**
-     * Display a listing of email notifications.
-     */
     public function index(Request $request): JsonResponse
     {
         $user = Auth::user();
 
-        // Ensure defaults exist for this company so they appear in the unified list.
-        // Idempotent — skips entries that already exist.
         if ($user->company_id) {
             $company = \App\Models\Company::find($user->company_id);
             if ($company) {
@@ -39,8 +34,6 @@ class EmailNotificationController extends Controller
         $query = EmailNotification::with(['company', 'location', 'template'])
             ->where('company_id', $user->company_id);
 
-        // Location managers/attendants can only see their own location notifications
-        // (or company-wide ones with location_id = null).
         if (in_array($user->role, ['location_manager', 'attendant'], true) && $user->location_id) {
             $query->where(function ($q) use ($user) {
                 $q->where('location_id', $user->location_id)
@@ -48,7 +41,6 @@ class EmailNotificationController extends Controller
             });
         }
 
-        // Filter by location if specified
         if ($request->has('location_id')) {
             $query->where(function ($q) use ($request) {
                 $q->where('location_id', $request->location_id)
@@ -56,27 +48,22 @@ class EmailNotificationController extends Controller
             });
         }
 
-        // Filter by trigger type
         if ($request->has('trigger_type')) {
             $query->where('trigger_type', $request->trigger_type);
         }
 
-        // Filter by entity type
         if ($request->has('entity_type')) {
             $query->where('entity_type', $request->entity_type);
         }
 
-        // Filter by active status
         if ($request->has('is_active')) {
             $query->where('is_active', $request->boolean('is_active'));
         }
 
-        // Filter by default status
         if ($request->has('is_default')) {
             $query->where('is_default', $request->boolean('is_default'));
         }
 
-        // Search by name
         if ($request->has('search')) {
             $query->where('name', 'like', '%' . $request->search . '%');
         }
@@ -87,8 +74,6 @@ class EmailNotificationController extends Controller
             ->orderBy('created_at', 'desc')
             ->paginate($request->per_page ?? 15);
 
-        // Enrich each item with effective values + customization flags so the
-        // frontend code editor can render correctly without an extra fetch.
         $notifications->getCollection()->transform(function ($notification) {
             $notification->effective_subject = $notification->getEffectiveSubject();
             $notification->effective_body = $notification->getEffectiveBody();
@@ -107,9 +92,6 @@ class EmailNotificationController extends Controller
         ]);
     }
 
-    /**
-     * Store a newly created email notification.
-     */
     public function store(Request $request): JsonResponse
     {
         $allTriggerTypes = array_keys(EmailNotification::getAllTriggerTypes());
@@ -184,9 +166,6 @@ class EmailNotificationController extends Controller
         }
     }
 
-    /**
-     * Display the specified email notification.
-     */
     public function show(EmailNotification $emailNotification): JsonResponse
     {
         $user = Auth::user();
@@ -202,17 +181,14 @@ class EmailNotificationController extends Controller
             $query->orderBy('created_at', 'desc')->limit(50);
         }]);
 
-        // Get statistics
         $stats = [
             'total_sent' => $emailNotification->logs()->sent()->count(),
             'total_failed' => $emailNotification->logs()->failed()->count(),
             'total_pending' => $emailNotification->logs()->pending()->count(),
         ];
 
-        // Get entity names
         $entityNames = $this->getEntityNames($emailNotification);
 
-        // Default email info
         $defaultInfo = null;
         if ($emailNotification->is_default) {
             $defaultInfo = [
@@ -224,8 +200,6 @@ class EmailNotificationController extends Controller
             ];
         }
 
-        // Effective values — what the email will actually use when sent.
-        // Frontend code editor should display these.
         $emailNotification->effective_subject = $emailNotification->getEffectiveSubject();
         $emailNotification->effective_body = $emailNotification->getEffectiveBody();
 
@@ -238,9 +212,6 @@ class EmailNotificationController extends Controller
         ]);
     }
 
-    /**
-     * Update the specified email notification.
-     */
     public function update(Request $request, EmailNotification $emailNotification): JsonResponse
     {
         $user = Auth::user();
@@ -277,7 +248,6 @@ class EmailNotificationController extends Controller
             'description' => 'nullable|string|max:1000',
         ]);
 
-        // For default notifications, restrict which fields can be updated
         if ($emailNotification->is_default) {
             $allowedDefaultFields = ['subject', 'body', 'is_active', 'include_qr_code', 'recipient_types', 'custom_emails', 'send_before_hours', 'send_after_hours', 'description'];
             $validated = array_intersect_key($validated, array_flip($allowedDefaultFields));
@@ -305,9 +275,6 @@ class EmailNotificationController extends Controller
         }
     }
 
-    /**
-     * Remove the specified email notification.
-     */
     public function destroy(EmailNotification $emailNotification): JsonResponse
     {
         $user = Auth::user();
@@ -319,7 +286,6 @@ class EmailNotificationController extends Controller
             ], 404);
         }
 
-        // Prevent deletion of default emails
         if ($emailNotification->is_default) {
             return response()->json([
                 'success' => false,
@@ -335,9 +301,6 @@ class EmailNotificationController extends Controller
         ]);
     }
 
-    /**
-     * Toggle the active status of an email notification.
-     */
     public function toggleStatus(EmailNotification $emailNotification): JsonResponse
     {
         $user = Auth::user();
@@ -360,9 +323,6 @@ class EmailNotificationController extends Controller
         ]);
     }
 
-    /**
-     * Duplicate an email notification.
-     */
     public function duplicate(EmailNotification $emailNotification): JsonResponse
     {
         $user = Auth::user();
@@ -388,9 +348,6 @@ class EmailNotificationController extends Controller
         ]);
     }
 
-    /**
-     * Get available entities (packages or attractions) for selection.
-     */
     public function getEntities(Request $request): JsonResponse
     {
         $user = Auth::user();
@@ -431,16 +388,12 @@ class EmailNotificationController extends Controller
         ]);
     }
 
-    /**
-     * Get available variables for email templates.
-     */
     public function getVariables(Request $request): JsonResponse
     {
         $triggerType = $request->input('trigger_type', 'booking_created');
 
         $variables = EmailNotificationService::getAvailableVariables();
 
-        // Determine which variable set based on trigger type category
         $category = EmailNotification::getTriggerCategory($triggerType);
 
         $typeMapping = [
@@ -465,9 +418,6 @@ class EmailNotificationController extends Controller
         ]);
     }
 
-    /**
-     * Get all available trigger types.
-     */
     public function getTriggerTypes(): JsonResponse
     {
         return response()->json([
@@ -477,9 +427,6 @@ class EmailNotificationController extends Controller
         ]);
     }
 
-    /**
-     * Get all available entity types.
-     */
     public function getEntityTypes(): JsonResponse
     {
         return response()->json([
@@ -488,9 +435,6 @@ class EmailNotificationController extends Controller
         ]);
     }
 
-    /**
-     * Get all available recipient types.
-     */
     public function getRecipientTypes(): JsonResponse
     {
         return response()->json([
@@ -499,9 +443,6 @@ class EmailNotificationController extends Controller
         ]);
     }
 
-    /**
-     * Get notification logs.
-     */
     public function getLogs(Request $request, EmailNotification $emailNotification): JsonResponse
     {
         $user = Auth::user();
@@ -528,9 +469,6 @@ class EmailNotificationController extends Controller
         ]);
     }
 
-    /**
-     * Resend a failed notification.
-     */
     public function resendLog(Request $request, EmailNotification $emailNotification, int $logId): JsonResponse
     {
         $user = Auth::user();
@@ -554,7 +492,6 @@ class EmailNotificationController extends Controller
         try {
             $service = new EmailNotificationService();
 
-            // Get the original entity
             $entity = $log->notifiable;
 
             if (!$entity) {
@@ -564,10 +501,8 @@ class EmailNotificationController extends Controller
                 ], 404);
             }
 
-            // Reset log status
             $log->update(['status' => 'pending', 'error_message' => null]);
 
-            // Trigger resend based on type
             if ($log->notifiable_type === 'App\\Models\\Booking') {
                 $service->processBookingCreated($entity);
             } else {
@@ -588,9 +523,6 @@ class EmailNotificationController extends Controller
         }
     }
 
-    /**
-     * Get entity names for display.
-     */
     protected function getEntityNames(EmailNotification $notification): array
     {
         $entityIds = $notification->entity_ids ?? [];
@@ -610,9 +542,6 @@ class EmailNotificationController extends Controller
         }
     }
 
-    /**
-     * Test send a notification.
-     */
     public function sendTest(Request $request, EmailNotification $emailNotification): JsonResponse
     {
         $user = Auth::user();
@@ -634,17 +563,13 @@ class EmailNotificationController extends Controller
         ]);
 
         try {
-            // Build variables - use real data if IDs are provided
             $variables = $this->buildSampleVariables($emailNotification, $validated);
 
-            // Get subject and body
             $subject = $this->replaceVariables($emailNotification->getEffectiveSubject(), $variables);
             $body = $this->replaceVariables($emailNotification->getEffectiveBody(), $variables);
 
-            // Generate HTML
             $htmlBody = $this->generateHtmlEmail($body);
 
-            // Send test email
             $useGmailApi = config('gmail.enabled', false) &&
                 (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
 
@@ -681,16 +606,11 @@ class EmailNotificationController extends Controller
         }
     }
 
-    /**
-     * Build sample variables for test emails.
-     * Uses real data if IDs are provided, otherwise uses sample data.
-     */
     protected function buildSampleVariables(EmailNotification $notification, array $params = []): array
     {
         $company = $notification->company;
         $location = $notification->location ?? $company?->locations()->first();
 
-        // Common variables (always present)
         $common = [
             'company_name' => $company?->company_name ?? 'Sample Company',
             'company_email' => $company?->email ?? 'info@example.com',
@@ -704,13 +624,11 @@ class EmailNotificationController extends Controller
             'current_year' => (string) now()->year,
         ];
 
-        // Try to get real customer data
         $customer = null;
         if (!empty($params['customer_id'])) {
             $customer = Customer::find($params['customer_id']);
         }
 
-        // Try to get real booking data
         $booking = null;
         if (!empty($params['booking_id'])) {
             $booking = Booking::with(['customer', 'package', 'room', 'addons', 'location'])->find($params['booking_id']);
@@ -726,7 +644,6 @@ class EmailNotificationController extends Controller
             }
         }
 
-        // Try to get real purchase data
         $purchase = null;
         if (!empty($params['purchase_id'])) {
             $purchase = AttractionPurchase::with(['customer', 'attraction', 'location'])->find($params['purchase_id']);
@@ -742,7 +659,6 @@ class EmailNotificationController extends Controller
             }
         }
 
-        // Try to get real package data
         $package = null;
         if (!empty($params['package_id'])) {
             $package = Package::find($params['package_id']);
@@ -750,7 +666,6 @@ class EmailNotificationController extends Controller
             $package = $booking->package;
         }
 
-        // Try to get real attraction data
         $attraction = null;
         if (!empty($params['attraction_id'])) {
             $attraction = Attraction::find($params['attraction_id']);
@@ -758,7 +673,6 @@ class EmailNotificationController extends Controller
             $attraction = $purchase->attraction;
         }
 
-        // Build customer variables
         if ($customer) {
             $common['customer_name'] = trim($customer->first_name . ' ' . $customer->last_name);
             $common['customer_first_name'] = $customer->first_name ?? '';
@@ -773,7 +687,6 @@ class EmailNotificationController extends Controller
             $common['customer_phone'] = '(555) 111-2222';
         }
 
-        // Determine if this is a booking or purchase trigger
         $isBookingTrigger = str_starts_with($notification->trigger_type, 'booking_') ||
                            str_starts_with($notification->trigger_type, 'payment_');
 
@@ -784,13 +697,9 @@ class EmailNotificationController extends Controller
         }
     }
 
-    /**
-     * Build booking-related variables.
-     */
     protected function buildBookingVariables(?Booking $booking, ?Package $package): array
     {
         if ($booking) {
-            // Build real booking data
             $addonsHtml = '';
             $addonsTotal = 0;
             if ($booking->addons && $booking->addons->count() > 0) {
@@ -836,7 +745,6 @@ class EmailNotificationController extends Controller
             ];
         }
 
-        // Sample booking data
         return [
             'booking_id' => '12345',
             'booking_reference' => 'BK-2026-00001',
@@ -866,13 +774,9 @@ class EmailNotificationController extends Controller
         ];
     }
 
-    /**
-     * Build purchase-related variables.
-     */
     protected function buildPurchaseVariables(?AttractionPurchase $purchase, ?Attraction $attraction): array
     {
         if ($purchase) {
-            // Build real purchase data
             $attr = $attraction ?? $purchase->attraction;
 
             return [
@@ -897,7 +801,6 @@ class EmailNotificationController extends Controller
             ];
         }
 
-        // Sample purchase data
         return [
             'purchase_id' => '67890',
             'purchase_reference' => 'AP-2026-00001',
@@ -920,27 +823,17 @@ class EmailNotificationController extends Controller
         ];
     }
 
-    /**
-     * Generate a simple QR code placeholder HTML.
-     */
     protected function generateQrCodeHtml(string $reference): string
     {
-        // Use a free QR code API to generate real QR code
         $qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=' . urlencode($reference);
         return '<img src="' . $qrUrl . '" alt="QR Code" style="width:150px;height:150px;border-radius:8px;">';
     }
 
-    /**
-     * Generate sample QR code HTML.
-     */
     protected function generateSampleQrCodeHtml(): string
     {
         return '<div style="width:150px;height:150px;background:#eee;display:flex;align-items:center;justify-content:center;border-radius:8px;font-size:12px;color:#666;">[QR Code]</div>';
     }
 
-    /**
-     * Replace variables in content.
-     */
     protected function replaceVariables(string $content, array $variables): string
     {
         foreach ($variables as $key => $value) {
@@ -955,9 +848,6 @@ class EmailNotificationController extends Controller
         return $content;
     }
 
-    /**
-     * Generate HTML email.
-     */
     protected function generateHtmlEmail(string $body): string
     {
         return <<<HTML
@@ -974,19 +864,11 @@ class EmailNotificationController extends Controller
 HTML;
     }
 
-    // ============================================
-    // DEFAULT EMAIL MANAGEMENT ENDPOINTS
-    // ============================================
 
-    /**
-     * Get all default email notifications for the company.
-     * If defaults don't exist yet, seeds them first.
-     */
     public function getDefaults(Request $request): JsonResponse
     {
         $user = Auth::user();
 
-        // Ensure all defaults exist (idempotent - skips existing ones)
         $company = $user->company;
         if ($company) {
             DefaultEmailNotificationSeeder::seedForCompany($company);
@@ -996,12 +878,10 @@ HTML;
             ->where('is_default', true)
             ->with(['company', 'location']);
 
-        // Filter by trigger type
         if ($request->has('trigger_type')) {
             $query->where('trigger_type', $request->trigger_type);
         }
 
-        // Filter by entity type
         if ($request->has('entity_type')) {
             $query->where('entity_type', $request->entity_type);
         }
@@ -1036,9 +916,6 @@ HTML;
         ]);
     }
 
-    /**
-     * Reset a default email notification to its original template.
-     */
     public function resetDefault(EmailNotification $emailNotification): JsonResponse
     {
         $user = Auth::user();
@@ -1074,10 +951,6 @@ HTML;
         ]);
     }
 
-    /**
-     * Preview an email notification with sample variables replaced.
-     * Returns rendered HTML that can be displayed in an iframe.
-     */
     public function preview(Request $request, EmailNotification $emailNotification): JsonResponse
     {
         $user = Auth::user();
@@ -1089,18 +962,14 @@ HTML;
             ], 404);
         }
 
-        // Allow overriding body/subject for live preview while editing
         $subject = $request->input('subject', $emailNotification->getEffectiveSubject());
         $body = $request->input('body', $emailNotification->getEffectiveBody());
 
-        // Build sample variables
         $variables = $this->buildSampleVariables($emailNotification, $request->all());
 
-        // Replace variables
         $processedSubject = $this->replaceVariables($subject, $variables);
         $processedBody = $this->replaceVariables($body, $variables);
 
-        // Generate full HTML
         $htmlEmail = $this->generateHtmlEmail($processedBody);
 
         return response()->json([
@@ -1114,10 +983,6 @@ HTML;
         ]);
     }
 
-    /**
-     * Seed default email notifications for the current user's company.
-     * Useful when defaults are missing or need to be re-initialized.
-     */
     public function seedDefaults(): JsonResponse
     {
         $user = Auth::user();
@@ -1145,9 +1010,6 @@ HTML;
         ]);
     }
 
-    /**
-     * Get available default email keys with their descriptions.
-     */
     public function getDefaultKeys(): JsonResponse
     {
         return response()->json([

@@ -33,7 +33,6 @@ class AddOn extends Model
         'max_quantity' => 'integer',
     ];
 
-    // Relationships
     public function location(): BelongsTo
     {
         return $this->belongsTo(Location::class);
@@ -59,7 +58,6 @@ class AddOn extends Model
         return $this->belongsToMany(Attraction::class, 'attraction_add_ons');
     }
 
-    // Scopes
     public function scopeActive($query)
     {
         return $query->where('is_active', true);

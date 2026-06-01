@@ -13,18 +13,12 @@ class EventPurchaseConfirmation extends Mailable
 
     public $purchase;
 
-    /**
-     * Create a new message instance.
-     */
     public function __construct(EventPurchase $purchase)
     {
         $purchase->loadMissing(['event.location.company', 'customer', 'addOns']);
         $this->purchase = $purchase;
     }
 
-    /**
-     * Build the message.
-     */
     public function build()
     {
         $this->subject('Event Purchase Confirmation - ' . $this->purchase->reference_number)

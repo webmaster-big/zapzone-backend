@@ -15,9 +15,6 @@ class FeeSupportController extends Controller
 {
     use ScopesByAuthUser;
 
-    /**
-     * Display a listing of fee supports.
-     */
     public function index(Request $request): JsonResponse
     {
         try {
@@ -25,12 +22,10 @@ class FeeSupportController extends Controller
 
             $query = FeeSupport::with(['company:id,company_name', 'location:id,name']);
 
-            // Multi-tenant scope by company (always)
             $authUser = $this->resolveAuthUser($request);
             if ($authUser && $authUser->company_id) {
                 $query->where('company_id', $authUser->company_id);
             }
-            // Location managers can see fees scoped to their location OR company-wide (location_id = null)
             if ($authUser && in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
                 $query->where(function ($q) use ($authUser) {
                     $q->where('location_id', $authUser->location_id)
@@ -38,43 +33,35 @@ class FeeSupportController extends Controller
                 });
             }
 
-            // Filter by company
             if ($request->has('company_id')) {
                 $query->byCompany($request->company_id);
             }
 
-            // Filter by location
             if ($request->has('location_id')) {
                 $query->byLocation($request->location_id);
             }
 
-            // Filter by entity type (package or attraction)
             if ($request->has('entity_type')) {
                 $query->where('entity_type', $request->entity_type);
             }
 
-            // Filter by fee calculation type
             if ($request->has('fee_calculation_type')) {
                 $query->where('fee_calculation_type', $request->fee_calculation_type);
             }
 
-            // Filter by fee application type
             if ($request->has('fee_application_type')) {
                 $query->where('fee_application_type', $request->fee_application_type);
             }
 
-            // Filter by active status
             if ($request->has('is_active')) {
                 $query->where('is_active', $request->boolean('is_active'));
             }
 
-            // Search by fee name
             if ($request->has('search')) {
                 $search = $request->search;
                 $query->where('fee_name', 'like', "%{$search}%");
             }
 
-            // Sort
             $sortBy = $request->get('sort_by', 'fee_name');
             $sortOrder = $request->get('sort_order', 'asc');
 
@@ -112,9 +99,6 @@ class FeeSupportController extends Controller
         }
     }
 
-    /**
-     * Store a newly created fee support.
-     */
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -133,7 +117,6 @@ class FeeSupportController extends Controller
         $feeSupport = FeeSupport::create($validated);
         $feeSupport->load(['company:id,company_name', 'location:id,name']);
 
-        // Log activity
         $currentUser = $request->user();
         ActivityLog::log(
             action: 'Fee Support Created',
@@ -160,9 +143,6 @@ class FeeSupportController extends Controller
         ], 201);
     }
 
-    /**
-     * Display the specified fee support.
-     */
     public function show(FeeSupport $feeSupport): JsonResponse
     {
         $feeSupport->load(['company:id,company_name', 'location:id,name']);
@@ -173,9 +153,6 @@ class FeeSupportController extends Controller
         ]);
     }
 
-    /**
-     * Update the specified fee support.
-     */
     public function update(Request $request, $id): JsonResponse
     {
         $feeSupport = FeeSupport::findOrFail($id);
@@ -200,7 +177,6 @@ class FeeSupportController extends Controller
         $feeSupport->refresh();
         $feeSupport->load(['company:id,company_name', 'location:id,name']);
 
-        // Log activity
         $currentUser = $request->user();
         ActivityLog::log(
             action: 'Fee Support Updated',
@@ -228,14 +204,10 @@ class FeeSupportController extends Controller
         ]);
     }
 
-    /**
-     * Remove the specified fee support.
-     */
     public function destroy(Request $request, FeeSupport $feeSupport): JsonResponse
     {
         $feeName = $feeSupport->fee_name;
 
-        // Log activity before deletion
         $currentUser = $request->user();
         ActivityLog::log(
             action: 'Fee Support Deleted',
@@ -263,9 +235,6 @@ class FeeSupportController extends Controller
         ]);
     }
 
-    /**
-     * Toggle active status for a fee support.
-     */
     public function toggleStatus(Request $request, FeeSupport $feeSupport): JsonResponse
     {
         $feeSupport->is_active = !$feeSupport->is_active;
@@ -273,7 +242,6 @@ class FeeSupportController extends Controller
 
         $status = $feeSupport->is_active ? 'activated' : 'deactivated';
 
-        // Log activity
         $currentUser = $request->user();
         ActivityLog::log(
             action: "Fee Support {$status}",
@@ -300,9 +268,6 @@ class FeeSupportController extends Controller
         ]);
     }
 
-    /**
-     * Get fee supports by location.
-     */
     public function getByLocation($locationId): JsonResponse
     {
         $feeSupports = FeeSupport::where(function ($q) use ($locationId) {
@@ -318,10 +283,6 @@ class FeeSupportController extends Controller
         ]);
     }
 
-    /**
-     * Get applicable fees for a specific entity (package or attraction).
-     * This is the main endpoint used during booking/purchase flows.
-     */
     public function getForEntity(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -350,9 +311,6 @@ class FeeSupportController extends Controller
         ]);
     }
 
-    /**
-     * Bulk delete fee supports.
-     */
     public function bulkDelete(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -362,7 +320,6 @@ class FeeSupportController extends Controller
 
         $count = FeeSupport::whereIn('id', $validated['ids'])->delete();
 
-        // Log activity
         $currentUser = $request->user();
         ActivityLog::log(
             action: 'Fee Supports Bulk Deleted',

@@ -37,7 +37,6 @@ class Contact extends Model
         'sms_consent' => 'boolean',
     ];
 
-    // Relationships
     public function company(): BelongsTo
     {
         return $this->belongsTo(Company::class);
@@ -53,7 +52,6 @@ class Contact extends Model
         return $this->belongsTo(User::class, 'created_by');
     }
 
-    // Accessors
     public function getFullNameAttribute(): string
     {
         return trim("{$this->first_name} {$this->last_name}") ?: $this->email;
@@ -72,7 +70,6 @@ class Contact extends Model
         return !empty($parts) ? implode(', ', $parts) : null;
     }
 
-    // Scopes
     public function scopeByCompany($query, $companyId)
     {
         return $query->where('company_id', $companyId);
@@ -128,7 +125,6 @@ class Contact extends Model
         });
     }
 
-    // Helper Methods
     public function hasTag(string $tag): bool
     {
         return is_array($this->tags) && in_array($tag, $this->tags);
@@ -160,9 +156,6 @@ class Contact extends Model
         $this->update(['status' => 'inactive']);
     }
 
-    /**
-     * Get contact data formatted for email campaigns.
-     */
     public function getEmailVariables(): array
     {
         return [
@@ -181,18 +174,6 @@ class Contact extends Model
         ];
     }
 
-    /**
-     * Create or update a contact from a booking or purchase.
-     * Updates existing contact if email exists, creates new one otherwise.
-     *
-     * @param int $companyId
-     * @param array $data Contact data (email required, others optional)
-     * @param string|null $source Source of the contact (booking, attraction_purchase, etc.)
-     * @param array $tags Tags to add to the contact
-     * @param int|null $locationId Location ID
-     * @param int|null $createdBy User ID who created/updated
-     * @return self
-     */
     public static function createOrUpdateFromSource(
         int $companyId,
         array $data,
@@ -201,18 +182,15 @@ class Contact extends Model
         ?int $locationId = null,
         ?int $createdBy = null
     ): self {
-        // Email is required
         if (empty($data['email'])) {
             throw new \InvalidArgumentException('Email is required to create or update a contact');
         }
 
-        // Find existing contact by email and company
         $contact = self::where('company_id', $companyId)
             ->where('email', $data['email'])
             ->first();
 
         if ($contact) {
-            // Update existing contact with new data (don't overwrite existing values with null)
             $updateData = [];
 
             if (!empty($data['first_name']) && empty($contact->first_name)) {
@@ -240,12 +218,10 @@ class Contact extends Model
                 $updateData['country'] = $data['country'];
             }
 
-            // Update sms_consent if provided (always update, user may change preference)
             if (isset($data['sms_consent'])) {
                 $updateData['sms_consent'] = (bool) $data['sms_consent'];
             }
 
-            // Update location if not set
             if ($locationId && !$contact->location_id) {
                 $updateData['location_id'] = $locationId;
             }
@@ -254,7 +230,6 @@ class Contact extends Model
                 $contact->update($updateData);
             }
 
-            // Add new tags without removing existing ones
             foreach ($tags as $tag) {
                 $contact->addTag($tag);
             }
@@ -262,7 +237,6 @@ class Contact extends Model
             return $contact;
         }
 
-        // Parse name if first_name/last_name not provided but full name is
         $firstName = $data['first_name'] ?? null;
         $lastName = $data['last_name'] ?? null;
 
@@ -272,7 +246,6 @@ class Contact extends Model
             $lastName = $nameParts[1] ?? null;
         }
 
-        // Create new contact
         $contact = self::create([
             'company_id' => $companyId,
             'location_id' => $locationId,
@@ -295,12 +268,6 @@ class Contact extends Model
         return $contact;
     }
 
-    /**
-     * Add multiple tags to the contact.
-     *
-     * @param array $newTags
-     * @return void
-     */
     public function addTags(array $newTags): void
     {
         $currentTags = $this->tags ?? [];
@@ -308,12 +275,6 @@ class Contact extends Model
         $this->update(['tags' => array_values($mergedTags)]);
     }
 
-    /**
-     * Remove multiple tags from the contact.
-     *
-     * @param array $tagsToRemove
-     * @return void
-     */
     public function removeTags(array $tagsToRemove): void
     {
         $currentTags = $this->tags ?? [];
@@ -321,12 +282,6 @@ class Contact extends Model
         $this->update(['tags' => !empty($filteredTags) ? array_values($filteredTags) : null]);
     }
 
-    /**
-     * Set tags (replace all existing tags).
-     *
-     * @param array $tags
-     * @return void
-     */
     public function setTags(array $tags): void
     {
         $this->update(['tags' => !empty($tags) ? array_values(array_unique($tags)) : null]);

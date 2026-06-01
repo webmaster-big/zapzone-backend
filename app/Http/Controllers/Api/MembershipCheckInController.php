@@ -6,21 +6,19 @@ use App\Http\Controllers\Controller;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Models\Membership;
 use App\Services\MembershipService;
+use App\Services\MembershipBenefitService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 
-/**
- * Staff QR check-in flow.
- *
- * 1. POST /memberships/scan      { qr_token }   -> returns full check-in view
- * 2. POST /memberships/{id}/check-in { result, location_id, ... }
- */
 class MembershipCheckInController extends Controller
 {
     use ScopesByAuthUser;
 
-    public function __construct(protected MembershipService $service) {}
+    public function __construct(
+        protected MembershipService $service,
+        protected MembershipBenefitService $benefits,
+    ) {}
 
     public function scan(Request $request): JsonResponse
     {
@@ -46,6 +44,8 @@ class MembershipCheckInController extends Controller
         $locationId = $data['location_id'] ?? $authUser->location_id;
         $eligibility = $this->service->eligibility($membership, $locationId);
 
+        $benefitQuote = $this->benefits->quote($membership, $locationId, []);
+
         return response()->json([
             'success' => true,
             'data' => [
@@ -53,6 +53,7 @@ class MembershipCheckInController extends Controller
                 'eligibility'   => $eligibility,
                 'photo_required'=> ! $membership->hasPhoto(),
                 'visits_today'  => $membership->visits()->whereDate('visited_at', today())->count(),
+                'passes'        => $benefitQuote['passes'] ?? [],
             ],
         ]);
     }
@@ -71,7 +72,6 @@ class MembershipCheckInController extends Controller
             'override_note'         => 'required_if:result,override|string',
         ]);
 
-        // Override requires a note (compliance)
         if ($data['result'] === 'override') {
             $this->service->log($membership, 'manual_override', null, [
                 'location_id' => $data['location_id'] ?? null,

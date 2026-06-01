@@ -9,19 +9,14 @@ use Illuminate\Http\JsonResponse;
 
 class GlobalNoteController extends Controller
 {
-    /**
-     * Display a listing of global notes.
-     */
     public function index(Request $request): JsonResponse
     {
         $query = GlobalNote::query();
 
-        // Filter by active status
         if ($request->has('is_active')) {
             $query->where('is_active', $request->boolean('is_active'));
         }
 
-        // Filter by package ID
         if ($request->has('package_id')) {
             $query->forPackage($request->package_id);
         }
@@ -34,9 +29,6 @@ class GlobalNoteController extends Controller
         ]);
     }
 
-    /**
-     * Get notes for a specific package (including global notes)
-     */
     public function getForPackage(int $packageId): JsonResponse
     {
         $notes = GlobalNote::active()
@@ -50,9 +42,6 @@ class GlobalNoteController extends Controller
         ]);
     }
 
-    /**
-     * Store a newly created global note.
-     */
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -73,9 +62,6 @@ class GlobalNoteController extends Controller
         ], 201);
     }
 
-    /**
-     * Display the specified global note.
-     */
     public function show(GlobalNote $globalNote): JsonResponse
     {
         return response()->json([
@@ -84,9 +70,6 @@ class GlobalNoteController extends Controller
         ]);
     }
 
-    /**
-     * Update the specified global note.
-     */
     public function update(Request $request, GlobalNote $globalNote): JsonResponse
     {
         $validated = $request->validate([
@@ -107,9 +90,6 @@ class GlobalNoteController extends Controller
         ]);
     }
 
-    /**
-     * Remove the specified global note.
-     */
     public function destroy(GlobalNote $globalNote): JsonResponse
     {
         $globalNote->delete();
@@ -120,9 +100,6 @@ class GlobalNoteController extends Controller
         ]);
     }
 
-    /**
-     * Toggle the active status of a global note.
-     */
     public function toggleStatus(GlobalNote $globalNote): JsonResponse
     {
         $globalNote->is_active = !$globalNote->is_active;

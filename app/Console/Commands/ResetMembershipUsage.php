@@ -6,13 +6,6 @@ use App\Models\Membership;
 use App\Services\MembershipService;
 use Illuminate\Console\Command;
 
-/**
- * Run nightly to:
- *  - Reset usage counters for memberships whose current_term_end has passed
- *  - Flip past-due grace-expired memberships to suspended
- *
- *  schedule: php artisan memberships:reset-usage
- */
 class ResetMembershipUsage extends Command
 {
     protected $signature = 'memberships:reset-usage';
@@ -22,7 +15,6 @@ class ResetMembershipUsage extends Command
     {
         $now = now();
 
-        // Term roll-over: active memberships whose term has ended (renewable)
         $rolled = 0;
         Membership::with('plan')
             ->where('status', 'active')
@@ -36,7 +28,6 @@ class ResetMembershipUsage extends Command
                 }
             });
 
-        // Grace expired: past_due -> suspended
         $suspended = 0;
         Membership::where('status', 'past_due')
             ->whereNotNull('grace_period_ends_at')
@@ -48,7 +39,6 @@ class ResetMembershipUsage extends Command
                 }
             });
 
-        // End-of-term cancellations
         $canceled = 0;
         Membership::whereNotNull('cancellation_effective_at')
             ->where('cancellation_effective_at', '<=', $now)

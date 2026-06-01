@@ -6,24 +6,16 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
         Schema::table('packages', function (Blueprint $table) {
-            // Change image column to text to support longer URLs or base64 images
             $table->text('image')->nullable()->change();
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::table('packages', function (Blueprint $table) {
-            // Revert back to string(255)
             $table->string('image')->nullable()->change();
         });
     }

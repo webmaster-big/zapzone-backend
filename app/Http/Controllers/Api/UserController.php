@@ -22,52 +22,40 @@ class UserController extends Controller
 {
     use ScopesByAuthUser;
 
-    /**
-     * Display a listing of users.
-     */
     public function index(Request $request): JsonResponse
     {
         $query = User::with(['company', 'location']);
         $authUser = $request->user();
 
-        // Role-based filtering
         if ($authUser) {
             if ($authUser->role === 'company_admin') {
-                // Company admin can only see users from their company
                 $query->byCompany($authUser->company_id);
             } elseif ($authUser->role === 'location_manager') {
-                // Location manager can only see users from their location
                 $query->byCompany($authUser->company_id)
                       ->byLocation($authUser->location_id);
             }
-            // super_admin or other roles can see all users
         }
 
-        // Filter by company (only if company_admin or above)
         if ($request->has('company_id') && (!$authUser || in_array($authUser->role, ['super_admin']))) {
             $query->byCompany($request->company_id);
         }
 
-        // Filter by location (company_admin can filter by location)
         if ($request->has('location_id')) {
             if (!$authUser || $authUser->role !== 'location_manager') {
                 $query->byLocation($request->location_id);
             }
         }
 
-        // Filter by role
         if ($request->has('role')) {
             $query->byRole($request->role);
         }
 
-        // Filter by status
         if ($request->has('status')) {
             $query->where('status', $request->status);
         } else {
             $query->active();
         }
 
-        // Search by name or email
         if ($request->has('search')) {
             $search = $request->search;
             $query->where(function ($q) use ($search) {
@@ -78,7 +66,6 @@ class UserController extends Controller
             });
         }
 
-        // Sort
         $sortBy = $request->get('sort_by', 'first_name');
         $sortOrder = $request->get('sort_order', 'asc');
 
@@ -105,9 +92,6 @@ class UserController extends Controller
         ]);
     }
 
-    /**
-     * Store a newly created user.
-     */
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -134,7 +118,6 @@ class UserController extends Controller
         $user = User::create($validated);
         $user->load(['company', 'location']);
 
-        // Log user creation
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'User Created',
@@ -169,9 +152,6 @@ class UserController extends Controller
         ], 201);
     }
 
-    /**
-     * Display the specified user.
-     */
     public function show(User $user): JsonResponse
     {
         $user->load(['company', 'location']);
@@ -182,9 +162,6 @@ class UserController extends Controller
         ]);
     }
 
-    /**
-     * Update the specified user.
-     */
     public function update(Request $request, User $user): JsonResponse
     {
         $validated = $request->validate([
@@ -213,7 +190,6 @@ class UserController extends Controller
         $user->update($validated);
         $user->load(['company', 'location']);
 
-        // Log user update
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'User Updated',
@@ -247,14 +223,12 @@ class UserController extends Controller
         ]);
     }
 
-    // update profile_path and store to storage
     public function updateProfilePath(Request $request, User $user): JsonResponse
     {
         $validated = $request->validate([
             'profile_path' => 'required|string|max:27262976', // 20MB in base64 is ~27MB
         ]);
 
-        // Delete old profile image if it exists
         if ($user->profile_path && Str::startsWith($user->profile_path, '/storage/profiles/')) {
             $oldImagePath = str_replace('/storage/', '', $user->profile_path);
             if (Storage::disk('public')->exists($oldImagePath)) {
@@ -262,7 +236,6 @@ class UserController extends Controller
             }
         }
 
-        // store profile path to the storage and get the path
         if (Str::startsWith($validated['profile_path'], 'data:image/')) {
             $imageData = $validated['profile_path'];
             $imageName = 'profiles/' . Str::uuid() . '.png';
@@ -281,7 +254,6 @@ class UserController extends Controller
     }
 
 
-    // update email check current email, if same, allow, if different, check unique and check password to confirm identity
     public function updateEmail(Request $request, User $user): JsonResponse
     {
         $validated = $request->validate([
@@ -289,7 +261,6 @@ class UserController extends Controller
             'password' => 'required|string',
         ]);
 
-        // Verify password
         if (!Hash::check($validated['password'], $user->password)) {
             return response()->json([
                 'success' => false,
@@ -307,7 +278,6 @@ class UserController extends Controller
         ]);
     }
 
-    // update password, require current password to confirm identity
     public function updatePassword(Request $request, User $user): JsonResponse
     {
         $validated = $request->validate([
@@ -315,7 +285,6 @@ class UserController extends Controller
             'new_password' => 'required|string|min:8|confirmed',
         ]);
 
-        // Verify current password
         if (!Hash::check($validated['current_password'], $user->password)) {
             return response()->json([
                 'success' => false,
@@ -333,9 +302,6 @@ class UserController extends Controller
         ]);
     }
 
-    /**
-     * Remove the specified user.
-     */
     public function destroy($id): JsonResponse
     {
         $user = User::findOrFail($id);
@@ -347,7 +313,6 @@ class UserController extends Controller
 
         $user->delete();
 
-        // Log user deletion
         ActivityLog::log(
             action: 'User Deleted',
             category: 'delete',
@@ -377,9 +342,6 @@ class UserController extends Controller
         ]);
     }
 
-    /**
-     * Get users by company.
-     */
     public function getByCompany(int $companyId): JsonResponse
     {
         if ($scopeError = $this->guardCompanyAccess(null, $companyId)) {
@@ -403,9 +365,6 @@ class UserController extends Controller
         ]);
     }
 
-    /**
-     * Get users by location.
-     */
     public function getByLocation(int $locationId): JsonResponse
     {
         if ($scopeError = $this->guardLocationAccess(null, $locationId)) {
@@ -429,9 +388,6 @@ class UserController extends Controller
         ]);
     }
 
-    /**
-     * Get users by role.
-     */
     public function getByRole(string $role): JsonResponse
     {
         $query = User::with(['company', 'location'])
@@ -456,9 +412,6 @@ class UserController extends Controller
         ]);
     }
 
-    /**
-     * Toggle user status.
-     */
     public function toggleStatus(User $user): JsonResponse
     {
         $newStatus = $user->status === 'active' ? 'inactive' : 'active';
@@ -471,9 +424,6 @@ class UserController extends Controller
         ]);
     }
 
-    /**
-     * Update last login timestamp.
-     */
     public function updateLastLogin(User $user): JsonResponse
     {
         $user->update(['last_login' => now()]);
@@ -484,9 +434,6 @@ class UserController extends Controller
         ]);
     }
 
-    /**
-     * Bulk delete users
-     */
     public function bulkDelete(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -494,7 +441,6 @@ class UserController extends Controller
             'ids.*' => 'required|integer|exists:users,id',
         ]);
 
-        // Prevent deletion of current user
         $currentUserId = auth()->id();
         $idsToDelete = array_diff($validated['ids'], [$currentUserId]);
 
@@ -515,7 +461,6 @@ class UserController extends Controller
             $deletedCount++;
         }
 
-        // Log bulk deletion
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Bulk Users Deleted',
@@ -544,24 +489,10 @@ class UserController extends Controller
         ]);
     }
 
-    /**
-     * Create a staff user (location_manager / attendant / company_admin) with
-     * either a custom or auto-generated password and email the credentials
-     * to the new user.
-     *
-     * - Only company_admin (or a user with no scope, e.g. CLI) may call this.
-     * - location_id, when supplied, MUST belong to the caller's company.
-     * - If password is omitted (or password_mode = "generate"), a strong
-     *   12-char password is generated server-side and sent in the email.
-     * - The plain password is NEVER returned in the response unless the
-     *   caller explicitly opts in via `return_password=true` (intended for
-     *   admin UIs that want to show it on screen too).
-     */
     public function createWithCredentials(Request $request): JsonResponse
     {
         $authUser = $request->user();
 
-        // Only company_admin and location_manager may create staff accounts.
         if (!$authUser || !in_array($authUser->role, ['company_admin', 'location_manager'], true)) {
             return response()->json([
                 'success' => false,
@@ -569,7 +500,6 @@ class UserController extends Controller
             ], 403);
         }
 
-        // Determine which roles the caller is allowed to create.
         $allowedRoles = $authUser->role === 'company_admin'
             ? ['location_manager', 'attendant', 'company_admin']
             : ['location_manager', 'attendant']; // location_manager can create managers and attendants within their location
@@ -595,12 +525,10 @@ class UserController extends Controller
             'login_url'     => 'sometimes|url|max:500',
         ]);
 
-        // location_manager callers: force location_id to their own location.
         if ($authUser->role === 'location_manager') {
             $validated['location_id'] = $authUser->location_id;
         }
 
-        // location_manager / attendant must have a location.
         if (in_array($validated['role'], ['location_manager', 'attendant'], true)
             && empty($validated['location_id'])) {
             return response()->json([
@@ -610,7 +538,6 @@ class UserController extends Controller
             ], 422);
         }
 
-        // If a location is provided, ensure it belongs to the caller's company.
         if (!empty($validated['location_id'])) {
             $location = Location::find($validated['location_id']);
             if (!$location || ($authUser->company_id && (int) $location->company_id !== (int) $authUser->company_id)) {
@@ -621,13 +548,11 @@ class UserController extends Controller
             }
         }
 
-        // Resolve password.
         $passwordMode = $validated['password_mode'] ?? (empty($validated['password']) ? 'generate' : 'custom');
         $plainPassword = $passwordMode === 'generate'
             ? $this->generateStrongPassword(12)
             : $validated['password'];
 
-        // Build user payload (force company_id from the caller, never from the request).
         $payload = [
             'company_id'     => $authUser->company_id,
             'location_id'    => $validated['location_id'] ?? null,
@@ -649,7 +574,6 @@ class UserController extends Controller
         $user = User::create($payload);
         $user->load(['company', 'location']);
 
-        // Activity log.
         ActivityLog::log(
             action: 'Staff Account Created',
             category: 'create',
@@ -669,7 +593,6 @@ class UserController extends Controller
             ]
         );
 
-        // Send credentials email (best-effort: do not fail user creation if mail fails).
         $emailSent = false;
         $emailError = null;
         $sendEmail = $validated['send_email'] ?? true;
@@ -712,10 +635,6 @@ class UserController extends Controller
         return response()->json($response, 201);
     }
 
-    /**
-     * Resend credentials to an existing staff user using a freshly
-     * generated password. The old password is replaced.
-     */
     public function resendCredentials(Request $request, User $user): JsonResponse
     {
         $authUser = $request->user();
@@ -727,7 +646,6 @@ class UserController extends Controller
             ], 403);
         }
 
-        // Caller must own the user (same company).
         if ($authUser->company_id && (int) $user->company_id !== (int) $authUser->company_id) {
             return response()->json([
                 'success' => false,
@@ -800,9 +718,6 @@ class UserController extends Controller
         return response()->json($response, 200);
     }
 
-    /**
-     * Generate a strong password containing upper, lower, digit and symbol.
-     */
     protected function generateStrongPassword(int $length = 12): string
     {
         $upper  = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -822,7 +737,6 @@ class UserController extends Controller
             $password[] = $all[random_int(0, strlen($all) - 1)];
         }
 
-        // Shuffle deterministically with random_int based Fisher-Yates
         for ($i = count($password) - 1; $i > 0; $i--) {
             $j = random_int(0, $i);
             [$password[$i], $password[$j]] = [$password[$j], $password[$i]];
@@ -831,9 +745,6 @@ class UserController extends Controller
         return implode('', $password);
     }
 
-    /**
-     * Send the credentials email using Gmail API when configured, else SMTP.
-     */
     protected function sendStaffCredentialsEmail(User $user, string $plainPassword, ?string $loginUrl, ?string $createdByName): void
     {
         $mailable = new StaffAccountCredentialsMail($user, $plainPassword, $loginUrl, $createdByName);

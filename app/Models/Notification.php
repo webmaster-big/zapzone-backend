@@ -29,13 +29,11 @@ class Notification extends Model
         'read_at' => 'datetime',
     ];
 
-    // Relationships
     public function location(): BelongsTo
     {
         return $this->belongsTo(Location::class);
     }
 
-    // Scopes
     public function scopeUnread($query)
     {
         return $query->where('status', 'unread');

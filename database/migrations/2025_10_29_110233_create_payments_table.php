@@ -6,9 +6,6 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
         Schema::create('payments', function (Blueprint $table) {
@@ -25,7 +22,6 @@ return new class extends Migration
             $table->timestamp('refunded_at')->nullable();
             $table->timestamps();
 
-            // Indexes
             $table->index('booking_id');
             $table->index('customer_id');
             $table->index('transaction_id');
@@ -33,9 +29,6 @@ return new class extends Migration
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::dropIfExists('payments');

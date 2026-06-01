@@ -7,21 +7,13 @@ use Illuminate\Support\Facades\DB;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
-        // MySQL doesn't support direct ALTER for ENUM, so we use raw SQL
         DB::statement("ALTER TABLE payments MODIFY COLUMN method ENUM('card', 'cash', 'authorize.net', 'in-store') NOT NULL");
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
-        // Revert back to previous enum values
         DB::statement("ALTER TABLE payments MODIFY COLUMN method ENUM('card', 'cash', 'authorize.net') NOT NULL");
     }
 };

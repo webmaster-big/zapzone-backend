@@ -6,13 +6,6 @@ use App\Models\PageView;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
 
-/**
- * Keeps the page_views table from growing forever.
- *
- *   php artisan analytics:prune                # default: PV>365d, conversions kept
- *   php artisan analytics:prune --days=180     # custom window
- *   php artisan analytics:prune --keep-conversions=false   # also prune conversions
- */
 class PrunePageViews extends Command
 {
     protected $signature = 'analytics:prune
@@ -39,7 +32,6 @@ class PrunePageViews extends Command
         }
 
         $this->info("Pruning {$count} page_views rows older than {$cutoff->toDateString()}".($keep ? ' (keeping conversions)' : '').'…');
-        // Chunked delete to keep transaction sizes sane.
         $deleted = 0;
         do {
             $batch = $q->limit(5000)->delete();

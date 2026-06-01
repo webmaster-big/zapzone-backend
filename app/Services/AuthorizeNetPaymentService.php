@@ -12,9 +12,6 @@ class AuthorizeNetPaymentService
     protected ?AuthorizeNetAccount $account = null;
     protected ?Location $location = null;
 
-    /**
-     * Initialize the service with a location
-     */
     public function forLocation(Location|int $location): self
     {
         if (is_int($location)) {
@@ -34,9 +31,6 @@ class AuthorizeNetPaymentService
         return $this;
     }
 
-    /**
-     * Get the API credentials for the location
-     */
     public function getCredentials(): array
     {
         if (!$this->account) {
@@ -50,9 +44,6 @@ class AuthorizeNetPaymentService
         ];
     }
 
-    /**
-     * Get the Authorize.Net API endpoint based on environment
-     */
     public function getApiEndpoint(): string
     {
         if (!$this->account) {
@@ -64,30 +55,16 @@ class AuthorizeNetPaymentService
             : 'https://apitest.authorize.net/xml/v1/request.api';
     }
 
-    /**
-     * Check if the account is in production mode
-     */
     public function isProduction(): bool
     {
         return $this->account && $this->account->isProduction();
     }
 
-    /**
-     * Check if the account is in sandbox mode
-     */
     public function isSandbox(): bool
     {
         return $this->account && $this->account->isSandbox();
     }
 
-    /**
-     * Process a payment transaction with Accept.js token
-     *
-     * @param array $paymentData - Should include dataDescriptor, dataValue, amount
-     * @param array|null $customerData - Customer billing information
-     * @param array|null $orderData - Order details (invoice number, description, etc.)
-     * @return array
-     */
     public function chargeTransaction(array $paymentData, ?array $customerData = null, ?array $orderData = null): array
     {
         if (!$this->account) {
@@ -107,27 +84,22 @@ class AuthorizeNetPaymentService
                 'customer_name' => ($customerData['first_name'] ?? '') . ' ' . ($customerData['last_name'] ?? ''),
             ]);
 
-            // Initialize Authorize.Net SDK
             $merchantAuthentication = new \net\authorize\api\contract\v1\MerchantAuthenticationType();
             $merchantAuthentication->setName($credentials['api_login_id']);
             $merchantAuthentication->setTransactionKey($credentials['transaction_key']);
 
-            // Set opaque data from Accept.js
             $opaqueData = new \net\authorize\api\contract\v1\OpaqueDataType();
             $opaqueData->setDataDescriptor($paymentData['dataDescriptor']);
             $opaqueData->setDataValue($paymentData['dataValue']);
 
-            // Set payment data
             $paymentOne = new \net\authorize\api\contract\v1\PaymentType();
             $paymentOne->setOpaqueData($opaqueData);
 
-            // Create transaction request
             $transactionRequestType = new \net\authorize\api\contract\v1\TransactionRequestType();
             $transactionRequestType->setTransactionType("authCaptureTransaction");
             $transactionRequestType->setAmount($paymentData['amount']);
             $transactionRequestType->setPayment($paymentOne);
 
-            // Add customer billing information if provided
             if ($customerData) {
                 $billTo = new \net\authorize\api\contract\v1\CustomerAddressType();
 
@@ -172,7 +144,6 @@ class AuthorizeNetPaymentService
                 ]);
             }
 
-            // Add order information if provided
             if ($orderData) {
                 $order = new \net\authorize\api\contract\v1\OrderType();
 
@@ -191,13 +162,11 @@ class AuthorizeNetPaymentService
                 ]);
             }
 
-            // Create request
             $request = new \net\authorize\api\contract\v1\CreateTransactionRequest();
             $request->setMerchantAuthentication($merchantAuthentication);
             $request->setRefId('ref' . time());
             $request->setTransactionRequest($transactionRequestType);
 
-            // Execute request
             $controller = new \net\authorize\api\controller\CreateTransactionController($request);
             $response = $controller->executeWithApiResponse($this->getApiEndpoint());
 
@@ -269,13 +238,6 @@ class AuthorizeNetPaymentService
         }
     }
 
-    /**
-     * Refund a transaction
-     *
-     * @param string $transactionId
-     * @param float $amount
-     * @return array
-     */
     public function refundTransaction(string $transactionId, float $amount): array
     {
         if (!$this->account) {
@@ -291,7 +253,6 @@ class AuthorizeNetPaymentService
                 'amount' => $amount,
             ]);
 
-            // Return mock response for now
             return [
                 'success' => true,
                 'refund_id' => 'REFUND_' . time(),
@@ -310,11 +271,6 @@ class AuthorizeNetPaymentService
         }
     }
 
-    /**
-     * Test the connection to Authorize.Net
-     *
-     * @return array
-     */
     public function testConnection(): array
     {
         if (!$this->account) {
@@ -324,8 +280,6 @@ class AuthorizeNetPaymentService
         try {
             $credentials = $this->getCredentials();
 
-            // Here you would make an actual API call to test credentials
-            // For example, getMerchantDetails API call
 
             Log::info('Testing Authorize.Net connection', [
                 'location_id' => $this->location->id,
@@ -353,17 +307,11 @@ class AuthorizeNetPaymentService
         }
     }
 
-    /**
-     * Get the account instance
-     */
     public function getAccount(): ?AuthorizeNetAccount
     {
         return $this->account;
     }
 
-    /**
-     * Get the location instance
-     */
     public function getLocation(): ?Location
     {
         return $this->location;

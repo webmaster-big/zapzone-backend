@@ -36,7 +36,6 @@ class Promo extends Model
         'deleted' => 'boolean',
     ];
 
-    // Relationships
     public function creator(): BelongsTo
     {
         return $this->belongsTo(User::class, 'created_by');
@@ -47,7 +46,6 @@ class Promo extends Model
         return $this->belongsToMany(Package::class, 'package_promos');
     }
 
-    // Scopes
     public function scopeActive($query)
     {
         return $query->where('status', 'active')->where('deleted', false);
@@ -88,7 +86,6 @@ class Promo extends Model
         return $query->where('code_mode', 'unique');
     }
 
-    // Helpers
     public function isExpired(): bool
     {
         return $this->end_date < now()->toDateString();

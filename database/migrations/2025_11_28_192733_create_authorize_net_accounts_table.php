@@ -6,9 +6,6 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
         Schema::create('authorize_net_accounts', function (Blueprint $table) {
@@ -22,15 +19,11 @@ return new class extends Migration
             $table->timestamp('last_tested_at')->nullable();
             $table->timestamps();
 
-            // Indexes
             $table->index('location_id');
             $table->index('is_active');
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::dropIfExists('authorize_net_accounts');

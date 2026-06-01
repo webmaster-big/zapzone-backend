@@ -15,16 +15,8 @@ class MobileAvailabilityController extends Controller
 {
     use GeneratesAvailableTimeSlots;
 
-    /**
-     * Cleanup/buffer time in minutes between bookings.
-     */
     private const CLEANUP_BUFFER_MINUTES = 15;
 
-    /**
-     * GET /api/mobile/locations
-     *
-     * Returns all active locations for the mobile app landing screen.
-     */
     public function getLocations(): JsonResponse
     {
         $locations = Location::active()
@@ -47,13 +39,6 @@ class MobileAvailabilityController extends Controller
         ]);
     }
 
-    /**
-     * GET /api/mobile/locations/{locationId}/packages?date=2026-03-17
-     *
-     * Returns active packages for a location filtered by date.
-     * Only packages that have an availability schedule matching the given date are returned.
-     * Defaults to today's date in the location's timezone.
-     */
     public function getPackagesByLocationAndDate(Request $request, int $locationId): JsonResponse
     {
         $location = Location::find($locationId);
@@ -65,11 +50,9 @@ class MobileAvailabilityController extends Controller
             ], 404);
         }
 
-        // Use location timezone for default date
         $timezone = $this->normalizeTimezone($location->timezone ?? 'America/Chicago');
         $date = $request->get('date', Carbon::now($timezone)->format('Y-m-d'));
 
-        // Validate date format
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
             return response()->json([
                 'success' => false,
@@ -77,7 +60,6 @@ class MobileAvailabilityController extends Controller
             ], 422);
         }
 
-        // Check if the entire location has a full day-off on this date
         $locationClosed = DayOff::isDateBlocked($locationId, $date);
 
         if ($locationClosed) {
@@ -96,7 +78,6 @@ class MobileAvailabilityController extends Controller
             ]);
         }
 
-        // Get active packages for this location with their schedules and rooms
         $packages = Package::with([
                 'availabilitySchedules' => function ($q) {
                     $q->where('is_active', true);
@@ -112,13 +93,11 @@ class MobileAvailabilityController extends Controller
                 'location_id',
             ]);
 
-        // Filter packages that have a matching schedule for the requested date
         $filteredPackages = $packages->filter(function ($package) use ($date) {
             return $package->availabilitySchedules->contains(fn($s) => $s->matchesDate($date));
         })->sortBy([['display_order', 'asc'], ['name', 'asc']]);
 
         $result = $filteredPackages->values()->map(function ($package) use ($date) {
-            // Use the same availability logic as PackageTimeSlotController
             $isBlocked = $this->isPackageFullyBlocked($package->location_id, $package->id, $date);
             $availableSlots = [];
             if (!$isBlocked && $package->rooms->isNotEmpty()) {
@@ -155,12 +134,6 @@ class MobileAvailabilityController extends Controller
         ]);
     }
 
-    /**
-     * GET /api/mobile/packages/{packageId}/availability?date=2026-03-17
-     *
-     * Returns detailed slot availability for a package on a given date.
-     * This is the data for the modal view with full slot details.
-     */
     public function getPackageAvailability(Request $request, int $packageId): JsonResponse
     {
         $package = Package::with(['rooms', 'location'])->find($packageId);
@@ -176,7 +149,6 @@ class MobileAvailabilityController extends Controller
         $timezone = $this->normalizeTimezone($location->timezone ?? 'America/Chicago');
         $date = $request->get('date', Carbon::now($timezone)->format('Y-m-d'));
 
-        // Validate date format
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
             return response()->json([
                 'success' => false,
@@ -204,19 +176,13 @@ class MobileAvailabilityController extends Controller
         ]);
     }
 
-    // ─── Private Helpers ──────────────────────────────────────────────────
 
-    /**
-     * Check if a package is fully blocked on a date (location-wide or package-specific full day off).
-     */
     private function isPackageFullyBlocked(int $locationId, int $packageId, string $date): bool
     {
-        // Check location-wide full day block
         if (DayOff::isDateBlocked($locationId, $date)) {
             return true;
         }
 
-        // Check package-specific full day block
         $dayOffs = DayOff::where('location_id', $locationId)
             ->whereDate('date', $date)
             ->forPackage($packageId)
@@ -231,11 +197,6 @@ class MobileAvailabilityController extends Controller
         return false;
     }
 
-    /**
-     * Normalize a timezone string to IANA format.
-     * Handles Windows-style timezone names (e.g. "Eastern Standard Time" → "America/New_York").
-     * Falls back to America/Chicago if the timezone is unrecognized.
-     */
     private function normalizeTimezone(string $timezone): string
     {
         static $windowsToIana = [
@@ -258,7 +219,6 @@ class MobileAvailabilityController extends Controller
             return $windowsToIana[$timezone];
         }
 
-        // Validate it's a real IANA timezone; fall back to America/Chicago if not
         try {
             new \DateTimeZone($timezone);
             return $timezone;

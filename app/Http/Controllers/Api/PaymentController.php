@@ -48,8 +48,6 @@ class PaymentController extends Controller
     {
         $query = Payment::with(['customer', 'location', 'booking', 'attractionPurchase', 'eventPurchase']);
 
-        // Multi-tenant + role-based scoping. Payment has location_id (no company_id);
-        // company is enforced through the location relation.
         $authUser = $this->resolveAuthUser($request);
         if ($authUser) {
             if (in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
@@ -59,29 +57,24 @@ class PaymentController extends Controller
             }
         }
 
-        // Filter by payable_id (the ID of the booking or attraction purchase)
         if ($request->has('payable_id')) {
             $query->where('payable_id', $request->payable_id);
         }
 
-        // Filter by payable_type ('booking' or 'attraction_purchase')
         if ($request->has('payable_type')) {
             $query->where('payable_type', $request->payable_type);
         }
 
-        // Backward compatibility: support booking_id filter (maps to payable_id with type 'booking')
         if ($request->has('booking_id')) {
             $query->where('payable_id', $request->booking_id)
                   ->where('payable_type', Payment::TYPE_BOOKING);
         }
 
-        // Filter by attraction_purchase_id
         if ($request->has('attraction_purchase_id')) {
             $query->where('payable_id', $request->attraction_purchase_id)
                   ->where('payable_type', Payment::TYPE_ATTRACTION_PURCHASE);
         }
 
-        // Filter by event_purchase_id
         if ($request->has('event_purchase_id')) {
             $query->where('payable_id', $request->event_purchase_id)
                   ->where('payable_type', Payment::TYPE_EVENT_PURCHASE);
@@ -121,7 +114,6 @@ class PaymentController extends Controller
         $validated = $request->validate([
             'payable_id' => 'nullable|integer',
             'payable_type' => ['nullable', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE, Payment::TYPE_EVENT_PURCHASE])],
-            // Backward compatibility: support booking_id (will be converted to payable_id/payable_type)
             'booking_id' => 'nullable|exists:bookings,id',
             'attraction_purchase_id' => 'nullable|exists:attraction_purchases,id',
             'event_purchase_id' => 'nullable|exists:event_purchases,id',
@@ -137,29 +129,24 @@ class PaymentController extends Controller
             'terms_accepted' => 'nullable|boolean',
         ]);
 
-        // Handle backward compatibility: convert booking_id to payable_id/payable_type
         if (isset($validated['booking_id']) && !isset($validated['payable_id'])) {
             $validated['payable_id'] = $validated['booking_id'];
             $validated['payable_type'] = Payment::TYPE_BOOKING;
             unset($validated['booking_id']);
         }
 
-        // Handle attraction_purchase_id
         if (isset($validated['attraction_purchase_id']) && !isset($validated['payable_id'])) {
             $validated['payable_id'] = $validated['attraction_purchase_id'];
             $validated['payable_type'] = Payment::TYPE_ATTRACTION_PURCHASE;
             unset($validated['attraction_purchase_id']);
         }
 
-        // Handle event_purchase_id
         if (isset($validated['event_purchase_id']) && !isset($validated['payable_id'])) {
             $validated['payable_id'] = $validated['event_purchase_id'];
             $validated['payable_type'] = Payment::TYPE_EVENT_PURCHASE;
             unset($validated['event_purchase_id']);
         }
 
-        // --- Duplicate payment prevention ---
-        // Prevent duplicate payments for the same entity within a 2-minute window
         if (!empty($validated['payable_id']) && !empty($validated['payable_type'])) {
             $existingPayment = Payment::where('payable_id', $validated['payable_id'])
                 ->where('payable_type', $validated['payable_type'])
@@ -182,11 +169,9 @@ class PaymentController extends Controller
                 ], 200);
             }
         }
-        // --- End duplicate payment prevention ---
 
         $validated['transaction_id'] = 'TXN' . now()->format('YmdHis') . strtoupper(Str::random(6));
 
-        // Handle signature image upload (base64)
         if (isset($validated['signature_image']) && !empty($validated['signature_image'])) {
             $validated['signature_image'] = $this->handleSignatureUpload($validated['signature_image']);
         }
@@ -198,7 +183,6 @@ class PaymentController extends Controller
         $payment = Payment::create($validated);
         $payment->load(['customer', 'location']);
 
-        // Sync amount_paid on the linked entity (match charge() behavior)
         if ($payment->payable_id && $payment->payable_type && $payment->status === 'completed') {
             if ($payment->payable_type === Payment::TYPE_BOOKING) {
                 $payable = Booking::find($payment->payable_id);
@@ -239,7 +223,6 @@ class PaymentController extends Controller
             }
         }
 
-        // Create notification for customer if payment is completed
         if ($payment->customer_id && $payment->status === 'completed') {
             CustomerNotification::create([
                 'customer_id' => $payment->customer_id,
@@ -260,7 +243,6 @@ class PaymentController extends Controller
             ]);
         }
 
-        // Create notification for location staff if payment is completed
         if ($payment->location_id && $payment->status === 'completed') {
             Notification::create([
                 'location_id' => $payment->location_id,
@@ -284,7 +266,6 @@ class PaymentController extends Controller
             ]);
         }
 
-        // Log payment creation activity with detailed metadata
         $customerName = $payment->customer
             ? "{$payment->customer->first_name} {$payment->customer->last_name}"
             : 'Guest';
@@ -320,7 +301,6 @@ class PaymentController extends Controller
             ]
         );
 
-        // Trigger payment received email notification
         if ($payment->status === 'completed') {
             try {
                 $emailService = app(EmailNotificationService::class);
@@ -341,7 +321,6 @@ class PaymentController extends Controller
     {
         $payment->load(['customer', 'location']);
 
-        // Load the related payable entity based on type
         $payableDetails = $payment->getPayableDetails();
 
         return response()->json([
@@ -351,19 +330,14 @@ class PaymentController extends Controller
         ]);
     }
 
-    /**
-     * Soft delete a payment record.
-     */
     public function destroy(Payment $payment): JsonResponse
     {
         $payment->delete();
 
-        // Recalculate amount_paid on the linked entity
         if ($payment->payable_id && $payment->payable_type && $payment->status === 'completed') {
             $this->recalculatePayableAmountPaid($payment->payable_id, $payment->payable_type);
         }
 
-        // Log activity
         ActivityLog::create([
             'user_id' => auth()->id(),
             'action' => 'soft_deleted',
@@ -379,20 +353,15 @@ class PaymentController extends Controller
         ]);
     }
 
-    /**
-     * Restore a soft-deleted payment record.
-     */
     public function restore(int $id): JsonResponse
     {
         $payment = Payment::onlyTrashed()->findOrFail($id);
         $payment->restore();
 
-        // Recalculate amount_paid on the linked entity
         if ($payment->payable_id && $payment->payable_type && $payment->status === 'completed') {
             $this->recalculatePayableAmountPaid($payment->payable_id, $payment->payable_type);
         }
 
-        // Log activity
         ActivityLog::create([
             'user_id' => auth()->id(),
             'action' => 'restored',
@@ -409,14 +378,10 @@ class PaymentController extends Controller
         ]);
     }
 
-    /**
-     * Permanently delete a soft-deleted payment record.
-     */
     public function forceDelete(int $id): JsonResponse
     {
         $payment = Payment::onlyTrashed()->findOrFail($id);
 
-        // Log activity before permanent deletion
         ActivityLog::create([
             'user_id' => auth()->id(),
             'action' => 'force_deleted',
@@ -434,9 +399,6 @@ class PaymentController extends Controller
         ]);
     }
 
-    /**
-     * List soft-deleted (trashed) payment records.
-     */
     public function trashed(Request $request): JsonResponse
     {
         $query = Payment::onlyTrashed()->with(['customer', 'location', 'booking', 'attractionPurchase', 'eventPurchase']);
@@ -466,9 +428,6 @@ class PaymentController extends Controller
         ]);
     }
 
-    /**
-     * Recalculate amount_paid on a payable entity after soft delete/restore.
-     */
     private function recalculatePayableAmountPaid(int $payableId, string $payableType): void
     {
         $totalPaid = Payment::where('payable_id', $payableId)
@@ -503,20 +462,10 @@ class PaymentController extends Controller
         }
     }
 
-    /**
-     * Link a payment to a booking or attraction purchase.
-     *
-     * Use this after charging the customer and then creating the booking/purchase.
-     * Flow: charge → create booking/purchase → call this to link payment to the entity.
-     *
-     * Updates the payable_id and payable_type on the payment record, and syncs
-     * the amount_paid on the related booking or attraction purchase.
-     */
     public function updatePayable(Request $request, string $id): JsonResponse
     {
         $transactionId = $request->query('transaction_id');
 
-        // Find payment by ID or transaction_id
         $payment = $id
             ? Payment::findOrFail($id)
             : Payment::where('transaction_id', $transactionId)->firstOrFail();
@@ -526,7 +475,6 @@ class PaymentController extends Controller
             'payable_type' => ['required', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE, Payment::TYPE_EVENT_PURCHASE])],
         ]);
 
-        // Verify the target entity exists
         if ($validated['payable_type'] === Payment::TYPE_BOOKING) {
             $payable = Booking::find($validated['payable_id']);
             if (!$payable) {
@@ -556,10 +504,8 @@ class PaymentController extends Controller
         $previousPayableId = $payment->payable_id;
         $previousPayableType = $payment->payable_type;
 
-        // Update the payment's payable link
         $payment->update($validated);
 
-        // Sync amount_paid on the newly linked entity
         if ($payment->status === 'completed') {
             $totalPaid = Payment::where('payable_id', $validated['payable_id'])
                 ->where('payable_type', $validated['payable_type'])
@@ -568,7 +514,6 @@ class PaymentController extends Controller
 
             $payable->update(['amount_paid' => $totalPaid]);
 
-            // Auto-determine status for attraction purchases
             if ($validated['payable_type'] === Payment::TYPE_ATTRACTION_PURCHASE) {
                 if ($totalPaid >= $payable->total_amount && $payable->status === AttractionPurchase::STATUS_PENDING) {
                     $payable->update(['status' => AttractionPurchase::STATUS_CONFIRMED]);
@@ -576,7 +521,6 @@ class PaymentController extends Controller
             }
         }
 
-        // If the payment was previously linked to another entity, recalculate that entity's amount_paid
         if ($previousPayableId && $previousPayableType) {
             $previousTotalPaid = Payment::where('payable_id', $previousPayableId)
                 ->where('payable_type', $previousPayableType)
@@ -596,7 +540,6 @@ class PaymentController extends Controller
             }
         }
 
-        // Log activity
         ActivityLog::log(
             action: 'Payment Linked',
             category: 'update',
@@ -626,11 +569,6 @@ class PaymentController extends Controller
         ]);
     }
 
-    /**
-     * Refund a payment via Authorize.Net
-     * Allows specifying a partial or full refund amount
-     * Requires the original transaction to be settled (usually 24-48 hours after capture)
-     */
     public function refund(Request $request, Payment $payment): JsonResponse
     {
         $validated = $request->validate([
@@ -649,7 +587,6 @@ class PaymentController extends Controller
 
         $refundAmount = $validated['amount'] ?? $payment->amount;
 
-        // Calculate total already refunded for this original payment
         $totalAlreadyRefunded = Payment::where('status', 'refunded')
             ->where('notes', 'like', '%Refund from Payment #' . $payment->id . ' %')
             ->sum('amount');
@@ -671,7 +608,6 @@ class PaymentController extends Controller
         }
 
         try {
-            // 1. Get Authorize.Net account for the location
             $account = AuthorizeNetAccount::where('location_id', $payment->location_id)
                 ->where('is_active', true)
                 ->first();
@@ -683,20 +619,16 @@ class PaymentController extends Controller
                 ], 503);
             }
 
-            // 2. Get decrypted credentials
             $apiLoginId = trim($account->api_login_id);
             $transactionKey = trim($account->transaction_key);
             $environment = $account->isProduction() ? ANetEnvironment::PRODUCTION : ANetEnvironment::SANDBOX;
 
-            // 3. Build merchant authentication
             $merchantAuthentication = new AnetAPI\MerchantAuthenticationType();
             $merchantAuthentication->setName($apiLoginId);
             $merchantAuthentication->setTransactionKey($transactionKey);
 
-            // 4. Create credit card payment type (last 4 digits required for refund)
             $lastFour = $payment->card_last_four;
 
-            // If card_last_four is missing, fetch it from Authorize.Net transaction details
             if (!$lastFour) {
                 Log::info('card_last_four missing, fetching from Authorize.Net GetTransactionDetails', [
                     'payment_id' => $payment->id,
@@ -715,10 +647,8 @@ class PaymentController extends Controller
                         $txn = $detailsResponse->getTransaction();
                         if ($txn && $txn->getPayment() && $txn->getPayment()->getCreditCard()) {
                             $cardNumber = $txn->getPayment()->getCreditCard()->getCardNumber();
-                            // Authorize.Net returns masked card like XXXX1234
                             $lastFour = substr($cardNumber, -4);
 
-                            // Persist for future refunds so we don't need to look it up again
                             $payment->update(['card_last_four' => $lastFour]);
 
                             Log::info('card_last_four retrieved and saved from Authorize.Net', [
@@ -756,14 +686,12 @@ class PaymentController extends Controller
             $paymentType = new AnetAPI\PaymentType();
             $paymentType->setCreditCard($creditCard);
 
-            // 5. Create refund transaction request
             $transactionRequestType = new AnetAPI\TransactionRequestType();
             $transactionRequestType->setTransactionType('refundTransaction');
             $transactionRequestType->setAmount($refundAmount);
             $transactionRequestType->setPayment($paymentType);
             $transactionRequestType->setRefTransId($payment->transaction_id);
 
-            // 6. Create and execute the request
             $apiRequest = new AnetAPI\CreateTransactionRequest();
             $apiRequest->setMerchantAuthentication($merchantAuthentication);
             $apiRequest->setTransactionRequest($transactionRequestType);
@@ -771,7 +699,6 @@ class PaymentController extends Controller
             $controller = new AnetController\CreateTransactionController($apiRequest);
             $response = $controller->executeWithApiResponse($environment);
 
-            // 7. Process response
             if ($response != null && $response->getMessages()->getResultCode() == 'Ok') {
                 $tresponse = $response->getTransactionResponse();
 
@@ -779,7 +706,6 @@ class PaymentController extends Controller
                     $refundTransactionId = $tresponse->getTransId();
                     $isFullRefund = ($refundAmount + $totalAlreadyRefunded) >= $payment->amount;
 
-                    // Create a NEW refund payment record (preserves the original payment as-is)
                     $refundPayment = Payment::create([
                         'payable_id' => $payment->payable_id,
                         'payable_type' => $payment->payable_type,
@@ -796,12 +722,10 @@ class PaymentController extends Controller
                         'location_id' => $payment->location_id,
                     ]);
 
-                    // Append a reference note to the original payment (do NOT change its status)
                     $payment->update([
                         'notes' => trim(($payment->notes ?? '') . "\nRefund of $" . number_format($refundAmount, 2) . " issued → Refund Payment #{$refundPayment->id} (TXN: {$refundTransactionId})"),
                     ]);
 
-                    // Negative conversion so net revenue dashboards stay accurate.
                     $this->recordConversion(
                         'refund_issued',
                         $refundPayment,
@@ -821,7 +745,6 @@ class PaymentController extends Controller
                         'location_id' => $payment->location_id,
                     ]);
 
-                    // Create notification for customer
                     if ($payment->customer_id) {
                         CustomerNotification::create([
                             'customer_id' => $payment->customer_id,
@@ -846,7 +769,6 @@ class PaymentController extends Controller
                         ]);
                     }
 
-                    // Create notification for location staff
                     if ($payment->location_id) {
                         Notification::create([
                             'location_id' => $payment->location_id,
@@ -872,7 +794,6 @@ class PaymentController extends Controller
                         ]);
                     }
 
-                    // Log activity
                     $customerName = $payment->customer
                         ? "{$payment->customer->first_name} {$payment->customer->last_name}"
                         : 'Guest';
@@ -912,7 +833,6 @@ class PaymentController extends Controller
                         ]
                     );
 
-                    // Update the related booking or attraction purchase
                     $isCancelled = $validated['cancel'] ?? $isFullRefund;
                     $payable = null;
 
@@ -933,7 +853,6 @@ class PaymentController extends Controller
                                 ]);
                             }
 
-                            // Sync to Google Calendar
                             try {
                                 $gcalService = new GoogleCalendarService($payable->location_id);
                                 if ($gcalService->isConnected()) {
@@ -943,7 +862,6 @@ class PaymentController extends Controller
                                 Log::warning('Google Calendar sync failed on refund', ['booking_id' => $payable->id, 'error' => $e->getMessage()]);
                             }
 
-                            // Send cancellation email via EmailNotificationService
                             if ($isCancelled) {
                                 try {
                                     $emailService = app(EmailNotificationService::class);
@@ -970,7 +888,6 @@ class PaymentController extends Controller
                                 ]);
                             }
 
-                            // Send cancellation email via EmailNotificationService
                             if ($isCancelled) {
                                 try {
                                     $emailService = app(EmailNotificationService::class);
@@ -994,7 +911,19 @@ class PaymentController extends Controller
                         }
                     }
 
-                    // Trigger payment refunded email notification
+                    if ($isCancelled && $payable) {
+                        try {
+                            app(\App\Services\MembershipBenefitService::class)
+                                ->reverseForRedeemable($payable, 'payment_refunded');
+                        } catch (\Throwable $e) {
+                            Log::warning('Failed to reverse membership redemptions on refund', [
+                                'payable_type' => $payment->payable_type,
+                                'payable_id'   => $payment->payable_id,
+                                'error'        => $e->getMessage(),
+                            ]);
+                        }
+                    }
+
                     try {
                         $emailService = app(EmailNotificationService::class);
                         $emailService->triggerPaymentNotification($refundPayment, EmailNotification::TRIGGER_PAYMENT_REFUNDED);
@@ -1049,7 +978,6 @@ class PaymentController extends Controller
                     $errorCode = $errorMessages[0]->getCode();
                     $errorMessage = $errorMessages[0]->getText();
 
-                    // Capture transaction-level error details for better diagnostics
                     $tresponse = $response->getTransactionResponse();
                     if ($tresponse && $tresponse->getErrors() != null) {
                         $transactionErrorCode = $tresponse->getErrors()[0]->getErrorCode();
@@ -1066,9 +994,6 @@ class PaymentController extends Controller
                     'location_id' => $payment->location_id,
                 ]);
 
-                // E00027 with transaction error code 54 means the transaction is unsettled.
-                // Also fall back to void for any E00027 refund failure as the most common cause
-                // is attempting to refund an unsettled transaction.
                 $isUnsettledError = $errorCode === 'E00027';
                 $isPartialRefund = $refundAmount < $payment->amount;
 
@@ -1078,7 +1003,6 @@ class PaymentController extends Controller
                         'transaction_id' => $payment->transaction_id,
                     ]);
 
-                    // Attempt a void instead
                     $voidTransactionRequestType = new AnetAPI\TransactionRequestType();
                     $voidTransactionRequestType->setTransactionType('voidTransaction');
                     $voidTransactionRequestType->setRefTransId($payment->transaction_id);
@@ -1098,13 +1022,11 @@ class PaymentController extends Controller
                                 'transaction_id' => $payment->transaction_id,
                             ]);
 
-                            // Update original payment status to voided
                             $payment->update([
                                 'status' => 'voided',
                                 'refunded_at' => now(),
                             ]);
 
-                            // Create a void payment record for the audit trail
                             $voidPayment = Payment::create([
                                 'payable_id' => $payment->payable_id,
                                 'payable_type' => $payment->payable_type,
@@ -1124,7 +1046,6 @@ class PaymentController extends Controller
                                 'notes' => trim(($payment->notes ?? '') . "\nTransaction voided (auto-fallback from refund) → Void Payment #{$voidPayment->id}"),
                             ]);
 
-                            // Update the related payable (void = always cancel)
                             $payable = null;
                             if ($payment->payable_type === Payment::TYPE_BOOKING && $payment->payable_id) {
                                 $payable = Booking::withTrashed()->find($payment->payable_id);
@@ -1156,6 +1077,19 @@ class PaymentController extends Controller
                                 }
                             }
 
+                            if ($payable) {
+                                try {
+                                    app(\App\Services\MembershipBenefitService::class)
+                                        ->reverseForRedeemable($payable, 'payment_voided');
+                                } catch (\Throwable $e) {
+                                    Log::warning('Failed to reverse membership redemptions on void fallback', [
+                                        'payable_type' => $payment->payable_type,
+                                        'payable_id'   => $payment->payable_id,
+                                        'error'        => $e->getMessage(),
+                                    ]);
+                                }
+                            }
+
                             return response()->json([
                                 'success' => true,
                                 'message' => 'Transaction was unsettled — voided successfully instead of refunded',
@@ -1171,7 +1105,6 @@ class PaymentController extends Controller
                         }
                     }
 
-                    // Log detailed void failure
                     $voidErrorMessage = 'Unknown void error';
                     $voidErrorCode = null;
                     if ($voidResponse != null) {
@@ -1234,12 +1167,6 @@ class PaymentController extends Controller
         }
     }
 
-    /**
-     * Manual refund for non-Authorize.Net payments (cash, in-store, card)
-     * Creates a new payment record with 'refunded' status to track the refund.
-     * Updates the related booking or attraction purchase accordingly.
-     * No external payment gateway call — the actual money return is handled by staff in person.
-     */
     public function manualRefund(Request $request, Payment $payment): JsonResponse
     {
         $validated = $request->validate([
@@ -1258,7 +1185,6 @@ class PaymentController extends Controller
 
         $refundAmount = $validated['amount'] ?? $payment->amount;
 
-        // Calculate total already refunded for this original payment
         $totalAlreadyRefunded = Payment::where('status', 'refunded')
             ->where('notes', 'like', '%Refund from Payment #' . $payment->id . ' %')
             ->sum('amount');
@@ -1281,7 +1207,6 @@ class PaymentController extends Controller
 
         $isFullRefund = ($refundAmount + $totalAlreadyRefunded) >= $payment->amount;
 
-        // Create a NEW refund payment record
         $refundPayment = Payment::create([
             'payable_id' => $payment->payable_id,
             'payable_type' => $payment->payable_type,
@@ -1297,12 +1222,10 @@ class PaymentController extends Controller
             'location_id' => $payment->location_id,
         ]);
 
-        // Append reference note to the original payment
         $payment->update([
             'notes' => trim(($payment->notes ?? '') . "\nManual refund of $" . number_format($refundAmount, 2) . " issued → Refund Payment #{$refundPayment->id}"),
         ]);
 
-        // Negative conversion so net revenue dashboards stay accurate.
         $this->recordConversion(
             'refund_issued',
             $refundPayment,
@@ -1321,7 +1244,6 @@ class PaymentController extends Controller
             'location_id' => $payment->location_id,
         ]);
 
-        // Create notification for customer
         if ($payment->customer_id) {
             CustomerNotification::create([
                 'customer_id' => $payment->customer_id,
@@ -1345,7 +1267,6 @@ class PaymentController extends Controller
             ]);
         }
 
-        // Create notification for location staff
         if ($payment->location_id) {
             Notification::create([
                 'location_id' => $payment->location_id,
@@ -1370,7 +1291,6 @@ class PaymentController extends Controller
             ]);
         }
 
-        // Log activity
         $customerName = $payment->customer
             ? "{$payment->customer->first_name} {$payment->customer->last_name}"
             : 'Guest';
@@ -1409,7 +1329,6 @@ class PaymentController extends Controller
             ]
         );
 
-        // Update the related booking or attraction purchase
         $isCancelled = $validated['cancel'] ?? $isFullRefund;
         $payable = null;
 
@@ -1430,7 +1349,6 @@ class PaymentController extends Controller
                     ]);
                 }
 
-                // Sync to Google Calendar
                 try {
                     $gcalService = new GoogleCalendarService($payable->location_id);
                     if ($gcalService->isConnected()) {
@@ -1440,7 +1358,6 @@ class PaymentController extends Controller
                     Log::warning('Google Calendar sync failed on manual refund', ['booking_id' => $payable->id, 'error' => $e->getMessage()]);
                 }
 
-                // Send cancellation email via EmailNotificationService
                 if ($isCancelled) {
                     try {
                         $emailService = app(EmailNotificationService::class);
@@ -1467,7 +1384,6 @@ class PaymentController extends Controller
                     ]);
                 }
 
-                // Send cancellation email via EmailNotificationService
                 if ($isCancelled) {
                     try {
                         $emailService = app(EmailNotificationService::class);
@@ -1491,7 +1407,6 @@ class PaymentController extends Controller
             }
         }
 
-        // Trigger payment refunded email notification
         try {
             $emailService = app(EmailNotificationService::class);
             $emailService->triggerPaymentNotification($refundPayment, EmailNotification::TRIGGER_PAYMENT_REFUNDED);
@@ -1515,10 +1430,6 @@ class PaymentController extends Controller
         ]);
     }
 
-    /**
-     * Void a transaction via Authorize.Net
-     * Used for unsettled transactions (before the batch is settled, typically within 24 hours)
-     */
     public function voidTransaction(Payment $payment): JsonResponse
     {
         if (!in_array($payment->status, ['completed', 'pending'])) {
@@ -1530,7 +1441,6 @@ class PaymentController extends Controller
         }
 
         try {
-            // 1. Get Authorize.Net account for the location
             $account = AuthorizeNetAccount::where('location_id', $payment->location_id)
                 ->where('is_active', true)
                 ->first();
@@ -1542,22 +1452,18 @@ class PaymentController extends Controller
                 ], 503);
             }
 
-            // 2. Get decrypted credentials
             $apiLoginId = trim($account->api_login_id);
             $transactionKey = trim($account->transaction_key);
             $environment = $account->isProduction() ? ANetEnvironment::PRODUCTION : ANetEnvironment::SANDBOX;
 
-            // 3. Build merchant authentication
             $merchantAuthentication = new AnetAPI\MerchantAuthenticationType();
             $merchantAuthentication->setName($apiLoginId);
             $merchantAuthentication->setTransactionKey($transactionKey);
 
-            // 4. Create void transaction request
             $transactionRequestType = new AnetAPI\TransactionRequestType();
             $transactionRequestType->setTransactionType('voidTransaction');
             $transactionRequestType->setRefTransId($payment->transaction_id);
 
-            // 5. Create and execute the request
             $apiRequest = new AnetAPI\CreateTransactionRequest();
             $apiRequest->setMerchantAuthentication($merchantAuthentication);
             $apiRequest->setTransactionRequest($transactionRequestType);
@@ -1565,7 +1471,6 @@ class PaymentController extends Controller
             $controller = new AnetController\CreateTransactionController($apiRequest);
             $response = $controller->executeWithApiResponse($environment);
 
-            // 6. Process response
             if ($response != null && $response->getMessages()->getResultCode() == 'Ok') {
                 $tresponse = $response->getTransactionResponse();
 
@@ -1573,13 +1478,11 @@ class PaymentController extends Controller
                     $previousStatus = $payment->status;
                     $voidAmount = $payment->amount;
 
-                    // Update original payment status to voided
                     $payment->update([
                         'status' => 'voided',
                         'refunded_at' => now(),
                     ]);
 
-                    // Create a NEW void payment record for the audit trail
                     $voidPayment = Payment::create([
                         'payable_id' => $payment->payable_id,
                         'payable_type' => $payment->payable_type,
@@ -1595,7 +1498,6 @@ class PaymentController extends Controller
                         'location_id' => $payment->location_id,
                     ]);
 
-                    // Append reference note to original payment
                     $payment->update([
                         'notes' => trim(($payment->notes ?? '') . "\nTransaction voided → Void Payment #{$voidPayment->id}"),
                     ]);
@@ -1608,7 +1510,6 @@ class PaymentController extends Controller
                         'location_id' => $payment->location_id,
                     ]);
 
-                    // Create notification for customer
                     if ($payment->customer_id) {
                         CustomerNotification::create([
                             'customer_id' => $payment->customer_id,
@@ -1630,7 +1531,6 @@ class PaymentController extends Controller
                         ]);
                     }
 
-                    // Create notification for location staff
                     if ($payment->location_id) {
                         Notification::create([
                             'location_id' => $payment->location_id,
@@ -1653,7 +1553,6 @@ class PaymentController extends Controller
                         ]);
                     }
 
-                    // Log activity
                     $customerName = $payment->customer
                         ? "{$payment->customer->first_name} {$payment->customer->last_name}"
                         : 'Guest';
@@ -1689,7 +1588,6 @@ class PaymentController extends Controller
                         ]
                     );
 
-                    // Update the related booking or attraction purchase (void = always cancel)
                     $payable = null;
 
                     if ($payment->payable_type === Payment::TYPE_BOOKING && $payment->payable_id) {
@@ -1702,7 +1600,6 @@ class PaymentController extends Controller
                                 'amount_paid' => max(0, $payable->amount_paid - $voidAmount),
                             ]);
 
-                            // Sync to Google Calendar
                             try {
                                 $gcalService = new GoogleCalendarService($payable->location_id);
                                 if ($gcalService->isConnected()) {
@@ -1712,7 +1609,6 @@ class PaymentController extends Controller
                                 Log::warning('Google Calendar sync failed on void', ['booking_id' => $payable->id, 'error' => $e->getMessage()]);
                             }
 
-                            // Send cancellation email via EmailNotificationService
                             try {
                                 $emailService = app(EmailNotificationService::class);
                                 $emailService->triggerBookingNotification($payable, EmailNotification::TRIGGER_BOOKING_CANCELLED);
@@ -1730,7 +1626,6 @@ class PaymentController extends Controller
                                 'amount_paid' => $newAmountPaid,
                             ]);
 
-                            // Send cancellation email via EmailNotificationService
                             try {
                                 $emailService = app(EmailNotificationService::class);
                                 $emailService->triggerPurchaseNotification($payable, EmailNotification::TRIGGER_PURCHASE_CANCELLED);
@@ -1752,7 +1647,19 @@ class PaymentController extends Controller
                         }
                     }
 
-                    // Trigger payment refunded email notification (void)
+                    if ($payable) {
+                        try {
+                            app(\App\Services\MembershipBenefitService::class)
+                                ->reverseForRedeemable($payable, 'payment_voided');
+                        } catch (\Throwable $e) {
+                            Log::warning('Failed to reverse membership redemptions on void', [
+                                'payable_type' => $payment->payable_type,
+                                'payable_id'   => $payment->payable_id,
+                                'error'        => $e->getMessage(),
+                            ]);
+                        }
+                    }
+
                     try {
                         $emailService = app(EmailNotificationService::class);
                         $emailService->triggerPaymentNotification($voidPayment, EmailNotification::TRIGGER_PAYMENT_REFUNDED);
@@ -1840,13 +1747,8 @@ class PaymentController extends Controller
         }
     }
 
-    /**
-     * Process payment using Accept.js (Authorize.Net)
-     * This method receives tokenized payment data from the frontend
-     */
     public function charge(Request $request): JsonResponse
     {
-        // Log incoming request for debugging
         Log::info('💳 Payment charge request received', [
             'location_id' => $request->location_id,
             'amount' => $request->amount,
@@ -1876,17 +1778,13 @@ class PaymentController extends Controller
             'customer.country' => 'nullable|string|max:60',
             'signature_image' => 'nullable|string',
             'terms_accepted' => 'nullable|boolean',
-            // Payable linking - link payment to booking, attraction purchase, or event purchase
             'payable_id' => 'nullable|integer',
             'payable_type' => ['nullable', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE, Payment::TYPE_EVENT_PURCHASE])],
-            // Email confirmation - send booking/purchase confirmation email after successful payment
             'send_email' => 'nullable|boolean',
             'qr_code' => 'nullable|string', // Base64 encoded QR code for email attachment
         ]);
 
         try {
-            // --- Duplicate payment prevention ---
-            // Prevent duplicate card charges for the same entity within a 2-minute window
             if ($request->payable_id && $request->payable_type) {
                 $existingPayment = Payment::where('payable_id', $request->payable_id)
                     ->where('payable_type', $request->payable_type)
@@ -1911,9 +1809,7 @@ class PaymentController extends Controller
                     ], 200);
                 }
             }
-            // --- End duplicate payment prevention ---
 
-            // 1. Get Authorize.Net account for the location
             $account = AuthorizeNetAccount::where('location_id', $request->location_id)
                 ->where('is_active', true)
                 ->first();
@@ -1927,7 +1823,6 @@ class PaymentController extends Controller
                 ], 503);
             }
 
-            // 2. Get decrypted credentials and trim whitespace
             $apiLoginId = trim($account->api_login_id);
             $transactionKey = trim($account->transaction_key);
             $environment = $account->isProduction() ? ANetEnvironment::PRODUCTION : ANetEnvironment::SANDBOX;
@@ -1946,12 +1841,10 @@ class PaymentController extends Controller
                 ],
             ]);
 
-            // 3. Build merchant authentication
             $merchantAuthentication = new AnetAPI\MerchantAuthenticationType();
             $merchantAuthentication->setName($apiLoginId);
             $merchantAuthentication->setTransactionKey($transactionKey);
 
-            // 4. Create payment from opaque data
             $opaqueData = new AnetAPI\OpaqueDataType();
             $opaqueData->setDataDescriptor($request->opaqueData['dataDescriptor']);
             $opaqueData->setDataValue($request->opaqueData['dataValue']);
@@ -1968,13 +1861,11 @@ class PaymentController extends Controller
             $paymentOne = new AnetAPI\PaymentType();
             $paymentOne->setOpaqueData($opaqueData);
 
-            // 5. Create transaction request
             $transactionRequestType = new AnetAPI\TransactionRequestType();
             $transactionRequestType->setTransactionType("authCaptureTransaction");
             $transactionRequestType->setAmount($request->amount);
             $transactionRequestType->setPayment($paymentOne);
 
-            // Add customer billing information if provided
             if ($request->has('customer')) {
                 $customerData = $request->customer;
 
@@ -2037,8 +1928,6 @@ class PaymentController extends Controller
                 Log::warning('⚠️ No customer billing data provided in payment request');
             }
 
-            // Add order information if provided
-            // Authorize.Net invoiceNumber max length is 20 characters
             if ($request->order_id) {
                 $order = new AnetAPI\OrderType();
                 $invoiceNumber = substr($request->order_id, 0, 20);
@@ -2057,7 +1946,6 @@ class PaymentController extends Controller
                 }
             }
 
-            // 6. Create and execute the request
             $apiRequest = new AnetAPI\CreateTransactionRequest();
             $apiRequest->setMerchantAuthentication($merchantAuthentication);
             $apiRequest->setTransactionRequest($transactionRequestType);
@@ -2065,15 +1953,12 @@ class PaymentController extends Controller
             $controller = new AnetController\CreateTransactionController($apiRequest);
             $response = $controller->executeWithApiResponse($environment);
 
-            // 7. Process response
             if ($response != null && $response->getMessages()->getResultCode() == "Ok") {
                 $tresponse = $response->getTransactionResponse();
 
                 if ($tresponse != null && $tresponse->getMessages() != null) {
-                    // Get the transaction ID
                     $transactionId = $tresponse->getTransId();
 
-                    // Validate we have a real transaction ID (not 0 or empty)
                     if (empty($transactionId) || $transactionId == '0') {
                         Log::error('Authorize.Net returned success but no valid transaction ID', [
                             'transaction_id' => $transactionId,
@@ -2093,7 +1978,6 @@ class PaymentController extends Controller
                         ], 400);
                     }
 
-                    // Success - capture verification codes from Authorize.Net response
                     $cardLastFour = null;
                     if ($tresponse->getAccountNumber()) {
                         $cardLastFour = substr($tresponse->getAccountNumber(), -4);
@@ -2109,10 +1993,6 @@ class PaymentController extends Controller
                         'location_id' => $request->location_id,
                     ]);
 
-                    // AVS fraud protection: reject and auto-void transactions with high-risk AVS codes
-                    // N = No match (address & zip), G = Non-US issuer, no AVS support
-                    // R = System unavailable, S = Not supported, U = Info unavailable
-                    // These codes indicate the cardholder's billing address does not match
                     $avsRejectCodes = ['N']; // Only hard-reject on full mismatch
                     $avsWarnCodes = ['A', 'W', 'Z']; // Partial matches: log warning but allow
 
@@ -2125,7 +2005,6 @@ class PaymentController extends Controller
                             'customer_zip' => $request->customer['zip'] ?? 'not provided',
                         ]);
 
-                        // Auto-void the transaction
                         try {
                             $voidRequest = new AnetAPI\TransactionRequestType();
                             $voidRequest->setTransactionType('voidTransaction');
@@ -2188,7 +2067,6 @@ class PaymentController extends Controller
                         'terms_accepted' => $request->boolean('terms_accepted', false),
                     ]);
 
-                    // Update amount_paid on the linked booking or attraction purchase
                     $payable = null;
                     if ($payment->payable_id && $payment->payable_type) {
                         if ($payment->payable_type === Payment::TYPE_BOOKING) {
@@ -2206,7 +2084,6 @@ class PaymentController extends Controller
                                     'status' => 'confirmed',
                                 ]);
 
-                                // Sync to Google Calendar (booking confirmed after payment)
                                 try {
                                     $gcalService = new GoogleCalendarService($payable->location_id);
                                     if ($gcalService->isConnected()) {
@@ -2261,7 +2138,6 @@ class PaymentController extends Controller
                         'customer_email' => $request->customer['email'] ?? 'Not provided',
                     ]);
 
-                    // Create notification for customer
                     if ($payment->customer_id) {
                         CustomerNotification::create([
                             'customer_id' => $payment->customer_id,
@@ -2283,7 +2159,6 @@ class PaymentController extends Controller
                         ]);
                     }
 
-                    // Create notification for location staff
                     Notification::create([
                         'location_id' => $payment->location_id,
                         'type' => 'payment',
@@ -2306,7 +2181,6 @@ class PaymentController extends Controller
                         ],
                     ]);
 
-                    // Trigger payment received email notification
                     try {
                         $emailService = app(EmailNotificationService::class);
                         $emailService->triggerPaymentNotification($payment, EmailNotification::TRIGGER_PAYMENT_RECEIVED);
@@ -2314,7 +2188,6 @@ class PaymentController extends Controller
                         Log::error('Failed to send payment received email (charge)', ['error' => $e->getMessage(), 'payment_id' => $payment->id]);
                     }
 
-                    // Send confirmation email if requested
                     $emailSent = false;
                     $emailError = null;
                     $sendEmail = $request->boolean('send_email', false);
@@ -2324,7 +2197,6 @@ class PaymentController extends Controller
                             $qrCode = $request->qr_code;
 
                             if ($payment->payable_type === Payment::TYPE_BOOKING) {
-                                // Process and save QR code, then send via EmailNotificationService
                                 $booking = $payable;
                                 $booking->load(['customer', 'package', 'location.company', 'room', 'creator', 'attractions', 'addOns']);
 
@@ -2349,7 +2221,6 @@ class PaymentController extends Controller
                                     }
                                 }
 
-                                // Send booking confirmation via EmailNotificationService (handles both customer + staff)
                                 $emailService = app(EmailNotificationService::class);
                                 $emailService->triggerBookingNotification($booking, EmailNotification::TRIGGER_BOOKING_CONFIRMED);
                                 $emailSent = true;
@@ -2358,7 +2229,6 @@ class PaymentController extends Controller
                                     'booking_id' => $booking->id,
                                 ]);
                             } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE) {
-                                // Send attraction purchase receipt email with QR code
                                 $purchase = $payable;
                                 $purchase->load(['attraction.location', 'customer', 'createdBy']);
 
@@ -2367,7 +2237,6 @@ class PaymentController extends Controller
                                     : $purchase->guest_email;
 
                                 if ($recipientEmail && $qrCode) {
-                                    // Process QR code
                                     $qrCodeBase64 = $qrCode;
                                     if (strpos($qrCodeBase64, 'data:image') === 0) {
                                         $qrCodeBase64 = substr($qrCodeBase64, strpos($qrCodeBase64, ',') + 1);
@@ -2419,7 +2288,6 @@ class PaymentController extends Controller
                                     }
                                 }
                             } elseif ($payment->payable_type === Payment::TYPE_EVENT_PURCHASE) {
-                                // Event purchase email confirmation
                                 $eventPurchase = $payable;
                                 $eventPurchase->loadMissing(['event.location.company', 'customer', 'location', 'addOns']);
 
@@ -2464,17 +2332,13 @@ class PaymentController extends Controller
                         }
                     }
 
-                    // Send staff/in-app notifications after successful payment
                     if ($payable) {
                         try {
                             if ($payment->payable_type === Payment::TYPE_BOOKING) {
                                 $booking = $payable;
                                 $booking->loadMissing(['customer', 'package', 'location.company', 'room', 'creator', 'attractions', 'addOns']);
 
-                                // Staff email notifications are already handled by triggerBookingNotification above
-                                // Only create in-app notifications here
 
-                                // Create customer notification (for in-app notifications)
                                 if ($booking->customer_id) {
                                     CustomerNotification::create([
                                         'customer_id' => $booking->customer_id,
@@ -2495,7 +2359,6 @@ class PaymentController extends Controller
                                     ]);
                                 }
 
-                                // Create staff in-app notification for the booking (mirrors store-time notification)
                                 $bookingCustomerName = $booking->customer ? "{$booking->customer->first_name} {$booking->customer->last_name}" : $booking->guest_name;
                                 $formattedDate = \Carbon\Carbon::parse($booking->booking_date)->format('m-d');
                                 $formattedTime = \Carbon\Carbon::parse($booking->booking_time)->format('g:i A');
@@ -2521,11 +2384,9 @@ class PaymentController extends Controller
                                 $purchase = $payable;
                                 $purchase->loadMissing(['attraction.location', 'customer', 'createdBy', 'addOns']);
 
-                                // Send automated email notifications via EmailNotificationService
                                 $emailNotificationService = new EmailNotificationService();
                                 $emailNotificationService->processPurchaseCreated($purchase);
 
-                                // Create customer notification
                                 if ($purchase->customer_id) {
                                     CustomerNotification::create([
                                         'customer_id' => $purchase->customer_id,
@@ -2546,7 +2407,6 @@ class PaymentController extends Controller
                                     ]);
                                 }
 
-                                // Create staff in-app notification for the attraction purchase (mirrors store-time notification)
                                 $attractionCustomerName = $purchase->customer ? "{$purchase->customer->first_name} {$purchase->customer->last_name}" : $purchase->guest_name;
                                 if ($purchase->attraction->location_id) {
                                     Notification::create([
@@ -2572,7 +2432,6 @@ class PaymentController extends Controller
                                 $eventPurchase = $payable;
                                 $eventPurchase->loadMissing(['event', 'customer', 'location']);
 
-                                // Create customer notification
                                 if ($eventPurchase->customer_id) {
                                     CustomerNotification::create([
                                         'customer_id' => $eventPurchase->customer_id,
@@ -2593,7 +2452,6 @@ class PaymentController extends Controller
                                     ]);
                                 }
 
-                                // Create staff in-app notification for the event purchase (mirrors store-time notification)
                                 $eventCustomerName = $eventPurchase->customer ? "{$eventPurchase->customer->first_name} {$eventPurchase->customer->last_name}" : $eventPurchase->guest_name;
                                 $eventFormattedDate = \Carbon\Carbon::parse($eventPurchase->purchase_date)->format('m-d');
                                 $eventFormattedTime = \Carbon\Carbon::parse($eventPurchase->purchase_time)->format('g:i A');
@@ -2638,7 +2496,6 @@ class PaymentController extends Controller
                         'email_error' => $emailError,
                     ]);
                 } else {
-                    // Transaction failed
                     $errorMessage = 'Transaction failed';
                     $errorCode = null;
                     if ($tresponse->getErrors() != null) {
@@ -2654,7 +2511,6 @@ class PaymentController extends Controller
                         'response_code' => $tresponse->getResponseCode(),
                     ]);
 
-                    // Force delete the pending entity when payment fails
                     $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
 
                     return response()->json([
@@ -2664,7 +2520,6 @@ class PaymentController extends Controller
                     ], 400);
                 }
             } else {
-                // API error
                 $errorMessage = 'Unknown error';
                 $errorCode = null;
                 $allErrors = [];
@@ -2673,7 +2528,6 @@ class PaymentController extends Controller
                     $errorCode = $errorMessages[0]->getCode();
                     $errorMessage = $errorMessages[0]->getText();
 
-                    // Collect all error messages
                     foreach ($errorMessages as $msg) {
                         $allErrors[] = [
                             'code' => $msg->getCode(),
@@ -2694,7 +2548,6 @@ class PaymentController extends Controller
                     'suggestion' => $errorCode === 'E00007' ? 'Check if credentials match environment. Run test-connection endpoint.' : null,
                 ]);
 
-                // Force delete the pending entity when payment fails
                 $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
 
                 return response()->json([
@@ -2712,7 +2565,6 @@ class PaymentController extends Controller
                 'location_id' => $request->location_id,
             ]);
 
-            // Force delete the pending entity when payment fails
             $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
 
             return response()->json([
@@ -2727,7 +2579,6 @@ class PaymentController extends Controller
                 'trace' => $e->getTraceAsString(),
             ]);
 
-            // Force delete the pending entity when payment fails
             $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
 
             return response()->json([
@@ -2737,11 +2588,6 @@ class PaymentController extends Controller
         }
     }
 
-    /**
-     * Force delete the related pending entity when payment fails.
-     * Only deletes entities that are still in 'pending' status.
-     * If force delete fails, falls back to soft delete.
-     */
     private function forceDeletePayableOnFailure(?int $payableId, ?string $payableType): void
     {
         if (!$payableId || !$payableType) {
@@ -2763,7 +2609,6 @@ class PaymentController extends Controller
                 return;
             }
 
-            // Only delete if still pending
             $isPending = $payableType === Payment::TYPE_ATTRACTION_PURCHASE
                 ? $payable->status === AttractionPurchase::STATUS_PENDING
                 : $payable->status === 'pending';
@@ -2782,7 +2627,6 @@ class PaymentController extends Controller
                 'error' => $e->getMessage(),
             ]);
 
-            // Fallback: soft delete if force delete fails
             try {
                 $fallback = null;
                 if ($payableType === Payment::TYPE_BOOKING) {
@@ -2816,20 +2660,12 @@ class PaymentController extends Controller
         }
     }
 
-    /**
-     * Generate PDF invoice for a single payment
-     *
-     * @param Payment $payment
-     * @return \Illuminate\Http\Response
-     */
     public function invoice(Payment $payment)
     {
         $payment->load(['customer', 'location']);
 
-        // Get the payable entity (booking or attraction purchase)
         $payable = $payment->getPayableDetails();
 
-        // Load related data for payable
         if ($payable) {
             if ($payment->payable_type === Payment::TYPE_BOOKING) {
                 $payable->load(['package', 'customer']);
@@ -2840,10 +2676,8 @@ class PaymentController extends Controller
             }
         }
 
-        // Get location info
         $location = $payment->location;
 
-        // Get company info
         $company = null;
         $companyName = 'ZapZone';
         if ($location && $location->company_id) {
@@ -2853,7 +2687,6 @@ class PaymentController extends Controller
             }
         }
 
-        // Get customer info
         $customer = $payment->customer;
 
         $timezone = $location->timezone ?? 'UTC';
@@ -2875,20 +2708,12 @@ class PaymentController extends Controller
         return $pdf->download($filename);
     }
 
-    /**
-     * Stream PDF invoice for viewing in browser
-     *
-     * @param Payment $payment
-     * @return \Illuminate\Http\Response
-     */
     public function invoiceView(Payment $payment)
     {
         $payment->load(['customer', 'location']);
 
-        // Get the payable entity (booking or attraction purchase)
         $payable = $payment->getPayableDetails();
 
-        // Load related data for payable
         if ($payable) {
             if ($payment->payable_type === Payment::TYPE_BOOKING) {
                 $payable->load(['package', 'customer', 'room', 'location', 'addOns', 'attractions']);
@@ -2899,10 +2724,8 @@ class PaymentController extends Controller
             }
         }
 
-        // Get location info
         $location = $payment->location;
 
-        // Get company info
         $company = null;
         $companyName = 'ZapZone';
         if ($location && $location->company_id) {
@@ -2912,7 +2735,6 @@ class PaymentController extends Controller
             }
         }
 
-        // Get customer info
         $customer = $payment->customer;
 
         $timezone = $location->timezone ?? 'UTC';
@@ -2932,12 +2754,6 @@ class PaymentController extends Controller
         return $pdf->stream('invoice_' . str_pad($payment->id, 6, '0', STR_PAD_LEFT) . '.pdf');
     }
 
-    /**
-     * Generate PDF report with multiple invoices (filtered)
-     *
-     * @param Request $request
-     * @return \Illuminate\Http\Response
-     */
     public function invoicesReport(Request $request)
     {
         $request->validate([
@@ -2952,10 +2768,8 @@ class PaymentController extends Controller
             'payment_ids.*' => 'exists:payments,id',
         ]);
 
-        // Build query
         $query = Payment::with(['customer', 'location']);
 
-        // Apply filters
         if ($request->has('location_id')) {
             $query->where('location_id', $request->location_id);
         }
@@ -2988,15 +2802,12 @@ class PaymentController extends Controller
             $query->where('created_at', '<=', $endDate);
         }
 
-        // If specific payment IDs are provided
         if ($request->has('payment_ids') && is_array($request->payment_ids)) {
             $query->whereIn('id', $request->payment_ids);
         }
 
-        // Get payments
         $payments = $query->orderBy('created_at', 'desc')->get();
 
-        // Load payable relationships for each payment
         foreach ($payments as $payment) {
             if ($payment->payable_type === Payment::TYPE_BOOKING) {
                 $payment->payable = Booking::withTrashed()->with('package')->find($payment->payable_id);
@@ -3007,7 +2818,6 @@ class PaymentController extends Controller
             }
         }
 
-        // Calculate summary
         $summary = [
             'total_count' => $payments->count(),
             'total_amount' => $payments->sum('amount'),
@@ -3019,7 +2829,6 @@ class PaymentController extends Controller
             'refunded_amount' => $payments->where('status', 'refunded')->sum('amount'),
         ];
 
-        // Get location and company info
         $locationName = 'All Locations';
         $companyName = 'ZapZone';
         $company = null;
@@ -3037,7 +2846,6 @@ class PaymentController extends Controller
             }
         }
 
-        // Build filters display
         $filters = [];
         if ($request->has('start_date') && $request->has('end_date')) {
             $filters['date_range'] = Carbon::parse($request->start_date)->format('M d, Y') .
@@ -3075,7 +2883,6 @@ class PaymentController extends Controller
 
         $filename = 'invoices_report_' . date('Ymd_His') . '.pdf';
 
-        // Check if user wants to download or stream
         if ($request->get('download', false)) {
             return $pdf->download($filename);
         }
@@ -3083,12 +2890,6 @@ class PaymentController extends Controller
         return $pdf->stream($filename);
     }
 
-    /**
-     * Export multiple individual invoices as a single PDF (each invoice on separate page)
-     *
-     * @param Request $request
-     * @return \Illuminate\Http\Response
-     */
     public function invoicesBulk(Request $request)
     {
         $request->validate([
@@ -3108,7 +2909,6 @@ class PaymentController extends Controller
             ], 404);
         }
 
-        // Build HTML for all invoices
         $html = '';
         $totalPayments = $payments->count();
         $index = 0;
@@ -3116,7 +2916,6 @@ class PaymentController extends Controller
         foreach ($payments as $payment) {
             $index++;
 
-            // Get the payable entity
             $payable = $payment->getPayableDetails();
 
             if ($payable) {
@@ -3129,10 +2928,8 @@ class PaymentController extends Controller
                 }
             }
 
-            // Get location info
             $location = $payment->location;
 
-            // Get company info
             $company = null;
             $companyName = 'ZapZone';
             if ($location && $location->company_id) {
@@ -3145,7 +2942,6 @@ class PaymentController extends Controller
             $customer = $payment->customer;
             $timezone = $location->timezone ?? 'UTC';
 
-            // Render the invoice view
             $invoiceHtml = view('exports.payment-invoice', [
                 'payment' => $payment,
                 'payable' => $payable,
@@ -3158,7 +2954,6 @@ class PaymentController extends Controller
 
             $html .= $invoiceHtml;
 
-            // Add page break between invoices (except for the last one)
             if ($index < $totalPayments) {
                 $html .= '<div style="page-break-after: always;"></div>';
             }
@@ -3176,13 +2971,6 @@ class PaymentController extends Controller
         return $pdf->stream($filename);
     }
 
-    /**
-     * Export invoices for a specific day
-     *
-     * @param Request $request
-     * @param string $date
-     * @return \Illuminate\Http\Response
-     */
     public function invoicesDay(Request $request, string $date)
     {
         $request->merge([
@@ -3193,13 +2981,6 @@ class PaymentController extends Controller
         return $this->invoicesExport($request);
     }
 
-    /**
-     * Export invoices for a week
-     *
-     * @param Request $request
-     * @param string $week - 'current', 'next', or a date string
-     * @return \Illuminate\Http\Response
-     */
     public function invoicesWeek(Request $request, string $week = 'current')
     {
         if ($week === 'current') {
@@ -3222,26 +3003,6 @@ class PaymentController extends Controller
         return $this->invoicesExport($request);
     }
 
-    /**
-     * Export invoices with comprehensive filtering options
-     *
-     * Query params:
-     * - payment_ids: comma-separated or array of payment IDs
-     * - payable_type: 'booking' or 'attraction_purchase'
-     * - date: specific date (Y-m-d) for single day export
-     * - start_date: start date for date range
-     * - end_date: end date for date range
-     * - week: 'current', 'next', or date string for week containing that date
-     * - location_id: filter by location
-     * - customer_id: filter by customer
-     * - status: filter by payment status
-     * - method: filter by payment method (card, cash)
-     * - view_mode: 'report' for summary table, 'individual' for one invoice per page (default)
-     * - stream: true to view in browser, false to download
-     *
-     * @param Request $request
-     * @return \Illuminate\Http\Response
-     */
     public function invoicesExport(Request $request)
     {
         $request->validate([
@@ -3262,7 +3023,6 @@ class PaymentController extends Controller
         $query = Payment::with(['customer', 'location']);
         $dateRange = null;
 
-        // Filter by specific payment IDs
         if ($request->has('payment_ids')) {
             $ids = is_array($request->payment_ids)
                 ? $request->payment_ids
@@ -3270,19 +3030,16 @@ class PaymentController extends Controller
             $query->whereIn('id', $ids);
         }
 
-        // Filter by payable_type (booking or attraction_purchase)
         if ($request->has('payable_type')) {
             $query->where('payable_type', $request->payable_type);
         }
 
-        // Filter by single date
         if ($request->has('date')) {
             $date = $request->date;
             $query->whereDate('created_at', $date);
             $dateRange = ['start' => $date, 'end' => $date];
         }
 
-        // Filter by date range
         if ($request->has('start_date') && $request->has('end_date')) {
             $startDate = Carbon::parse($request->start_date)->startOfDay();
             $endDate = Carbon::parse($request->end_date)->endOfDay();
@@ -3298,7 +3055,6 @@ class PaymentController extends Controller
             $dateRange = ['start' => 'Beginning', 'end' => $request->end_date];
         }
 
-        // Filter by week
         if ($request->has('week') && !$request->has('start_date') && !$request->has('date')) {
             $weekParam = $request->week;
 
@@ -3318,27 +3074,22 @@ class PaymentController extends Controller
             $dateRange = ['start' => $startOfWeek->format('Y-m-d'), 'end' => $endOfWeek->format('Y-m-d')];
         }
 
-        // Filter by location
         if ($request->has('location_id')) {
             $query->where('location_id', $request->location_id);
         }
 
-        // Filter by customer
         if ($request->has('customer_id')) {
             $query->where('customer_id', $request->customer_id);
         }
 
-        // Filter by status
         if ($request->has('status')) {
             $query->where('status', $request->status);
         }
 
-        // Filter by method
         if ($request->has('method')) {
             $query->where('method', $request->method);
         }
 
-        // Sort by date
         $query->orderBy('created_at', 'desc');
 
         $payments = $query->get();
@@ -3350,7 +3101,6 @@ class PaymentController extends Controller
             ], 404);
         }
 
-        // Load payable relationships for each payment
         foreach ($payments as $payment) {
             if ($payment->payable_type === Payment::TYPE_BOOKING) {
                 $payment->payable = Booking::with(['package', 'customer', 'room', 'location', 'addOns', 'attractions'])->find($payment->payable_id);
@@ -3361,10 +3111,8 @@ class PaymentController extends Controller
             }
         }
 
-        // Determine view mode
         $viewMode = $request->get('view_mode', 'individual');
 
-        // Get location and company info
         $location = null;
         $locationName = 'All Locations';
         $company = null;
@@ -3384,7 +3132,6 @@ class PaymentController extends Controller
         }
 
         if ($viewMode === 'report') {
-            // Summary report view
             $summary = [
                 'total_count' => $payments->count(),
                 'total_amount' => $payments->sum('amount'),
@@ -3402,7 +3149,6 @@ class PaymentController extends Controller
                 'event_purchase_amount' => $payments->where('payable_type', Payment::TYPE_EVENT_PURCHASE)->sum('amount'),
             ];
 
-            // Build filters display
             $filters = [];
             if ($dateRange) {
                 if ($dateRange['start'] === $dateRange['end']) {
@@ -3435,7 +3181,6 @@ class PaymentController extends Controller
                 'timezone' => $reportTimezone,
             ]);
         } else {
-            // Individual invoices (one per page)
             $html = '';
             $totalPayments = $payments->count();
             $index = 0;
@@ -3487,7 +3232,6 @@ class PaymentController extends Controller
 
         $pdf->setPaper('A4', 'portrait');
 
-        // Generate filename
         $filename = 'invoices';
         if ($request->has('payable_type')) {
             $filename .= '-' . str_replace('_', '-', $request->payable_type);
@@ -3503,7 +3247,6 @@ class PaymentController extends Controller
         }
         $filename .= '.pdf';
 
-        // Stream or download based on request
         if ($request->get('stream', false)) {
             return $pdf->stream($filename);
         }
@@ -3511,9 +3254,6 @@ class PaymentController extends Controller
         return $pdf->download($filename);
     }
 
-    /**
-     * Generate report title based on filters
-     */
     private function getReportTitle(Request $request, ?array $dateRange): string
     {
         $title = 'Payment Invoices';
@@ -3537,24 +3277,6 @@ class PaymentController extends Controller
         return $title;
     }
 
-    /**
-     * Export package-specific invoices (all invoices for bookings of a specific package)
-     * Lists all payment invoices grouped by package in a consistent invoice format
-     *
-     * Access control:
-     * - If user has location_id: only invoices for that location
-     * - If user has no location_id (company admin): access to all locations in company
-     *
-     * Query params:
-     * - package_id: required - the package to generate invoices for
-     * - date: specific date (Y-m-d) for single day
-     * - start_date, end_date: date range
-     * - location_id: filter by location (only if user is company admin)
-     * - status: filter by payment status
-     *
-     * @param Request $request
-     * @return \Illuminate\Http\Response
-     */
     public function packageInvoicesExport(Request $request)
     {
         $request->validate([
@@ -3566,28 +3288,20 @@ class PaymentController extends Controller
             'status' => ['nullable', Rule::in(['pending', 'completed', 'failed', 'refunded', 'voided'])],
         ]);
 
-        // Get authenticated user
         $user = auth()->user();
 
-        // Get the package
         $package = Package::findOrFail($request->package_id);
 
-        // Query payments for bookings of this package
         $query = Payment::with(['customer', 'location'])
             ->where('payable_type', Payment::TYPE_BOOKING)
             ->whereHas('booking', function ($q) use ($request) {
                 $q->where('package_id', $request->package_id);
             });
 
-        // Apply location-based access control
         if ($user->location_id) {
-            // User is a location manager - can only see their location's invoices
             $query->where('location_id', $user->location_id);
         } else {
-            // User is a company admin (no location_id) - can see all locations in their company
-            // But can optionally filter by a specific location
             if ($request->has('location_id')) {
-                // Verify the location belongs to user's company
                 $location = Location::where('id', $request->location_id)
                     ->where('company_id', $user->company_id)
                     ->first();
@@ -3601,7 +3315,6 @@ class PaymentController extends Controller
 
                 $query->where('location_id', $request->location_id);
             } else {
-                // Filter by all locations in the user's company
                 $companyLocationIds = Location::where('company_id', $user->company_id)->pluck('id');
                 $query->whereIn('location_id', $companyLocationIds);
             }
@@ -3609,14 +3322,12 @@ class PaymentController extends Controller
 
         $dateRange = null;
 
-        // Filter by single date
         if ($request->has('date')) {
             $date = $request->date;
             $query->whereDate('created_at', $date);
             $dateRange = ['start' => $date, 'end' => $date];
         }
 
-        // Filter by date range
         if ($request->has('start_date') && $request->has('end_date')) {
             $startDate = Carbon::parse($request->start_date)->startOfDay();
             $endDate = Carbon::parse($request->end_date)->endOfDay();
@@ -3632,14 +3343,11 @@ class PaymentController extends Controller
             $dateRange = ['start' => 'Beginning', 'end' => $request->end_date];
         }
 
-        // Note: location_id filtering is already handled in the access control section above
 
-        // Filter by payment status
         if ($request->has('status')) {
             $query->where('status', $request->status);
         }
 
-        // Sort by date
         $query->orderBy('created_at', 'desc');
 
         $payments = $query->get();
@@ -3651,7 +3359,6 @@ class PaymentController extends Controller
             ], 404);
         }
 
-        // Load booking details for each payment
         foreach ($payments as $payment) {
             $payment->payable = Booking::with([
                 'package',
@@ -3663,13 +3370,11 @@ class PaymentController extends Controller
             ])->find($payment->payable_id);
         }
 
-        // Get location and company info based on user context
         $location = null;
         $locationName = 'All Locations';
         $company = null;
         $companyName = 'ZapZone';
 
-        // Get company info from user
         if ($user->company_id) {
             $company = Company::find($user->company_id);
             if ($company) {
@@ -3677,23 +3382,18 @@ class PaymentController extends Controller
             }
         }
 
-        // Get location info
         if ($user->location_id) {
-            // Location manager - use their location
             $location = Location::find($user->location_id);
             if ($location) {
                 $locationName = $location->name;
             }
         } elseif ($request->has('location_id')) {
-            // Company admin filtering by specific location
             $location = Location::find($request->location_id);
             if ($location) {
                 $locationName = $location->name;
             }
         }
-        // If no location specified, keep "All Locations"
 
-        // Calculate summary
         $summary = [
             'total_invoices' => $payments->count(),
             'total_amount' => $payments->sum('amount'),
@@ -3721,7 +3421,6 @@ class PaymentController extends Controller
 
         $pdf->setPaper('A4', 'portrait');
 
-        // Generate filename
         $filename = 'invoices-' . \Illuminate\Support\Str::slug($package->name);
         if ($dateRange) {
             if ($dateRange['start'] === $dateRange['end']) {
@@ -3734,7 +3433,6 @@ class PaymentController extends Controller
         }
         $filename .= '.pdf';
 
-        // Stream or download
         if ($request->get('stream', false)) {
             return $pdf->stream($filename);
         }
@@ -3742,41 +3440,27 @@ class PaymentController extends Controller
         return $pdf->download($filename);
     }
 
-    /**
-     * Handle signature image upload from base64 data URI.
-     * Stores the image to storage/app/public/images/signatures/ and returns the relative path.
-     *
-     * @param string $image Base64 data URI or existing path
-     * @return string Relative path to the stored signature image
-     */
     private function handleSignatureUpload(string $image): string
     {
-        // Check if it's a base64 string
         if (is_string($image) && strpos($image, 'data:image') === 0) {
-            // Extract base64 data
             preg_match('/data:image\/(\w+);base64,/', $image, $matches);
             $imageType = $matches[1] ?? 'png';
             $base64Data = substr($image, strpos($image, ',') + 1);
             $imageData = base64_decode($base64Data, true);
 
-            // Generate unique filename
             $filename = uniqid() . '.' . $imageType;
             $path = 'images/signatures';
             $fullPath = storage_path('app/public/' . $path);
 
-            // Create directory if it doesn't exist
             if (!file_exists($fullPath)) {
                 mkdir($fullPath, 0755, true);
             }
 
-            // Save the file
             file_put_contents($fullPath . '/' . $filename, $imageData);
 
-            // Return the relative path
             return $path . '/' . $filename;
         }
 
-        // If it's already a file path or URL, return as is
         return $image;
     }
 }

@@ -6,15 +6,11 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
    {
         Schema::create('bookings', function (Blueprint $table) {
             $table->id();
             $table->string('reference_number')->unique();
-            //customer id nullable to allow guest bookings
             $table->foreignId('customer_id')->nullable()->constrained()->onDelete('cascade');
             $table->foreignId('package_id')->nullable()->constrained()->onDelete('set null');
             $table->foreignId('location_id')->constrained()->onDelete('cascade');
@@ -41,7 +37,6 @@ return new class extends Migration
             $table->timestamp('cancelled_at')->nullable();
             $table->timestamps();
 
-            // Indexes
             $table->index('customer_id');
             $table->index('location_id');
             $table->index('status');
@@ -50,9 +45,6 @@ return new class extends Migration
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::dropIfExists('bookings');

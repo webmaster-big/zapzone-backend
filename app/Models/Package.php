@@ -59,7 +59,6 @@ class Package extends Model
         'min_booking_notice_hours' => 'integer',
     ];
 
-    // Relationships
     public function location(): BelongsTo
     {
         return $this->belongsTo(Location::class);
@@ -100,7 +99,6 @@ class Package extends Model
         return $this->hasMany(PackageAvailabilitySchedule::class);
     }
 
-    // Scopes
     public function scopeActive($query)
     {
         return $query->where('is_active', true);
@@ -131,16 +129,8 @@ class Package extends Model
         return $query->where('package_type', '!=', 'regular');
     }
 
-    /**
-     * Get available time slots for a specific date.
-     * Returns time slots from matching availability schedules.
-     *
-     * @param string $date Date in Y-m-d format
-     * @return array Array of time slots in H:i format
-     */
     public function getTimeSlotsForDate(string $date): array
     {
-        // Find matching schedules for the given date
         $matchingSchedules = $this->availabilitySchedules()
             ->active()
             ->get()
@@ -149,23 +139,17 @@ class Package extends Model
             })
             ->sortByDesc('priority');
 
-        // If we have matching schedules, use the highest priority one
         if ($matchingSchedules->isNotEmpty()) {
             $schedule = $matchingSchedules->first();
 
-            // Calculate package duration in minutes to ensure slots don't exceed schedule end
             $durationMinutes = $this->getDurationInMinutes();
 
             return $schedule->getTimeSlotsForDate($date, $durationMinutes);
         }
 
-        // No schedules found for this date
         return [];
     }
 
-    /**
-     * Get the package duration in minutes.
-     */
     public function getDurationInMinutes(): int
     {
         $duration = (float) $this->duration;

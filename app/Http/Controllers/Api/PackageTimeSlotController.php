@@ -17,21 +17,12 @@ class PackageTimeSlotController extends Controller
     use GeneratesAvailableTimeSlots;
     use ScopesByAuthUser;
 
-    /**
-     * Cleanup/buffer time in minutes between bookings.
-     * This allows time for cleaning the room after a booking ends.
-     */
     private const CLEANUP_BUFFER_MINUTES = 15;
 
-    /**
-     * Display a listing of time slots with filters.
-     */
     public function index(Request $request): JsonResponse
     {
         $query = PackageTimeSlot::with(['package', 'room', 'booking', 'customer', 'user']);
 
-        // Multi-tenant + role-based scoping. PackageTimeSlot has no direct
-        // location/company column; scope through the related package's location.
         $authUser = $this->resolveAuthUser($request);
         if ($authUser) {
             if (in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
@@ -41,32 +32,26 @@ class PackageTimeSlotController extends Controller
             }
         }
 
-        // Filter by package
         if ($request->has('package_id')) {
             $query->byPackage($request->package_id);
         }
 
-        // Filter by room
         if ($request->has('room_id')) {
             $query->byRoom($request->room_id);
         }
 
-        // Filter by date
         if ($request->has('date')) {
             $query->byDate($request->date);
         }
 
-        // Filter by customer
         if ($request->has('customer_id')) {
             $query->byCustomer($request->customer_id);
         }
 
-        // Filter by status
         if ($request->has('status')) {
             $query->where('status', $request->status);
         }
 
-        // Sort
         $sortBy = $request->get('sort_by', 'booked_date');
         $sortOrder = $request->get('sort_order', 'asc');
         $query->orderBy($sortBy, $sortOrder);
@@ -88,9 +73,6 @@ class PackageTimeSlotController extends Controller
         ]);
     }
 
-    /**
-     * Store a newly created time slot.
-     */
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -107,7 +89,6 @@ class PackageTimeSlotController extends Controller
             'notes' => 'nullable|string',
         ]);
 
-        // Check for booking conflicts
         $conflict = $this->checkTimeSlotConflict(
             $validated['room_id'],
             $validated['booked_date'],
@@ -123,7 +104,6 @@ class PackageTimeSlotController extends Controller
             ], 422);
         }
 
-        // Check for area group stagger conflicts
         $staggerConflict = $this->checkAreaGroupStaggerConflict(
             $validated['room_id'],
             $validated['booked_date'],
@@ -147,9 +127,6 @@ class PackageTimeSlotController extends Controller
         ], 201);
     }
 
-    /**
-     * Display the specified time slot.
-     */
     public function show(PackageTimeSlot $packageTimeSlot): JsonResponse
     {
         $packageTimeSlot->load(['package', 'room', 'booking', 'customer', 'user']);
@@ -160,9 +137,6 @@ class PackageTimeSlotController extends Controller
         ]);
     }
 
-    /**
-     * Update the specified time slot.
-     */
     public function update(Request $request, PackageTimeSlot $packageTimeSlot): JsonResponse
     {
         $validated = $request->validate([
@@ -174,7 +148,6 @@ class PackageTimeSlotController extends Controller
             'notes' => 'nullable|string',
         ]);
 
-        // If time/date is being updated, check for conflicts
         if (isset($validated['booked_date']) || isset($validated['time_slot_start']) ||
             isset($validated['duration']) || isset($validated['duration_unit'])) {
 
@@ -197,7 +170,6 @@ class PackageTimeSlotController extends Controller
                 ], 422);
             }
 
-            // Check for area group stagger conflicts
             $staggerConflict = $this->checkAreaGroupStaggerConflict(
                 $packageTimeSlot->room_id,
                 $newDate,
@@ -223,9 +195,6 @@ class PackageTimeSlotController extends Controller
         ]);
     }
 
-    /**
-     * Remove the specified time slot.
-     */
     public function destroy(PackageTimeSlot $packageTimeSlot): JsonResponse
     {
         $timeSlotId = $packageTimeSlot->id;
@@ -234,7 +203,6 @@ class PackageTimeSlotController extends Controller
 
         $packageTimeSlot->delete();
 
-        // Log time slot deletion
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Package Time Slot Deleted',
@@ -265,13 +233,9 @@ class PackageTimeSlotController extends Controller
         ]);
     }
 
-    /**
-     * Get available time slots for a package and date (auto-finds available rooms) - SSE.
-     */
     public function getAvailableSlotsAuto(int $packageId, string $date)
     {
         return response()->stream(function () use ($packageId, $date) {
-            // Set headers for SSE
             header('Content-Type: text/event-stream');
             header('Cache-Control: no-cache');
             header('Connection: keep-alive');
@@ -293,7 +257,6 @@ class PackageTimeSlotController extends Controller
 
                 $lastHash = '';
 
-                // Keep sending updates every 3 seconds
                 while (true) {
                     $availableSlots = $this->generateAvailableSlotsWithRooms(
                         $package,
@@ -311,23 +274,19 @@ class PackageTimeSlotController extends Controller
                         'timestamp' => now()->toIso8601String(),
                     ];
 
-                    // Check if data has changed
                     $currentHash = md5(json_encode($data));
 
                     if ($currentHash !== $lastHash) {
-                        // Send data only if changed
                         echo "data: " . json_encode($data) . "\n\n";
                         ob_flush();
                         flush();
                         $lastHash = $currentHash;
                     }
 
-                    // Check if connection is still alive
                     if (connection_aborted()) {
                         break;
                     }
 
-                    // Wait 3 seconds before next update
                     sleep(3);
                 }
             } catch (\Exception $e) {
@@ -337,7 +296,6 @@ class PackageTimeSlotController extends Controller
                     'error' => $e->getMessage(),
                 ]);
 
-                // Send error to client
                 echo "event: error\n";
                 echo "data: " . json_encode([
                     'error' => $e->getMessage(),

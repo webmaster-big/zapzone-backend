@@ -17,9 +17,6 @@ class BookingCancellation extends Mailable
     public float $refundAmount;
     public string $type; // 'refund' or 'void'
 
-    /**
-     * Create a new message instance.
-     */
     public function __construct(Booking $booking, Payment $payment, float $refundAmount, string $type = 'refund')
     {
         $booking->loadMissing(['location.company', 'customer', 'package', 'room']);
@@ -29,9 +26,6 @@ class BookingCancellation extends Mailable
         $this->type = $type;
     }
 
-    /**
-     * Build the message.
-     */
     public function build()
     {
         $subject = $this->type === 'void'

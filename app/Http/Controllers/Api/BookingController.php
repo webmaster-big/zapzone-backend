@@ -21,6 +21,8 @@ use App\Models\CustomerNotification;
 use App\Models\Notification;
 use App\Models\PackageTimeSlot;
 use App\Models\User;
+use App\Models\Membership;
+use App\Services\MembershipBenefitService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
@@ -35,13 +37,9 @@ class BookingController extends Controller
     use ScopesByAuthUser;
     use RecordsPageAnalytics;
 
-    /**
-     * Display a listing of bookings.
-     */
     public function index(Request $request): JsonResponse
     {
         try {
-            // Optimized query - load only necessary fields from relationships to reduce memory
             $query = Booking::select([
                     'id', 'reference_number', 'customer_id', 'package_id', 'location_id', 'room_id',
                     'created_by', 'guest_name', 'guest_email', 'guest_phone', 'booking_date', 'booking_time',
@@ -59,35 +57,28 @@ class BookingController extends Controller
                     'addOns:id,name',       // BelongsToMany - pivot data loaded automatically
                 ]);
 
-            // Multi-tenant + role-based scoping (driven by Sanctum auth user)
             $this->applyAuthScope($query, $request);
 
-            // Filter by location
             if ($request->has('location_id')) {
                 $query->byLocation($request->location_id);
             }
 
-            // reference number
             if ($request->has('reference_number')) {
                 $query->where('reference_number', $request->reference_number);
             }
 
-            // Filter by status
             if ($request->has('status')) {
                 $query->byStatus($request->status);
             }
 
-            // Filter by customer
             if ($request->has('customer_id')) {
                 $query->byCustomer($request->customer_id);
             }
 
-            // booking date
             if ($request->has('booking_date')) {
                 $query->byDate($request->booking_date);
             }
 
-            // Search by reference number, customer name, email, phone, or guest info
             if ($request->has('search')) {
                 $search = $request->search;
                 $query->where(function ($q) use ($search) {
@@ -104,7 +95,6 @@ class BookingController extends Controller
                 });
             }
 
-            // Sort
             $sortBy = $request->get('sort_by', 'booking_date');
             $sortOrder = $request->get('sort_order', 'desc');
 
@@ -145,10 +135,8 @@ class BookingController extends Controller
         }
     }
 
-    // customer booking index based on customer id and guest email
     public function customerBookings(Request $request): JsonResponse
     {
-        // Optimized query - load necessary fields for customer details
         $query = Booking::select([
                 'id', 'reference_number', 'customer_id', 'package_id', 'location_id', 'room_id',
                 'created_by', 'guest_name', 'guest_email', 'guest_phone',
@@ -171,7 +159,6 @@ class BookingController extends Controller
                 'addOns:id,name',
             ]);
 
-        // filter by search by location, reference number, package name
         if ($request->has('search')) {
             $search = $request->search;
             $query->where(function ($q) use ($search) {
@@ -195,7 +182,6 @@ class BookingController extends Controller
             });
         }
 
-        // Sort
         $sortBy = $request->get('sort_by', 'booking_date');
         $sortOrder = $request->get('sort_order', 'desc');
 
@@ -223,12 +209,8 @@ class BookingController extends Controller
     }
 
 
-    /**
-     * Store a newly created booking.
-     */
     public function store(Request $request): JsonResponse
     {
-        // Clean undefined values from request
         $data = $request->all();
         foreach ($data as $key => $value) {
             if ($value === 'undefined' || $value === 'null') {
@@ -264,6 +246,7 @@ class BookingController extends Controller
             'created_by' => 'nullable|exists:users,id',
             'gift_card_id' => 'nullable|exists:gift_cards,id',
             'promo_id' => 'nullable|exists:promos,id',
+            'membership_id' => 'nullable|exists:memberships,id',
             'promo_code' => 'nullable|string',
             'gift_card_code' => 'nullable|string',
             'type' => ['required', Rule::in(['package'])],
@@ -286,8 +269,6 @@ class BookingController extends Controller
             'applied_discounts.*.original_price' => 'required_with:applied_discounts|numeric|min:0',
             'applied_discounts.*.special_pricing_id' => 'nullable|integer',
             'payment_method' => ['nullable', Rule::in(['card', 'in-store', 'paylater', 'authorize.net'])],
-            // Note: status and payment_status are set automatically based on payment_method:
-            // in-store/card → confirmed, paylater/authorize.net → pending (charge endpoint confirms)
             'notes' => 'nullable|string',
             'internal_notes' => 'nullable|string',
             'send_notification' => 'nullable|boolean',
@@ -313,8 +294,6 @@ class BookingController extends Controller
             'sms_consent' => 'nullable|boolean',
         ]);
 
-        // --- Duplicate booking prevention ---
-        // Check for any existing pending/confirmed booking with same key fields (no time window)
         $duplicateQuery = Booking::where('package_id', $validated['package_id'] ?? null)
             ->where('booking_date', $validated['booking_date'])
             ->where('booking_time', $validated['booking_time'])
@@ -341,22 +320,15 @@ class BookingController extends Controller
                 'data' => $existingPending,
             ], 200);
         }
-        // --- End duplicate booking prevention ---
 
-        // Generate unique reference number
         do {
             $validated['reference_number'] = 'BK' . now()->format('Ymd') . strtoupper(Str::random(6));
         } while (Booking::where('reference_number', $validated['reference_number'])->exists());
 
-        // Default payment method to paylater when not specified
         if (!isset($validated['payment_method'])) {
             $validated['payment_method'] = 'paylater';
         }
 
-        // Set status based on payment method:
-        // - in-store/card (on-site): confirmed immediately, no charge step needed
-        // - paylater: pending until payment is collected later
-        // - authorize.net: pending until charge endpoint confirms after successful payment
         if (in_array($validated['payment_method'], ['in-store', 'card'])) {
             $validated['status'] = 'confirmed';
             $validated['payment_status'] = $validated['amount_paid'] >= $validated['total_amount'] ? 'paid' : 'partial';
@@ -367,7 +339,6 @@ class BookingController extends Controller
 
         $booking = Booking::create($validated);
 
-        // Attach attractions with individual quantity and price (new format)
         if (isset($validated['additional_attractions']) && is_array($validated['additional_attractions'])) {
             foreach ($validated['additional_attractions'] as $attraction) {
                 BookingAttraction::create([
@@ -379,7 +350,6 @@ class BookingController extends Controller
             }
         }
 
-        // Attach add-ons with individual quantity and price (new format)
         if (isset($validated['additional_addons']) && is_array($validated['additional_addons'])) {
             foreach ($validated['additional_addons'] as $addon) {
                 BookingAddOn::create([
@@ -391,7 +361,6 @@ class BookingController extends Controller
             }
         }
 
-        // Store time slot in package_time_slots table
         if ($validated['room_id']) {
             PackageTimeSlot::create([
                 'package_id' => $validated['package_id'],
@@ -410,9 +379,8 @@ class BookingController extends Controller
 
         $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
 
-        // Create notification for customer (only when booking is confirmed AND payment collected)
-        // For online bookings (pending → charge → confirmed), notifications are sent from PaymentController::charge
-        // Skip notification if no payment was collected to avoid confusing admin with unpaid bookings
+        $this->recordMembershipRedemptions($booking, $validated);
+
         if ($booking->customer_id && $booking->status === 'confirmed' && (float) ($booking->amount_paid ?? 0) > 0) {
             CustomerNotification::create([
                 'customer_id' => $booking->customer_id,
@@ -433,9 +401,6 @@ class BookingController extends Controller
             ]);
         }
 
-        // Create notification for location staff (only for confirmed bookings with payment collected)
-        // For authorize.net pending bookings, staff notifications are sent from PaymentController::charge after payment succeeds
-        // Skip notification if no payment was collected to avoid admin seeing bookings they can't act on
         $customerName = $booking->customer ? "{$booking->customer->first_name} {$booking->customer->last_name}" : $booking->guest_name;
         if ($booking->status === 'confirmed' && (float) ($booking->amount_paid ?? 0) > 0) {
             $formattedDate = \Carbon\Carbon::parse($booking->booking_date)->format('m-d');
@@ -460,8 +425,6 @@ class BookingController extends Controller
             ]);
         }
 
-        // Log booking creation activity
-        // if created_by is not null
         if($booking->created_by){
             $booking->load('creator');
 
@@ -513,12 +476,10 @@ class BookingController extends Controller
           );
         }
 
-        // Create or update contact from booking
         try {
             $contactEmail = null;
             $contactData = [];
 
-            // Get email from customer or guest
             if ($booking->customer_id && $booking->customer) {
                 $contactEmail = $booking->customer->email;
                 $contactData = [
@@ -559,18 +520,13 @@ class BookingController extends Controller
                 );
             }
         } catch (\Exception $e) {
-            // Log error but don't fail the booking creation
             Log::warning('Failed to create/update contact from booking', [
                 'booking_id' => $booking->id,
                 'error' => $e->getMessage(),
             ]);
         }
 
-        // Email notifications (staff + customer) are sent from storeQrCode() after QR code is generated,
-        // so that the QR code attachment is available. For online bookings, PaymentController::charge handles it.
-        // No email sending here to avoid double-emails.
 
-        // Auto-sync to Google Calendar if connected
         if (config('google_calendar.auto_sync', true)) {
             try {
                 $gcalService = new GoogleCalendarService($booking->location_id);
@@ -585,7 +541,6 @@ class BookingController extends Controller
             }
         }
 
-        // Fire server-side conversion (idempotent via tracking_id).
         $this->recordConversion('booking_completed', $booking, (float) ($booking->total_amount ?? 0));
 
         return response()->json([
@@ -595,10 +550,47 @@ class BookingController extends Controller
         ], 201);
     }
 
-    // export index functionality with filters similar to index method but without pagination with date range, amount, status range too and other advanced filters
+    private function recordMembershipRedemptions(Booking $booking, array $validated): void
+    {
+        if (empty($validated['membership_id'])) {
+            return;
+        }
+
+        try {
+            $membership = Membership::find($validated['membership_id']);
+            if (! $membership) {
+                return;
+            }
+
+            $qty       = max(1, (int) ($booking->participants ?? 1));
+            $unitPrice = $qty > 0 ? (float) $booking->total_amount / $qty : (float) $booking->total_amount;
+
+            $quote = app(MembershipBenefitService::class)->quote($membership, $booking->location_id, [[
+                'type'       => 'package',
+                'id'         => $booking->package_id,
+                'unit_price' => $unitPrice,
+                'quantity'   => $qty,
+            ]]);
+
+            if (! empty($quote['applied'])) {
+                app(MembershipBenefitService::class)->recordPurchaseRedemptions(
+                    $membership,
+                    $booking,
+                    $quote['applied'],
+                    $booking->location_id,
+                    auth()->id()
+                );
+            }
+        } catch (\Throwable $e) {
+            Log::warning('Failed to record membership redemptions for booking', [
+                'booking_id' => $booking->id,
+                'error'      => $e->getMessage(),
+            ]);
+        }
+    }
+
     public function exportIndex(Request $request): JsonResponse
     {
-        // Optimized query for export - load only necessary fields
         $query = Booking::select([
                 'id', 'reference_number', 'customer_id', 'package_id', 'location_id', 'room_id',
                 'created_by', 'guest_name', 'guest_email', 'guest_phone', 'booking_date', 'booking_time',
@@ -616,43 +608,35 @@ class BookingController extends Controller
                 'addOns:id,name',       // BelongsToMany - pivot data loaded automatically
             ]);
 
-        // Multi-tenant + role-based scoping (driven by Sanctum auth user)
         $this->applyAuthScope($query, $request);
 
-        // Filter by location, what if multiple locations are provided as in checklist
         if ($request->has('location_id')) {
             $locationIds = is_array($request->location_id) ? $request->location_id : explode(',', $request->location_id);
             $query->whereIn('location_id', $locationIds);
         }
 
-        // reference number
         if ($request->has('reference_number')) {
             $query->where('reference_number', $request->reference_number);
         }
 
-        // Filter by status, what if multiple statuses are provided as in checklist
         if ($request->has('status')) {
             $statuses = is_array($request->status) ? $request->status : explode(',', $request->status);
             $query->whereIn('status', $statuses);
         }
 
-        // Filter by customer, in customer selection multiple customers can be selected
         if ($request->has('customer_id')) {
             $customerIds = is_array($request->customer_id) ? $request->customer_id : explode(',', $request->customer_id);
             $query->whereIn('customer_id', $customerIds);
         }
 
-        // booking date range
         if ($request->has('start_date') && $request->has('end_date')) {
             $query->whereBetween('booking_date', [$request->start_date, $request->end_date]);
         }
 
-        // total amount range
         if ($request->has('min_amount') && $request->has('max_amount')) {
             $query->whereBetween('total_amount', [$request->min_amount, $request->max_amount]);
         }
 
-        // Sort
         $sortBy = $request->get('sort_by', 'booking_date');
         $sortOrder = $request->get('sort_order', 'desc');
 
@@ -660,7 +644,6 @@ class BookingController extends Controller
             $query->orderBy($sortBy, $sortOrder);
         }
 
-        // Limit export to 1000 records max to prevent memory exhaustion
         $bookings = $query->limit(1000)->get();
 
         return response()->json([
@@ -672,9 +655,6 @@ class BookingController extends Controller
         ]);
     }
 
-    /**
-     * Store QR code for a booking.
-     */
     public function storeQrCode(Request $request, Booking $booking): JsonResponse
     {
         Log::info('QR Code storage initiated', [
@@ -689,10 +669,8 @@ class BookingController extends Controller
 
         $sendEmail = !isset($validated['send_email']) || $validated['send_email'] !== false;
 
-        // Decode base64 QR code
         $qrCodeData = $validated['qr_code'];
 
-        // Remove data:image/png;base64, prefix if present
         if (strpos($qrCodeData, 'data:image') === 0) {
             $qrCodeData = substr($qrCodeData, strpos($qrCodeData, ',') + 1);
         }
@@ -709,14 +687,11 @@ class BookingController extends Controller
             ], 400);
         }
 
-        // Create shorter filename using booking ID
         $fileName = 'qr_' . $booking->id . '.png';
         $qrCodePath = 'qrcodes/' . $fileName;
 
-        // Store in public/storage/qrcodes
         $fullPath = storage_path('app/public/' . $qrCodePath);
 
-        // Create directory if not exists
         $dir = dirname($fullPath);
         if (!file_exists($dir)) {
             mkdir($dir, 0755, true);
@@ -742,10 +717,8 @@ class BookingController extends Controller
             'size' => $writeResult,
         ]);
 
-        // Update booking with QR code path
         $booking->update(['qr_code_path' => $qrCodePath]);
 
-        // Send confirmation email with QR code via EmailNotificationService
         $emailSent = false;
         $emailError = null;
 
@@ -795,9 +768,6 @@ class BookingController extends Controller
         ]);
     }
 
-    /**
-     * Display the specified booking.
-     */
     public function show(Request $request, Booking $booking): JsonResponse
     {
         $booking->load(['customer', 'package', 'location', 'room', 'creator', 'giftCard', 'promo', 'attractions', 'addOns', 'payments']);
@@ -815,12 +785,8 @@ class BookingController extends Controller
         ]);
     }
 
-    /**
-     * Update the specified booking.
-     */
     public function update(Request $request, Booking $booking): JsonResponse
     {
-        // Clean undefined values from request
         $data = $request->all();
         foreach ($data as $key => $value) {
             if ($value === 'undefined' || $value === 'null') {
@@ -889,7 +855,6 @@ class BookingController extends Controller
             'additional_addons.*.price_at_booking' => 'nullable|numeric|min:0',
         ]);
 
-        // Capture original values before update for activity logging
         $originalValues = $booking->only([
             'status', 'payment_status', 'total_amount', 'amount_paid', 'discount_amount',
             'applied_fees', 'booking_date', 'booking_time', 'participants', 'duration', 'duration_unit',
@@ -909,7 +874,6 @@ class BookingController extends Controller
             'price' => $a->pivot->price_at_booking,
         ])->toArray();
 
-        // Update timestamps based on status
         if (isset($validated['status'])) {
             switch ($validated['status']) {
                 case 'checked-in':
@@ -924,19 +888,15 @@ class BookingController extends Controller
             }
         }
 
-        // Update payment status based on amount paid if not explicitly set
         if (isset($validated['amount_paid']) && isset($validated['total_amount']) && !isset($validated['payment_status'])) {
             $validated['payment_status'] = $validated['amount_paid'] >= $validated['total_amount'] ? 'paid' : 'partial';
         }
 
         $booking->update($validated);
 
-        // Update attractions if provided
         if (isset($validated['additional_attractions'])) {
-            // Delete existing attractions
             BookingAttraction::where('booking_id', $booking->id)->delete();
 
-            // Add new attractions
             if (is_array($validated['additional_attractions'])) {
                 foreach ($validated['additional_attractions'] as $attraction) {
                     BookingAttraction::create([
@@ -949,12 +909,9 @@ class BookingController extends Controller
             }
         }
 
-        // Update add-ons if provided
         if (isset($validated['additional_addons'])) {
-            // Delete existing add-ons
             BookingAddOn::where('booking_id', $booking->id)->delete();
 
-            // Add new add-ons
             if (is_array($validated['additional_addons'])) {
                 foreach ($validated['additional_addons'] as $addon) {
                     BookingAddOn::create([
@@ -967,7 +924,6 @@ class BookingController extends Controller
             }
         }
 
-        // Update time slot if room, date, or time changed
         if (isset($validated['room_id']) || isset($validated['booking_date']) || isset($validated['booking_time']) || isset($validated['duration']) || isset($validated['duration_unit'])) {
             $timeSlot = PackageTimeSlot::where('booking_id', $booking->id)->first();
 
@@ -981,7 +937,6 @@ class BookingController extends Controller
                     'notes' => $validated['notes'] ?? $timeSlot->notes,
                 ]);
             } elseif (isset($validated['room_id']) && $validated['room_id']) {
-                // Create time slot if it doesn't exist but room is provided
                 PackageTimeSlot::create([
                     'package_id' => $validated['package_id'] ?? $booking->package_id,
                     'booking_id' => $booking->id,
@@ -1000,12 +955,10 @@ class BookingController extends Controller
 
         $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
 
-        // Send notification email if requested
         if ($request->boolean('send_notification')) {
             $this->sendNotificationEmail($booking, 'updated');
         }
 
-        // Build detailed changes for activity log
         $changes = [];
         foreach ($validated as $field => $newValue) {
             if (in_array($field, ['additional_attractions', 'additional_addons', 'send_notification'])) {
@@ -1020,7 +973,6 @@ class BookingController extends Controller
             }
         }
 
-        // Track add-on changes
         $newAddons = [];
         if (isset($validated['additional_addons'])) {
             $newAddons = $booking->addOns()->with('addOn')->get()->map(fn($a) => [
@@ -1037,7 +989,6 @@ class BookingController extends Controller
             }
         }
 
-        // Track attraction changes
         $newAttractions = [];
         if (isset($validated['additional_attractions'])) {
             $newAttractions = $booking->attractions()->with('attraction')->get()->map(fn($a) => [
@@ -1054,7 +1005,6 @@ class BookingController extends Controller
             }
         }
 
-        // Log booking update activity with detailed metadata
         $customerName = $booking->customer ? "{$booking->customer->first_name} {$booking->customer->last_name}" : $booking->guest_name;
         $changedFieldsList = array_keys($changes);
         $changesSummary = count($changedFieldsList) > 0 ? implode(', ', $changedFieldsList) : 'no fields';
@@ -1084,7 +1034,6 @@ class BookingController extends Controller
             ]
         );
 
-        // Auto-sync update to Google Calendar
         try {
             $gcalService = new GoogleCalendarService($booking->location_id);
             if ($gcalService->isConnected()) {
@@ -1104,9 +1053,6 @@ class BookingController extends Controller
         ]);
     }
 
-    /**
-     * Cancel the specified booking.
-     */
     public function cancel(Booking $booking): JsonResponse
     {
         if (in_array($booking->status, ['completed', 'cancelled'])) {
@@ -1121,12 +1067,10 @@ class BookingController extends Controller
             'cancelled_at' => now(),
         ]);
 
-        // Update time slot status
         PackageTimeSlot::where('booking_id', $booking->id)->update([
             'status' => 'cancelled',
         ]);
 
-        // Remove from Google Calendar when cancelled
         try {
             $gcalService = new GoogleCalendarService($booking->location_id);
             if ($gcalService->isConnected() && $booking->google_calendar_event_id) {
@@ -1139,7 +1083,6 @@ class BookingController extends Controller
             ]);
         }
 
-        // Send cancellation email via EmailNotificationService
         try {
             $emailService = app(EmailNotificationService::class);
             $emailService->triggerBookingNotification($booking, EmailNotification::TRIGGER_BOOKING_CANCELLED);
@@ -1150,7 +1093,6 @@ class BookingController extends Controller
             ]);
         }
 
-        // Negative conversion so net revenue dashboards stay accurate.
         $this->recordConversion(
             'booking_cancelled',
             $booking,
@@ -1167,9 +1109,6 @@ class BookingController extends Controller
 
 
 
-    /**
-     * Check in the booking.
-     */
     public function checkIn(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -1205,7 +1144,6 @@ class BookingController extends Controller
 
         $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
 
-        // Log check-in activity
         $customerName = $booking->customer
             ? ($booking->customer->first_name . ' ' . $booking->customer->last_name)
             : ($booking->guest_name ?? 'Guest');
@@ -1230,7 +1168,6 @@ class BookingController extends Controller
             ]
         );
 
-        // Sync to Google Calendar
         try {
             $gcalService = new GoogleCalendarService($booking->location_id);
             if ($gcalService->isConnected()) {
@@ -1247,9 +1184,6 @@ class BookingController extends Controller
         ]);
     }
 
-    /**
-     * Complete the booking.
-     */
     public function complete(Booking $booking): JsonResponse
     {
         if ($booking->status !== 'checked-in') {
@@ -1264,12 +1198,10 @@ class BookingController extends Controller
             'completed_at' => now(),
         ]);
 
-        // Update time slot status
         PackageTimeSlot::where('booking_id', $booking->id)->update([
             'status' => 'completed',
         ]);
 
-        // Sync to Google Calendar
         try {
             $gcalService = new GoogleCalendarService($booking->location_id);
             if ($gcalService->isConnected()) {
@@ -1286,7 +1218,6 @@ class BookingController extends Controller
         ]);
     }
 
-    // update status depending on the status sent
     public function updateStatus(Request $request, Booking $booking): JsonResponse
     {
         $validated = $request->validate([
@@ -1296,7 +1227,6 @@ class BookingController extends Controller
         $previousStatus = $booking->status;
         $notificationData = null;
 
-        // Update timestamps based on status
         switch ($validated['status']) {
             case 'checked-in':
                 $booking->update([
@@ -1334,6 +1264,7 @@ class BookingController extends Controller
                 PackageTimeSlot::where('booking_id', $booking->id)->update([
                     'status' => 'cancelled',
                 ]);
+                app(MembershipBenefitService::class)->reverseForRedeemable($booking, 'booking_cancelled');
                 $notificationData = [
                     'title' => 'Booking Cancelled',
                     'message' => "Your booking {$booking->reference_number} has been cancelled.",
@@ -1357,7 +1288,6 @@ class BookingController extends Controller
                 break;
         }
 
-        // Create notification for customer if status changed to important states
         if ($booking->customer_id && $notificationData) {
             CustomerNotification::create([
                 'customer_id' => $booking->customer_id,
@@ -1377,7 +1307,6 @@ class BookingController extends Controller
             ]);
         }
 
-        // Create notification for location staff on cancelled bookings
         if ($validated['status'] === 'cancelled') {
             $customerName = $booking->customer ? "{$booking->customer->first_name} {$booking->customer->last_name}" : $booking->guest_name;
             Notification::create([
@@ -1398,12 +1327,10 @@ class BookingController extends Controller
             ]);
         }
 
-        // Sync to Google Calendar
         try {
             $gcalService = new GoogleCalendarService($booking->location_id);
             if ($gcalService->isConnected()) {
                 if ($validated['status'] === 'cancelled') {
-                    // Remove from Google Calendar when cancelled
                     $gcalService->deleteEvent($booking);
                 } else {
                     $gcalService->updateEventFromBooking($booking);
@@ -1413,7 +1340,6 @@ class BookingController extends Controller
             Log::warning('Google Calendar sync failed on status update', ['booking_id' => $booking->id, 'error' => $e->getMessage()]);
         }
 
-        // Log booking status change activity
         $customerName = $booking->customer ? "{$booking->customer->first_name} {$booking->customer->last_name}" : $booking->guest_name;
         ActivityLog::log(
             action: 'Booking Status Changed',
@@ -1459,7 +1385,6 @@ class BookingController extends Controller
             'payment_status' => $validated['payment_status'],
         ]);
 
-        // Create customer notification if payment status changed to paid
         if ($validated['payment_status'] === 'paid' && $previousStatus !== 'paid' && $booking->customer_id) {
             CustomerNotification::create([
                 'customer_id' => $booking->customer_id,
@@ -1480,7 +1405,6 @@ class BookingController extends Controller
             ]);
         }
 
-        // Log payment status change activity
         $customerName = $booking->customer ? "{$booking->customer->first_name} {$booking->customer->last_name}" : $booking->guest_name;
         ActivityLog::log(
             action: 'Payment Status Changed',
@@ -1514,9 +1438,6 @@ class BookingController extends Controller
     }
 
 
-    /**
-     * Get bookings by location and date.
-     */
     public function getByLocationAndDate(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -1564,9 +1485,6 @@ class BookingController extends Controller
         ]);
     }
 
-    /**
-     * Bulk delete bookings
-     */
     public function bulkDelete(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -1581,7 +1499,6 @@ class BookingController extends Controller
         foreach ($bookings as $booking) {
             $locationIds[] = $booking->location_id;
 
-            // Remove from Google Calendar before deleting
             try {
                 $gcalService = new GoogleCalendarService($booking->location_id);
                 if ($gcalService->isConnected() && $booking->google_calendar_event_id) {
@@ -1595,7 +1512,6 @@ class BookingController extends Controller
             $deletedCount++;
         }
 
-        // Log bulk deletion
         ActivityLog::log(
             action: 'Bulk Bookings Deleted',
             category: 'delete',
@@ -1613,9 +1529,6 @@ class BookingController extends Controller
         ]);
     }
 
-    /**
-     * Update internal notes only for a booking
-     */
     public function updateInternalNotes(Request $request, string $id): JsonResponse
     {
         $booking = Booking::findOrFail($id);
@@ -1627,7 +1540,6 @@ class BookingController extends Controller
         $booking->internal_notes = $validated['internal_notes'] ?? null;
         $booking->save();
 
-        // Log internal notes update
         ActivityLog::log(
             action: 'Booking Internal Notes Updated',
             category: 'update',
@@ -1649,9 +1561,6 @@ class BookingController extends Controller
         ]);
     }
 
-    /**
-     * Send notification email to customer via EmailNotificationService
-     */
     private function sendNotificationEmail(Booking $booking, string $action = 'updated'): void
     {
         try {
@@ -1677,7 +1586,6 @@ class BookingController extends Controller
         }
     }
 
-    // destroy method
     public function destroy($id): JsonResponse
     {
         Log::info('Booking delete request received', ['id' => $id, 'ip' => request()->ip()]);
@@ -1693,7 +1601,6 @@ class BookingController extends Controller
                 ], 404);
             }
 
-            // Safely get auth user ID (Customer model lacks getAuthIdentifier)
             $deletedBy = null;
             $user = null;
             try {
@@ -1706,7 +1613,6 @@ class BookingController extends Controller
                 Log::info('Auth resolution skipped on booking delete', ['error' => $e->getMessage()]);
             }
 
-            // Remove from Google Calendar before deleting
             try {
                 $gcalService = new GoogleCalendarService($booking->location_id);
                 if ($gcalService->isConnected() && $booking->google_calendar_event_id) {
@@ -1722,7 +1628,6 @@ class BookingController extends Controller
 
             $deleted = $booking->delete();
 
-            // Verify the delete actually persisted
             $verify = Booking::withTrashed()->find($bookingId);
             Log::info('Booking delete verification', [
                 'id' => $bookingId,
@@ -1732,12 +1637,10 @@ class BookingController extends Controller
             ]);
 
             if (!$deleted || !$verify?->trashed()) {
-                // Force the soft delete via direct query
                 Log::warning('Booking soft delete did not persist, forcing via query', ['id' => $bookingId]);
                 Booking::where('id', $bookingId)->update(['deleted_at' => now()]);
             }
 
-            // Log deletion
             $deletedByName = $user ? "{$user->first_name} {$user->last_name}" : 'system/public';
             ActivityLog::log(
                 action: 'Booking Deleted',
@@ -1769,9 +1672,6 @@ class BookingController extends Controller
         }
     }
 
-    /**
-     * Generate a single booking summary PDF (download)
-     */
     public function summary(Booking $booking)
     {
         $booking->load(['customer', 'package', 'location', 'room', 'attractions', 'addOns', 'payments']);
@@ -1788,9 +1688,6 @@ class BookingController extends Controller
         return $pdf->download($filename);
     }
 
-    /**
-     * View a single booking summary PDF in browser
-     */
     public function summaryView(Booking $booking)
     {
         $booking->load(['customer', 'package', 'location', 'room', 'attractions', 'addOns', 'payments']);
@@ -1805,19 +1702,6 @@ class BookingController extends Controller
         return $pdf->stream('booking-summary-' . $booking->reference_number . '.pdf');
     }
 
-    /**
-     * Export booking summaries (by date range, specific bookings, or filters)
-     *
-     * Query params:
-     * - booking_ids: comma-separated booking IDs (optional)
-     * - date: specific date (Y-m-d) for single day export
-     * - start_date: start date for date range
-     * - end_date: end date for date range
-     * - week: export entire week ('current', 'next', or date string for week containing that date)
-     * - location_id: filter by location
-     * - status: filter by status
-     * - view_mode: 'compact' for cards, 'full' for one page per booking (default: full)
-     */
     public function summariesExport(Request $request)
     {
         $query = Booking::with(['customer', 'package', 'location', 'room', 'attractions', 'addOns', 'payments']);
@@ -1825,7 +1709,6 @@ class BookingController extends Controller
         $dateRange = null;
         $location = null;
 
-        // Filter by specific booking IDs
         if ($request->has('booking_ids')) {
             $ids = is_array($request->booking_ids)
                 ? $request->booking_ids
@@ -1833,20 +1716,17 @@ class BookingController extends Controller
             $query->whereIn('id', $ids);
         }
 
-        // Filter by single date
         if ($request->has('date')) {
             $date = $request->date;
             $query->whereDate('booking_date', $date);
             $dateRange = ['start' => $date, 'end' => $date];
         }
 
-        // Filter by date range
         if ($request->has('start_date') && $request->has('end_date')) {
             $query->whereBetween('booking_date', [$request->start_date, $request->end_date]);
             $dateRange = ['start' => $request->start_date, 'end' => $request->end_date];
         }
 
-        // Filter by week
         if ($request->has('week')) {
             $weekParam = $request->week;
 
@@ -1857,7 +1737,6 @@ class BookingController extends Controller
                 $startOfWeek = now()->addWeek()->startOfWeek();
                 $endOfWeek = now()->addWeek()->endOfWeek();
             } else {
-                // Treat as a date and get the week containing that date
                 $date = \Carbon\Carbon::parse($weekParam);
                 $startOfWeek = $date->startOfWeek();
                 $endOfWeek = $date->copy()->endOfWeek();
@@ -1867,30 +1746,25 @@ class BookingController extends Controller
             $dateRange = ['start' => $startOfWeek->format('Y-m-d'), 'end' => $endOfWeek->format('Y-m-d')];
         }
 
-        // Filter by location
         if ($request->has('location_id')) {
             $query->where('location_id', $request->location_id);
             $location = \App\Models\Location::find($request->location_id);
         }
 
-        // Multi-tenant + role-based scoping (driven by Sanctum auth user)
         $this->applyAuthScope($query, $request);
         $authUser = $this->resolveAuthUser($request);
         if ($authUser && in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
             $location = $location ?? \App\Models\Location::find($authUser->location_id);
         }
 
-        // Filter by status
         if ($request->has('status')) {
             $query->where('status', $request->status);
         }
 
-        // Exclude cancelled by default unless explicitly requested
         if (!$request->has('include_cancelled')) {
             $query->where('status', '!=', 'cancelled');
         }
 
-        // Sort by date and time
         $query->orderBy('booking_date', 'asc')->orderBy('booking_time', 'asc');
 
         $bookings = $query->get();
@@ -1902,7 +1776,6 @@ class BookingController extends Controller
             ], 404);
         }
 
-        // Determine view mode
         $viewMode = $request->get('view_mode', 'full'); // 'compact' or 'full'
 
         $pdf = Pdf::loadView('exports.booking-summaries-report', [
@@ -1913,10 +1786,8 @@ class BookingController extends Controller
             'companyName' => config('app.name', 'ZapZone'),
         ]);
 
-        // Set paper size and orientation
         $pdf->setPaper('A4', 'portrait');
 
-        // Generate filename
         $filename = 'party-summaries';
         if ($dateRange) {
             if ($dateRange['start'] === $dateRange['end']) {
@@ -1929,7 +1800,6 @@ class BookingController extends Controller
         }
         $filename .= '.pdf';
 
-        // Stream or download based on request
         if ($request->get('stream', false)) {
             return $pdf->stream($filename);
         }
@@ -1937,40 +1807,18 @@ class BookingController extends Controller
         return $pdf->download($filename);
     }
 
-    /**
-     * Export bookings for a specific day (shortcut method)
-     */
     public function summariesDay(Request $request, string $date)
     {
         $request->merge(['date' => $date]);
         return $this->summariesExport($request);
     }
 
-    /**
-     * Export bookings for current week (shortcut method)
-     */
     public function summariesWeek(Request $request, string $week = 'current')
     {
         $request->merge(['week' => $week]);
         return $this->summariesExport($request);
     }
 
-    /**
-     * Export detailed booking report by package with flexible date filtering
-     *
-     * Query params:
-     * - package_ids: array of package IDs or 'all' (required)
-     * - period_type: 'today', 'weekly', 'monthly', 'custom' (required)
-     * - week_of_month: 1-5 for weekly reports (required if period_type=weekly)
-     * - month: 1-12 (required if period_type=monthly or weekly)
-     * - year: YYYY (required if period_type=monthly or weekly)
-     * - start_date: Y-m-d (required if period_type=custom)
-     * - end_date: Y-m-d (required if period_type=custom)
-     * - view_mode: 'list' or 'individual' (default: individual)
-     * - location_id: filter by location (optional)
-     * - status: filter by status (optional)
-     * - include_cancelled: include cancelled bookings (optional, default: false)
-     */
     public function bookingDetailsReport(Request $request)
     {
         Log::info('Booking details report generation initiated', [
@@ -2000,7 +1848,6 @@ class BookingController extends Controller
 
         $query = Booking::with(['customer', 'package', 'location', 'location.company', 'room', 'attractions', 'addOns', 'payments']);
 
-        // Filter by package
         if ($validated['package_ids'] !== 'all') {
             $packageIds = is_array($validated['package_ids'])
                 ? $validated['package_ids']
@@ -2008,7 +1855,6 @@ class BookingController extends Controller
             $query->whereIn('package_id', $packageIds);
         }
 
-        // Date filtering based on period type
         $dateRange = null;
         switch ($validated['period_type']) {
             case 'today':
@@ -2022,12 +1868,10 @@ class BookingController extends Controller
                 $month = $validated['month'];
                 $weekOfMonth = $validated['week_of_month'];
 
-                // Calculate start and end of the specified week
                 $firstDayOfMonth = Carbon::create($year, $month, 1);
                 $startOfWeek = $firstDayOfMonth->copy()->addWeeks($weekOfMonth - 1)->startOfWeek();
                 $endOfWeek = $startOfWeek->copy()->endOfWeek();
 
-                // Make sure we don't go outside the month
                 $lastDayOfMonth = $firstDayOfMonth->copy()->endOfMonth();
                 if ($endOfWeek->gt($lastDayOfMonth)) {
                     $endOfWeek = $lastDayOfMonth;
@@ -2071,15 +1915,12 @@ class BookingController extends Controller
                 break;
         }
 
-        // Filter by location
         if (isset($validated['location_id'])) {
             $query->where('location_id', $validated['location_id']);
         }
 
-        // Multi-tenant + role-based scoping (driven by Sanctum auth user)
         $this->applyAuthScope($query, $request);
 
-        // Filter by status
         if (isset($validated['status'])) {
             $statuses = is_array($validated['status'])
                 ? $validated['status']
@@ -2087,15 +1928,12 @@ class BookingController extends Controller
             $query->whereIn('status', $statuses);
         }
 
-        // Exclude cancelled by default
         if (!($validated['include_cancelled'] ?? false)) {
             $query->where('status', '!=', 'cancelled');
         }
 
-        // Sort by date and time
         $query->orderBy('booking_date', 'asc')->orderBy('booking_time', 'asc');
 
-        // Log the SQL query for debugging
         Log::info('SQL Query for booking details report', [
             'sql' => $query->toSql(),
             'bindings' => $query->getBindings(),
@@ -2124,7 +1962,6 @@ class BookingController extends Controller
             ], 404);
         }
 
-        // Get package names for report title
         $packageNames = 'All Packages';
         if ($validated['package_ids'] !== 'all') {
             $packageIds = is_array($validated['package_ids'])
@@ -2134,10 +1971,8 @@ class BookingController extends Controller
             $packageNames = $packages->join(', ');
         }
 
-        // Determine view mode
         $viewMode = $validated['view_mode'] ?? 'individual';
 
-        // Select appropriate view
         $view = $viewMode === 'list'
             ? 'exports.booking-details-list'
             : 'exports.booking-details-individual';
@@ -2151,10 +1986,8 @@ class BookingController extends Controller
             'companyName' => config('app.name', 'ZapZone'),
         ]);
 
-        // Set paper size and orientation
         $pdf->setPaper('A4', 'portrait');
 
-        // Generate filename
         $filename = 'booking-details';
         if ($validated['period_type'] === 'today') {
             $filename .= '-today-' . Carbon::today()->format('Y-m-d');
@@ -2176,7 +2009,6 @@ class BookingController extends Controller
             'stream' => $request->get('stream', false),
         ]);
 
-        // Stream or download based on request
         if ($request->get('stream', false)) {
             return $pdf->stream($filename);
         }
@@ -2184,11 +2016,6 @@ class BookingController extends Controller
         return $pdf->download($filename);
     }
 
-    /**
-     * Send booking reminders for bookings scheduled for tomorrow.
-     * Only sends reminders to bookings that haven't been reminded yet
-     * and have a valid customer email.
-     */
     private function sendBookingReminders(): void
     {
         $today = Carbon::now()->toDateString();
@@ -2200,7 +2027,6 @@ class BookingController extends Controller
             'checking_for_bookings_on' => $tomorrow,
         ]);
 
-        // Get all bookings for tomorrow that haven't been reminded yet
         $bookingsToRemind = Booking::with(['customer', 'package', 'location', 'location.company', 'room'])
             ->where('booking_date', $tomorrow)
             ->where('reminder_sent', false)
@@ -2228,7 +2054,6 @@ class BookingController extends Controller
                 'reminder_sent' => $booking->reminder_sent,
                 'status' => $booking->status,
             ]);
-            // Determine recipient email
             $recipientEmail = $booking->customer?->email ?? $booking->guest_email;
 
             if (!$recipientEmail) {
@@ -2240,11 +2065,9 @@ class BookingController extends Controller
             }
 
             try {
-                // Send reminder via EmailNotificationService (uses editable DB template)
                 $emailService = app(EmailNotificationService::class);
                 $emailService->triggerBookingNotification($booking, EmailNotification::TRIGGER_BOOKING_REMINDER);
 
-                // Update booking to mark reminder as sent
                 $booking->update([
                     'reminder_sent' => true,
                     'reminder_sent_at' => Carbon::now(),
@@ -2268,23 +2091,17 @@ class BookingController extends Controller
         }
     }
 
-    /**
-     * List soft-deleted bookings (trash).
-     */
     public function trashed(Request $request): JsonResponse
     {
         try {
             $query = Booking::onlyTrashed()->with(['customer', 'package', 'location', 'room', 'creator']);
 
-            // Multi-tenant + role-based scoping (driven by Sanctum auth user)
             $this->applyAuthScope($query, $request);
 
-            // Filter by location
             if ($request->has('location_id')) {
                 $query->where('location_id', $request->location_id);
             }
 
-            // Search
             if ($request->has('search')) {
                 $search = $request->search;
                 $query->where(function ($q) use ($search) {
@@ -2333,9 +2150,6 @@ class BookingController extends Controller
         }
     }
 
-    /**
-     * Restore a soft-deleted booking.
-     */
     public function restore(int $id): JsonResponse
     {
         $booking = Booking::onlyTrashed()->findOrFail($id);
@@ -2343,7 +2157,6 @@ class BookingController extends Controller
         $booking->restore();
         $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
 
-        // Re-sync to Google Calendar if connected
         try {
             $gcalService = new GoogleCalendarService($booking->location_id);
             if ($gcalService->isConnected() && !$booking->google_calendar_event_id) {
@@ -2356,7 +2169,6 @@ class BookingController extends Controller
             ]);
         }
 
-        // Log restore activity
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Booking Restored',
@@ -2384,9 +2196,6 @@ class BookingController extends Controller
         ]);
     }
 
-    /**
-     * Permanently delete a soft-deleted booking.
-     */
     public function forceDelete(int $id): JsonResponse
     {
         $booking = Booking::onlyTrashed()->findOrFail($id);
@@ -2395,7 +2204,6 @@ class BookingController extends Controller
         $bookingId = $booking->id;
         $locationId = $booking->location_id;
 
-        // Remove from Google Calendar before permanently deleting
         try {
             $gcalService = new GoogleCalendarService($booking->location_id);
             if ($gcalService->isConnected() && $booking->google_calendar_event_id) {
@@ -2410,7 +2218,6 @@ class BookingController extends Controller
 
         $booking->forceDelete();
 
-        // Log permanent deletion
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Booking Permanently Deleted',
@@ -2437,9 +2244,6 @@ class BookingController extends Controller
         ]);
     }
 
-    /**
-     * Bulk restore soft-deleted bookings.
-     */
     public function bulkRestore(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -2454,7 +2258,6 @@ class BookingController extends Controller
             $booking->restore();
             $restoredCount++;
 
-            // Re-sync to Google Calendar if connected
             try {
                 $gcalService = new GoogleCalendarService($booking->location_id);
                 if ($gcalService->isConnected() && !$booking->google_calendar_event_id) {
@@ -2468,7 +2271,6 @@ class BookingController extends Controller
             }
         }
 
-        // Log bulk restore
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Bulk Bookings Restored',
@@ -2495,9 +2297,6 @@ class BookingController extends Controller
         ]);
     }
 
-    /**
-     * Force delete a pending booking (public - for payment error cleanup).
-     */
     public function publicForceDelete($id): JsonResponse
     {
         Log::info('Booking public force delete request', ['id' => $id, 'ip' => request()->ip()]);
@@ -2523,7 +2322,6 @@ class BookingController extends Controller
             $bookingId = $booking->id;
             $locationId = $booking->location_id;
 
-            // Remove from Google Calendar before permanently deleting
             try {
                 $gcalService = new GoogleCalendarService($booking->location_id);
                 if ($gcalService->isConnected() && $booking->google_calendar_event_id) {
@@ -2572,9 +2370,6 @@ class BookingController extends Controller
         }
     }
 
-    /**
-     * Bulk import bookings from a CSV file (Bookly format).
-     */
     public function bulkImportCsv(Request $request): JsonResponse
     {
         $request->validate([
@@ -2590,7 +2385,6 @@ class BookingController extends Controller
             $service = new \App\Services\BookingCsvImportService();
             $file = $request->file('file');
 
-            // Parse CSV or Excel
             $rows = $service->parseFile(
                 $file->getRealPath(),
                 $file->getClientOriginalName()
@@ -2603,7 +2397,6 @@ class BookingController extends Controller
                 ], 422);
             }
 
-            // Process rows in a transaction
             \Illuminate\Support\Facades\DB::beginTransaction();
 
             try {
@@ -2615,7 +2408,6 @@ class BookingController extends Controller
                 throw $e;
             }
 
-            // Log activity
             $currentUser = auth()->user();
             ActivityLog::log(
                 action: 'Bookings Bulk Import (CSV)',

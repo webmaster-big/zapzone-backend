@@ -16,9 +16,6 @@ class SpecialPricingController extends Controller
 {
     use ScopesByAuthUser;
 
-    /**
-     * Display a listing of special pricings.
-     */
     public function index(Request $request): JsonResponse
     {
         try {
@@ -26,12 +23,10 @@ class SpecialPricingController extends Controller
 
             $query = SpecialPricing::with(['company:id,company_name', 'location:id,name']);
 
-            // Multi-tenant scope by company (always)
             $authUser = $this->resolveAuthUser($request);
             if ($authUser && $authUser->company_id) {
                 $query->where('company_id', $authUser->company_id);
             }
-            // Location managers can see pricings scoped to their location OR company-wide (location_id = null)
             if ($authUser && in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
                 $query->where(function ($q) use ($authUser) {
                     $q->where('location_id', $authUser->location_id)
@@ -39,17 +34,14 @@ class SpecialPricingController extends Controller
                 });
             }
 
-            // Filter by company
             if ($request->has('company_id')) {
                 $query->byCompany($request->company_id);
             }
 
-            // Filter by location
             if ($request->has('location_id')) {
                 $query->byLocation($request->location_id);
             }
 
-            // Filter by entity type
             if ($request->has('entity_type')) {
                 $entityType = $request->entity_type;
                 if ($entityType === 'package') {
@@ -61,27 +53,22 @@ class SpecialPricingController extends Controller
                 }
             }
 
-            // Filter by recurrence type
             if ($request->has('recurrence_type')) {
                 $query->where('recurrence_type', $request->recurrence_type);
             }
 
-            // Filter by discount type
             if ($request->has('discount_type')) {
                 $query->where('discount_type', $request->discount_type);
             }
 
-            // Filter by active status
             if ($request->has('is_active')) {
                 $query->where('is_active', $request->boolean('is_active'));
             }
 
-            // Filter upcoming only (active and within date range)
             if ($request->boolean('upcoming_only')) {
                 $query->active()->withinDateRange();
             }
 
-            // Search by name or description
             if ($request->has('search')) {
                 $search = $request->search;
                 $query->where(function ($q) use ($search) {
@@ -90,7 +77,6 @@ class SpecialPricingController extends Controller
                 });
             }
 
-            // Sort
             $sortBy = $request->get('sort_by', 'priority');
             $sortOrder = $request->get('sort_order', 'desc');
 
@@ -100,7 +86,6 @@ class SpecialPricingController extends Controller
 
             $specialPricings = $query->paginate($perPage);
 
-            // Add recurrence display to each item
             $items = collect($specialPricings->items())->map(function ($item) {
                 $item->recurrence_display = $item->getRecurrenceDisplay();
                 $item->upcoming_dates = $item->getUpcomingDates(3);
@@ -135,9 +120,6 @@ class SpecialPricingController extends Controller
         }
     }
 
-    /**
-     * Store a newly created special pricing.
-     */
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -162,7 +144,6 @@ class SpecialPricingController extends Controller
             'is_active' => 'nullable|boolean',
         ]);
 
-        // Validate recurrence_value based on recurrence_type
         if ($validated['recurrence_type'] === 'weekly') {
             if (!isset($validated['recurrence_value']) || $validated['recurrence_value'] < 0 || $validated['recurrence_value'] > 6) {
                 return response()->json([
@@ -179,7 +160,6 @@ class SpecialPricingController extends Controller
             }
         }
 
-        // Validate percentage doesn't exceed 100
         if ($validated['discount_type'] === 'percentage' && $validated['discount_amount'] > 100) {
             return response()->json([
                 'success' => false,
@@ -192,7 +172,6 @@ class SpecialPricingController extends Controller
         $specialPricing->recurrence_display = $specialPricing->getRecurrenceDisplay();
         $specialPricing->upcoming_dates = $specialPricing->getUpcomingDates(3);
 
-        // Log activity
         $currentUser = $request->user();
         ActivityLog::log(
             action: 'Special Pricing Created',
@@ -219,9 +198,6 @@ class SpecialPricingController extends Controller
         ], 201);
     }
 
-    /**
-     * Display the specified special pricing.
-     */
     public function show(SpecialPricing $specialPricing): JsonResponse
     {
         $specialPricing->load(['company:id,company_name', 'location:id,name']);
@@ -234,9 +210,6 @@ class SpecialPricingController extends Controller
         ]);
     }
 
-    /**
-     * Update the specified special pricing.
-     */
     public function update(Request $request, $id): JsonResponse
     {
         $specialPricing = SpecialPricing::findOrFail($id);
@@ -266,7 +239,6 @@ class SpecialPricingController extends Controller
             'is_active' => 'sometimes|boolean',
         ]);
 
-        // Validate percentage doesn't exceed 100
         $discountType = $validated['discount_type'] ?? $specialPricing->discount_type;
         $discountAmount = $validated['discount_amount'] ?? $specialPricing->discount_amount;
         if ($discountType === 'percentage' && $discountAmount > 100) {
@@ -282,7 +254,6 @@ class SpecialPricingController extends Controller
         $specialPricing->recurrence_display = $specialPricing->getRecurrenceDisplay();
         $specialPricing->upcoming_dates = $specialPricing->getUpcomingDates(3);
 
-        // Log activity
         $currentUser = $request->user();
         ActivityLog::log(
             action: 'Special Pricing Updated',
@@ -310,14 +281,10 @@ class SpecialPricingController extends Controller
         ]);
     }
 
-    /**
-     * Remove the specified special pricing.
-     */
     public function destroy(Request $request, SpecialPricing $specialPricing): JsonResponse
     {
         $name = $specialPricing->name;
 
-        // Log activity before deletion
         $currentUser = $request->user();
         ActivityLog::log(
             action: 'Special Pricing Deleted',
@@ -345,9 +312,6 @@ class SpecialPricingController extends Controller
         ]);
     }
 
-    /**
-     * Toggle active status for a special pricing.
-     */
     public function toggleStatus(Request $request, SpecialPricing $specialPricing): JsonResponse
     {
         $specialPricing->is_active = !$specialPricing->is_active;
@@ -355,7 +319,6 @@ class SpecialPricingController extends Controller
 
         $status = $specialPricing->is_active ? 'activated' : 'deactivated';
 
-        // Log activity
         $currentUser = $request->user();
         ActivityLog::log(
             action: "Special Pricing {$status}",
@@ -382,9 +345,6 @@ class SpecialPricingController extends Controller
         ]);
     }
 
-    /**
-     * Get special pricings by location.
-     */
     public function getByLocation($locationId): JsonResponse
     {
         $specialPricings = SpecialPricing::byLocation($locationId)
@@ -404,10 +364,6 @@ class SpecialPricingController extends Controller
         ]);
     }
 
-    /**
-     * Get applicable special pricing(s) for a specific entity on a date.
-     * This is the main endpoint used during booking/purchase flows.
-     */
     public function getForEntity(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -437,9 +393,6 @@ class SpecialPricingController extends Controller
         ]);
     }
 
-    /**
-     * Check if a date has any active special pricing.
-     */
     public function checkDate(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -493,9 +446,6 @@ class SpecialPricingController extends Controller
         ]);
     }
 
-    /**
-     * Get upcoming special pricing dates for a location.
-     */
     public function getUpcomingDates(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -524,7 +474,6 @@ class SpecialPricingController extends Controller
 
         $specialPricings = $query->get();
 
-        // Build date map
         $dateMap = [];
         $startDate = Carbon::today();
         $endDate = Carbon::today()->addDays($days);
@@ -552,7 +501,6 @@ class SpecialPricingController extends Controller
             }
         }
 
-        // Sort by date
         ksort($dateMap);
 
         return response()->json([
@@ -564,9 +512,6 @@ class SpecialPricingController extends Controller
         ]);
     }
 
-    /**
-     * Bulk delete special pricings.
-     */
     public function bulkDelete(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -576,7 +521,6 @@ class SpecialPricingController extends Controller
 
         $count = SpecialPricing::whereIn('id', $validated['ids'])->delete();
 
-        // Log activity
         $currentUser = $request->user();
         ActivityLog::log(
             action: 'Special Pricings Bulk Deleted',

@@ -36,30 +36,20 @@ class GoogleCalendarSetting extends Model
         'refresh_token',
     ];
 
-    /**
-     * Get the location this Google Calendar setting belongs to.
-     */
     public function location(): BelongsTo
     {
         return $this->belongsTo(Location::class);
     }
 
-    /**
-     * Get settings for a specific location.
-     */
     public static function getSettings(?int $locationId = null): ?self
     {
         if ($locationId) {
             return static::where('location_id', $locationId)->first();
         }
 
-        // Fallback: return first record (legacy / no location specified)
         return static::first();
     }
 
-    /**
-     * Get or create settings for a specific location.
-     */
     public static function getOrCreateForLocation(int $locationId): self
     {
         return static::firstOrCreate(
@@ -68,9 +58,6 @@ class GoogleCalendarSetting extends Model
         );
     }
 
-    /**
-     * Check if the token is expired.
-     */
     public function isTokenExpired(): bool
     {
         if (!$this->token_expires_at) {

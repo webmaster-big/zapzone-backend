@@ -38,9 +38,6 @@ class BookingInvitation extends Model
         'responded_at' => 'datetime',
     ];
 
-    /**
-     * Boot the model.
-     */
     protected static function boot()
     {
         parent::boot();
@@ -52,9 +49,6 @@ class BookingInvitation extends Model
         });
     }
 
-    /**
-     * Generate a unique RSVP token.
-     */
     public static function generateUniqueToken(): string
     {
         do {
@@ -64,18 +58,12 @@ class BookingInvitation extends Model
         return $token;
     }
 
-    // ============================================
-    // RELATIONSHIPS
-    // ============================================
 
     public function booking(): BelongsTo
     {
         return $this->belongsTo(Booking::class);
     }
 
-    // ============================================
-    // SCOPES
-    // ============================================
 
     public function scopeByBooking($query, int $bookingId)
     {
@@ -97,29 +85,17 @@ class BookingInvitation extends Model
         return $query->where('rsvp_status', 'declined');
     }
 
-    // ============================================
-    // HELPERS
-    // ============================================
 
-    /**
-     * Check if the invitation has been responded to.
-     */
     public function hasResponded(): bool
     {
         return $this->rsvp_status !== 'pending';
     }
 
-    /**
-     * Check if the guest is attending.
-     */
     public function isAttending(): bool
     {
         return $this->rsvp_status === 'attending';
     }
 
-    /**
-     * Mark the invitation as responded with RSVP data.
-     */
     public function submitRsvp(array $data): self
     {
         $this->update([
@@ -136,18 +112,12 @@ class BookingInvitation extends Model
         return $this;
     }
 
-    /**
-     * Get the RSVP URL for this invitation.
-     */
     public function getRsvpUrl(): string
     {
         $frontendUrl = rtrim(config('app.frontend_url', config('app.url')), '/');
         return $frontendUrl . '/rsvp/' . $this->rsvp_token;
     }
 
-    /**
-     * Get summary stats for a booking's invitations.
-     */
     public static function getSummaryForBooking(int $bookingId, int $maxParticipants): array
     {
         $invitations = self::where('booking_id', $bookingId)->get();

@@ -9,25 +9,12 @@ use Illuminate\Support\Facades\DB;
 
 class ReEncryptAuthorizeNetCredentials extends Command
 {
-    /**
-     * The name and signature of the console command.
-     *
-     * @var string
-     */
     protected $signature = 'authorizenet:re-encrypt
                             {--old-key= : The old APP_KEY to decrypt with}
                             {--test : Test mode - show what would be re-encrypted without making changes}';
 
-    /**
-     * The console command description.
-     *
-     * @var string
-     */
     protected $description = 'Re-encrypt Authorize.Net credentials when APP_KEY changes';
 
-    /**
-     * Execute the console command.
-     */
     public function handle()
     {
         $oldKey = $this->option('old-key');
@@ -44,7 +31,6 @@ class ReEncryptAuthorizeNetCredentials extends Command
             $this->warn('Running in TEST mode - no changes will be made');
         }
 
-        // Get all accounts
         $accounts = DB::table('authorize_net_accounts')->get();
 
         if ($accounts->isEmpty()) {
@@ -58,11 +44,9 @@ class ReEncryptAuthorizeNetCredentials extends Command
         $successCount = 0;
         $failCount = 0;
 
-        // Set old key temporarily
         config(['app.key' => $oldKey]);
         $oldCrypter = app('encrypter');
 
-        // Get current key
         $currentKey = config('app.key');
         config(['app.key' => $currentKey]);
         $newCrypter = app('encrypter');
@@ -71,7 +55,6 @@ class ReEncryptAuthorizeNetCredentials extends Command
             try {
                 $this->info("Processing Account ID: {$account->id} (Location: {$account->location_id})");
 
-                // Decrypt with old key
                 $apiLoginId = $oldCrypter->decryptString($account->api_login_id);
                 $transactionKey = $oldCrypter->decryptString($account->transaction_key);
                 $publicClientKey = $account->public_client_key ? $oldCrypter->decryptString($account->public_client_key) : null;
@@ -79,12 +62,10 @@ class ReEncryptAuthorizeNetCredentials extends Command
                 $this->line("  ✓ Successfully decrypted credentials");
 
                 if (!$testMode) {
-                    // Re-encrypt with new key
                     $newApiLoginId = $newCrypter->encryptString($apiLoginId);
                     $newTransactionKey = $newCrypter->encryptString($transactionKey);
                     $newPublicClientKey = $publicClientKey ? $newCrypter->encryptString($publicClientKey) : null;
 
-                    // Update in database
                     $updateData = [
                         'api_login_id' => $newApiLoginId,
                         'transaction_key' => $newTransactionKey,
@@ -115,7 +96,6 @@ class ReEncryptAuthorizeNetCredentials extends Command
             }
         }
 
-        // Summary
         $this->newLine();
         $this->info('=== Summary ===');
         $this->info("Total accounts: {$accounts->count()}");

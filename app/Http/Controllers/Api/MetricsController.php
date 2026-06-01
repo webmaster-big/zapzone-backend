@@ -18,27 +18,15 @@ class MetricsController extends Controller
 {
     use ScopesByAuthUser;
 
-    /**
-     * Get dashboard metrics based on authenticated user's role and location
-     * - company_admin: All locations (no location filter)
-     * - location_manager: Their specific location only
-     * - attendant: Their specific location only
-     *
-     * @param Request $request
-     * @return \Illuminate\Http\JsonResponse
-     */
     public function dashboard(Request $request, $id)
     {
         try {
-            // SECURITY: always use the authenticated user, NOT the route param.
-            // The {user} path segment is preserved for backwards-compat only.
             $authUser = auth()->user();
             if (!$authUser) {
                 return response()->json(['success' => false, 'message' => 'Unauthenticated'], 401);
             }
             $user = $authUser;
 
-            // Log incoming request for debugging
             Log::info('=== Dashboard Metrics API Called ===', [
                 'user_role' => $user->role,
                 'user_location_id' => $user->location_id,
@@ -48,18 +36,14 @@ class MetricsController extends Controller
                 'timestamp' => now()->toDateTimeString(),
             ]);
 
-        // Timeframe selector: supports 'last_24h', 'last_7d', 'last_30d', 'all_time', or 'custom'
-        // Custom range uses date_from and date_to parameters
         $timeframe = $request->query('timeframe', 'all_time');
         $dateFrom = $request->query('date_from');
         $dateTo = $request->query('date_to');
         $useDateTime = false; // Flag to determine if we should use datetime or date-only comparison
 
-        // If custom dates are provided, use them and set timeframe to 'custom'
         if ($dateFrom || $dateTo) {
             $timeframe = 'custom';
         } else {
-            // Apply timeframe preset
             switch ($timeframe) {
                 case 'last_24h':
                     $dateFrom = now()->subHours(24);
@@ -79,25 +63,21 @@ class MetricsController extends Controller
                 case 'custom':
                 case 'all_time':
                 default:
-                    // No date filter - all time metrics
                     $dateFrom = null;
                     $dateTo = null;
                     break;
             }
         }
 
-        // Determine location filter based on user role
         $locationId = null;
         if (in_array($user->role, ['location_manager', 'attendant'])) {
             $locationId = $user->location_id;
         }
 
-        // Build booking query
         $bookingQuery = Booking::query();
         $purchaseQuery = AttractionPurchase::query();
         $eventPurchaseQuery = EventPurchase::query();
 
-        // Apply location filter based on role
         if ($locationId) {
             $bookingQuery->where('location_id', $locationId);
             $purchaseQuery->whereHas('attraction', function ($q) use ($locationId) {
@@ -106,7 +86,6 @@ class MetricsController extends Controller
             $eventPurchaseQuery->where('location_id', $locationId);
         }
 
-        // Apply date range filter
         if ($dateFrom) {
             if ($useDateTime) {
                 $bookingQuery->where('created_at', '>=', $dateFrom);
@@ -131,7 +110,6 @@ class MetricsController extends Controller
             }
         }
 
-        // Calculate booking metrics
         $totalBookings = $bookingQuery->count();
         $confirmedBookings = (clone $bookingQuery)->where('status', 'confirmed')->count();
         $pendingBookings = (clone $bookingQuery)->where('status', 'pending')->count();
@@ -151,18 +129,14 @@ class MetricsController extends Controller
             'revenue' => $bookingRevenue,
         ]);
 
-        // Calculate purchase metrics
         $totalPurchases = $purchaseQuery->count();
 
-        // Get all purchases for debugging
         $allPurchaseStatuses = (clone $purchaseQuery)->select('status', DB::raw('COUNT(*) as count'), DB::raw('SUM(total_amount) as revenue'))
             ->groupBy('status')
             ->get();
 
-        // Revenue from completed purchases only
         $purchaseRevenue = (clone $purchaseQuery)->where('status', 'completed')->sum('amount_paid') ?? 0;
 
-        // All non-cancelled purchases revenue (use total_amount so pending/in-store sales are counted)
         $allPurchaseRevenue = (clone $purchaseQuery)->whereNotIn('status', ['cancelled'])->sum('total_amount') ?? 0;
 
         Log::info('Purchase metrics calculated', [
@@ -172,12 +146,10 @@ class MetricsController extends Controller
             'status_breakdown' => $allPurchaseStatuses->toArray(),
         ]);
 
-        // Calculate event purchase metrics
         $totalEventPurchases = (clone $eventPurchaseQuery)->count();
         $eventPurchaseRevenue = (clone $eventPurchaseQuery)->whereNotIn('status', ['cancelled', 'refunded'])->sum('total_amount') ?? 0;
         $totalEventTickets = (clone $eventPurchaseQuery)->whereNotIn('status', ['cancelled', 'refunded'])->sum('quantity') ?? 0;
 
-        // Calculate total revenue (using all non-cancelled purchases)
         $totalRevenue = $bookingRevenue + $allPurchaseRevenue + $eventPurchaseRevenue;
 
         Log::info('Total revenue calculated', [
@@ -187,7 +159,6 @@ class MetricsController extends Controller
             'total_revenue' => $totalRevenue,
         ]);
 
-        // Get unique customers count
         $customerQuery = Customer::query();
         if ($locationId || $dateFrom || $dateTo) {
             $customerQuery->whereHas('bookings', function ($q) use ($locationId, $dateFrom, $dateTo, $useDateTime) {
@@ -252,7 +223,6 @@ class MetricsController extends Controller
 
         Log::info('Customer count calculated', ['total_customers' => $totalCustomers]);
 
-        // Get recent event purchases (last 5)
         $recentEventPurchasesQuery = EventPurchase::with(['customer', 'event']);
         if ($locationId) {
             $recentEventPurchasesQuery->where('location_id', $locationId);
@@ -292,7 +262,6 @@ class MetricsController extends Controller
                 ];
             });
 
-        // Get recent purchases (last 5-10)
         $recentPurchasesQuery = AttractionPurchase::with(['customer', 'attraction.location', 'createdBy']);
         if ($locationId) {
             $recentPurchasesQuery->whereHas('attraction', function ($q) use ($locationId) {
@@ -349,8 +318,6 @@ class MetricsController extends Controller
                 },
             ],
             'metrics' => [
-                // All counts below are filtered by the selected timeframe
-                // If timeframe is 'all_time', counts represent all historical data
                 'totalBookings' => $totalBookings,
                 'totalRevenue' => round($totalRevenue, 2),
                 'totalCustomers' => $totalCustomers,
@@ -372,14 +339,12 @@ class MetricsController extends Controller
             'recentEventPurchases' => $recentEventPurchases,
         ];
 
-        // Add location stats for company_admin
         if ($user->role === 'company_admin') {
             $locationStats = $this->getLocationStats($dateFrom, $dateTo);
             $response['locationStats'] = $locationStats;
             Log::info('Added location stats for company_admin', ['locations_count' => count($locationStats)]);
         }
 
-        // Add location details for manager/attendant
         if (in_array($user->role, ['location_manager', 'attendant']) && $locationId) {
             $location = Location::find($locationId);
             if ($location) {
@@ -438,28 +403,19 @@ class MetricsController extends Controller
         }
     }
 
-    /**
-     * Get metrics for attendant view with recent transactions
-     *
-     * @param Request $request
-     * @return \Illuminate\Http\JsonResponse
-     */
     public function attendant(Request $request)
     {
         try {
             $locationId = $request->query('location_id');
 
-            // Timeframe selector: supports 'last_24h', 'last_7d', 'last_30d', 'all_time', or 'custom'
             $timeframe = $request->query('timeframe', 'all_time');
             $dateFrom = $request->query('date_from');
             $dateTo = $request->query('date_to');
             $useDateTime = false; // Flag to determine if we should use datetime or date-only comparison
 
-            // If custom dates are provided, use them and set timeframe to 'custom'
             if ($dateFrom || $dateTo) {
                 $timeframe = 'custom';
             } else {
-                // Apply timeframe preset
                 switch ($timeframe) {
                     case 'last_24h':
                         $dateFrom = now()->subHours(24);
@@ -485,7 +441,6 @@ class MetricsController extends Controller
                 }
             }
 
-            // Log incoming request for debugging
             Log::info('=== Attendant Metrics API Called ===', [
                 'location_id' => $locationId,
                 'timeframe' => $timeframe,
@@ -494,12 +449,10 @@ class MetricsController extends Controller
                 'timestamp' => now()->toDateTimeString(),
             ]);
 
-        // Build booking query
         $bookingQuery = Booking::query();
         $purchaseQuery = AttractionPurchase::query();
         $eventPurchaseQuery = EventPurchase::query();
 
-        // Apply location filter
         if ($locationId) {
             $bookingQuery->where('location_id', $locationId);
             $purchaseQuery->whereHas('attraction', function ($q) use ($locationId) {
@@ -509,7 +462,6 @@ class MetricsController extends Controller
             Log::info('Applied location filter', ['location_id' => $locationId]);
         }
 
-        // Apply date range filter
         if ($dateFrom) {
             if ($useDateTime) {
                 $bookingQuery->where('created_at', '>=', $dateFrom);
@@ -534,7 +486,6 @@ class MetricsController extends Controller
             }
         }
 
-        // Calculate booking metrics
         $totalBookings = $bookingQuery->count();
         $confirmedBookings = (clone $bookingQuery)->where('status', 'confirmed')->count();
         $pendingBookings = (clone $bookingQuery)->where('status', 'pending')->count();
@@ -543,26 +494,20 @@ class MetricsController extends Controller
         $totalParticipants = (clone $bookingQuery)->sum('participants') ?? 0;
         $bookingRevenue = (clone $bookingQuery)->whereNotIn('status', ['cancelled'])->sum('amount_paid') ?? 0;
 
-        // Calculate purchase metrics
         $totalPurchases = $purchaseQuery->count();
 
-        // Get all purchases for debugging
         $allPurchaseStatuses = (clone $purchaseQuery)->select('status', DB::raw('COUNT(*) as count'), DB::raw('SUM(total_amount) as revenue'))
             ->groupBy('status')
             ->get();
 
-        // Revenue from completed purchases only
         $purchaseRevenue = (clone $purchaseQuery)->where('status', 'completed')->sum('amount_paid') ?? 0;
 
-        // All non-cancelled purchases revenue (use total_amount so pending/in-store sales are counted)
         $allPurchaseRevenue = (clone $purchaseQuery)->whereNotIn('status', ['cancelled'])->sum('total_amount') ?? 0;
 
-        // Calculate event purchase metrics
         $totalEventPurchases = (clone $eventPurchaseQuery)->count();
         $eventPurchaseRevenue = (clone $eventPurchaseQuery)->whereNotIn('status', ['cancelled', 'refunded'])->sum('total_amount') ?? 0;
         $totalEventTickets = (clone $eventPurchaseQuery)->whereNotIn('status', ['cancelled', 'refunded'])->sum('quantity') ?? 0;
 
-        // Calculate total revenue (using all non-cancelled purchases)
         $totalRevenue = $bookingRevenue + $allPurchaseRevenue + $eventPurchaseRevenue;
 
         Log::info('Attendant purchase metrics calculated', [
@@ -575,7 +520,6 @@ class MetricsController extends Controller
             'status_breakdown' => $allPurchaseStatuses->toArray(),
         ]);
 
-        // Get unique customers count
         $customerQuery = Customer::query();
         if ($locationId || $dateFrom || $dateTo) {
             $customerQuery->whereHas('bookings', function ($q) use ($locationId, $dateFrom, $dateTo, $useDateTime) {
@@ -646,7 +590,6 @@ class MetricsController extends Controller
             'customers' => $totalCustomers,
         ]);
 
-        // Get recent event purchases (last 5)
         $recentEventPurchasesQuery = EventPurchase::with(['customer', 'event']);
         if ($locationId) {
             $recentEventPurchasesQuery->where('location_id', $locationId);
@@ -689,7 +632,6 @@ class MetricsController extends Controller
                 ];
             });
 
-        // Get recent purchases (last 5)
         $recentPurchasesQuery = AttractionPurchase::with(['customer', 'attraction.location', 'createdBy']);
         if ($locationId) {
             $recentPurchasesQuery->whereHas('attraction', function ($q) use ($locationId) {
@@ -735,7 +677,6 @@ class MetricsController extends Controller
                 ];
             });
 
-        // Get recent bookings (last 5)
         $recentBookingsQuery = Booking::with(['customer', 'package', 'location', 'room']);
         if ($locationId) {
             $recentBookingsQuery->where('location_id', $locationId);
@@ -803,7 +744,6 @@ class MetricsController extends Controller
                 },
             ],
             'metrics' => [
-                // All counts below are filtered by the selected timeframe
                 'totalBookings' => $totalBookings,
                 'totalRevenue' => round($totalRevenue, 2),
                 'totalCustomers' => $totalCustomers,
@@ -865,27 +805,17 @@ class MetricsController extends Controller
         }
     }
 
-    /**
-     * Get location statistics (for company_admin)
-     *
-     * @param string|null $dateFrom
-     * @param string|null $dateTo
-     * @return array
-     */
     private function getLocationStats($dateFrom = null, $dateTo = null)
     {
         $locationStats = [];
 
-        // Get all active locations
         $locations = Location::where('is_active', true)->get();
 
         Log::info('Processing location stats', ['locations_count' => $locations->count()]);
 
         foreach ($locations as $location) {
-            // Booking stats for this location
             $locationBookingQuery = Booking::where('location_id', $location->id);
             if ($dateFrom) {
-                // For location stats, always use date-only comparison for consistent reporting
                 $locationBookingQuery->whereDate('created_at', '>=', is_string($dateFrom) ? $dateFrom : $dateFrom->toDateString());
             }
             if ($dateTo) {
@@ -898,12 +828,10 @@ class MetricsController extends Controller
                 ->whereIn('status', ['confirmed', 'completed', 'checked-in'])
                 ->sum('amount_paid') ?? 0;
 
-            // Purchase stats for this location
             $locationPurchaseQuery = AttractionPurchase::whereHas('attraction', function ($q) use ($location) {
                 $q->where('location_id', $location->id);
             });
             if ($dateFrom) {
-                // For location stats, always use date-only comparison for consistent reporting
                 $locationPurchaseQuery->whereDate('created_at', '>=', is_string($dateFrom) ? $dateFrom : $dateFrom->toDateString());
             }
             if ($dateTo) {
@@ -912,18 +840,15 @@ class MetricsController extends Controller
 
             $locationPurchases = $locationPurchaseQuery->count();
 
-            // Get purchase status breakdown for debugging
             $locationPurchaseStatuses = (clone $locationPurchaseQuery)
                 ->select('status', DB::raw('COUNT(*) as count'), DB::raw('SUM(total_amount) as revenue'))
                 ->groupBy('status')
                 ->get();
 
-            // All non-cancelled purchases — mirrors global allPurchaseRevenue logic
             $locationPurchaseRevenue = (clone $locationPurchaseQuery)
                 ->whereNotIn('status', ['cancelled'])
                 ->sum('total_amount') ?? 0;
 
-            // Event purchase stats for this location
             $locationEventPurchaseQuery = EventPurchase::where('location_id', $location->id);
             if ($dateFrom) {
                 $locationEventPurchaseQuery->whereDate('created_at', '>=', is_string($dateFrom) ? $dateFrom : $dateFrom->toDateString());
@@ -940,7 +865,6 @@ class MetricsController extends Controller
                 ->whereNotIn('status', ['cancelled', 'refunded'])
                 ->sum('quantity') ?? 0;
 
-            // Calculate utilization (simplified: based on bookings vs capacity)
             $daysInRange = 1;
             if ($dateFrom && $dateTo) {
                 $daysInRange = max(1, \Carbon\Carbon::parse($dateFrom)->diffInDays(\Carbon\Carbon::parse($dateTo)) + 1);

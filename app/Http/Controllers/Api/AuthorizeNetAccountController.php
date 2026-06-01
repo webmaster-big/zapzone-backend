@@ -38,21 +38,16 @@ class AuthorizeNetAccountController extends Controller
         ]);
     }
 
-    /**
-     * Get the Authorize.Net account for the authenticated user's location
-     */
     public function show(Request $request)
     {
         $user = $request->user();
 
-        // Ensure user has a location assigned
         if (!$user->location_id) {
             return response()->json([
                 'message' => 'No location assigned to your account'
             ], 403);
         }
 
-        // Get the account for the user's location
         $account = AuthorizeNetAccount::where('location_id', $user->location_id)->first();
 
         if (!$account) {
@@ -62,10 +57,8 @@ class AuthorizeNetAccountController extends Controller
             ], 200);
         }
 
-        // Check if credentials can be decrypted
         $credentialsValid = true;
         try {
-            // Attempt to access encrypted field to verify APP_KEY matches
             $testAccess = $account->api_login_id;
             Log::info('Authorize.Net credentials decrypted successfully', [
                 'location_id' => $user->location_id,
@@ -97,26 +90,20 @@ class AuthorizeNetAccountController extends Controller
                 'is_active' => $account->is_active,
                 'connected_at' => $account->connected_at,
                 'last_tested_at' => $account->last_tested_at,
-                // Note: We never expose the actual credentials
             ]
         ]);
     }
 
-    /**
-     * Connect a new Authorize.Net account (store)
-     */
     public function store(Request $request)
     {
         $user = $request->user();
 
-        // Ensure user has a location assigned
         if (!$user->location_id) {
             return response()->json([
                 'message' => 'No location assigned to your account'
             ], 403);
         }
 
-        // Validate request
         $validator = Validator::make($request->all(), [
             'api_login_id' => 'required|string|max:255',
             'transaction_key' => 'required|string|max:255',
@@ -137,7 +124,6 @@ class AuthorizeNetAccountController extends Controller
             ], 422);
         }
 
-        // Check if account already exists for this location
         $existingAccount = AuthorizeNetAccount::where('location_id', $user->location_id)->first();
 
         if ($existingAccount) {
@@ -154,7 +140,6 @@ class AuthorizeNetAccountController extends Controller
         }
 
         try {
-            // Create the account - trim credentials to prevent whitespace issues
             $account = AuthorizeNetAccount::create([
                 'location_id' => $user->location_id,
                 'api_login_id' => trim($request->api_login_id),
@@ -205,9 +190,6 @@ class AuthorizeNetAccountController extends Controller
         }
     }
 
-    /**
-     * Update the Authorize.Net account
-     */
     public function update(Request $request)
     {
         $user = $request->user();
@@ -226,7 +208,6 @@ class AuthorizeNetAccountController extends Controller
             ], 404);
         }
 
-        // Validate request
         $validator = Validator::make($request->all(), [
             'api_login_id' => 'sometimes|required|string|max:255',
             'transaction_key' => 'sometimes|required|string|max:255',
@@ -258,7 +239,6 @@ class AuthorizeNetAccountController extends Controller
                 'is_active'
             ]);
 
-            // Trim credential fields to prevent whitespace issues
             if (isset($updateData['api_login_id'])) {
                 $updateData['api_login_id'] = trim($updateData['api_login_id']);
             }
@@ -316,9 +296,6 @@ class AuthorizeNetAccountController extends Controller
         }
     }
 
-    /**
-     * Disconnect (delete) the Authorize.Net account
-     */
     public function destroy(Request $request)
     {
         $user = $request->user();
@@ -343,7 +320,6 @@ class AuthorizeNetAccountController extends Controller
 
             $account->delete();
 
-            // Log account deletion
             ActivityLog::log(
                 action: 'Authorize.Net Account Deleted',
                 category: 'delete',
@@ -396,10 +372,6 @@ class AuthorizeNetAccountController extends Controller
     }
 
 
-    /**
-     * Get public API credentials for frontend (Accept.js)
-     * Only returns API Login ID - NEVER the transaction key
-     */
     public function getPublicKey(Request $request, $locationId)
     {
         Log::info('🔑 Public key request received', [
@@ -429,7 +401,6 @@ class AuthorizeNetAccountController extends Controller
                 'connected_at' => $account->connected_at
             ]);
 
-            // Try to decrypt the API login ID
             try {
                 $apiLoginId = $account->api_login_id;
                 $publicClientKey = $account->public_client_key;
@@ -480,13 +451,10 @@ class AuthorizeNetAccountController extends Controller
                 ], 500);
             }
 
-            // Only return API Login ID and Public Client Key for Accept.js
-            // NEVER expose the transaction key to frontend
             return response()->json([
                 'api_login_id' => $apiLoginId,
                 'client_key' => $publicClientKey,
                 'environment' => $account->environment,
-                // Include Accept.js script URL to help frontend load correct script
                 'accept_js_url' => $account->environment === 'production'
                     ? 'https://js.authorize.net/v1/Accept.js'
                     : 'https://jstest.authorize.net/v1/Accept.js',
@@ -512,9 +480,6 @@ class AuthorizeNetAccountController extends Controller
         }
     }
 
-    /**
-     * Test Authorize.Net credentials by making a test API call
-     */
     public function testConnection(Request $request)
     {
         $user = $request->user();
@@ -534,7 +499,6 @@ class AuthorizeNetAccountController extends Controller
         }
 
         try {
-            // Try to decrypt credentials
             $apiLoginId = $account->api_login_id;
             $transactionKey = $account->transaction_key;
 
@@ -547,16 +511,13 @@ class AuthorizeNetAccountController extends Controller
                 'transaction_key_length' => strlen($transactionKey)
             ]);
 
-            // Use the official Authorize.Net SDK for authentication testing
             $merchantAuthentication = new \net\authorize\api\contract\v1\MerchantAuthenticationType();
             $merchantAuthentication->setName($apiLoginId);
             $merchantAuthentication->setTransactionKey($transactionKey);
 
-            // Use getMerchantDetailsRequest to validate credentials
             $apiRequest = new \net\authorize\api\contract\v1\GetMerchantDetailsRequest();
             $apiRequest->setMerchantAuthentication($merchantAuthentication);
 
-            // Set the environment
             $environment = $account->environment === 'production'
                 ? \net\authorize\api\constants\ANetEnvironment::PRODUCTION
                 : \net\authorize\api\constants\ANetEnvironment::SANDBOX;
@@ -569,7 +530,6 @@ class AuthorizeNetAccountController extends Controller
                 'result_code' => $response ? $response->getMessages()->getResultCode() : 'null'
             ]);
 
-            // Update last tested timestamp
             $account->update(['last_tested_at' => now()]);
 
             if ($response !== null && $response->getMessages()->getResultCode() === "Ok") {
@@ -633,9 +593,6 @@ class AuthorizeNetAccountController extends Controller
         }
     }
 
-    /**
-     * Test Authorize.Net credentials for a specific location (admin use)
-     */
     public function testConnectionForLocation(Request $request, $locationId)
     {
         $account = AuthorizeNetAccount::where('location_id', $locationId)->first();
@@ -647,7 +604,6 @@ class AuthorizeNetAccountController extends Controller
         }
 
         try {
-            // Try to decrypt credentials
             $apiLoginId = $account->api_login_id;
             $transactionKey = $account->transaction_key;
 
@@ -660,16 +616,13 @@ class AuthorizeNetAccountController extends Controller
                 'transaction_key_length' => strlen($transactionKey)
             ]);
 
-            // Use the official Authorize.Net SDK for authentication testing
             $merchantAuthentication = new \net\authorize\api\contract\v1\MerchantAuthenticationType();
             $merchantAuthentication->setName($apiLoginId);
             $merchantAuthentication->setTransactionKey($transactionKey);
 
-            // Use getMerchantDetailsRequest to validate credentials
             $apiRequest = new \net\authorize\api\contract\v1\GetMerchantDetailsRequest();
             $apiRequest->setMerchantAuthentication($merchantAuthentication);
 
-            // Set the environment
             $environment = $account->environment === 'production'
                 ? \net\authorize\api\constants\ANetEnvironment::PRODUCTION
                 : \net\authorize\api\constants\ANetEnvironment::SANDBOX;
@@ -683,7 +636,6 @@ class AuthorizeNetAccountController extends Controller
                 'result_code' => $response ? $response->getMessages()->getResultCode() : 'null'
             ]);
 
-            // Update last tested timestamp
             $account->update(['last_tested_at' => now()]);
 
             if ($response !== null && $response->getMessages()->getResultCode() === "Ok") {

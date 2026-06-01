@@ -32,7 +32,6 @@ class GiftCard extends Model
         'deleted' => 'boolean',
     ];
 
-    // Relationships
     public function creator(): BelongsTo
     {
         return $this->belongsTo(User::class, 'created_by');
@@ -53,7 +52,6 @@ class GiftCard extends Model
         return $this->belongsToMany(Customer::class, 'customer_gift_cards');
     }
 
-    // Scopes
     public function scopeActive($query)
     {
         return $query->where('status', 'active')->where('deleted', false);
@@ -82,7 +80,6 @@ class GiftCard extends Model
         return $query->where('location_id', $locationId);
     }
 
-    // Helpers
     public function isExpired(): bool
     {
         return $this->expiry_date && $this->expiry_date < now()->toDateString();

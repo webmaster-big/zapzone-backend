@@ -24,19 +24,12 @@ class EmailNotificationService
         $this->gmailService = new GmailApiService();
     }
 
-    // ============================================
-    // MAIN TRIGGER METHODS - Call these from controllers
-    // ============================================
 
-    /**
-     * Process any booking-related trigger.
-     */
     public function triggerBookingNotification(Booking $booking, string $triggerType): void
     {
         try {
             $booking->load(['customer', 'package', 'location.company', 'room', 'addOns']);
 
-            // Auto-seed defaults if company has none yet
             $this->ensureDefaultsSeeded($booking->location?->company);
 
             $notifications = EmailNotification::findForBooking($booking, $triggerType);
@@ -46,7 +39,6 @@ class EmailNotificationService
                     $this->sendNotification($notification, $booking, 'booking');
                 }
             } else {
-                // Fallback for booking_created/confirmed only (hardcoded template)
                 if (in_array($triggerType, [EmailNotification::TRIGGER_BOOKING_CREATED, EmailNotification::TRIGGER_BOOKING_CONFIRMED])) {
                     $this->sendDefaultBookingNotification($booking, $triggerType);
                 }
@@ -60,15 +52,11 @@ class EmailNotificationService
         }
     }
 
-    /**
-     * Process any purchase-related trigger.
-     */
     public function triggerPurchaseNotification(AttractionPurchase $purchase, string $triggerType): void
     {
         try {
             $purchase->load(['customer', 'attraction.location.company']);
 
-            // Auto-seed defaults if company has none yet
             $this->ensureDefaultsSeeded($purchase->attraction?->location?->company);
 
             $notifications = EmailNotification::findForPurchase($purchase, $triggerType);
@@ -78,7 +66,6 @@ class EmailNotificationService
                     $this->sendNotification($notification, $purchase, 'purchase');
                 }
             } else {
-                // Fallback for purchase_created/confirmed only (hardcoded template)
                 if (in_array($triggerType, [EmailNotification::TRIGGER_PURCHASE_CREATED, EmailNotification::TRIGGER_PURCHASE_CONFIRMED])) {
                     $this->sendDefaultPurchaseNotification($purchase, $triggerType);
                 }
@@ -92,15 +79,11 @@ class EmailNotificationService
         }
     }
 
-    /**
-     * Process any payment-related trigger.
-     */
     public function triggerPaymentNotification(Payment $payment, string $triggerType): void
     {
         try {
             $payment->load(['payable']);
 
-            // Auto-seed defaults for the payable's company
             $company = null;
             if ($payment->payable instanceof Booking) {
                 $payment->payable->load('location.company');
@@ -128,14 +111,7 @@ class EmailNotificationService
         }
     }
 
-    // ============================================
-    // HELPER METHODS
-    // ============================================
 
-    /**
-     * Ensure default email notifications are seeded for a company.
-     * Prevents silent failures when triggers fire before admin visits email editor.
-     */
     protected function ensureDefaultsSeeded(?Company $company): void
     {
         if (!$company) {
@@ -158,29 +134,17 @@ class EmailNotificationService
         }
     }
 
-    // ============================================
-    // LEGACY METHODS - For backward compatibility
-    // ============================================
 
-    /**
-     * Process email notification for a new booking (legacy method).
-     */
     public function processBookingCreated(Booking $booking): void
     {
         $this->triggerBookingNotification($booking, EmailNotification::TRIGGER_BOOKING_CREATED);
     }
 
-    /**
-     * Process email notification for a new attraction purchase (legacy method).
-     */
     public function processPurchaseCreated(AttractionPurchase $purchase): void
     {
         $this->triggerPurchaseNotification($purchase, EmailNotification::TRIGGER_PURCHASE_CREATED);
     }
 
-    /**
-     * Send notification using custom configuration.
-     */
     protected function sendNotification(EmailNotification $notification, $entity, string $type, ?string $overrideRecipient = null): void
     {
         $recipients = $overrideRecipient
@@ -189,7 +153,6 @@ class EmailNotificationService
 
         foreach ($recipients as $recipient) {
             try {
-                // Create log entry
                 $log = EmailNotificationLog::create([
                     'email_notification_id' => $notification->id,
                     'recipient_email' => $recipient['email'],
@@ -199,20 +162,15 @@ class EmailNotificationService
                     'status' => EmailNotificationLog::STATUS_PENDING,
                 ]);
 
-                // Build variables
                 $variables = $this->buildVariables($entity, $type, $notification->include_qr_code);
 
-                // Get subject and body
                 $subject = $this->replaceVariables($notification->getEffectiveSubject(), $variables);
                 $body = $this->replaceVariables($notification->getEffectiveBody(), $variables);
 
-                // Generate HTML
                 $htmlBody = $this->generateHtmlEmail($body);
 
-                // Build attachments
                 $attachments = $this->buildAttachments($entity, $type, $notification->include_qr_code);
 
-                // Send email
                 $this->sendEmail($recipient['email'], $subject, $htmlBody, $variables, $attachments);
 
                 $log->markAsSent();
@@ -237,9 +195,6 @@ class EmailNotificationService
         }
     }
 
-    /**
-     * Get recipients based on notification configuration.
-     */
     protected function getRecipients(EmailNotification $notification, $entity, string $type): array
     {
         $recipients = [];
@@ -284,7 +239,6 @@ class EmailNotificationService
             }
         }
 
-        // Remove duplicates
         $seen = [];
         return array_filter($recipients, function ($recipient) use (&$seen) {
             if (in_array($recipient['email'], $seen)) {
@@ -295,13 +249,9 @@ class EmailNotificationService
         });
     }
 
-    /**
-     * Get customer email from entity.
-     */
     protected function getCustomerEmail($entity, string $type): ?string
     {
         if ($type === 'payment') {
-            // Prefer payment.customer; fall back to payable's customer/guest_email.
             $email = $entity->customer?->email;
             if (!$email && $entity->payable) {
                 $email = $entity->payable->customer?->email ?? ($entity->payable->guest_email ?? null);
@@ -312,10 +262,6 @@ class EmailNotificationService
         return $entity->customer?->email ?? $entity->guest_email;
     }
 
-    /**
-     * Resolve location_id for an entity given the trigger type.
-     * For payments, falls back to the payable's location_id when payment.location_id is null.
-     */
     protected function resolveLocationId($entity, string $type): ?int
     {
         if ($type === 'booking') {
@@ -331,13 +277,9 @@ class EmailNotificationService
             return $locationId;
         }
 
-        // purchase
         return $entity->attraction->location_id ?? null;
     }
 
-    /**
-     * Resolve Location model for an entity given the trigger type.
-     */
     protected function resolveLocation($entity, string $type)
     {
         if ($type === 'booking') {
@@ -353,13 +295,9 @@ class EmailNotificationService
             return $location;
         }
 
-        // purchase
         return $entity->attraction->location ?? null;
     }
 
-    /**
-     * Get staff emails for location.
-     */
     protected function getStaffEmails($entity, string $type): array
     {
         $locationId = $this->resolveLocationId($entity, $type);
@@ -376,9 +314,6 @@ class EmailNotificationService
             ->toArray();
     }
 
-    /**
-     * Get company admin emails.
-     */
     protected function getCompanyAdminEmails($entity, string $type): array
     {
         $location = $this->resolveLocation($entity, $type);
@@ -395,9 +330,6 @@ class EmailNotificationService
             ->toArray();
     }
 
-    /**
-     * Get location manager emails.
-     */
     protected function getLocationManagerEmails($entity, string $type): array
     {
         $locationId = $this->resolveLocationId($entity, $type);
@@ -414,9 +346,6 @@ class EmailNotificationService
             ->toArray();
     }
 
-    /**
-     * Build variables for email template.
-     */
     protected function buildVariables($entity, string $type, bool $includeQrCode = true): array
     {
         switch ($type) {
@@ -431,9 +360,6 @@ class EmailNotificationService
         }
     }
 
-    /**
-     * Build common variables available for all email types.
-     */
     protected function buildCommonVariables(?Location $location = null, ?Company $company = null): array
     {
         return [
@@ -456,9 +382,6 @@ class EmailNotificationService
         ];
     }
 
-    /**
-     * Build variables for a booking.
-     */
     protected function buildBookingVariables(Booking $booking, bool $includeQrCode = true): array
     {
         $customer = $booking->customer;
@@ -467,7 +390,6 @@ class EmailNotificationService
         $room = $booking->room;
         $company = $location?->company;
 
-        // Build add-ons list
         $addOnsList = '';
         $addOnsTotal = 0;
         if ($booking->addOns && $booking->addOns->count() > 0) {
@@ -482,7 +404,6 @@ class EmailNotificationService
             $addOnsList = implode('<br>', $addOnItems);
         }
 
-        // QR Code
         $qrCodeHtml = '';
         if ($includeQrCode && $booking->qr_code_path) {
             $qrCodeUrl = Storage::url($booking->qr_code_path);
@@ -499,14 +420,12 @@ class EmailNotificationService
             : '';
 
         return [
-            // Customer variables
             'customer_name' => $customer ? trim($customer->first_name . ' ' . $customer->last_name) : ($booking->guest_name ?? 'Guest'),
             'customer_first_name' => $customer?->first_name ?? explode(' ', $booking->guest_name ?? 'Guest')[0],
             'customer_last_name' => $customer?->last_name ?? '',
             'customer_email' => $customer?->email ?? $booking->guest_email ?? '',
             'customer_phone' => $customer?->phone ?? $booking->guest_phone ?? '',
 
-            // Booking variables
             'booking_id' => (string) $booking->id,
             'booking_reference' => $booking->reference_number ?? '',
             'booking_date' => $booking->booking_date?->format('F j, Y') ?? '',
@@ -521,7 +440,6 @@ class EmailNotificationService
             'booking_notes' => $booking->notes ?? '',
             'booking_created_at' => $booking->created_at?->format('F j, Y g:i A') ?? '',
 
-            // Package variables
             'package_name' => $package?->name ?? '',
             'package_description' => $package?->description ?? '',
             'package_duration' => (string) ($package?->duration_minutes ?? 0) . ' minutes',
@@ -529,39 +447,30 @@ class EmailNotificationService
             'package_min_participants' => (string) ($package?->min_participants ?? 1),
             'package_max_participants' => (string) ($package?->max_participants ?? 10),
 
-            // Room variables
             'room_name' => $room?->name ?? '',
             'room_description' => $room?->description ?? '',
 
-            // Location variables
             'location_name' => $location?->name ?? '',
             'location_address' => $locationAddress,
             'location_phone' => $location?->phone ?? '',
             'location_email' => $location?->email ?? '',
 
-            // Company variables
             'company_name' => $company?->company_name ?? '',
             'company_email' => $company?->email ?? '',
             'company_phone' => $company?->phone ?? '',
             'company_address' => $company?->address ?? '',
 
-            // Add-ons
             'addons_list' => $addOnsList,
             'addons_total' => '$' . number_format($addOnsTotal, 2),
 
-            // QR Code
             'qr_code' => $qrCodeHtml,
             'qr_code_url' => $booking->qr_code_path ? Storage::url($booking->qr_code_path) : '',
 
-            // Date/time
             'current_date' => now()->format('F j, Y'),
             'current_year' => (string) now()->year,
         ];
     }
 
-    /**
-     * Build variables for a purchase.
-     */
     protected function buildPurchaseVariables(AttractionPurchase $purchase, bool $includeQrCode = true): array
     {
         $customer = $purchase->customer;
@@ -569,7 +478,6 @@ class EmailNotificationService
         $location = $attraction?->location;
         $company = $location?->company;
 
-        // QR Code
         $qrCodeHtml = '';
         if ($includeQrCode && $purchase->qrcode_path) {
             $qrCodeUrl = Storage::url($purchase->qrcode_path);
@@ -586,14 +494,12 @@ class EmailNotificationService
             : '';
 
         return [
-            // Customer variables
             'customer_name' => $customer ? trim($customer->first_name . ' ' . $customer->last_name) : ($purchase->guest_name ?? 'Guest'),
             'customer_first_name' => $customer?->first_name ?? explode(' ', $purchase->guest_name ?? 'Guest')[0],
             'customer_last_name' => $customer?->last_name ?? '',
             'customer_email' => $customer?->email ?? $purchase->guest_email ?? '',
             'customer_phone' => $customer?->phone ?? $purchase->guest_phone ?? '',
 
-            // Purchase variables
             'purchase_id' => (string) $purchase->id,
             'purchase_reference' => $purchase->reference_number ?? '',
             'purchase_date' => $purchase->purchase_date?->format('F j, Y') ?? '',
@@ -607,37 +513,29 @@ class EmailNotificationService
             'purchase_notes' => $purchase->notes ?? '',
             'purchase_created_at' => $purchase->created_at?->format('F j, Y g:i A') ?? '',
 
-            // Attraction variables
             'attraction_name' => $attraction?->name ?? '',
             'attraction_description' => $attraction?->description ?? '',
             'attraction_price' => '$' . number_format($attraction?->price ?? 0, 2),
             'attraction_duration' => (string) ($attraction?->duration_minutes ?? 0) . ' minutes',
 
-            // Location variables
             'location_name' => $location?->name ?? '',
             'location_address' => $locationAddress,
             'location_phone' => $location?->phone ?? '',
             'location_email' => $location?->email ?? '',
 
-            // Company variables
             'company_name' => $company?->company_name ?? '',
             'company_email' => $company?->email ?? '',
             'company_phone' => $company?->phone ?? '',
             'company_address' => $company?->address ?? '',
 
-            // QR Code
             'qr_code' => $qrCodeHtml,
             'qr_code_url' => $purchase->qrcode_path ? Storage::url($purchase->qrcode_path) : '',
 
-            // Date/time
             'current_date' => now()->format('F j, Y'),
             'current_year' => (string) now()->year,
         ];
     }
 
-    /**
-     * Build variables for a payment.
-     */
     protected function buildPaymentVariables(Payment $payment): array
     {
         $payable = $payment->payable;
@@ -679,9 +577,6 @@ class EmailNotificationService
         ]);
     }
 
-    /**
-     * Replace variables in content.
-     */
     protected function replaceVariables(string $content, array $variables): string
     {
         foreach ($variables as $key => $value) {
@@ -696,9 +591,6 @@ class EmailNotificationService
         return $content;
     }
 
-    /**
-     * Generate HTML email.
-     */
     protected function generateHtmlEmail(string $body): string
     {
         return <<<HTML
@@ -715,9 +607,6 @@ class EmailNotificationService
 HTML;
     }
 
-    /**
-     * Send email via Gmail API or fallback.
-     */
     protected function sendEmail(string $to, string $subject, string $htmlBody, array $variables, array $attachments = []): void
     {
         $useGmailApi = config('gmail.enabled', false) &&
@@ -732,7 +621,6 @@ HTML;
                 $attachments
             );
         } else {
-            // Fallback to Laravel Mail
             \Illuminate\Support\Facades\Mail::html($htmlBody, function ($message) use ($to, $subject, $variables, $attachments) {
                 $message->to($to)
                     ->subject($subject)
@@ -756,9 +644,6 @@ HTML;
         }
     }
 
-    /**
-     * Build attachments array for an entity.
-     */
     protected function buildAttachments($entity, string $type, bool $includeQrCode = true): array
     {
         $attachments = [];
@@ -785,7 +670,6 @@ HTML;
             }
         }
 
-        // Attach invitation file if available for bookings
         if ($type === 'booking' && $entity->package && $entity->package->invitation_file) {
             $invitationFile = $entity->package->invitation_file;
             if (!str_starts_with($invitationFile, 'data:') && !str_starts_with($invitationFile, 'http')) {
@@ -803,10 +687,6 @@ HTML;
         return $attachments;
     }
 
-    /**
-     * Send default booking notification.
-     * Checks DB for editable default template first, then falls back to hardcoded.
-     */
     protected function sendDefaultBookingNotification(Booking $booking, string $triggerType = 'booking_confirmed'): void
     {
         $customerEmail = $booking->customer?->email ?? $booking->guest_email;
@@ -821,7 +701,6 @@ HTML;
         try {
             $variables = $this->buildBookingVariables($booking, true);
 
-            // Try to find the DB-stored default notification
             $companyId = $booking->location?->company_id;
             $defaultNotification = null;
 
@@ -833,21 +712,17 @@ HTML;
             }
 
             if ($defaultNotification && $defaultNotification->is_active) {
-                // Use the DB-stored (possibly edited) template
                 $subject = $this->replaceVariables($defaultNotification->getEffectiveSubject(), $variables);
                 $body = $this->replaceVariables($defaultNotification->getEffectiveBody(), $variables);
 
-                // Log via notification log if available
                 $this->createDefaultLog($defaultNotification, $customerEmail, $booking);
             } else {
-                // Absolute fallback to hardcoded template
                 $subject = "Booking Confirmation - {$variables['booking_reference']}";
                 $body = $this->replaceVariables($this->getDefaultBookingEmailBody(), $variables);
             }
 
             $htmlBody = $this->generateHtmlEmail($body);
 
-            // Build attachments (QR code + invitation file)
             $attachments = $this->buildAttachments($booking, 'booking', true);
 
             $this->sendEmail($customerEmail, $subject, $htmlBody, $variables, $attachments);
@@ -864,10 +739,6 @@ HTML;
         }
     }
 
-    /**
-     * Send default purchase notification.
-     * Checks DB for editable default template first, then falls back to hardcoded.
-     */
     protected function sendDefaultPurchaseNotification(AttractionPurchase $purchase, string $triggerType = 'purchase_confirmed'): void
     {
         $customerEmail = $purchase->customer?->email ?? $purchase->guest_email;
@@ -882,7 +753,6 @@ HTML;
         try {
             $variables = $this->buildPurchaseVariables($purchase, true);
 
-            // Try to find the DB-stored default notification
             $companyId = $purchase->attraction?->location?->company_id;
             $defaultNotification = null;
 
@@ -894,21 +764,17 @@ HTML;
             }
 
             if ($defaultNotification && $defaultNotification->is_active) {
-                // Use the DB-stored (possibly edited) template
                 $subject = $this->replaceVariables($defaultNotification->getEffectiveSubject(), $variables);
                 $body = $this->replaceVariables($defaultNotification->getEffectiveBody(), $variables);
 
-                // Log via notification log if available
                 $this->createDefaultLog($defaultNotification, $customerEmail, $purchase);
             } else {
-                // Absolute fallback to hardcoded template
                 $subject = "Purchase Confirmation - {$variables['attraction_name']}";
                 $body = $this->replaceVariables($this->getDefaultPurchaseEmailBody(), $variables);
             }
 
             $htmlBody = $this->generateHtmlEmail($body);
 
-            // Build attachments (QR code if available)
             $attachments = $this->buildAttachments($purchase, 'purchase', true);
 
             $this->sendEmail($customerEmail, $subject, $htmlBody, $variables, $attachments);
@@ -925,9 +791,6 @@ HTML;
         }
     }
 
-    /**
-     * Create a log entry for a default email notification send.
-     */
     protected function createDefaultLog(EmailNotification $notification, string $recipientEmail, $entity): void
     {
         try {
@@ -948,9 +811,6 @@ HTML;
         }
     }
 
-    /**
-     * Get default booking email body.
-     */
     protected function getDefaultBookingEmailBody(): string
     {
         return <<<HTML
@@ -996,9 +856,6 @@ HTML;
 HTML;
     }
 
-    /**
-     * Get default purchase email body.
-     */
     protected function getDefaultPurchaseEmailBody(): string
     {
         return <<<HTML
@@ -1042,9 +899,6 @@ HTML;
 HTML;
     }
 
-    /**
-     * Get all available variables for templates.
-     */
     public static function getAvailableVariables(): array
     {
         return [

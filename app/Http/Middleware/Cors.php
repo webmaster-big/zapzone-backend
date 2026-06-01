@@ -8,9 +8,6 @@ use Symfony\Component\HttpFoundation\Response;
 
 class Cors
 {
-    /**
-     * Handle an incoming request.
-     */
     public function handle(Request $request, Closure $next): Response
     {
         $origin = $request->header('Origin');
@@ -24,10 +21,8 @@ class Cors
             'https://zapzone-backend-yt1lm2w5.on-forge.com',
         ];
 
-        // Determine which origin to allow
         $allowedOrigin = in_array($origin, $allowedOrigins) ? $origin : '*';
 
-        // Handle preflight OPTIONS request
         if ($request->isMethod('OPTIONS')) {
             return response('', 200)
                 ->header('Access-Control-Allow-Origin', $allowedOrigin)
@@ -39,7 +34,6 @@ class Cors
 
         $response = $next($request);
 
-        // Apply CORS headers to all responses
         $response->headers->set('Access-Control-Allow-Origin', $allowedOrigin);
         $response->headers->set('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
         $response->headers->set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin, X-CSRF-TOKEN, X-Visitor-Id, X-Session-Id, X-Analytics-Source, X-Tracking-Id');

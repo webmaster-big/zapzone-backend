@@ -13,15 +13,11 @@ class EventController extends Controller
 {
     use ScopesByAuthUser;
 
-    /**
-     * List all events.
-     */
     public function index(Request $request): JsonResponse
     {
         try {
             $query = Event::with(['location:id,name', 'addOns']);
 
-            // Multi-tenant + role-based scoping (driven by Sanctum auth user)
             $this->applyAuthScope($query, $request);
 
             if ($request->has('location_id')) {
@@ -40,9 +36,6 @@ class EventController extends Controller
         }
     }
 
-    /**
-     * Store a new event.
-     */
     public function store(Request $request): JsonResponse
     {
         try {
@@ -72,7 +65,6 @@ class EventController extends Controller
                 $validated['end_date'] = null;
             }
 
-            // Handle image upload (base64)
             if (isset($validated['image']) && !empty($validated['image'])) {
                 $validated['image'] = $this->handleImageUpload($validated['image']);
             }
@@ -94,17 +86,11 @@ class EventController extends Controller
         }
     }
 
-    /**
-     * Show a single event.
-     */
     public function show(Event $event): JsonResponse
     {
         return response()->json($event->load(['location:id,name', 'eventPurchases', 'addOns']));
     }
 
-    /**
-     * Update an event.
-     */
     public function update(Request $request, Event $event): JsonResponse
     {
         try {
@@ -135,9 +121,7 @@ class EventController extends Controller
                 $validated['end_date'] = null;
             }
 
-            // Handle image upload (base64)
             if (isset($validated['image']) && !empty($validated['image'])) {
-                // Delete old image if it exists
                 if ($event->image) {
                     $oldImagePath = storage_path('app/public/' . $event->image);
                     if (file_exists($oldImagePath)) {
@@ -164,9 +148,6 @@ class EventController extends Controller
         }
     }
 
-    /**
-     * Delete an event (soft delete).
-     */
     public function destroy(Event $event): JsonResponse
     {
         try {
@@ -177,26 +158,17 @@ class EventController extends Controller
         }
     }
 
-    /**
-     * Toggle event active status.
-     */
     public function toggleStatus(Event $event): JsonResponse
     {
         $event->update(['is_active' => !$event->is_active]);
         return response()->json($event);
     }
 
-    /**
-     * Get available dates for an event.
-     */
     public function getAvailableDates(Event $event): JsonResponse
     {
         return response()->json(['dates' => $event->getAvailableDates()]);
     }
 
-    /**
-     * Get available time slots for a specific event date.
-     */
     public function getAvailableTimeSlots(Event $event, string $date): JsonResponse
     {
         if (!$event->isDateValid($date)) {
@@ -208,11 +180,6 @@ class EventController extends Controller
         return response()->json(['date' => $date, 'time_slots' => $slots]);
     }
 
-    /**
-     * Get public events grouped by name with location-based purchase links.
-     * Groups events by name and shows all locations where they're available.
-     * Only active events are shown.
-     */
     public function eventsGroupedByName(Request $request): JsonResponse
     {
         $search = $request->get('search', null);
@@ -287,9 +254,6 @@ class EventController extends Controller
         ]);
     }
 
-    /**
-     * Get events by location (public).
-     */
     public function getByLocation(int $locationId): JsonResponse
     {
         $events = Event::active()
@@ -300,9 +264,6 @@ class EventController extends Controller
         return response()->json($events);
     }
 
-    /**
-     * Handle image upload - supports base64 or existing file path.
-     */
     private function handleImageUpload(string $image): string
     {
         if (strpos($image, 'data:image') === 0) {

@@ -16,6 +16,8 @@ use App\Models\Contact;
 use App\Models\CustomerNotification;
 use App\Models\Notification;
 use App\Models\User;
+use App\Models\Membership;
+use App\Services\MembershipBenefitService;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
@@ -27,15 +29,11 @@ class AttractionPurchaseController extends Controller
     use ScopesByAuthUser;
     use RecordsPageAnalytics;
 
-    /**
-     * Display a listing of attraction purchases.
-     */
     public function index(Request $request): JsonResponse
     {
         try {
             $query = AttractionPurchase::with(['attraction', 'customer', 'createdBy', 'addOns']);
 
-            // Multi-tenant + role-based scoping (driven by Sanctum auth user)
             $authUser = $this->resolveAuthUser($request);
             if ($authUser && in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
                 $query->whereHas('attraction', function ($q) use ($authUser) {
@@ -48,32 +46,26 @@ class AttractionPurchaseController extends Controller
                 });
             }
 
-        // Filter by location
         if ($request->has('location_id')) {
             $query->byLocation($request->location_id);
         }
 
-        // Filter by attraction
         if ($request->has('attraction_id')) {
             $query->where('attraction_id', $request->attraction_id);
         }
 
-        // Filter by customer
         if ($request->has('customer_id')) {
             $query->where('customer_id', $request->customer_id);
         }
 
-        // Filter by status
         if ($request->has('status')) {
             $query->where('status', $request->status);
         }
 
-        // Filter by payment method
         if ($request->has('payment_method')) {
             $query->where('payment_method', $request->payment_method);
         }
 
-        // Filter by date range
         if ($request->has('start_date')) {
             $query->where('purchase_date', '>=', $request->start_date);
         }
@@ -81,28 +73,23 @@ class AttractionPurchaseController extends Controller
             $query->where('purchase_date', '<=', $request->end_date);
         }
 
-        // Search by customer name, guest name, email, or attraction name
         if ($request->has('search')) {
             $search = $request->search;
             $query->where(function ($q) use ($search) {
-                // Search registered customers
                 $q->whereHas('customer', function ($subQ) use ($search) {
                     $subQ->where('first_name', 'like', "%{$search}%")
                          ->orWhere('last_name', 'like', "%{$search}%")
                          ->orWhere('email', 'like', "%{$search}%");
                 })
-                // Search guest customers
                 ->orWhere('guest_name', 'like', "%{$search}%")
                 ->orWhere('guest_email', 'like', "%{$search}%")
                 ->orWhere('guest_phone', 'like', "%{$search}%")
-                // Search attractions
                 ->orWhereHas('attraction', function ($subQ) use ($search) {
                     $subQ->where('name', 'like', "%{$search}%");
                 });
             });
         }
 
-        // Sort
         $sortBy = $request->get('sort_by', 'purchase_date');
         $sortOrder = $request->get('sort_order', 'desc');
 
@@ -152,9 +139,6 @@ class AttractionPurchaseController extends Controller
         }
     }
 
-    /**
-     * Customer-facing: list attraction purchases by guest email or customer ID.
-     */
     public function customerPurchases(Request $request): JsonResponse
     {
         $query = AttractionPurchase::select([
@@ -174,7 +158,6 @@ class AttractionPurchaseController extends Controller
                 'addOns:id,name',
             ]);
 
-        // Filter by guest_email (matches guest_email or customer email)
         if ($request->has('guest_email')) {
             $guestEmail = $request->guest_email;
             $query->where(function ($q) use ($guestEmail) {
@@ -185,12 +168,10 @@ class AttractionPurchaseController extends Controller
             });
         }
 
-        // Filter by customer_id
         if ($request->has('customer_id')) {
             $query->where('customer_id', $request->customer_id);
         }
 
-        // Search by attraction name or location name
         if ($request->has('search')) {
             $search = $request->search;
             $query->where(function ($q) use ($search) {
@@ -203,7 +184,6 @@ class AttractionPurchaseController extends Controller
             });
         }
 
-        // Sort
         $sortBy = $request->get('sort_by', 'purchase_date');
         $sortOrder = $request->get('sort_order', 'desc');
 
@@ -230,16 +210,13 @@ class AttractionPurchaseController extends Controller
         ]);
     }
 
- /**
-     * Store a newly created attraction purchase.
-     */
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
             'attraction_id' => 'required|exists:attractions,id',
             'customer_id' => 'nullable|exists:customers,id',
+            'membership_id' => 'nullable|exists:memberships,id',
 
-            // Guest customer fields (required if no customer_id)
             'guest_name' => 'required_without:customer_id|string|max:255',
             'guest_email' => 'required_without:customer_id|email|max:255',
             'guest_phone' => 'nullable|string|max:20',
@@ -271,15 +248,12 @@ class AttractionPurchaseController extends Controller
             'notes' => 'nullable|string',
             'send_email' => 'nullable|boolean', // Optional flag to control email sending
 
-            // Add-ons
             'additional_addons' => 'nullable|array',
             'additional_addons.*.addon_id' => 'required_with:additional_addons|exists:add_ons,id',
             'additional_addons.*.quantity' => 'nullable|integer|min:1',
             'additional_addons.*.price_at_purchase' => 'nullable|numeric|min:0',
         ]);
 
-        // --- Duplicate purchase prevention ---
-        // Check for any existing pending purchase with same key fields (no time window)
         $duplicateQuery = AttractionPurchase::where('attraction_id', $validated['attraction_id'])
             ->where('quantity', $validated['quantity'])
             ->where('status', AttractionPurchase::STATUS_PENDING);
@@ -305,17 +279,11 @@ class AttractionPurchaseController extends Controller
                 'data' => $existingPending,
             ], 200);
         }
-        // --- End duplicate prevention ---
 
-        // Default payment method to paylater when not specified
         if (!isset($validated['payment_method'])) {
             $validated['payment_method'] = 'paylater';
         }
 
-        // Set status based on payment method:
-        // - in-store/card (on-site): confirmed immediately, no charge step needed
-        // - paylater: pending until payment is collected later
-        // - authorize.net: pending until charge endpoint confirms after successful payment
         if (in_array($validated['payment_method'], ['in-store', 'card'])) {
             $validated['status'] = AttractionPurchase::STATUS_CONFIRMED;
         } else {
@@ -326,7 +294,6 @@ class AttractionPurchaseController extends Controller
 
         $purchase = AttractionPurchase::create($validated);
 
-        // Create add-on records
         if (isset($validated['additional_addons']) && is_array($validated['additional_addons'])) {
             foreach ($validated['additional_addons'] as $addon) {
                 AttractionPurchaseAddOn::create([
@@ -340,9 +307,8 @@ class AttractionPurchaseController extends Controller
 
         $purchase->load(['attraction', 'customer', 'createdBy', 'addOns']);
 
-        // Create notification for customer (only when purchase is confirmed AND payment collected)
-        // For online purchases (pending → charge → confirmed), notifications are sent from PaymentController::charge
-        // Skip notification if no payment was collected to avoid confusing admin with unpaid purchases
+        $this->recordMembershipRedemptions($purchase, $validated);
+
         if ($purchase->customer_id && $purchase->status !== AttractionPurchase::STATUS_PENDING && (float) ($purchase->amount_paid ?? 0) > 0) {
             CustomerNotification::create([
                 'customer_id' => $purchase->customer_id,
@@ -363,9 +329,6 @@ class AttractionPurchaseController extends Controller
             ]);
         }
 
-        // Create notification for location staff (only for confirmed purchases with payment collected)
-        // For authorize.net pending purchases, staff notifications are sent from PaymentController::charge after payment succeeds
-        // Skip notification if no payment was collected to avoid admin seeing purchases they can't act on
         $customerName = $purchase->customer ? "{$purchase->customer->first_name} {$purchase->customer->last_name}" : $purchase->guest_name;
         if ($purchase->status !== AttractionPurchase::STATUS_PENDING && $purchase->attraction->location_id && (float) ($purchase->amount_paid ?? 0) > 0) {
             Notification::create([
@@ -388,7 +351,6 @@ class AttractionPurchaseController extends Controller
             ]);
         }
 
-        // Log attraction purchase activity
         if($purchase->created_by){
             $purchase->load('createdBy');
 
@@ -427,7 +389,6 @@ class AttractionPurchaseController extends Controller
           );
         }
 
-        // Create or update contact from attraction purchase
         try {
             $contactEmail = $purchase->customer?->email ?? $purchase->guest_email;
             $contactName = $purchase->customer
@@ -454,16 +415,12 @@ class AttractionPurchaseController extends Controller
                 }
             }
         } catch (\Exception $e) {
-            // Log but don't fail the purchase if contact creation fails
             Log::warning('Failed to create contact from attraction purchase', [
                 'purchase_id' => $purchase->id,
                 'error' => $e->getMessage(),
             ]);
         }
 
-        // Send automated email notifications based on configured notification rules
-        // Only send if purchase is confirmed (onsite) and send_email is not explicitly false
-        // For online purchases (pending → charge → confirmed), emails are sent from PaymentController::charge
         $sendEmail = $validated['send_email'] ?? true;
         if ($sendEmail && $purchase->status !== AttractionPurchase::STATUS_PENDING) {
             try {
@@ -481,7 +438,6 @@ class AttractionPurchaseController extends Controller
             ]);
         }
 
-        // Fire server-side conversion (idempotent via tracking_id).
         $this->recordConversion('purchase_completed', $purchase, (float) ($purchase->total_amount ?? 0));
 
         return response()->json([
@@ -491,9 +447,46 @@ class AttractionPurchaseController extends Controller
         ], 201);
     }
 
-    /**
-     * Store QR code and send receipt email (without storing QR on server)
-     */
+    private function recordMembershipRedemptions(AttractionPurchase $purchase, array $validated): void
+    {
+        if (empty($validated['membership_id'])) {
+            return;
+        }
+
+        try {
+            $membership = Membership::find($validated['membership_id']);
+            if (! $membership) {
+                return;
+            }
+
+            $qty       = max(1, (int) ($purchase->quantity ?? 1));
+            $unitPrice = $qty > 0 ? (float) $purchase->total_amount / $qty : (float) $purchase->total_amount;
+            $locationId = $purchase->attraction->location_id ?? null;
+
+            $quote = app(MembershipBenefitService::class)->quote($membership, $locationId, [[
+                'type'       => 'attraction',
+                'id'         => $purchase->attraction_id,
+                'unit_price' => $unitPrice,
+                'quantity'   => $qty,
+            ]]);
+
+            if (! empty($quote['applied'])) {
+                app(MembershipBenefitService::class)->recordPurchaseRedemptions(
+                    $membership,
+                    $purchase,
+                    $quote['applied'],
+                    $locationId,
+                    auth()->id()
+                );
+            }
+        } catch (\Throwable $e) {
+            Log::warning('Failed to record membership redemptions for attraction purchase', [
+                'purchase_id' => $purchase->id,
+                'error'       => $e->getMessage(),
+            ]);
+        }
+    }
+
     public function storeQrCode(Request $request, AttractionPurchase $attractionPurchase): JsonResponse
     {
         Log::info('Attraction purchase receipt email initiated', [
@@ -505,7 +498,6 @@ class AttractionPurchaseController extends Controller
             'send_email' => 'nullable|boolean', // Optional flag to control email sending
         ]);
 
-        // Check if email sending is disabled
         if (isset($validated['send_email']) && $validated['send_email'] === false) {
             Log::info('Email sending skipped per user request', [
                 'purchase_id' => $attractionPurchase->id,
@@ -517,7 +509,6 @@ class AttractionPurchaseController extends Controller
             ]);
         }
 
-        // Get recipient email
         $recipientEmail = $attractionPurchase->customer
             ? $attractionPurchase->customer->email
             : $attractionPurchase->guest_email;
@@ -542,7 +533,6 @@ class AttractionPurchaseController extends Controller
         $emailError = null;
 
         try {
-            // Get base64 QR code (remove data URI prefix if present)
             $qrCodeBase64 = $validated['qr_code'];
             if (strpos($qrCodeBase64, 'data:image') === 0) {
                 $qrCodeBase64 = substr($qrCodeBase64, strpos($qrCodeBase64, ',') + 1);
@@ -552,7 +542,6 @@ class AttractionPurchaseController extends Controller
                 throw new \Exception("Failed to decode QR code data");
             }
 
-            // Load relationships for email including location
             $attractionPurchase->load(['attraction.location', 'customer', 'createdBy']);
 
             Log::info('Preparing email for attraction purchase', [
@@ -561,7 +550,6 @@ class AttractionPurchaseController extends Controller
                 'use_gmail_api' => config('gmail.enabled', false),
             ]);
 
-            // Check if Gmail API should be used
             $useGmailApi = config('gmail.enabled', false) &&
                           (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
 
@@ -570,7 +558,6 @@ class AttractionPurchaseController extends Controller
                     'purchase_id' => $attractionPurchase->id,
                 ]);
 
-                // Send using Gmail API
                 $gmailService = new GmailApiService();
                 $mailable = new AttractionPurchaseReceipt($attractionPurchase, $qrCodeBase64);
                 $emailBody = $mailable->render();
@@ -594,18 +581,15 @@ class AttractionPurchaseController extends Controller
                     'mail_driver' => config('mail.default'),
                 ]);
 
-                // Decode base64 to create temporary file for attachment
                 $qrCodeImage = base64_decode($qrCodeBase64);
                 $tempPath = storage_path('app/temp/qr_' . $attractionPurchase->id . '_' . time() . '.png');
 
-                // Create temp directory if not exists
                 if (!file_exists(storage_path('app/temp'))) {
                     mkdir(storage_path('app/temp'), 0755, true);
                 }
 
                 file_put_contents($tempPath, $qrCodeImage);
 
-                // Send using Laravel Mail (SMTP)
                 \Illuminate\Support\Facades\Mail::send([], [], function ($message) use ($attractionPurchase, $tempPath, $recipientEmail, $qrCodeBase64) {
                     $mailable = new AttractionPurchaseReceipt($attractionPurchase, $qrCodeBase64);
                     $emailBody = $mailable->render();
@@ -619,7 +603,6 @@ class AttractionPurchaseController extends Controller
                         ]);
                 });
 
-                // Clean up temp file
                 if (file_exists($tempPath)) {
                     unlink($tempPath);
                 }
@@ -664,9 +647,6 @@ class AttractionPurchaseController extends Controller
         ]);
     }
 
-    /**
-     * Display the specified attraction purchase.
-     */
     public function show(AttractionPurchase $attractionPurchase): JsonResponse
     {
         $attractionPurchase->load(['attraction', 'customer', 'createdBy', 'addOns']);
@@ -677,9 +657,6 @@ class AttractionPurchaseController extends Controller
         ]);
     }
 
-    /**
-     * Update the specified attraction purchase.
-     */
     public function update(Request $request, AttractionPurchase $attractionPurchase): JsonResponse
     {
         $validated = $request->validate([
@@ -708,14 +685,12 @@ class AttractionPurchaseController extends Controller
             'scheduled_time' => 'nullable|date_format:H:i',
             'notes' => 'nullable|string',
 
-            // Add-ons
             'additional_addons' => 'nullable|array',
             'additional_addons.*.addon_id' => 'required_with:additional_addons|exists:add_ons,id',
             'additional_addons.*.quantity' => 'nullable|integer|min:1',
             'additional_addons.*.price_at_purchase' => 'nullable|numeric|min:0',
         ]);
 
-        // Recalculate total amount if attraction or quantity changed
         if (isset($validated['attraction_id']) || isset($validated['quantity'])) {
             $attractionId = $validated['attraction_id'] ?? $attractionPurchase->attraction_id;
             $quantity = $validated['quantity'] ?? $attractionPurchase->quantity;
@@ -726,7 +701,6 @@ class AttractionPurchaseController extends Controller
 
         $attractionPurchase->update($validated);
 
-        // Update add-ons (delete-and-recreate strategy, same as booking addons)
         if (isset($validated['additional_addons'])) {
             AttractionPurchaseAddOn::where('attraction_purchase_id', $attractionPurchase->id)->delete();
             if (is_array($validated['additional_addons'])) {
@@ -743,7 +717,6 @@ class AttractionPurchaseController extends Controller
 
         $attractionPurchase->load(['attraction', 'customer', 'createdBy', 'addOns']);
 
-        // Log attraction purchase update activity
         $customerName = $attractionPurchase->customer ? "{$attractionPurchase->customer->first_name} {$attractionPurchase->customer->last_name}" : $attractionPurchase->guest_name;
         $currentUser = auth()->user();
         ActivityLog::log(
@@ -783,9 +756,6 @@ class AttractionPurchaseController extends Controller
         ]);
     }
 
-    /**
-     * Remove the specified attraction purchase.
-     */
     public function destroy($id): JsonResponse
     {
         Log::info('Attraction purchase delete request received', ['id' => $id, 'ip' => request()->ip()]);
@@ -801,7 +771,6 @@ class AttractionPurchaseController extends Controller
                 ], 404);
             }
 
-            // Safely get auth user ID (Customer model lacks getAuthIdentifier)
             $userId = null;
             $user = null;
             try {
@@ -821,7 +790,6 @@ class AttractionPurchaseController extends Controller
 
             $deleted = $attractionPurchase->delete();
 
-            // Verify the delete actually persisted
             $verify = AttractionPurchase::withTrashed()->find($purchaseId);
             Log::info('Attraction purchase delete verification', [
                 'id' => $purchaseId,
@@ -831,12 +799,10 @@ class AttractionPurchaseController extends Controller
             ]);
 
             if (!$deleted || !$verify?->trashed()) {
-                // Force the soft delete via direct query
                 Log::warning('Attraction purchase soft delete did not persist, forcing via query', ['id' => $purchaseId]);
                 AttractionPurchase::where('id', $purchaseId)->update(['deleted_at' => now()]);
             }
 
-            // Log attraction purchase deletion activity
             ActivityLog::log(
                 action: 'Attraction Purchase Deleted',
                 category: 'delete',
@@ -879,7 +845,6 @@ class AttractionPurchaseController extends Controller
         }
     }
 
-    // update status, amount paid, payment method
     public function updateStatus(Request $request, AttractionPurchase $attractionPurchase): JsonResponse
     {
         $validated = $request->validate([
@@ -890,7 +855,6 @@ class AttractionPurchaseController extends Controller
 
         $previousStatus = $attractionPurchase->status;
 
-        // Auto-determine status based on amount_paid vs total_amount when amount_paid changes
         if (isset($validated['amount_paid']) && !isset($validated['status'])) {
             $newAmountPaid = $validated['amount_paid'];
             if ($newAmountPaid >= $attractionPurchase->total_amount) {
@@ -909,9 +873,6 @@ class AttractionPurchaseController extends Controller
         ]);
     }
 
-    /**
-     * Mark purchase as confirmed (fully paid, awaiting check-in).
-     */
     public function markAsConfirmed(AttractionPurchase $attractionPurchase): JsonResponse
     {
         if ($attractionPurchase->status === AttractionPurchase::STATUS_CONFIRMED) {
@@ -938,9 +899,6 @@ class AttractionPurchaseController extends Controller
         ]);
     }
 
-    /**
-     * Cancel purchase.
-     */
     public function cancel(AttractionPurchase $attractionPurchase): JsonResponse
     {
         if ($attractionPurchase->status === AttractionPurchase::STATUS_CANCELLED) {
@@ -960,7 +918,8 @@ class AttractionPurchaseController extends Controller
         $attractionPurchase->update(['status' => AttractionPurchase::STATUS_CANCELLED]);
         $attractionPurchase->load(['attraction', 'customer', 'createdBy', 'addOns']);
 
-        // Negative conversion so net revenue dashboards stay accurate.
+        app(MembershipBenefitService::class)->reverseForRedeemable($attractionPurchase, 'purchase_cancelled');
+
         $this->recordConversion(
             'purchase_cancelled',
             $attractionPurchase,
@@ -975,14 +934,10 @@ class AttractionPurchaseController extends Controller
         ]);
     }
 
-    /**
-     * Get purchase statistics.
-     */
     public function statistics(Request $request): JsonResponse
     {
         $query = AttractionPurchase::query();
 
-        // Filter by date range if provided
         if ($request->has('start_date')) {
             $query->where('purchase_date', '>=', $request->start_date);
         }
@@ -1018,9 +973,6 @@ class AttractionPurchaseController extends Controller
         ]);
     }
 
-    /**
-     * Get purchases by customer.
-     */
     public function getByCustomer(int $customerId): JsonResponse
     {
         $purchases = AttractionPurchase::with(['attraction', 'createdBy'])
@@ -1034,9 +986,6 @@ class AttractionPurchaseController extends Controller
         ]);
     }
 
-    /**
-     * Get purchases by attraction.
-     */
     public function getByAttraction(int $attractionId): JsonResponse
     {
         $purchases = AttractionPurchase::with(['customer', 'createdBy'])
@@ -1050,122 +999,33 @@ class AttractionPurchaseController extends Controller
         ]);
     }
 
-    // /**
-    //  * Send receipt email with QR code (API endpoint)
-    //  */
-    // public function sendReceipt(Request $request, AttractionPurchase $attractionPurchase): JsonResponse
-    // {
-    //     $validated = $request->validate([
-    //         'qr_code' => 'nullable|string', // Base64 encoded QR code image
-    //         'email' => 'nullable|email', // Optional: override email address
-    //     ]);
 
-    //     try {
-    //         // Get recipient email
-    //         $recipientEmail = $validated['email'] ?? (
-    //             $attractionPurchase->customer
-    //                 ? $attractionPurchase->customer->email
-    //                 : $attractionPurchase->guest_email
-    //         );
 
-    //         if (!$recipientEmail) {
-    //             return response()->json([
-    //                 'success' => false,
-    //                 'message' => 'No email address found for this purchase',
-    //             ], 400);
-    //         }
 
-    //         $qrCodePath = null;
 
-    //         // If QR code image (base64) is provided, save it temporarily
-    //         if (isset($validated['qr_code']) && !empty($validated['qr_code'])) {
-    //             $qrCodeImage = $validated['qr_code'];
 
-    //             // Handle data URL format
-    //             if (strpos($qrCodeImage, 'data:image') === 0) {
-    //                 $qrCodePath = $this->saveQRCodeImage($qrCodeImage, $attractionPurchase->id);
-    //             }
-    //         }
 
-    //         // Load relationships for email
-    //         $attractionPurchase->load(['attraction', 'customer', 'createdBy']);
 
-    //         // Send the email
-    //         Mail::to($recipientEmail)->send(new AttractionPurchaseReceipt($attractionPurchase, $qrCodePath));
 
-    //         // Clean up temporary QR code file
-    //         if ($qrCodePath && file_exists($qrCodePath)) {
-    //             unlink($qrCodePath);
-    //         }
 
-    //         Log::info('Receipt email sent successfully for purchase #' . $attractionPurchase->id);
 
-    //         return response()->json([
-    //             'success' => true,
-    //             'message' => 'Receipt email sent successfully',
-    //         ]);
 
-    //     } catch (\Exception $e) {
-    //         Log::error('Failed to send receipt email for purchase #' . $attractionPurchase->id . ': ' . $e->getMessage());
 
-    //         return response()->json([
-    //             'success' => false,
-    //             'message' => 'Failed to send receipt email: ' . $e->getMessage(),
-    //         ], 500);
-    //     }
-    // }
 
-    // /**
-    //  * Save QR code image from base64 string
-    //  */
-    // private function saveQRCodeImage(string $base64Image, int $purchaseId): ?string
-    // {
-    //     try {
-    //         // Extract base64 data (remove data:image/png;base64, prefix)
-    //         if (strpos($base64Image, ',') !== false) {
-    //             $imageData = substr($base64Image, strpos($base64Image, ',') + 1);
-    //         } else {
-    //             $imageData = $base64Image;
-    //         }
 
-    //         $imageData = base64_decode($imageData);
 
-    //         if ($imageData === false) {
-    //             throw new \Exception('Failed to decode base64 image');
-    //         }
 
-    //         // Create temporary file path
-    //         $filename = 'qrcode_' . $purchaseId . '_' . time() . '.png';
-    //         $tempPath = storage_path('app/temp/' . $filename);
 
-    //         // Create temp directory if it doesn't exist
-    //         $tempDir = storage_path('app/temp');
-    //         if (!file_exists($tempDir)) {
-    //             mkdir($tempDir, 0755, true);
-    //         }
 
-    //         // Save the file
-    //         file_put_contents($tempPath, $imageData);
 
-    //         return $tempPath;
 
-    //     } catch (\Exception $e) {
-    //         Log::error('Failed to save QR code image: ' . $e->getMessage());
-    //         return null;
-    //     }
-    // }
 
-/**
- * Verify a purchase ticket without modifying it
- * GET /api/attraction-purchases/{id}/verify
- */
 public function verify(Request $request, int $id): JsonResponse
 {
     try {
         $purchase = AttractionPurchase::with(['attraction', 'customer'])
             ->findOrFail($id);
 
-        // Multi-tenant + role-based scoping (driven by Sanctum auth user)
         $authUser = $this->resolveAuthUser($request);
         if ($authUser && in_array($authUser->role, ['location_manager', 'attendant'], true)
             && $authUser->location_id
@@ -1216,23 +1076,17 @@ public function verify(Request $request, int $id): JsonResponse
     }
 }
 
-/**
- * Check-in a purchase ticket (mark as used/completed)
- * PATCH /api/attraction-purchases/{id}/check-in
- */
 public function checkIn(Request $request, int $id): JsonResponse
 {
     try {
         $purchase = AttractionPurchase::with(['attraction', 'customer'])
             ->findOrFail($id);
 
-        // Get staff user for auditing
         $authUser = null;
         if ($request->has('user_id')) {
             $authUser = User::find($request->user_id);
         }
 
-        // Validate ticket status
         if ($purchase->status === AttractionPurchase::STATUS_CHECKED_IN) {
             return response()->json([
                 'success' => false,
@@ -1265,24 +1119,19 @@ public function checkIn(Request $request, int $id): JsonResponse
             ], 400);
         }
 
-        // Mark as checked-in (only confirmed tickets can be checked in)
         $purchase->status = AttractionPurchase::STATUS_CHECKED_IN;
         $purchase->checked_in_at = now();
         $purchase->checked_in_by = $authUser ? $authUser->id : null;
         $purchase->save();
 
-        // Reload with relationships
         $purchase->load(['attraction', 'customer']);
 
-        // Get customer name for logging
         $customerName = $purchase->customer
             ? ($purchase->customer->first_name . ' ' . $purchase->customer->last_name)
             : ($purchase->guest_name ?? 'Guest');
 
-        // Get location_id from attraction
         $locationId = $purchase->attraction ? $purchase->attraction->location_id : null;
 
-        // Log check-in activity
         ActivityLog::log(
             action: 'Attraction Purchase Checked In',
             category: 'check-in',
@@ -1347,9 +1196,6 @@ public function checkIn(Request $request, int $id): JsonResponse
     }
 }
 
-    /**
-     * Bulk delete attraction purchases
-     */
     public function bulkDelete(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -1369,7 +1215,6 @@ public function checkIn(Request $request, int $id): JsonResponse
             $deletedCount++;
         }
 
-        // Log bulk deletion
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Bulk Attraction Purchases Deleted',
@@ -1398,15 +1243,11 @@ public function checkIn(Request $request, int $id): JsonResponse
         ]);
     }
 
-    /**
-     * List soft-deleted attraction purchases (trash).
-     */
     public function trashed(Request $request): JsonResponse
     {
         try {
             $query = AttractionPurchase::onlyTrashed()->with(['attraction', 'customer', 'createdBy', 'addOns']);
 
-            // Multi-tenant + role-based scoping (driven by Sanctum auth user)
             $authUser = $this->resolveAuthUser($request);
             if ($authUser && in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
                 $query->whereHas('attraction', function ($q) use ($authUser) {
@@ -1414,12 +1255,10 @@ public function checkIn(Request $request, int $id): JsonResponse
                 });
             }
 
-            // Filter by location
             if ($request->has('location_id')) {
                 $query->byLocation($request->location_id);
             }
 
-            // Search
             if ($request->has('search')) {
                 $search = $request->search;
                 $query->where(function ($q) use ($search) {
@@ -1470,9 +1309,6 @@ public function checkIn(Request $request, int $id): JsonResponse
         }
     }
 
-    /**
-     * Restore a soft-deleted attraction purchase.
-     */
     public function restore(int $id): JsonResponse
     {
         $purchase = AttractionPurchase::onlyTrashed()->findOrFail($id);
@@ -1480,7 +1316,6 @@ public function checkIn(Request $request, int $id): JsonResponse
         $purchase->restore();
         $purchase->load(['attraction', 'customer', 'createdBy', 'addOns']);
 
-        // Log restore activity
         $currentUser = auth()->user();
         $customerName = $purchase->customer
             ? "{$purchase->customer->first_name} {$purchase->customer->last_name}"
@@ -1517,9 +1352,6 @@ public function checkIn(Request $request, int $id): JsonResponse
         ]);
     }
 
-    /**
-     * Permanently delete a soft-deleted attraction purchase.
-     */
     public function forceDelete(int $id): JsonResponse
     {
         $purchase = AttractionPurchase::onlyTrashed()->findOrFail($id);
@@ -1530,7 +1362,6 @@ public function checkIn(Request $request, int $id): JsonResponse
 
         $purchase->forceDelete();
 
-        // Log permanent deletion
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Attraction Purchase Permanently Deleted',
@@ -1556,9 +1387,6 @@ public function checkIn(Request $request, int $id): JsonResponse
         ]);
     }
 
-    /**
-     * Bulk restore soft-deleted attraction purchases.
-     */
     public function bulkRestore(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -1574,7 +1402,6 @@ public function checkIn(Request $request, int $id): JsonResponse
             $restoredCount++;
         }
 
-        // Log bulk restore
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Bulk Attraction Purchases Restored',
@@ -1601,9 +1428,6 @@ public function checkIn(Request $request, int $id): JsonResponse
         ]);
     }
 
-    /**
-     * Force delete a pending attraction purchase (public - for payment error cleanup).
-     */
     public function publicForceDelete($id): JsonResponse
     {
         Log::info('Attraction purchase public force delete request', ['id' => $id, 'ip' => request()->ip()]);

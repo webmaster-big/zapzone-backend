@@ -18,13 +18,7 @@ class PageAnalyticsController extends Controller
     {
     }
 
-    // =====================================================================
-    // PUBLIC TRACKING ENDPOINTS (no auth — called from customer browser)
-    // =====================================================================
 
-    /**
-     * POST /api/analytics/track
-     */
     public function track(Request $request): JsonResponse
     {
         $payload = $this->validateEvent($request);
@@ -36,10 +30,6 @@ class PageAnalyticsController extends Controller
         ], 201);
     }
 
-    /**
-     * POST /api/analytics/track/batch
-     * Body: { events: [ {…}, {…} ] }
-     */
     public function trackBatch(Request $request): JsonResponse
     {
         $request->validate([
@@ -67,10 +57,6 @@ class PageAnalyticsController extends Controller
         ], 201);
     }
 
-    /**
-     * POST /api/analytics/duration
-     * sendBeacon-friendly patch of an existing page_view's engagement metrics.
-     */
     public function patchDuration(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -90,16 +76,11 @@ class PageAnalyticsController extends Controller
         return response()->json(['success' => true]);
     }
 
-    // =====================================================================
-    // PROTECTED ANALYTICS ENDPOINTS (auth:sanctum)
-    // =====================================================================
 
     public function overview(Request $request): JsonResponse
     {
         $base = $this->scopedQuery($request);
 
-        // All visitor counts use the same predicate (event_type='page_view')
-        // so `returning = unique - new` is arithmetically consistent.
         $pvBase = (clone $base)->where('event_type', 'page_view');
 
         $views          = (clone $pvBase)->count();
@@ -111,8 +92,6 @@ class PageAnalyticsController extends Controller
         $conversions    = (clone $base)->where('event_type', 'conversion')->count();
         $convValue      = (float) (clone $base)->where('event_type', 'conversion')->sum('conversion_value');
 
-        // Bounce = sessions with exactly 1 page_view. Computed inline so we
-        // don't depend on a stale flag.
         $bouncedSessions = (int) (clone $pvBase)
             ->whereNotNull('session_id')
             ->select('session_id')
@@ -211,7 +190,6 @@ class PageAnalyticsController extends Controller
 
         $rows = $q->get();
 
-        // Hydrate display name per entity_type.
         $byType = $rows->groupBy('entity_type');
         foreach ($byType as $type => $group) {
             $cls = PageAnalyticsRecorder::ENTITY_MAP[$type] ?? null;
@@ -231,7 +209,6 @@ class PageAnalyticsController extends Controller
     {
         $base = $this->scopedQuery($request);
 
-        // UTM-tagged traffic, grouped
         $utm = (clone $base)
             ->select('utm_source', 'utm_medium', 'utm_campaign')
             ->selectRaw('COUNT(*) as events')
@@ -244,8 +221,6 @@ class PageAnalyticsController extends Controller
             ->limit(50)
             ->get();
 
-        // Direct traffic (no UTM, no referrer) — otherwise the dashboard
-        // pretends 100% of traffic came from campaigns.
         $directBase = (clone $base)->whereNull('utm_source');
         $direct = [
             'events'      => (clone $directBase)->count(),
@@ -298,8 +273,6 @@ class PageAnalyticsController extends Controller
             return (clone $q)->whereNotNull('visitor_id')->distinct('visitor_id')->count('visitor_id');
         };
 
-        // No shopping cart in this product — the funnel is:
-        //   visited → viewed an offer page (book/buy) → started filling form → converted
         $visited       = $countVisitors((clone $base)->where('event_name', 'page_view'));
         $viewedOffer   = $countVisitors((clone $base)
             ->where('event_type', 'page_view')
@@ -328,8 +301,6 @@ class PageAnalyticsController extends Controller
             ->orderByDesc('created_at')
             ->paginate($perPage);
 
-        // Hydrate entity names so the dashboard can show e.g. "Unlimited Wristband"
-        // instead of just "Package #7".
         $items = collect($rows->items());
         $byType = $items->whereNotNull('entity_type')->groupBy('entity_type');
         foreach ($byType as $type => $group) {
@@ -363,13 +334,7 @@ class PageAnalyticsController extends Controller
         ]);
     }
 
-    // ---- New endpoints --------------------------------------------------
 
-    /**
-     * GET /api/page-analytics/live
-     * Active sessions in the last N minutes (default 5, max 60).
-     * Intentionally ignores the `from`/`to` filter.
-     */
     public function live(Request $request): JsonResponse
     {
         $minutes = (int) $request->get('minutes', 5);
@@ -403,16 +368,10 @@ class PageAnalyticsController extends Controller
         ]);
     }
 
-    /**
-     * GET /api/page-analytics/landing-pages
-     * Top entry pages with bounce rate. Bounce = the landing session had
-     * exactly 1 page_view (computed inline).
-     */
     public function landingPages(Request $request): JsonResponse
     {
         $limit = (int) $request->get('limit', 20);
 
-        // Sessions per landing page.
         $landings = $this->scopedQuery($request)
             ->where('is_landing', true)
             ->where('event_type', 'page_view')
@@ -425,7 +384,6 @@ class PageAnalyticsController extends Controller
             return response()->json(['success' => true, 'data' => []]);
         }
 
-        // For those sessions, count their page_views.
         $sessionIds = $landings->pluck('session_id')->unique()->values();
         $pvCounts = PageView::whereIn('session_id', $sessionIds)
             ->where('event_type', 'page_view')
@@ -433,8 +391,6 @@ class PageAnalyticsController extends Controller
             ->groupBy('session_id')
             ->pluck('c', 'session_id');
 
-        // Also count conversions + revenue per session so landing pages can
-        // show their contribution to revenue (not just bounce rate).
         $convBySession = PageView::whereIn('session_id', $sessionIds->all())
             ->where('event_type', 'conversion')
             ->select('session_id')
@@ -468,9 +424,6 @@ class PageAnalyticsController extends Controller
         return response()->json(['success' => true, 'data' => $rows]);
     }
 
-    /**
-     * GET /api/page-analytics/sessions/{sessionId}
-     */
     public function session(Request $request, string $sessionId): JsonResponse
     {
         $events = $this->tenantScope($request, PageView::query())
@@ -509,10 +462,6 @@ class PageAnalyticsController extends Controller
         ]);
     }
 
-    /**
-     * GET /api/page-analytics/searches
-     * Top queries + zero-result queries from `metadata.query` / `metadata.results`.
-     */
     public function searches(Request $request): JsonResponse
     {
         $limit  = (int) $request->get('limit', 20);
@@ -544,9 +493,6 @@ class PageAnalyticsController extends Controller
         return response()->json(['success' => true, 'data' => ['top' => $top, 'zero_result' => $zero]]);
     }
 
-    /**
-     * GET /api/page-analytics/promo-performance
-     */
     public function promoPerformance(Request $request): JsonResponse
     {
         $limit = (int) $request->get('limit', 20);
@@ -574,14 +520,6 @@ class PageAnalyticsController extends Controller
         return response()->json(['success' => true, 'data' => $rows]);
     }
 
-    /**
-     * GET /api/page-analytics/entities/{type}/{id}
-     * Deep-dive analytics for ONE specific package/attraction/event/etc.
-     * Returns the same shape as `overview` plus timeseries, sources,
-     * devices, top variants, and recent conversions — all scoped to the
-     * single entity. Honours the same tenant + date filters as the rest
-     * of the dashboard endpoints.
-     */
     public function entityDetail(Request $request, string $type, int $id): JsonResponse
     {
         if (!array_key_exists($type, PageAnalyticsRecorder::ENTITY_MAP)) {
@@ -591,9 +529,7 @@ class PageAnalyticsController extends Controller
             ], 422);
         }
 
-        // Hydrate entity (also verifies it exists + tenant can see it).
         $cls = PageAnalyticsRecorder::ENTITY_MAP[$type];
-        /** @var \Illuminate\Database\Eloquent\Model|null $entity */
         $entity = $cls::query()->find($id);
         if (!$entity) {
             return response()->json([
@@ -602,8 +538,6 @@ class PageAnalyticsController extends Controller
             ], 404);
         }
 
-        // Cross-tenant guard: a company_admin/location user cannot peek
-        // at another company's entities.
         $authUser = $request->user();
         if ($authUser && $authUser->company_id && !empty($entity->company_id)
             && (int) $entity->company_id !== (int) $authUser->company_id) {
@@ -613,13 +547,11 @@ class PageAnalyticsController extends Controller
             ], 403);
         }
 
-        // Force the entity filter onto this request, then reuse scopedQuery.
         $request->merge(['entity_type' => $type, 'entity_id' => $id]);
 
         $base   = $this->scopedQuery($request);
         $pvBase = (clone $base)->where('event_type', 'page_view');
 
-        // ---- Headline ---------------------------------------------------
         $views          = (clone $pvBase)->count();
         $uniqueVisitors = (clone $pvBase)->whereNotNull('visitor_id')->distinct('visitor_id')->count('visitor_id');
         $newVisitors    = (clone $pvBase)->where('is_new_visitor', true)->whereNotNull('visitor_id')->distinct('visitor_id')->count('visitor_id');
@@ -632,7 +564,6 @@ class PageAnalyticsController extends Controller
         $conversions    = (clone $base)->where('event_type', 'conversion')->count();
         $convValue      = (float) (clone $base)->where('event_type', 'conversion')->sum('conversion_value');
 
-        // Bounce: sessions that touched this entity's page exactly once.
         $bouncedSessions = (int) (clone $pvBase)
             ->whereNotNull('session_id')
             ->select('session_id')
@@ -646,7 +577,6 @@ class PageAnalyticsController extends Controller
         $finishRate  = $startedForm    > 0 ? round(($conversions  / $startedForm)    * 100, 2) : 0;
         $bounceRate  = $sessions       > 0 ? round(($bouncedSessions / $sessions)    * 100, 2) : 0;
 
-        // ---- Timeseries -------------------------------------------------
         $request->validate(['bucket' => ['sometimes', Rule::in(['hour', 'day', 'week', 'month'])]]);
         $bucket = $request->get('bucket', 'day');
         $expr   = $this->bucketExpression(DB::connection()->getDriverName(), $bucket);
@@ -661,9 +591,6 @@ class PageAnalyticsController extends Controller
             ->orderBy('bucket')
             ->get();
 
-        // ---- Top variants (different page_paths under one entity) -------
-        // e.g. one package available at multiple locations will show as
-        // distinct rows: /book/package/downtown/... vs /book/package/airport/...
         $byPath = (clone $pvBase)
             ->select('page_path', 'location_id')
             ->selectRaw('COUNT(*) as views')
@@ -674,7 +601,6 @@ class PageAnalyticsController extends Controller
             ->limit(20)
             ->get();
 
-        // ---- Sources / devices for THIS entity --------------------------
         $sources = (clone $base)
             ->select('utm_source', 'utm_medium', 'utm_campaign')
             ->selectRaw('COUNT(*) as events')
@@ -704,7 +630,6 @@ class PageAnalyticsController extends Controller
         $countries = (clone $pvBase)->select('country')->selectRaw('COUNT(*) as views')
             ->whereNotNull('country')->groupBy('country')->orderByDesc('views')->limit(20)->get();
 
-        // ---- Recent conversions for this entity -------------------------
         $recent = (clone $base)
             ->where('event_type', 'conversion')
             ->orderByDesc('created_at')
@@ -754,12 +679,6 @@ class PageAnalyticsController extends Controller
         ]);
     }
 
-    /**
-     * GET /api/page-analytics/entities-leaderboard
-     * Compare every entity of one type side-by-side. Same headline metrics
-     * as `topEntities` but with conversion rate + revenue + form-starts so
-     * a manager can sort packages/attractions/events by performance.
-     */
     public function entitiesLeaderboard(Request $request): JsonResponse
     {
         $request->validate([
@@ -772,8 +691,6 @@ class PageAnalyticsController extends Controller
         $sort  = $request->get('sort', 'views');
         $limit = (int) $request->get('limit', 50);
 
-        // Don't apply the request's entity_type filter twice (scopedQuery
-        // would also pick it up); manually scope and skip that.
         $req = clone $request;
         $req->offsetUnset('entity_type');
         $req->offsetUnset('entity_id');
@@ -800,10 +717,8 @@ class PageAnalyticsController extends Controller
                 return $r;
             });
 
-        // Sort + cap (we sort in PHP because conversion_rate is computed).
         $rows = $rows->sortByDesc(fn ($r) => (float) $r->{$sort})->take($limit)->values();
 
-        // Hydrate names.
         $cls   = PageAnalyticsRecorder::ENTITY_MAP[$type];
         $named = $cls::whereIn('id', $rows->pluck('entity_id'))->get()->keyBy('id');
         foreach ($rows as $r) {
@@ -823,10 +738,6 @@ class PageAnalyticsController extends Controller
         ]);
     }
 
-    /**
-     * GET /api/page-analytics/attribution
-     * First-touch vs last-touch revenue split by source/campaign.
-     */
     public function attribution(Request $request): JsonResponse
     {
         $base = $this->scopedQuery($request)->where('event_type', 'conversion');
@@ -857,9 +768,6 @@ class PageAnalyticsController extends Controller
         ]);
     }
 
-    // =====================================================================
-    // INTERNAL
-    // =====================================================================
 
     protected function validateEvent(Request $request): array
     {
@@ -904,9 +812,6 @@ class PageAnalyticsController extends Controller
         ]);
     }
 
-    /**
-     * Auth-tenant scope only (company / location pinning). No date range.
-     */
     protected function tenantScope(Request $request, $q)
     {
         $authUser = $request->user();
@@ -923,9 +828,6 @@ class PageAnalyticsController extends Controller
         return $q;
     }
 
-    /**
-     * Tenant scope + date range + standard filters.
-     */
     protected function scopedQuery(Request $request)
     {
         $q = $this->tenantScope($request, PageView::query());

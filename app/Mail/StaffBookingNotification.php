@@ -15,21 +15,14 @@ class StaffBookingNotification extends Mailable
     public string $recipientName;
     public string $recipientRole;
 
-    /**
-     * Create a new message instance.
-     */
     public function __construct(Booking $booking, string $recipientName = 'Team Member', string $recipientRole = 'staff')
     {
-        // Ensure all relationships are loaded
         $booking->loadMissing(['location.company', 'customer', 'package', 'room', 'attractions', 'addOns']);
         $this->booking = $booking;
         $this->recipientName = $recipientName;
         $this->recipientRole = $recipientRole;
     }
 
-    /**
-     * Build the message.
-     */
     public function build()
     {
         $customerName = $this->booking->customer

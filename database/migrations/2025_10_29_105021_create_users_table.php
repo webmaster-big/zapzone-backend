@@ -6,9 +6,6 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
      {
         Schema::create('users', function (Blueprint $table) {
@@ -33,7 +30,6 @@ return new class extends Migration
             $table->rememberToken();
             $table->timestamps();
 
-            // Indexes
             $table->index(['company_id', 'location_id']);
             $table->index(['role', 'status']);
             $table->index('email');
@@ -55,9 +51,6 @@ return new class extends Migration
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::dropIfExists('users');

@@ -14,38 +14,29 @@ class RoomController extends Controller
 {
     use ScopesByAuthUser;
 
-    /**
-     * Display a listing of rooms.
-     */
     public function index(Request $request): JsonResponse
     {
         try {
-            // Limit per_page to prevent memory exhaustion
             $perPage = min($request->get('per_page', 15), 500);
 
             $query = Room::with(['location:id,name', 'packages:id,name']);
 
-            // Multi-tenant + role-based scoping (driven by Sanctum auth user)
             $this->applyAuthScope($query, $request);
 
-            // Filter by location
             if ($request->has('location_id')) {
                 $query->byLocation($request->location_id);
             }
 
-            // Filter by availability
             if ($request->has('is_available')) {
                 $query->where('is_available', $request->boolean('is_available'));
             } else {
                 $query->available();
             }
 
-            // Filter by capacity
             if ($request->has('min_capacity')) {
                 $query->byCapacity($request->min_capacity);
             }
 
-            // Price range filter
             if ($request->has('min_price')) {
                 $query->where('price', '>=', $request->min_price);
             }
@@ -53,13 +44,11 @@ class RoomController extends Controller
                 $query->where('price', '<=', $request->max_price);
             }
 
-            // Search by name
             if ($request->has('search')) {
                 $search = $request->search;
                 $query->where('name', 'like', "%{$search}%");
             }
 
-            // Sort
             $sortBy = $request->get('sort_by', 'name');
             $sortOrder = $request->get('sort_order', 'asc');
 
@@ -97,9 +86,6 @@ class RoomController extends Controller
         }
     }
 
-    /**
-     * Store a newly created room.
-     */
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -123,9 +109,6 @@ class RoomController extends Controller
         ], 201);
     }
 
-    /**
-     * Display the specified room.
-     */
     public function show(Room $room): JsonResponse
     {
         $room->load(['location', 'packages']);
@@ -136,9 +119,6 @@ class RoomController extends Controller
         ]);
     }
 
-    /**
-     * Update the specified room.
-     */
     public function update(Request $request, Room $room): JsonResponse
     {
         $validated = $request->validate([
@@ -162,7 +142,6 @@ class RoomController extends Controller
         ]);
     }
 
-    // update all booking interval based on area_group they belong to
     public function updateBookingIntervalByAreaGroup(Request $request, string $areaGroup): JsonResponse
     {
         $validated = $request->validate([
@@ -179,9 +158,6 @@ class RoomController extends Controller
         ]);
     }
 
-    /**
-     * Remove the specified room.
-     */
     public function destroy(Room $room): JsonResponse
     {
         $roomName = $room->name;
@@ -190,7 +166,6 @@ class RoomController extends Controller
 
         $room->delete();
 
-        // Log room deletion
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Room Deleted',
@@ -221,9 +196,6 @@ class RoomController extends Controller
         ]);
     }
 
-    /**
-     * Get rooms by location.
-     */
     public function getByLocation(int $locationId): JsonResponse
     {
         $rooms = Room::with(['packages'])
@@ -238,9 +210,6 @@ class RoomController extends Controller
         ]);
     }
 
-    /**
-     * Toggle room availability.
-     */
     public function toggleAvailability(Room $room): JsonResponse
     {
         $room->update(['is_available' => !$room->is_available]);
@@ -252,9 +221,6 @@ class RoomController extends Controller
         ]);
     }
 
-    /**
-     * Get available rooms with capacity.
-     */
     public function getAvailableRooms(Request $request): JsonResponse
     {
         $query = Room::with(['location'])
@@ -276,9 +242,6 @@ class RoomController extends Controller
         ]);
     }
 
-    /**
-     * Bulk delete rooms.
-     */
     public function bulkDelete(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -298,7 +261,6 @@ class RoomController extends Controller
                 $room->delete();
                 $deletedCount++;
 
-                // Log each room deletion
                 $currentUser = auth()->user();
                 ActivityLog::log(
                     action: 'Room Bulk Deleted',
@@ -326,7 +288,6 @@ class RoomController extends Controller
             }
         }
 
-        // Log the bulk operation summary
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Rooms Bulk Delete',

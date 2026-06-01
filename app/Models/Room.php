@@ -27,7 +27,6 @@ class Room extends Model
         'booking_interval' => 'integer',
     ];
 
-    // Relationships
     public function location(): BelongsTo
     {
         return $this->belongsTo(Location::class);
@@ -38,7 +37,6 @@ class Room extends Model
         return $this->belongsToMany(Package::class, 'package_rooms');
     }
 
-    // Scopes
     public function scopeAvailable($query)
     {
         return $query->where('is_available', true);
@@ -59,9 +57,6 @@ class Room extends Model
         return $query->where('area_group', $areaGroup);
     }
 
-    /**
-     * Get all rooms in the same area group (for stagger checking)
-     */
     public function getRoomsInSameAreaGroup()
     {
         if (!$this->area_group) {

@@ -26,34 +26,24 @@ class PackageController extends Controller
 {
     use ScopesByAuthUser;
 
-    /**
-     * Display a listing of packages.
-     * Note: Soft-deleted packages are automatically excluded by Laravel's SoftDeletes trait.
-     */
     public function index(Request $request): JsonResponse
     {
-        // SoftDeletes trait automatically excludes deleted packages
         $query = Package::with(['location', 'rooms', 'giftCards', 'promos', 'availabilitySchedules']);
 
-        // Multi-tenant + role-based scoping (driven by Sanctum auth user)
         $this->applyAuthScope($query, $request);
 
-        // Filter by location
         if ($request->has('location_id')) {
             $query->byLocation($request->location_id);
         }
 
-        // Filter by category
         if ($request->has('category')) {
             $query->byCategory($request->category);
         }
 
-        // Filter by package type
         if ($request->has('package_type')) {
             $query->byPackageType($request->package_type);
         }
 
-        // Search by name or description
         if ($request->has('search')) {
             $search = $request->search;
             $query->where(function ($q) use ($search) {
@@ -62,7 +52,6 @@ class PackageController extends Controller
             });
         }
 
-        // Sort
         $sortBy = $request->get('sort_by', 'id');
         $sortOrder = $request->get('sort_order', 'desc');
 
@@ -75,7 +64,6 @@ class PackageController extends Controller
         $perPage = min($request->get('per_page', 15), 50); // Max 50 items per page for better performance
         $packages = $query->paginate($perPage);
 
-        // Load relationships after pagination to reduce memory usage
         $packages->load(['location', 'attractions', 'addOns', 'rooms', 'giftCards', 'promos', 'availabilitySchedules']);
 
         return response()->json([
@@ -94,21 +82,13 @@ class PackageController extends Controller
         ]);
     }
 
-    /**
-     * Get public packages with location-based booking links
-     * Groups packages by name and shows all locations where they're available
-     * Note: Only active, non-deleted packages are shown to public.
-     */
     public function packagesGroupedByName(Request $request): JsonResponse
     {
-        // search
         $search = $request->get('search', null);
         $date = $request->get('date') ? Carbon::parse($request->get('date')) : Carbon::today();
 
         $groupedPackages = [];
 
-        // SoftDeletes trait automatically excludes deleted packages
-        // Exclude 'image' from SELECT to avoid MySQL sort buffer overflow on large columns
         $query = Package::with(['location', 'availabilitySchedules'])
             ->select(['id', 'name', 'description', 'price', 'category', 'min_participants', 'max_participants', 'duration', 'location_id', 'is_active', 'display_order', 'package_type', 'duration_unit', 'price_per_additional'])
             ->where('is_active', true);
@@ -122,14 +102,12 @@ class PackageController extends Controller
 
         $packages = $query->orderBy('display_order', 'asc')->orderBy('id')->get();
 
-        // Fetch images separately (no ORDER BY = no sort buffer issue)
         $packageImages = Package::whereIn('id', $packages->pluck('id'))
             ->pluck('image', 'id');
 
         foreach ($packages as $package) {
             $packageName = $package->name;
 
-            // Get special pricing for this package on the requested date
             $priceBreakdown = SpecialPricing::getFullPriceBreakdown(
                 'package',
                 $package->id,
@@ -139,7 +117,6 @@ class PackageController extends Controller
             );
 
             if (!isset($groupedPackages[$packageName])) {
-                // Initialize the group with the first package's data
                 $groupedPackages[$packageName] = [
                     'name' => $package->name,
                     'description' => $package->description,
@@ -160,7 +137,6 @@ class PackageController extends Controller
                 ];
             }
 
-            // Add this location's information
             $locationSlug = str_replace(' ', '', $package->location->name);
 
             $groupedPackages[$packageName]['locations'][] = [
@@ -176,7 +152,6 @@ class PackageController extends Controller
                 'special_pricing' => $priceBreakdown,
             ];
 
-            // Create booking link for this location
             $groupedPackages[$packageName]['booking_links'][] = [
                 'location' => $package->location->name,
                 'url' => "/book/package/{$locationSlug}/{$package->id}",
@@ -185,7 +160,6 @@ class PackageController extends Controller
             ];
         }
 
-        // Convert to indexed array
         $result = array_values($groupedPackages);
 
         return response()->json([
@@ -195,14 +169,10 @@ class PackageController extends Controller
         ]);
     }
 
-    /**
-     * Store a newly created package.
-     */
     public function store(StorePackageRequest $request): JsonResponse
     {
         $validated = $request->validated();
 
-        // Handle image upload (array of images)
         if (isset($validated['image']) && is_array($validated['image']) && count($validated['image']) > 0) {
             $uploadedImages = [];
             foreach ($validated['image'] as $image) {
@@ -215,7 +185,6 @@ class PackageController extends Controller
             $validated['image'] = null;
         }
 
-        // Handle invitation_file upload
         if (isset($validated['invitation_file']) && !empty($validated['invitation_file'])) {
             try {
                 $validated['invitation_file'] = $this->handleFileUpload($validated['invitation_file'], 'invitations');
@@ -229,24 +198,20 @@ class PackageController extends Controller
 
         $user = $request->user();
 
-        // Set location_id based on user role
         if ($user) {
             if ($user->role === 'company_admin') {
-                // Company admin can specify location_id, or default to their first location
                 if (!isset($validated['location_id'])) {
                     $validated['location_id'] = \App\Models\Location::where('company_id', $user->company_id)
                         ->first()
                         ->id ?? null;
                 }
             } else {
-                // Other users can only create packages for their location
                 $validated['location_id'] = $user->location_id;
             }
         }
 
         $package = Package::create($validated);
 
-        // Handle attraction IDs
         if (isset($validated['attraction_ids']) && is_array($validated['attraction_ids'])) {
             foreach ($validated['attraction_ids'] as $attractionId) {
                 PackageAttraction::create([
@@ -256,7 +221,6 @@ class PackageController extends Controller
             }
         }
 
-        // Handle add-on IDs
         if (isset($validated['addon_ids']) && is_array($validated['addon_ids'])) {
             foreach ($validated['addon_ids'] as $addonId) {
                 PackageAddOn::create([
@@ -266,7 +230,6 @@ class PackageController extends Controller
             }
         }
 
-        // Handle gift card IDs
         if (isset($validated['gift_card_ids']) && is_array($validated['gift_card_ids'])) {
             foreach ($validated['gift_card_ids'] as $giftCardId) {
                 PackageGiftCard::create([
@@ -276,7 +239,6 @@ class PackageController extends Controller
             }
         }
 
-        // Handle promo IDs
         if (isset($validated['promo_ids']) && is_array($validated['promo_ids'])) {
             foreach ($validated['promo_ids'] as $promoId) {
                 PackagePromo::create([
@@ -286,7 +248,6 @@ class PackageController extends Controller
             }
         }
 
-        // Handle room IDs
         if (isset($validated['room_ids']) && is_array($validated['room_ids'])) {
             foreach ($validated['room_ids'] as $roomId) {
                 PackageRoom::create([
@@ -304,13 +265,8 @@ class PackageController extends Controller
         ], 201);
     }
 
-    /**
-     * Display the specified package.
-     * Note: Soft-deleted packages will return 404 (excluded by SoftDeletes trait).
-     */
     public function show($package): JsonResponse
     {
-        // findOrFail automatically excludes soft-deleted packages
         $package = Package::with(['location', 'attractions', 'addOns', 'rooms', 'giftCards', 'promos', 'availabilitySchedules'])->findOrFail($package);
 
         return response()->json([
@@ -319,18 +275,13 @@ class PackageController extends Controller
         ]);
     }
 
-    /**
-     * Update the specified package.
-     */
     public function update(UpdatePackageRequest $request, $package): JsonResponse
     {
         $package = Package::with(['location', 'attractions', 'addOns', 'rooms', 'giftCards', 'promos', 'availabilitySchedules'])->findOrFail($package);
 
         $validated = $request->validated();
 
-        // Handle image upload (array of images)
         if (isset($validated['image']) && is_array($validated['image']) && count($validated['image']) > 0) {
-            // Delete old images if they exist
             if ($package->image && is_array($package->image)) {
                 foreach ($package->image as $oldImage) {
                     $oldImagePath = storage_path('app/public/' . $oldImage);
@@ -351,16 +302,13 @@ class PackageController extends Controller
                             'package_id' => $package->id,
                             'error' => $e->getMessage()
                         ]);
-                        // Continue with other images
                     }
                 }
             }
             $validated['image'] = !empty($uploadedImages) ? $uploadedImages : null;
         }
 
-        // Handle invitation_file upload
         if (isset($validated['invitation_file']) && !empty($validated['invitation_file'])) {
-            // Delete old invitation file if it exists and is a local file
             if ($package->invitation_file &&
                 !filter_var($package->invitation_file, FILTER_VALIDATE_URL) &&
                 strpos($package->invitation_file, 'data:') !== 0) {
@@ -379,20 +327,15 @@ class PackageController extends Controller
                     'package_id' => $package->id,
                     'error' => $e->getMessage()
                 ]);
-                // Keep the old file if new upload fails
                 unset($validated['invitation_file']);
             }
         }
 
-        // Update the package basic information
         $package->update($validated);
 
-        // Handle attraction IDs sync
         if (isset($validated['attraction_ids'])) {
-            // Delete existing relationships
             PackageAttraction::where('package_id', $package->id)->delete();
 
-            // Create new relationships
             foreach ($validated['attraction_ids'] as $attractionId) {
                 PackageAttraction::create([
                     'package_id' => $package->id,
@@ -401,12 +344,9 @@ class PackageController extends Controller
             }
         }
 
-        // Handle add-on IDs sync
         if (isset($validated['addon_ids'])) {
-            // Delete existing relationships
             PackageAddOn::where('package_id', $package->id)->delete();
 
-            // Create new relationships
             foreach ($validated['addon_ids'] as $addonId) {
                 PackageAddOn::create([
                     'package_id' => $package->id,
@@ -415,12 +355,9 @@ class PackageController extends Controller
             }
         }
 
-        // Handle gift card IDs sync
         if (isset($validated['gift_card_ids'])) {
-            // Delete existing relationships
             PackageGiftCard::where('package_id', $package->id)->delete();
 
-            // Create new relationships
             foreach ($validated['gift_card_ids'] as $giftCardId) {
                 PackageGiftCard::create([
                     'package_id' => $package->id,
@@ -429,12 +366,9 @@ class PackageController extends Controller
             }
         }
 
-        // Handle promo IDs sync
         if (isset($validated['promo_ids'])) {
-            // Delete existing relationships
             PackagePromo::where('package_id', $package->id)->delete();
 
-            // Create new relationships
             foreach ($validated['promo_ids'] as $promoId) {
                 PackagePromo::create([
                     'package_id' => $package->id,
@@ -443,12 +377,9 @@ class PackageController extends Controller
             }
         }
 
-        // Handle room IDs sync
         if (isset($validated['room_ids'])) {
-            // Delete existing relationships
             PackageRoom::where('package_id', $package->id)->delete();
 
-            // Create new relationships
             foreach ($validated['room_ids'] as $roomId) {
                 PackageRoom::create([
                     'package_id' => $package->id,
@@ -464,20 +395,14 @@ class PackageController extends Controller
         ]);
     }
 
-    /**
-     * Soft delete the specified package.
-     * Images and relationships are preserved for historical bookings.
-     */
     public function destroy(Request $request, Package $package): JsonResponse
     {
         $packageName = $package->name;
         $packageId = $package->id;
         $locationId = $package->location_id;
 
-        // Soft delete the package (sets deleted_at timestamp)
         $package->delete();
 
-        // Log package deletion
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Package Deleted',
@@ -509,10 +434,8 @@ class PackageController extends Controller
         ]);
     }
 
-    // delete package add ons
     public function deletePackageAddOns( Package $package): JsonResponse
     {
-        // Delete all add-ons associated with the package
         PackageAddOn::where('package_id', $package->id)->delete();
 
         return response()->json([
@@ -521,14 +444,10 @@ class PackageController extends Controller
         ]);
     }
 
-    /**
-     * Restore a soft-deleted package.
-     */
     public function restore(Request $request, int $id): JsonResponse
     {
         $package = Package::withTrashed()->findOrFail($id);
 
-        // UPDATE DELETE_AT TO NULL
         $package->deleted_at = null;
         $package->save();
 
@@ -541,7 +460,6 @@ class PackageController extends Controller
 
         $package->restore();
 
-        // Log package restoration
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Package Restored',
@@ -573,10 +491,6 @@ class PackageController extends Controller
         ]);
     }
 
-    /**
-     * Permanently delete a soft-deleted package.
-     * This action cannot be undone.
-     */
     public function forceDelete(Request $request, int $id): JsonResponse
     {
         $package = Package::withTrashed()->findOrFail($id);
@@ -592,7 +506,6 @@ class PackageController extends Controller
         $packageId = $package->id;
         $locationId = $package->location_id;
 
-        // Delete associated images if they exist
         if ($package->image && is_array($package->image)) {
             foreach ($package->image as $image) {
                 if (file_exists(storage_path('app/public/' . $image))) {
@@ -601,10 +514,8 @@ class PackageController extends Controller
             }
         }
 
-        // Permanently delete the package
         $package->forceDelete();
 
-        // Log package permanent deletion
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Package Permanently Deleted',
@@ -636,18 +547,12 @@ class PackageController extends Controller
         ]);
     }
 
-    /**
-     * Get packages by location.
-     * Note: Only active, non-deleted packages are returned.
-     */
     public function getByLocation(Request $request, int $locationId): JsonResponse
     {
         $user = $request->user();
 
-        // Check if user has access to this location
         if ($user) {
             if ($user->role === 'company_admin') {
-                // Company admin can only view packages from their company's locations
                 $companyLocationIds = \App\Models\Location::where('company_id', $user->company_id)
                     ->pluck('id')
                     ->toArray();
@@ -659,7 +564,6 @@ class PackageController extends Controller
                     ], 403);
                 }
             } else {
-                // Other users can only view packages from their location
                 if ($locationId !== $user->location_id) {
                     return response()->json([
                         'success' => false,
@@ -669,7 +573,6 @@ class PackageController extends Controller
             }
         }
 
-        // SoftDeletes trait automatically excludes deleted packages
         $packages = Package::with(['attractions', 'addOns', 'rooms'])
             ->byLocation($locationId)
             ->active()
@@ -683,29 +586,21 @@ class PackageController extends Controller
         ]);
     }
 
-    /**
-     * Get packages by category.
-     * Note: Only active, non-deleted packages are returned.
-     */
     public function getByCategory(Request $request, string $category): JsonResponse
     {
         $user = $request->user();
-        // SoftDeletes trait automatically excludes deleted packages
         $query = Package::with(['location', 'attractions', 'addOns', 'rooms'])
             ->byCategory($category)
             ->active();
 
-        // Filter by user's accessible locations
         if ($user) {
             if ($user->role === 'company_admin') {
-                // Company admin can see packages from their company's locations
                 $companyLocationIds = \App\Models\Location::where('company_id', $user->company_id)
                     ->pluck('id')
                     ->toArray();
 
                 $query->whereIn('location_id', $companyLocationIds);
             } else {
-                // Other users can only see packages from their location
                 $query->where('location_id', $user->location_id);
             }
         }
@@ -734,9 +629,6 @@ class PackageController extends Controller
         ]);
     }
 
-    /**
-     * Attach attractions to package.
-     */
     public function attachAttractions(Request $request, Package $package): JsonResponse
     {
         $validated = $request->validate([
@@ -752,9 +644,6 @@ class PackageController extends Controller
         ]);
     }
 
-    /**
-     * Detach attractions from package.
-     */
     public function detachAttractions(Request $request, Package $package): JsonResponse
     {
         $validated = $request->validate([
@@ -770,9 +659,6 @@ class PackageController extends Controller
         ]);
     }
 
-    /**
-     * Attach add-ons to package.
-     */
     public function attachAddOns(Request $request, Package $package): JsonResponse
     {
         $validated = $request->validate([
@@ -788,9 +674,6 @@ class PackageController extends Controller
         ]);
     }
 
-    /**
-     * Detach add-ons from package.
-     */
     public function detachAddOns(Request $request, Package $package): JsonResponse
     {
         $validated = $request->validate([
@@ -806,9 +689,6 @@ class PackageController extends Controller
         ]);
     }
 
-    /**
-     * Bulk import packages
-     */
     public function bulkImport(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -833,7 +713,6 @@ class PackageController extends Controller
             'packages.*.package_type' => 'nullable|string',
             'packages.*.partial_payment_percentage' => 'nullable|numeric|min:0|max:100',
             'packages.*.partial_payment_fixed' => 'nullable|numeric|min:0',
-            // Support both ID arrays and full object arrays
             'packages.*.attraction_ids' => 'nullable|array',
             'packages.*.attraction_ids.*' => 'exists:attractions,id',
             'packages.*.addon_ids' => 'nullable|array',
@@ -844,7 +723,6 @@ class PackageController extends Controller
             'packages.*.gift_card_ids.*' => 'exists:gift_cards,id',
             'packages.*.promo_ids' => 'nullable|array',
             'packages.*.promo_ids.*' => 'exists:promos,id',
-            // Full object arrays from export
             'packages.*.attractions' => 'nullable|array',
             'packages.*.attractions.*.id' => 'nullable|exists:attractions,id',
             'packages.*.add_ons' => 'nullable|array',
@@ -855,7 +733,6 @@ class PackageController extends Controller
             'packages.*.gift_cards.*.id' => 'nullable|exists:gift_cards,id',
             'packages.*.promos' => 'nullable|array',
             'packages.*.promos.*.id' => 'nullable|exists:promos,id',
-            // Availability schedules
             'packages.*.availability_schedules' => 'nullable|array',
             'packages.*.availability_schedules.*.availability_type' => 'nullable|in:daily,weekly,monthly',
             'packages.*.availability_schedules.*.day_configuration' => 'nullable|array',
@@ -871,7 +748,6 @@ class PackageController extends Controller
 
         foreach ($validated['packages'] as $index => $packageData) {
             try {
-                // Handle image upload if provided (array of images)
                 if (isset($packageData['image']) && is_array($packageData['image']) && count($packageData['image']) > 0) {
                     $uploadedImages = [];
                     foreach ($packageData['image'] as $image) {
@@ -884,9 +760,6 @@ class PackageController extends Controller
                     $packageData['image'] = null;
                 }
 
-                // Extract relationship IDs - support both formats
-                // 1. Direct ID arrays (attraction_ids, addon_ids, etc.)
-                // 2. Full object arrays from export (attractions, add_ons, etc.)
 
                 $attractionIds = $packageData['attraction_ids'] ?? [];
                 if (empty($attractionIds) && isset($packageData['attractions']) && is_array($packageData['attractions'])) {
@@ -913,10 +786,8 @@ class PackageController extends Controller
                     $promoIds = array_filter(array_column($packageData['promos'], 'id'));
                 }
 
-                // Extract availability schedules
                 $availabilitySchedules = $packageData['availability_schedules'] ?? [];
 
-                // Remove relationship data from package data
                 unset(
                     $packageData['attraction_ids'],
                     $packageData['addon_ids'],
@@ -932,16 +803,13 @@ class PackageController extends Controller
                     $packageData['location'] // Remove nested location object
                 );
 
-                // Map max_guests to max_participants if present
                 if (isset($packageData['max_guests'])) {
                     $packageData['max_participants'] = $packageData['max_guests'];
                     unset($packageData['max_guests']);
                 }
 
-                // Create the package with a unique ID
                 $package = Package::create($packageData);
 
-                // Attach attractions
                 if (!empty($attractionIds)) {
                     foreach ($attractionIds as $attractionId) {
                         PackageAttraction::create([
@@ -951,7 +819,6 @@ class PackageController extends Controller
                     }
                 }
 
-                // Attach add-ons
                 if (!empty($addonIds)) {
                     foreach ($addonIds as $addonId) {
                         PackageAddOn::create([
@@ -961,7 +828,6 @@ class PackageController extends Controller
                     }
                 }
 
-                // Attach rooms
                 if (!empty($roomIds)) {
                     foreach ($roomIds as $roomId) {
                         PackageRoom::create([
@@ -971,7 +837,6 @@ class PackageController extends Controller
                     }
                 }
 
-                // Attach gift cards
                 if (!empty($giftCardIds)) {
                     foreach ($giftCardIds as $giftCardId) {
                         PackageGiftCard::create([
@@ -981,7 +846,6 @@ class PackageController extends Controller
                     }
                 }
 
-                // Attach promos
                 if (!empty($promoIds)) {
                     foreach ($promoIds as $promoId) {
                         PackagePromo::create([
@@ -991,10 +855,8 @@ class PackageController extends Controller
                     }
                 }
 
-                // Create availability schedules
                 if (!empty($availabilitySchedules)) {
                     foreach ($availabilitySchedules as $scheduleData) {
-                        // Skip if missing required fields
                         if (empty($scheduleData['availability_type']) ||
                             empty($scheduleData['time_slot_start']) ||
                             empty($scheduleData['time_slot_end']) ||
@@ -1015,7 +877,6 @@ class PackageController extends Controller
                     }
                 }
 
-                // Load relationships
                 $package->load(['location', 'attractions', 'addOns', 'rooms', 'giftCards', 'promos', 'availabilitySchedules']);
                 $importedPackages[] = new PackageResource($package);
 
@@ -1052,15 +913,10 @@ class PackageController extends Controller
         return response()->json($response, count($errors) > 0 ? 207 : 201);
     }
 
-    /**
-     * Handle image upload - supports base64 or file upload
-     */
     private function handleImageUpload($image): string
     {
-        // Check if it's a base64 string
         if (is_string($image) && strpos($image, 'data:image') === 0) {
             try {
-                // Extract base64 data
                 preg_match('/data:image\/(\w+);base64,/', $image, $matches);
 
                 if (empty($matches)) {
@@ -1071,7 +927,6 @@ class PackageController extends Controller
                 $imageType = $matches[1] ?? 'png';
                 $base64Data = substr($image, strpos($image, ',') + 1);
 
-                // Validate base64 data
                 if (empty($base64Data)) {
                     Log::error('Empty base64 data');
                     throw new \Exception('Empty image data');
@@ -1079,7 +934,6 @@ class PackageController extends Controller
 
                 $imageData = base64_decode($base64Data, true);
 
-                // Check if decode was successful
                 if ($imageData === false) {
                     Log::error('Failed to decode base64 data', [
                         'data_length' => strlen($base64Data),
@@ -1088,7 +942,6 @@ class PackageController extends Controller
                     throw new \Exception('Failed to decode image data');
                 }
 
-                // Generate shorter filename
                 $filename = uniqid() . '.' . $imageType;
                 $path = 'images/packages';
                 $fullPath = storage_path('app/public/' . $path);
@@ -1101,13 +954,11 @@ class PackageController extends Controller
                     'imageSize' => strlen($imageData)
                 ]);
 
-                // Create directory if it doesn't exist
                 if (!file_exists($fullPath)) {
                     mkdir($fullPath, 0755, true);
                     Log::info('Created directory', ['path' => $fullPath]);
                 }
 
-                // Save the file
                 $bytesWritten = file_put_contents($fullPath . '/' . $filename, $imageData);
 
                 if ($bytesWritten === false) {
@@ -1120,7 +971,6 @@ class PackageController extends Controller
                     'bytes' => $bytesWritten
                 ]);
 
-                // Return the relative path (for storage URL)
                 return $path . '/' . $filename;
 
             } catch (\Exception $e) {
@@ -1132,26 +982,19 @@ class PackageController extends Controller
             }
         }
 
-        // If it's already a file path or URL, return as is
         Log::info('Image path returned as-is', ['image' => substr($image, 0, 100)]);
         return $image;
     }
 
-    /**
-     * Handle file upload (PDFs, documents, etc.) - supports base64, URL, or file upload
-     */
     private function handleFileUpload($file, string $subDirectory = 'files'): string
     {
-        // If it's a URL (http/https), return as is
         if (filter_var($file, FILTER_VALIDATE_URL)) {
             Log::info('File is URL, returned as-is', ['url' => substr($file, 0, 100)]);
             return $file;
         }
 
-        // Check if it's a base64 string (data URI)
         if (is_string($file) && strpos($file, 'data:') === 0) {
             try {
-                // Extract MIME type and base64 data
                 preg_match('/data:([^;]+);base64,/', $file, $matches);
 
                 if (empty($matches)) {
@@ -1162,7 +1005,6 @@ class PackageController extends Controller
                 $mimeType = $matches[1] ?? 'application/octet-stream';
                 $base64Data = substr($file, strpos($file, ',') + 1);
 
-                // Validate base64 data
                 if (empty($base64Data)) {
                     Log::error('Empty base64 data');
                     throw new \Exception('Empty file data');
@@ -1175,7 +1017,6 @@ class PackageController extends Controller
                     throw new \Exception('Failed to decode file data');
                 }
 
-                // Determine file extension from MIME type
                 $extension = 'pdf'; // default
                 $mimeToExt = [
                     'application/pdf' => 'pdf',
@@ -1193,7 +1034,6 @@ class PackageController extends Controller
                     $extension = $mimeToExt[$mimeType];
                 }
 
-                // Generate filename
                 $filename = uniqid() . '.' . $extension;
                 $path = $subDirectory;
                 $fullPath = storage_path('app/public/' . $path);
@@ -1206,13 +1046,11 @@ class PackageController extends Controller
                     'fileSize' => strlen($fileData)
                 ]);
 
-                // Create directory if it doesn't exist
                 if (!file_exists($fullPath)) {
                     mkdir($fullPath, 0755, true);
                     Log::info('Created directory', ['path' => $fullPath]);
                 }
 
-                // Save the file
                 $bytesWritten = file_put_contents($fullPath . '/' . $filename, $fileData);
 
                 if ($bytesWritten === false) {
@@ -1225,7 +1063,6 @@ class PackageController extends Controller
                     'bytes' => $bytesWritten
                 ]);
 
-                // Return the relative path (for storage URL)
                 return $path . '/' . $filename;
 
             } catch (\Exception $e) {
@@ -1237,12 +1074,10 @@ class PackageController extends Controller
             }
         }
 
-        // If it's already a file path, return as is
         Log::info('File path returned as-is', ['file' => substr($file, 0, 100)]);
         return $file;
     }
 
-    // store package room
     public function storePackageRoom(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -1259,9 +1094,6 @@ class PackageController extends Controller
         ], 201);
     }
 
-    /**
-     * Get availability schedules for a package.
-     */
     public function getAvailabilitySchedules(Package $package): JsonResponse
     {
         $schedules = $package->availabilitySchedules()
@@ -1279,9 +1111,6 @@ class PackageController extends Controller
         ]);
     }
 
-    /**
-     * Store a new availability schedule for a package.
-     */
     public function storeAvailabilitySchedule(Request $request, Package $package): JsonResponse
     {
         Log::info('Creating new availability schedule', [
@@ -1348,9 +1177,6 @@ class PackageController extends Controller
         ], 201);
     }
 
-    /**
-     * Update availability schedules for a package (bulk replace).
-     */
     public function updateAvailabilitySchedules(\App\Http\Requests\StorePackageAvailabilityScheduleRequest $request, Package $package): JsonResponse
     {
         Log::info('Bulk updating availability schedules', [
@@ -1368,17 +1194,14 @@ class PackageController extends Controller
             'schedules_to_create' => count($validated['schedules']),
         ]);
 
-        // Get existing schedules count before deletion
         $existingSchedulesCount = $package->availabilitySchedules()->count();
         Log::info('Deleting existing schedules', [
             'package_id' => $package->id,
             'existing_count' => $existingSchedulesCount,
         ]);
 
-        // Delete existing schedules
         $package->availabilitySchedules()->delete();
 
-        // Create new schedules
         $createdSchedules = [];
         foreach ($validated['schedules'] as $index => $scheduleData) {
             $scheduleData['package_id'] = $package->id;
@@ -1399,7 +1222,6 @@ class PackageController extends Controller
             'created_count' => count($createdSchedules),
         ]);
 
-        // Log the activity
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Availability Schedules Updated',
@@ -1436,9 +1258,6 @@ class PackageController extends Controller
         ]);
     }
 
-    /**
-     * Delete a specific availability schedule.
-     */
     public function deleteAvailabilitySchedule(Package $package, int $scheduleId): JsonResponse
     {
         Log::info('Deleting availability schedule', [
@@ -1465,7 +1284,6 @@ class PackageController extends Controller
             'package_id' => $package->id,
         ]);
 
-        // Log the activity
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Availability Schedule Deleted',
@@ -1501,10 +1319,6 @@ class PackageController extends Controller
         ]);
     }
 
-    /**
-     * Bulk update min_booking_notice_hours for multiple packages.
-     * Allows setting the minimum booking notice time for selected packages at once.
-     */
     public function bulkUpdateMinBookingNotice(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -1516,14 +1330,11 @@ class PackageController extends Controller
         $packageIds = $validated['package_ids'];
         $minBookingNoticeHours = $validated['min_booking_notice_hours'];
 
-        // Update all selected packages
         $updatedCount = Package::whereIn('id', $packageIds)
             ->update(['min_booking_notice_hours' => $minBookingNoticeHours]);
 
-        // Get package names for logging
         $packageNames = Package::whereIn('id', $packageIds)->pluck('name')->toArray();
 
-        // Log the bulk update
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Bulk Package Min Booking Notice Updated',
@@ -1559,10 +1370,6 @@ class PackageController extends Controller
         ]);
     }
 
-    /**
-     * Reorder packages (for drag-and-drop).
-     * Accepts an array of { id, display_order } objects.
-     */
     public function reorder(Request $request): JsonResponse
     {
         $validated = $request->validate([

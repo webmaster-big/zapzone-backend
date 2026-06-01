@@ -11,6 +11,7 @@ use App\Models\MembershipPayment;
 use App\Models\MembershipPlan;
 use App\Models\AuthorizeNetAccount;
 use App\Services\MembershipService;
+use App\Services\MembershipBenefitService;
 use App\Support\CompanyLocations;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -28,17 +29,16 @@ class MembershipController extends Controller
 {
     use ScopesByAuthUser;
 
-    public function __construct(protected MembershipService $service) {}
+    public function __construct(
+        protected MembershipService $service,
+        protected MembershipBenefitService $benefits,
+    ) {}
 
-    // ----------------------------------------------------------
-    // STAFF / ADMIN endpoints
-    // ----------------------------------------------------------
 
     public function index(Request $request): JsonResponse
     {
         $query = Membership::with(['customer:id,first_name,last_name,email,phone', 'plan:id,name,tier,price,billing_cycle', 'homeLocation:id,name']);
 
-        // Scope by company through plan / by location through home_location
         $authUser = $this->resolveAuthUser($request);
         if ($authUser) {
             if (in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
@@ -53,6 +53,7 @@ class MembershipController extends Controller
 
         if ($request->filled('status'))         $query->where('status', $request->status);
         if ($request->filled('plan_id'))        $query->where('membership_plan_id', $request->plan_id);
+        if ($request->filled('customer_id'))    $query->where('customer_id', $request->customer_id);
         if ($request->filled('location_id'))    $query->where('home_location_id', $request->location_id);
         if ($request->filled('search')) {
             $s = $request->search;
@@ -92,32 +93,17 @@ class MembershipController extends Controller
         return response()->json(['success' => true, 'data' => $membership]);
     }
 
-    /**
-     * Staff-side create (e.g. comped, manual signup at desk).
-     *
-     * Accepts either:
-     *   (a) customer_id — link to an existing customer account, OR
-     *   (b) first_name + last_name + email + phone — create a new customer on-the-fly.
-     *
-     * When a new customer is created a temporary random password is set and the
-     * membership activation email (with QR code) is sent to their email address
-     * by the normal activate() flow.  They can use "Forgot Password" from the
-     * customer login page to set their own password afterwards.
-     */
     public function store(Request $request): JsonResponse
     {
         $authUser = $this->resolveAuthUser($request);
         abort_unless($authUser, 403);
 
         $data = $request->validate([
-            // Existing customer — supply one or the other block, not both.
             'customer_id'          => 'nullable|exists:customers,id',
-            // New customer fields (required when customer_id is omitted)
             'first_name'           => 'required_without:customer_id|string|max:100',
             'last_name'            => 'required_without:customer_id|string|max:100',
             'email'                => 'required_without:customer_id|email|max:255',
             'phone'                => 'nullable|string|max:30',
-            // Membership fields
             'membership_plan_id'   => 'required|exists:membership_plans,id',
             'home_location_id'     => 'nullable|exists:locations,id',
             'sold_at_location_id'  => 'nullable|exists:locations,id',
@@ -129,9 +115,7 @@ class MembershipController extends Controller
             'payment_profile_token'=> 'nullable|string|max:120',
         ]);
 
-        // Resolve or create the customer account.
         if (empty($data['customer_id'])) {
-            // Check if a customer with this email already exists.
             $existing = Customer::where('email', $data['email'])->first();
             if ($existing) {
                 $customerId = $existing->id;
@@ -150,7 +134,6 @@ class MembershipController extends Controller
             $customerId = (int) $data['customer_id'];
         }
 
-        // Strip the new-customer fields before creating the membership.
         $membershipData = array_intersect_key($data, array_flip([
             'membership_plan_id', 'home_location_id', 'sold_at_location_id',
             'is_comped', 'discount_amount', 'recurring_billing_authorized',
@@ -169,10 +152,6 @@ class MembershipController extends Controller
         return response()->json(['success' => true, 'data' => $membership->fresh()->load('plan', 'customer')], 201);
     }
 
-    /**
-     * Customer-side purchase (called from booking-frontend customer flow).
-     * Customer must be authenticated. Charges via Authorize.Net Accept.js token.
-     */
     public function purchase(Request $request): JsonResponse
     {
         $customer = $this->resolveCustomer();
@@ -191,7 +170,6 @@ class MembershipController extends Controller
 
         $plan = MembershipPlan::findOrFail($data['membership_plan_id']);
 
-        // Resolve home location ID — accept either an explicit ID or a name.
         $homeLocId = $data['home_location_id'] ?? null;
         if (!$homeLocId && !empty($data['home_location_name'])) {
             $homeLocId = \App\Models\Location::where('name', $data['home_location_name'])->value('id');
@@ -211,7 +189,6 @@ class MembershipController extends Controller
             'recurring_billing_authorized_at'=> now(),
         ]);
 
-        // Free / comped plan — activate immediately, no charge needed.
         if ($plan->price <= 0) {
             $this->service->recordPayment($membership, [
                 'amount'      => 0,
@@ -222,13 +199,11 @@ class MembershipController extends Controller
             return response()->json(['success' => true, 'data' => $membership->fresh()->load('plan')], 201);
         }
 
-        // Paid plan: opaque_data required.
         if (empty($data['opaque_data']['dataDescriptor']) || empty($data['opaque_data']['dataValue'])) {
             $membership->delete();
             return response()->json(['success' => false, 'message' => 'Payment information is required.'], 422);
         }
 
-        // Look up the active Authorize.Net account for this location.
         $account = AuthorizeNetAccount::where('location_id', $homeLocId)
             ->where('is_active', true)
             ->first();
@@ -244,7 +219,6 @@ class MembershipController extends Controller
             $merchantAuthentication->setTransactionKey(trim($account->transaction_key));
             $environment = $account->isProduction() ? ANetEnvironment::PRODUCTION : ANetEnvironment::SANDBOX;
 
-            // Accept.js opaque data token (never touches raw card numbers).
             $opaqueData = new AnetAPI\OpaqueDataType();
             $opaqueData->setDataDescriptor($data['opaque_data']['dataDescriptor']);
             $opaqueData->setDataValue($data['opaque_data']['dataValue']);
@@ -252,14 +226,12 @@ class MembershipController extends Controller
             $paymentType = new AnetAPI\PaymentType();
             $paymentType->setOpaqueData($opaqueData);
 
-            // Customer billing info.
             $billTo = new AnetAPI\CustomerAddressType();
             $billTo->setFirstName(substr($customer->first_name ?? '', 0, 50));
             $billTo->setLastName(substr($customer->last_name ?? '', 0, 50));
             if (!empty($customer->email))  $billTo->setEmail(substr($customer->email, 0, 255));
             if (!empty($customer->phone))  $billTo->setPhoneNumber(substr($customer->phone, 0, 25));
 
-            // Order metadata.
             $order = new AnetAPI\OrderType();
             $order->setInvoiceNumber(substr('MEM-' . $membership->id, 0, 20));
             $order->setDescription(substr("Membership: {$plan->name}", 0, 255));
@@ -306,7 +278,6 @@ class MembershipController extends Controller
                 }
             }
 
-            // Charge was declined or gateway returned an error.
             $errorMessage = 'Payment declined';
             if ($response) {
                 $tresponse = $response->getTransactionResponse();
@@ -343,10 +314,6 @@ class MembershipController extends Controller
         }
     }
 
-    /**
-     * Customer view of their own active membership — returns full transparent details
-     * including which locations the membership is valid at.
-     */
     public function myMembership(): JsonResponse
     {
         $customer = $this->resolveCustomer();
@@ -356,8 +323,10 @@ class MembershipController extends Controller
             'plan',
             'plan.approvedLocations:id,name',
             'plan.location:id,name',
+            'plan.planBenefits' => fn($q) => $q->where('is_active', true)->orderByDesc('priority'),
             'homeLocation:id,name',
             'membershipPayments' => fn($q) => $q->latest()->limit(10),
+            'benefitRedemptions' => fn($q) => $q->whereNull('reversed_at')->latest()->limit(50),
         ])
         ->where('customer_id', $customer->id)
         ->latest()
@@ -367,7 +336,6 @@ class MembershipController extends Controller
             return response()->json(['success' => true, 'data' => null]);
         }
 
-        // Build a clear, customer-facing summary of which locations are valid for this membership.
         $plan               = $membership->plan;
         $validLocations     = $this->resolveValidLocations($plan, $membership);
         $locationAccessLabel = match ($plan?->location_access_mode) {
@@ -382,6 +350,44 @@ class MembershipController extends Controller
         $data['location_access_label']  = $locationAccessLabel;
 
         return response()->json(['success' => true, 'data' => $data]);
+    }
+
+    public function quote(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'location_id'         => 'nullable|integer|exists:locations,id',
+            'membership_id'       => 'nullable|integer|exists:memberships,id',
+            'items'               => 'required|array|min:1',
+            'items.*.type'        => ['required', Rule::in(['package', 'attraction', 'event', 'addon'])],
+            'items.*.id'          => 'nullable|integer',
+            'items.*.category'    => 'nullable|string|max:150',
+            'items.*.unit_price'  => 'required|numeric|min:0',
+            'items.*.quantity'    => 'nullable|integer|min:1',
+        ]);
+
+        $locationId = $data['location_id'] ?? null;
+        $items      = $data['items'];
+
+        $customer = $this->resolveCustomer();
+        if ($customer) {
+            $quote = $this->benefits->quoteForCustomer($customer, $locationId, $items);
+            return response()->json(['success' => true, 'data' => $quote]);
+        }
+
+        $authUser = $this->resolveAuthUser($request);
+        abort_unless($authUser, 401, 'Authentication required');
+
+        if (empty($data['membership_id'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'membership_id is required for staff benefit quotes.',
+            ], 422);
+        }
+
+        $membership = Membership::findOrFail($data['membership_id']);
+        $quote = $this->benefits->quote($membership, $locationId, $items);
+
+        return response()->json(['success' => true, 'data' => $quote]);
     }
 
     public function updateStatus(Request $request, Membership $membership): JsonResponse
@@ -448,9 +454,6 @@ class MembershipController extends Controller
         return response()->json(['success' => true, 'data' => $membership->fresh()->load('plan')]);
     }
 
-    /**
-     * Staff-only first-visit photo upload.
-     */
     public function uploadPhoto(Request $request, Membership $membership): JsonResponse
     {
         $authUser = $this->resolveAuthUser($request);
@@ -495,16 +498,11 @@ class MembershipController extends Controller
         ]);
     }
 
-    /**
-     * Update customer's payment method on file (label-only; full token flow
-     * delegated to existing Authorize.Net pipeline used elsewhere in the app).
-     */
     public function updatePaymentMethod(Request $request, Membership $membership): JsonResponse
     {
         $customer = $this->resolveCustomer();
         $authUser = $this->resolveAuthUser($request);
 
-        // Either the owning customer or staff may update
         $ownsIt = $customer && (int) $customer->id === (int) $membership->customer_id;
         abort_unless($ownsIt || $authUser, 403);
 
@@ -517,9 +515,6 @@ class MembershipController extends Controller
         return response()->json(['success' => true, 'data' => $membership->fresh()]);
     }
 
-    /**
-     * Retry a failed payment (staff-triggered).
-     */
     public function retryPayment(Request $request, Membership $membership): JsonResponse
     {
         $authUser = $this->resolveAuthUser($request);
@@ -528,8 +523,6 @@ class MembershipController extends Controller
         $lastFailed = $membership->membershipPayments()->where('status', 'failed')->latest()->first();
         $attempt = ($lastFailed?->retry_attempt ?? 0) + 1;
 
-        // The actual charge is dispatched to the existing payment pipeline by the frontend.
-        // We record the attempt here; status is set by the FE callback or webhook.
         $payment = $this->service->recordPayment($membership, [
             'amount'        => $membership->billing_amount,
             'status'        => $request->input('status', 'pending'),
@@ -540,10 +533,6 @@ class MembershipController extends Controller
         return response()->json(['success' => true, 'data' => $payment]);
     }
 
-    /**
-     * List payment history for a membership (paginated, newest first).
-     * Accessible by staff and by the owning customer.
-     */
     public function payments(Request $request, Membership $membership): JsonResponse
     {
         $customer = $this->resolveCustomer();
@@ -559,10 +548,6 @@ class MembershipController extends Controller
         return response()->json(['success' => true, 'data' => $payments]);
     }
 
-    /**
-     * Refund a membership payment via Authorize.Net.
-     * For settled transactions: issues a credit. For unsettled: auto-falls back to void.
-     */
     public function refundMembershipPayment(Request $request, Membership $membership, MembershipPayment $membershipPayment): JsonResponse
     {
         $authUser = $this->resolveAuthUser($request);
@@ -585,7 +570,6 @@ class MembershipController extends Controller
         $note         = $data['note'] ?? 'Refund processed by staff';
         $before       = ['status' => $membershipPayment->status, 'amount' => (float) $membershipPayment->amount];
 
-        // No transaction_id → internal/manual payment; just mark refunded in DB.
         if (empty($membershipPayment->transaction_id)) {
             $membershipPayment->update(['status' => 'refunded', 'failure_reason' => $note]);
             $this->service->log($membership, 'payment_refunded', $before, ['refund_amount' => $refundAmount], $note);
@@ -605,7 +589,6 @@ class MembershipController extends Controller
             $merchantAuthentication->setTransactionKey(trim($account->transaction_key));
             $environment = $account->isProduction() ? ANetEnvironment::PRODUCTION : ANetEnvironment::SANDBOX;
 
-            // Refund requires card last four. Fetch from Authorize.Net GetTransactionDetails.
             $lastFour = null;
             try {
                 $detailsReq = new AnetAPI\GetTransactionDetailsRequest();
@@ -671,7 +654,6 @@ class MembershipController extends Controller
                 }
             }
 
-            // Determine error; if unsettled (E00027) and full refund → auto-void instead.
             $errorCode    = null;
             $errorMessage = 'Refund failed';
             if ($response) {
@@ -686,7 +668,6 @@ class MembershipController extends Controller
             }
 
             if ($errorCode === 'E00027' && $refundAmount >= (float) $membershipPayment->amount) {
-                // Transaction is unsettled — void it instead.
                 $voidReq = new AnetAPI\TransactionRequestType();
                 $voidReq->setTransactionType('voidTransaction');
                 $voidReq->setRefTransId($membershipPayment->transaction_id);
@@ -720,10 +701,6 @@ class MembershipController extends Controller
         }
     }
 
-    /**
-     * Void a membership payment via Authorize.Net.
-     * Works on unsettled transactions (typically same-day). Marks as voided.
-     */
     public function voidMembershipPayment(Request $request, Membership $membership, MembershipPayment $membershipPayment): JsonResponse
     {
         $authUser = $this->resolveAuthUser($request);
@@ -742,7 +719,6 @@ class MembershipController extends Controller
         $note   = $data['note'] ?? 'Payment voided by staff';
         $before = ['status' => $membershipPayment->status];
 
-        // No transaction_id → mark voided in DB only.
         if (empty($membershipPayment->transaction_id)) {
             $membershipPayment->update(['status' => 'voided', 'failure_reason' => $note, 'failed_at' => now()]);
             $this->service->log($membership, 'payment_voided', $before, ['status' => 'voided'], $note);
@@ -805,10 +781,6 @@ class MembershipController extends Controller
         }
     }
 
-    /**
-     * Unfreeze a membership — restores it to active and clears frozen_until.
-     * Dedicated endpoint so staff don't need to know to call /status.
-     */
     public function unfreeze(Request $request, Membership $membership): JsonResponse
     {
         $authUser = $this->resolveAuthUser($request);
@@ -829,23 +801,16 @@ class MembershipController extends Controller
         return $user instanceof Customer ? $user : null;
     }
 
-    /**
-     * Build the list of location names a membership / plan is valid at.
-     * For 'all' plans we return the hard-coded canonical locations list so the
-     * response is self-contained — no extra location-API call needed by the client.
-     */
     private function resolveValidLocations(?MembershipPlan $plan, ?Membership $membership = null): array
     {
         if (! $plan) return [];
 
         return match ($plan->location_access_mode) {
-            // Query the actual DB so names always match what the app shows in dropdowns.
             'all'   => \App\Models\Location::where('company_id', $plan->company_id)
                             ->orderBy('name')
                             ->pluck('name')
                             ->all(),
             'multi' => $plan->approvedLocations->pluck('name')->filter()->sort()->values()->all(),
-            // single — valid only at the membership's own home location (or the plan's default)
             default => array_filter([
                 $membership?->homeLocation?->name ?? $plan->location?->name ?? null,
             ]),

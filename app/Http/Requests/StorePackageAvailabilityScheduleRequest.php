@@ -7,19 +7,11 @@ use Illuminate\Validation\Rule;
 
 class StorePackageAvailabilityScheduleRequest extends FormRequest
 {
-    /**
-     * Determine if the user is authorized to make this request.
-     */
     public function authorize(): bool
     {
         return true;
     }
 
-    /**
-     * Get the validation rules that apply to the request.
-     *
-     * @return array<string, \Illuminate\Contracts\Validation\ValidationRule|array<mixed>|string>
-     */
     public function rules(): array
     {
         return [
@@ -29,12 +21,10 @@ class StorePackageAvailabilityScheduleRequest extends FormRequest
             'schedules.*.day_configuration.*' => [
                 'string',
                 function ($attribute, $value, $fail) {
-                    // Extract schedule index from attribute path like 'schedules.0.day_configuration.0'
                     $parts = explode('.', $attribute);
                     $index = $parts[1];
                     $type = $this->input("schedules.{$index}.availability_type");
 
-                    // Validate format for weekly (should be a day name)
                     if ($type === 'weekly' && $value) {
                         $validDays = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
                         if (!in_array(strtolower($value), $validDays)) {
@@ -42,7 +32,6 @@ class StorePackageAvailabilityScheduleRequest extends FormRequest
                         }
                     }
 
-                    // Validate format for monthly (should be occurrence-day pattern)
                     if ($type === 'monthly' && $value) {
                         $pattern = '/^(first|second|third|fourth|last)-(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i';
                         if (!preg_match($pattern, $value)) {
@@ -59,9 +48,6 @@ class StorePackageAvailabilityScheduleRequest extends FormRequest
         ];
     }
 
-    /**
-     * Get custom messages for validator errors.
-     */
     public function messages(): array
     {
         return [

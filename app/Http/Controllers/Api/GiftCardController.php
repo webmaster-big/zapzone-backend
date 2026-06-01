@@ -18,15 +18,10 @@ class GiftCardController extends Controller
     use ScopesByAuthUser;
     use RecordsPageAnalytics;
 
-    /**
-     * Display a listing of gift cards.
-     */
     public function index(Request $request): JsonResponse
     {
         $query = GiftCard::with(['creator', 'packages', 'customers', 'location']);
 
-        // Multi-tenant + role-based scoping (driven by Sanctum auth user).
-        // GiftCard has location_id but no company_id; scope company through the location relation.
         $authUser = $this->resolveAuthUser($request);
         if ($authUser) {
             if (in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
@@ -36,29 +31,24 @@ class GiftCardController extends Controller
             }
         }
 
-        // Filter by location
         if ($request->has('location_id')) {
             $query->byLocation($request->location_id);
         }
 
-        // Filter by status
         if ($request->has('status')) {
             $query->where('status', $request->status);
         } else {
             $query->active();
         }
 
-        // Filter by customer (customer-facing: show only gift cards linked to this customer)
         if ($request->filled('customer_id')) {
             $query->whereHas('customers', fn($q) => $q->where('customers.id', $request->customer_id));
         }
 
-        // Filter by type
         if ($request->has('type')) {
             $query->byType($request->type);
         }
 
-        // Filter by expiry
         if ($request->has('include_expired')) {
             if (!$request->boolean('include_expired')) {
                 $query->notExpired();
@@ -67,7 +57,6 @@ class GiftCardController extends Controller
             $query->notExpired();
         }
 
-        // Search by code or description
         if ($request->has('search')) {
             $search = $request->search;
             $query->where(function ($q) use ($search) {
@@ -76,7 +65,6 @@ class GiftCardController extends Controller
             });
         }
 
-        // Sort
         $sortBy = $request->get('sort_by', 'created_at');
         $sortOrder = $request->get('sort_order', 'desc');
 
@@ -103,9 +91,6 @@ class GiftCardController extends Controller
         ]);
     }
 
-    /**
-     * Store a newly created gift card.
-     */
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -120,14 +105,12 @@ class GiftCardController extends Controller
             'location_id' => 'nullable|exists:locations,id',
         ]);
 
-        // Generate unique code if not provided
         if (!isset($validated['code'])) {
             do {
                 $validated['code'] = 'GC' . strtoupper(Str::random(8));
             } while (GiftCard::where('code', $validated['code'])->exists());
         }
 
-        // Set balance to initial value
         $validated['balance'] = $validated['initial_value'];
 
         $giftCard = GiftCard::create($validated);
@@ -140,9 +123,6 @@ class GiftCardController extends Controller
         ], 201);
     }
 
-    /**
-     * Display the specified gift card.
-     */
     public function show(GiftCard $giftCard): JsonResponse
     {
         $giftCard->load(['creator', 'packages', 'customers', 'location']);
@@ -153,9 +133,6 @@ class GiftCardController extends Controller
         ]);
     }
 
-    /**
-     * Update the specified gift card.
-     */
     public function update(Request $request, GiftCard $giftCard): JsonResponse
     {
         $validated = $request->validate([
@@ -173,7 +150,6 @@ class GiftCardController extends Controller
         $giftCard->update($validated);
         $giftCard->load(['creator', 'packages', 'location']);
 
-        // Log gift card update activity
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Gift Card Updated',
@@ -209,9 +185,6 @@ class GiftCardController extends Controller
         ]);
     }
 
-    /**
-     * Remove the specified gift card.
-     */
     public function destroy(GiftCard $giftCard): JsonResponse
     {
         $giftCardCode = $giftCard->code;
@@ -219,7 +192,6 @@ class GiftCardController extends Controller
 
         $giftCard->update(['deleted' => true, 'status' => 'deleted']);
 
-        // Log gift card deletion activity
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Gift Card Deleted',
@@ -249,9 +221,6 @@ class GiftCardController extends Controller
         ]);
     }
 
-    /**
-     * Validate gift card by code.
-     */
     public function validateByCode(Request $request): JsonResponse
     {
         $request->validate([
@@ -280,9 +249,6 @@ class GiftCardController extends Controller
         ]);
     }
 
-    /**
-     * Redeem gift card.
-     */
     public function redeem(Request $request, GiftCard $giftCard): JsonResponse
     {
         $validated = $request->validate([
@@ -310,7 +276,6 @@ class GiftCardController extends Controller
             'status' => $newBalance <= 0 ? 'redeemed' : 'active',
         ]);
 
-        // Create notification for customer if provided
         if (isset($validated['customer_id'])) {
             CustomerNotification::create([
                 'customer_id' => $validated['customer_id'],
@@ -331,7 +296,6 @@ class GiftCardController extends Controller
             ]);
         }
 
-        // Log gift card redemption activity
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Gift Card Redeemed',
@@ -361,7 +325,6 @@ class GiftCardController extends Controller
             ]
         );
 
-        // Engagement event — gift card redeemed.
         $this->pageAnalyticsRecorder()->recordConversion(
             'gift_card_redeemed',
             $giftCard,
@@ -384,9 +347,6 @@ class GiftCardController extends Controller
         ]);
     }
 
-    /**
-     * Deactivate gift card.
-     */
     public function deactivate(GiftCard $giftCard): JsonResponse
     {
         $giftCard->update(['status' => 'inactive']);
@@ -398,9 +358,6 @@ class GiftCardController extends Controller
         ]);
     }
 
-    /**
-     * Reactivate gift card.
-     */
     public function reactivate(GiftCard $giftCard): JsonResponse
     {
         if ($giftCard->isExpired()) {

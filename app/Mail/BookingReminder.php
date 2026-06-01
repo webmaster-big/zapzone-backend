@@ -17,14 +17,10 @@ class BookingReminder extends Mailable
     public Booking $booking;
     public string $customerName;
 
-    /**
-     * Create a new message instance.
-     */
     public function __construct(Booking $booking)
     {
         $this->booking = $booking;
 
-        // Determine customer name
         if ($booking->customer) {
             $this->customerName = trim($booking->customer->first_name . ' ' . $booking->customer->last_name);
         } else {
@@ -32,9 +28,6 @@ class BookingReminder extends Mailable
         }
     }
 
-    /**
-     * Get the message envelope.
-     */
     public function envelope(): Envelope
     {
         $companyName = $this->booking->location?->company?->name ?? 'ZapZone';
@@ -44,9 +37,6 @@ class BookingReminder extends Mailable
         );
     }
 
-    /**
-     * Get the message content definition.
-     */
     public function content(): Content
     {
         return new Content(
@@ -58,11 +48,6 @@ class BookingReminder extends Mailable
         );
     }
 
-    /**
-     * Get the attachments for the message.
-     *
-     * @return array<int, \Illuminate\Mail\Mailables\Attachment>
-     */
     public function attachments(): array
     {
         return [];

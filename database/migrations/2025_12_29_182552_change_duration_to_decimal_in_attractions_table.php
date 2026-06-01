@@ -6,16 +6,11 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
         Schema::table('attractions', function (Blueprint $table) {
-            // Change duration from integer to decimal
             $table->decimal('duration', 8, 2)->nullable()->change();
             
-            // Update duration_unit enum to include 'hours and minutes'
             $table->dropColumn('duration_unit');
         });
         
@@ -24,16 +19,11 @@ return new class extends Migration
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::table('attractions', function (Blueprint $table) {
-            // Revert duration back to integer
             $table->integer('duration')->nullable()->change();
             
-            // Revert duration_unit back to original enum
             $table->dropColumn('duration_unit');
         });
         

@@ -6,9 +6,6 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
         Schema::create('promos', function (Blueprint $table) {
@@ -28,16 +25,12 @@ return new class extends Migration
             $table->boolean('deleted')->default(false);
             $table->timestamps();
 
-            // Indexes
             $table->index('code');
             $table->index('status');
             $table->index(['start_date', 'end_date']);
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::dropIfExists('promos');

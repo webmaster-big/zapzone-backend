@@ -36,10 +36,8 @@ class AuthController extends RoutingController
         $type = $user->role;
         $user->load('location');
 
-        // Update last login timestamp
         $user->update(['last_login' => now()]);
 
-        // Log login activity
         ActivityLog::log(
             action: 'User Login',
             category: 'login',
@@ -68,7 +66,6 @@ class AuthController extends RoutingController
         return $this->createTokenResponse($user, $type);
     }
 
-    // login for customer
     public function customerLogin(Request $request)
     {
         $request->validate([
@@ -76,7 +73,6 @@ class AuthController extends RoutingController
             'password' => 'required|min:8',
         ]);
 
-        // log request
         Log::info('Customer login attempt', ['email' => $request->email]);
 
         $user = Customer::where('email', $request->email)->first();
@@ -96,7 +92,6 @@ class AuthController extends RoutingController
         return $this->createTokenResponse($user, $type);
     }
 
-    // register for customer
     public function customerRegister(Request $request)
     {
         $request->validate([
@@ -136,10 +131,8 @@ class AuthController extends RoutingController
                 'email' => $customer->email,
             ]);
 
-            // Fire server-side signup conversion (no monetary value).
             $this->recordConversion('signup', $customer, 0.0);
 
-            // Return the customer with auth token
             return response()->json([
                 'success' => true,
                 'message' => 'Registration successful',
@@ -174,7 +167,6 @@ class AuthController extends RoutingController
     {
         $user = $request->user();
 
-        // Log logout activity
         if ($user) {
             $isCustomer = $user instanceof Customer;
             ActivityLog::log(

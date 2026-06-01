@@ -16,9 +16,6 @@ class DynamicCampaignMail extends Mailable
     public string $emailBody;
     public array $variables;
 
-    /**
-     * Create a new message instance.
-     */
     public function __construct(string $subject, string $body, array $variables = [])
     {
         $this->emailSubject = $subject;
@@ -26,12 +23,8 @@ class DynamicCampaignMail extends Mailable
         $this->variables = $variables;
     }
 
-    /**
-     * Build the message.
-     */
     public function build()
     {
-        // Replace variables in subject and body
         $processedSubject = $this->replaceVariables($this->emailSubject);
         $processedBody = $this->replaceVariables($this->emailBody);
 
@@ -43,13 +36,9 @@ class DynamicCampaignMail extends Mailable
             ]);
     }
 
-    /**
-     * Replace template variables with actual values
-     */
     protected function replaceVariables(string $content): string
     {
         foreach ($this->variables as $key => $value) {
-            // Support both {{ variable }} and {{variable}} formats
             $content = preg_replace(
                 '/\{\{\s*' . preg_quote($key, '/') . '\s*\}\}/',
                 $value ?? '',
@@ -60,9 +49,6 @@ class DynamicCampaignMail extends Mailable
         return $content;
     }
 
-    /**
-     * Get the message envelope.
-     */
     public function envelope(): Envelope
     {
         return new Envelope(
@@ -70,9 +56,6 @@ class DynamicCampaignMail extends Mailable
         );
     }
 
-    /**
-     * Get the message content definition.
-     */
     public function content(): Content
     {
         return new Content(
@@ -80,11 +63,6 @@ class DynamicCampaignMail extends Mailable
         );
     }
 
-    /**
-     * Get the attachments for the message.
-     *
-     * @return array<int, \Illuminate\Mail\Mailables\Attachment>
-     */
     public function attachments(): array
     {
         return [];

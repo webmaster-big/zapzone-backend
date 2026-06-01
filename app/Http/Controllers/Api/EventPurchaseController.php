@@ -12,6 +12,8 @@ use App\Models\CustomerNotification;
 use App\Models\EventPurchase;
 use App\Models\Event;
 use App\Models\Notification;
+use App\Models\Membership;
+use App\Services\MembershipBenefitService;
 use App\Services\EmailNotificationService;
 use App\Services\GmailApiService;
 use Illuminate\Http\JsonResponse;
@@ -26,9 +28,6 @@ class EventPurchaseController extends Controller
     use ScopesByAuthUser;
     use RecordsPageAnalytics;
 
-    /**
-     * List event purchases.
-     */
     public function index(Request $request): JsonResponse
     {
         try {
@@ -39,7 +38,6 @@ class EventPurchaseController extends Controller
                 'addOns:id,name',
             ]);
 
-            // Multi-tenant + role-based scoping (driven by Sanctum auth user)
             $this->applyAuthScope($query, $request);
 
             if ($request->has('event_id')) {
@@ -68,15 +66,13 @@ class EventPurchaseController extends Controller
         }
     }
 
-    /**
-     * Store a new event purchase.
-     */
     public function store(Request $request): JsonResponse
     {
         try {
             $validated = $request->validate([
                 'event_id' => 'required|exists:events,id',
                 'customer_id' => 'nullable|exists:customers,id',
+                'membership_id' => 'nullable|exists:memberships,id',
                 'location_id' => 'required|exists:locations,id',
                 'guest_name' => 'nullable|string|max:255',
                 'guest_email' => 'nullable|email|max:255',
@@ -98,8 +94,6 @@ class EventPurchaseController extends Controller
                 'amount_paid' => 'nullable|numeric|min:0',
                 'discount_amount' => 'nullable|numeric|min:0',
                 'payment_method' => 'nullable|in:card,in-store,paylater,authorize.net',
-                // Note: status and payment_status are set automatically based on payment_method:
-                // in-store/card → confirmed, paylater/authorize.net → pending (charge endpoint confirms)
                 'transaction_id' => 'nullable|string|max:255',
                 'notes' => 'nullable|string',
                 'special_requests' => 'nullable|string',
@@ -111,25 +105,20 @@ class EventPurchaseController extends Controller
                 'add_ons.*.price_at_purchase' => 'required_with:add_ons|numeric|min:0',
             ]);
 
-            // Validate the event exists and is active
             $event = Event::findOrFail($validated['event_id']);
             if (!$event->is_active) {
                 return response()->json(['message' => 'This event is not currently active'], 422);
             }
 
-            // Validate date is valid for the event
             if (!$event->isDateValid($validated['purchase_date'])) {
                 return response()->json(['message' => 'Selected date is not available for this event'], 422);
             }
 
-            // Validate time slot is available
             $availableSlots = $event->getAvailableTimeSlotsForDate($validated['purchase_date']);
             if (!in_array($validated['purchase_time'], $availableSlots)) {
                 return response()->json(['message' => 'Selected time slot is not available'], 422);
             }
 
-            // --- Duplicate purchase prevention ---
-            // Check for any existing pending purchase with same key fields (no time window)
             $duplicateQuery = EventPurchase::where('event_id', $validated['event_id'])
                 ->where('purchase_date', $validated['purchase_date'])
                 ->where('purchase_time', $validated['purchase_time'])
@@ -153,20 +142,13 @@ class EventPurchaseController extends Controller
                 ]);
                 return response()->json($existingPending, 200);
             }
-            // --- End duplicate prevention ---
 
-            // Generate reference number
             $validated['reference_number'] = 'EVT-' . strtoupper(Str::random(8));
 
-            // Default payment method to paylater when not specified
             if (!isset($validated['payment_method'])) {
                 $validated['payment_method'] = 'paylater';
             }
 
-            // Set status based on payment method:
-            // - in-store/card (on-site): confirmed immediately, no charge step needed
-            // - paylater: pending until payment is collected later
-            // - authorize.net: pending until charge endpoint confirms after successful payment
             if (in_array($validated['payment_method'], ['in-store', 'card'])) {
                 $validated['status'] = 'confirmed';
                 $validated['payment_status'] = ($validated['amount_paid'] ?? 0) >= ($validated['total_amount'] ?? 0) ? 'paid' : 'partial';
@@ -175,7 +157,6 @@ class EventPurchaseController extends Controller
                 $validated['payment_status'] = 'pending';
             }
 
-            // Extract add_ons, send_email, and sms_consent before creating purchase
             $addOns = $validated['add_ons'] ?? [];
             $sendEmail = $validated['send_email'] ?? true;
             $smsConsent = $validated['sms_consent'] ?? false;
@@ -183,7 +164,6 @@ class EventPurchaseController extends Controller
 
             $purchase = EventPurchase::create($validated);
 
-            // Attach add-ons
             if (!empty($addOns)) {
                 foreach ($addOns as $addOn) {
                     $purchase->addOns()->attach($addOn['add_on_id'], [
@@ -195,9 +175,8 @@ class EventPurchaseController extends Controller
 
             $purchase->load(['event.location.company', 'customer', 'location:id,name', 'addOns']);
 
-            // Create notification for customer (only when purchase is confirmed AND payment collected)
-            // For online purchases (pending → charge → confirmed), notifications are sent from PaymentController::charge
-            // Skip notification if no payment was collected to avoid confusing admin with unpaid purchases
+            $this->recordMembershipRedemptions($purchase, $validated);
+
             if ($purchase->customer_id && $purchase->status === 'confirmed' && (float) ($purchase->amount_paid ?? 0) > 0) {
                 CustomerNotification::create([
                     'customer_id' => $purchase->customer_id,
@@ -218,9 +197,6 @@ class EventPurchaseController extends Controller
                 ]);
             }
 
-            // Create notification for location staff (only for confirmed purchases with payment collected)
-            // For authorize.net pending purchases, staff notifications are sent from PaymentController::charge after payment succeeds
-            // Skip notification if no payment was collected to avoid admin seeing purchases they can't act on
             $customerName = $purchase->customer ? "{$purchase->customer->first_name} {$purchase->customer->last_name}" : $purchase->guest_name;
             if ($purchase->status === 'confirmed' && (float) ($purchase->amount_paid ?? 0) > 0) {
                 $formattedDate = \Carbon\Carbon::parse($purchase->purchase_date)->format('m-d');
@@ -245,7 +221,6 @@ class EventPurchaseController extends Controller
                 ]);
             }
 
-            // Log event purchase activity
             if (auth()->id()) {
                 ActivityLog::log(
                     action: 'Event Purchase Created',
@@ -281,7 +256,6 @@ class EventPurchaseController extends Controller
                 );
             }
 
-            // Create or update contact from event purchase
             try {
                 $contactEmail = $purchase->customer?->email ?? $purchase->guest_email;
                 $contactName = $purchase->customer
@@ -311,8 +285,6 @@ class EventPurchaseController extends Controller
                 ]);
             }
 
-            // Send confirmation email (only when purchase is confirmed, e.g. onsite purchases)
-            // For online purchases (pending → charge → confirmed), emails are sent from PaymentController::charge
             if ($sendEmail && $purchase->status === 'confirmed') {
                 try {
                     $recipientEmail = $purchase->customer?->email ?? $purchase->guest_email;
@@ -327,7 +299,6 @@ class EventPurchaseController extends Controller
                 }
             }
 
-            // Fire server-side conversion (idempotent via tracking_id).
             $this->recordConversion('event_purchase_completed', $purchase, (float) ($purchase->total_amount ?? 0));
 
             return response()->json($purchase, 201);
@@ -338,9 +309,45 @@ class EventPurchaseController extends Controller
         }
     }
 
-    /**
-     * Show a single event purchase.
-     */
+    private function recordMembershipRedemptions(EventPurchase $purchase, array $validated): void
+    {
+        if (empty($validated['membership_id'])) {
+            return;
+        }
+
+        try {
+            $membership = Membership::find($validated['membership_id']);
+            if (! $membership) {
+                return;
+            }
+
+            $qty       = max(1, (int) ($purchase->quantity ?? 1));
+            $unitPrice = $qty > 0 ? (float) $purchase->total_amount / $qty : (float) $purchase->total_amount;
+
+            $quote = app(MembershipBenefitService::class)->quote($membership, $purchase->location_id, [[
+                'type'       => 'event',
+                'id'         => $purchase->event_id,
+                'unit_price' => $unitPrice,
+                'quantity'   => $qty,
+            ]]);
+
+            if (! empty($quote['applied'])) {
+                app(MembershipBenefitService::class)->recordPurchaseRedemptions(
+                    $membership,
+                    $purchase,
+                    $quote['applied'],
+                    $purchase->location_id,
+                    auth()->id()
+                );
+            }
+        } catch (\Throwable $e) {
+            Log::warning('Failed to record membership redemptions for event purchase', [
+                'purchase_id' => $purchase->id,
+                'error'       => $e->getMessage(),
+            ]);
+        }
+    }
+
     public function show(EventPurchase $eventPurchase): JsonResponse
     {
         return response()->json(
@@ -348,9 +355,6 @@ class EventPurchaseController extends Controller
         );
     }
 
-    /**
-     * Update an event purchase.
-     */
     public function update(Request $request, EventPurchase $eventPurchase): JsonResponse
     {
         try {
@@ -385,11 +389,9 @@ class EventPurchaseController extends Controller
                 'add_ons.*.price_at_purchase' => 'required_with:add_ons|numeric|min:0',
             ]);
 
-            // Extract add_ons before updating
             $addOns = $validated['add_ons'] ?? null;
             unset($validated['add_ons']);
 
-            // Handle status timestamps
             if (isset($validated['status'])) {
                 switch ($validated['status']) {
                     case 'checked-in':
@@ -406,7 +408,6 @@ class EventPurchaseController extends Controller
 
             $eventPurchase->update($validated);
 
-            // Sync add-ons if provided
             if ($addOns !== null) {
                 $syncData = [];
                 foreach ($addOns as $addOn) {
@@ -428,9 +429,6 @@ class EventPurchaseController extends Controller
         }
     }
 
-    /**
-     * Delete an event purchase (soft delete).
-     */
     public function destroy($id): JsonResponse
     {
         Log::info('Event purchase delete request received', ['id' => $id, 'ip' => request()->ip()]);
@@ -446,7 +444,6 @@ class EventPurchaseController extends Controller
                 ], 404);
             }
 
-            // Safely get auth user ID (Customer model lacks getAuthIdentifier)
             $userId = null;
             $user = null;
             try {
@@ -466,7 +463,6 @@ class EventPurchaseController extends Controller
 
             $deleted = $eventPurchase->delete();
 
-            // Verify the delete actually persisted
             $verify = EventPurchase::withTrashed()->find($purchaseId);
             Log::info('Event purchase delete verification', [
                 'id' => $purchaseId,
@@ -476,12 +472,10 @@ class EventPurchaseController extends Controller
             ]);
 
             if (!$deleted || !$verify?->trashed()) {
-                // Force the soft delete via direct query
                 Log::warning('Event purchase soft delete did not persist, forcing via query', ['id' => $purchaseId]);
                 EventPurchase::where('id', $purchaseId)->update(['deleted_at' => now()]);
             }
 
-            // Log event purchase deletion activity
             ActivityLog::log(
                 action: 'Event Purchase Deleted',
                 category: 'delete',
@@ -524,9 +518,6 @@ class EventPurchaseController extends Controller
         }
     }
 
-    /**
-     * Cancel an event purchase.
-     */
     public function cancel(EventPurchase $eventPurchase): JsonResponse
     {
         $eventPurchase->update([
@@ -534,7 +525,6 @@ class EventPurchaseController extends Controller
             'cancelled_at' => now(),
         ]);
 
-        // Negative conversion so net revenue dashboards stay accurate.
         $this->recordConversion(
             'event_purchase_cancelled',
             $eventPurchase,
@@ -545,9 +535,6 @@ class EventPurchaseController extends Controller
         return response()->json($eventPurchase->fresh()->load(['event:id,name', 'addOns']));
     }
 
-    /**
-     * Update event purchase status.
-     */
     public function updateStatus(Request $request, EventPurchase $eventPurchase): JsonResponse
     {
         $validated = $request->validate([
@@ -570,12 +557,13 @@ class EventPurchaseController extends Controller
 
         $eventPurchase->update($updates);
 
+        if ($validated['status'] === 'cancelled') {
+            app(MembershipBenefitService::class)->reverseForRedeemable($eventPurchase, 'purchase_cancelled');
+        }
+
         return response()->json($eventPurchase->fresh());
     }
 
-    /**
-     * Get purchases for a customer by customer_id or guest_email.
-     */
     public function customerPurchases(Request $request): JsonResponse
     {
         $query = EventPurchase::select([
@@ -594,12 +582,10 @@ class EventPurchaseController extends Controller
                 'addOns:id,name',
             ]);
 
-        // Filter by customer_id
         if ($request->has('customer_id')) {
             $query->where('customer_id', $request->customer_id);
         }
 
-        // Filter by guest_email (matches guest_email or customer email)
         if ($request->has('guest_email')) {
             $guestEmail = $request->guest_email;
             $query->where(function ($q) use ($guestEmail) {
@@ -610,7 +596,6 @@ class EventPurchaseController extends Controller
             });
         }
 
-        // Search by reference number, event name, or location name
         if ($request->has('search')) {
             $search = $request->search;
             $query->where(function ($q) use ($search) {
@@ -624,7 +609,6 @@ class EventPurchaseController extends Controller
             });
         }
 
-        // Sort
         $sortBy = $request->get('sort_by', 'purchase_date');
         $sortOrder = $request->get('sort_order', 'desc');
 
@@ -651,9 +635,6 @@ class EventPurchaseController extends Controller
         ]);
     }
 
-    /**
-     * Send confirmation email for event purchase.
-     */
     private function sendConfirmationEmail(EventPurchase $purchase, string $recipientEmail): void
     {
         $purchase->loadMissing(['event.location.company', 'customer', 'addOns']);
@@ -682,9 +663,6 @@ class EventPurchaseController extends Controller
         ]);
     }
 
-    /**
-     * Force delete a pending event purchase (public - for payment error cleanup).
-     */
     public function publicForceDelete($id): JsonResponse
     {
         Log::info('Event purchase public force delete request', ['id' => $id, 'ip' => request()->ip()]);
@@ -746,9 +724,6 @@ class EventPurchaseController extends Controller
         }
     }
 
-    /**
-     * List soft-deleted event purchases.
-     */
     public function trashed(Request $request): JsonResponse
     {
         try {
@@ -807,9 +782,6 @@ class EventPurchaseController extends Controller
         }
     }
 
-    /**
-     * Restore a soft-deleted event purchase.
-     */
     public function restore(int $id): JsonResponse
     {
         $purchase = EventPurchase::onlyTrashed()->findOrFail($id);
@@ -837,9 +809,6 @@ class EventPurchaseController extends Controller
         ]);
     }
 
-    /**
-     * Bulk restore soft-deleted event purchases.
-     */
     public function bulkRestore(Request $request): JsonResponse
     {
         $validated = $request->validate([

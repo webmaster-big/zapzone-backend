@@ -45,7 +45,6 @@ class Attraction extends Model
         'display_order' => 'integer',
     ];
 
-    // Relationships
     public function location(): BelongsTo
     {
         return $this->belongsTo(Location::class);
@@ -71,7 +70,6 @@ class Attraction extends Model
         return $this->hasMany(AttractionPurchase::class);
     }
 
-    // Scopes
     public function scopeActive($query)
     {
         return $query->where('is_active', true);

@@ -19,30 +19,24 @@ class NotificationController extends Controller
     {
         $query = Notification::with('location');
 
-        // Multi-tenant + role-based scoping (driven by Sanctum auth user)
         $this->applyAuthScope($query, $request);
 
-        // Filter by location
         if ($request->has('location_id')) {
             $query->byLocation($request->location_id);
         }
 
-        // Filter by status
         if ($request->has('status')) {
             $query->where('status', $request->status);
         }
 
-        // Filter by type
         if ($request->has('type')) {
             $query->byType($request->type);
         }
 
-        // Filter by priority
         if ($request->has('priority')) {
             $query->byPriority($request->priority);
         }
 
-        // Filter unread/read
         if ($request->has('unread')) {
             $query->unread();
         } elseif ($request->has('read')) {
@@ -143,7 +137,6 @@ class NotificationController extends Controller
 
         $query = Notification::where('location_id', $validated['location_id']);
 
-        // If status is specified, only delete notifications with that status
         if (isset($validated['status'])) {
             $query->where('status', $validated['status']);
         }
@@ -151,7 +144,6 @@ class NotificationController extends Controller
         $count = $query->count();
         $query->delete();
 
-        // Log activity
         ActivityLog::log(
             action: 'Notifications Cleared',
             category: 'delete',
@@ -192,7 +184,6 @@ class NotificationController extends Controller
 
         $notification->delete();
 
-        // Log notification deletion
         ActivityLog::log(
             action: 'Notification Deleted',
             category: 'delete',

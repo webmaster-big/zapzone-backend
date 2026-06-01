@@ -18,15 +18,10 @@ class PromoController extends Controller
     use ScopesByAuthUser;
     use RecordsPageAnalytics;
 
-    /**
-     * Display a listing of promos.
-     */
     public function index(Request $request): JsonResponse
     {
         $query = Promo::with(['creator', 'packages']);
 
-        // Multi-tenant + role-based scoping. Promos do not have a direct
-        // location_id/company_id, so we scope by creator and/or attached package's location.
         $authUser = $this->resolveAuthUser($request);
         if ($authUser) {
             if (in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
@@ -43,26 +38,22 @@ class PromoController extends Controller
             }
         }
 
-        // Filter by status
         if ($request->has('status')) {
             $query->where('status', $request->status);
         } else {
             $query->active();
         }
 
-        // Filter by type
         if ($request->has('type')) {
             $query->where('type', $request->type);
         }
 
-        // Filter by validity
         if ($request->has('only_valid')) {
             if ($request->boolean('only_valid')) {
                 $query->valid();
             }
         }
 
-        // Search by code, name, or description
         if ($request->has('search')) {
             $search = $request->search;
             $query->where(function ($q) use ($search) {
@@ -72,7 +63,6 @@ class PromoController extends Controller
             });
         }
 
-        // Sort
         $sortBy = $request->get('sort_by', 'created_at');
         $sortOrder = $request->get('sort_order', 'desc');
 
@@ -99,9 +89,6 @@ class PromoController extends Controller
         ]);
     }
 
-    /**
-     * Store a newly created promo.
-     */
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -117,7 +104,6 @@ class PromoController extends Controller
             'created_by' => 'required|exists:users,id',
         ]);
 
-        // Generate unique code if not provided
         if (!isset($validated['code'])) {
             do {
                 $validated['code'] = 'PROMO' . strtoupper(Str::random(6));
@@ -134,9 +120,6 @@ class PromoController extends Controller
         ], 201);
     }
 
-    /**
-     * Display the specified promo.
-     */
     public function show(Promo $promo): JsonResponse
     {
         $promo->load(['creator', 'packages']);
@@ -147,9 +130,6 @@ class PromoController extends Controller
         ]);
     }
 
-    /**
-     * Update the specified promo.
-     */
     public function update(Request $request, Promo $promo): JsonResponse
     {
         $validated = $request->validate([
@@ -175,9 +155,6 @@ class PromoController extends Controller
         ]);
     }
 
-    /**
-     * Remove the specified promo.
-     */
     public function destroy(Promo $promo): JsonResponse
     {
         $promoCode = $promo->code;
@@ -185,7 +162,6 @@ class PromoController extends Controller
 
         $promo->update(['deleted' => true, 'status' => 'inactive']);
 
-        // Log promo deletion
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Promo Deleted',
@@ -215,9 +191,6 @@ class PromoController extends Controller
         ]);
     }
 
-    /**
-     * Validate promo by code.
-     */
     public function validateByCode(Request $request): JsonResponse
     {
         $request->validate([
@@ -249,9 +222,6 @@ class PromoController extends Controller
         ]);
     }
 
-    /**
-     * Apply promo code.
-     */
     public function apply(Request $request, Promo $promo): JsonResponse
     {
         if (!$promo->isValid()) {
@@ -261,16 +231,12 @@ class PromoController extends Controller
             ], 400);
         }
 
-        // Increment usage
         $promo->increment('current_usage');
 
-        // Check if exhausted
         if ($promo->usage_limit_total && $promo->current_usage >= $promo->usage_limit_total) {
             $promo->update(['status' => 'exhausted']);
         }
 
-        // Engagement event — promo applied. We do NOT mark this as a
-        // conversion (the booking/purchase that follows will be).
         $this->pageAnalyticsRecorder()->recordConversion(
             'promo_applied',
             $promo->fresh(),
@@ -293,9 +259,6 @@ class PromoController extends Controller
         ]);
     }
 
-    /**
-     * Get valid promos.
-     */
     public function getValid(Request $request): JsonResponse
     {
         $promos = Promo::with(['packages'])
@@ -309,9 +272,6 @@ class PromoController extends Controller
         ]);
     }
 
-    /**
-     * Toggle promo status.
-     */
     public function toggleStatus(Promo $promo): JsonResponse
     {
         $newStatus = $promo->status === 'active' ? 'inactive' : 'active';
@@ -324,9 +284,6 @@ class PromoController extends Controller
         ]);
     }
 
-    /**
-     * Generate unique promo codes in bulk.
-     */
     public function generateBulk(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -395,14 +352,12 @@ class PromoController extends Controller
             ];
         }
 
-        // Insert in chunks for performance
         foreach (array_chunk($promos, 100) as $chunk) {
             Promo::insert($chunk);
         }
 
         $createdPromos = Promo::where('batch_id', $batchId)->get();
 
-        // Log bulk generation
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Bulk Promo Generated',
@@ -444,9 +399,6 @@ class PromoController extends Controller
         ], 201);
     }
 
-    /**
-     * List all batches of bulk-generated promo codes.
-     */
     public function listBatches(Request $request): JsonResponse
     {
         $batches = Promo::whereNotNull('batch_id')
@@ -462,20 +414,15 @@ class PromoController extends Controller
         ]);
     }
 
-    /**
-     * Show details of a specific batch.
-     */
     public function showBatch(Request $request, string $batchId): JsonResponse
     {
         $promos = Promo::where('batch_id', $batchId)
             ->where('deleted', false);
 
-        // Filter by status within batch
         if ($request->has('status')) {
             $promos->where('status', $request->status);
         }
 
-        // Filter used/unused
         if ($request->has('used')) {
             if ($request->boolean('used')) {
                 $promos->where('current_usage', '>', 0);
@@ -493,7 +440,6 @@ class PromoController extends Controller
         $perPage = $request->get('per_page', 50);
         $result = $promos->paginate($perPage);
 
-        // Get batch summary
         $summary = Promo::where('batch_id', $batchId)
             ->where('deleted', false)
             ->selectRaw('COUNT(*) as total_codes, SUM(current_usage) as total_used, SUM(CASE WHEN status = "active" THEN 1 ELSE 0 END) as active_codes, SUM(CASE WHEN status = "exhausted" THEN 1 ELSE 0 END) as exhausted_codes, SUM(CASE WHEN status = "inactive" THEN 1 ELSE 0 END) as inactive_codes')
@@ -517,9 +463,6 @@ class PromoController extends Controller
         ]);
     }
 
-    /**
-     * Export batch codes to CSV.
-     */
     public function exportBatchCsv(Request $request, string $batchId): StreamedResponse
     {
         $promos = Promo::where('batch_id', $batchId)
@@ -537,7 +480,6 @@ class PromoController extends Controller
         return response()->streamDownload(function () use ($promos) {
             $handle = fopen('php://output', 'w');
 
-            // CSV header row
             fputcsv($handle, [
                 'Code',
                 'Name',
@@ -573,9 +515,6 @@ class PromoController extends Controller
         ]);
     }
 
-    /**
-     * Deactivate all codes in a batch.
-     */
     public function deactivateBatch(string $batchId): JsonResponse
     {
         $count = Promo::where('batch_id', $batchId)
@@ -590,9 +529,6 @@ class PromoController extends Controller
         ]);
     }
 
-    /**
-     * Delete (soft) all codes in a batch.
-     */
     public function destroyBatch(string $batchId): JsonResponse
     {
         $count = Promo::where('batch_id', $batchId)

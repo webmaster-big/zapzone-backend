@@ -19,18 +19,8 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Log;
 
-/**
- * MembershipService
- *
- * Centralizes membership lifecycle logic so controllers stay thin.
- * Handles: activation, term math, usage counters, status transitions,
- * billing record creation, audit logging, customer notifications.
- */
 class MembershipService
 {
-    /**
-     * Activate a brand-new membership after a successful purchase / staff create.
-     */
     public function activate(Membership $membership, ?array $context = []): Membership
     {
         return DB::transaction(function () use ($membership, $context) {
@@ -46,7 +36,6 @@ class MembershipService
                 : null;
             $membership->grace_period_ends_at = null;
 
-            // Initialise usage counters from plan
             $membership->uses_remaining     = $plan->unlimited_uses_per_term ? null : $plan->uses_per_term;
             $membership->visits_remaining   = $plan->unlimited_visits_per_term ? null : $plan->visits_per_term;
             $membership->services_remaining = $plan->services_per_term;
@@ -62,9 +51,6 @@ class MembershipService
         });
     }
 
-    /**
-     * Calculate next term end based on billing cycle.
-     */
     public function calcTermEnd(Carbon $from, MembershipPlan $plan): Carbon
     {
         return match ($plan->billing_cycle) {
@@ -75,9 +61,6 @@ class MembershipService
         };
     }
 
-    /**
-     * Reset usage counters at start of a new term (called by cron command).
-     */
     public function resetTermUsage(Membership $membership): void
     {
         $plan = $membership->plan;
@@ -92,10 +75,6 @@ class MembershipService
         $this->log($membership, 'term_reset');
     }
 
-    /**
-     * Determine if the membership can be used to check-in / book right now.
-     * Returns ['eligible' => bool, 'reason' => ?string].
-     */
     public function eligibility(Membership $membership, ?int $locationId = null): array
     {
         $membership->loadMissing('plan.approvedLocations');
@@ -143,9 +122,6 @@ class MembershipService
         return false;
     }
 
-    /**
-     * Record a check-in (visit) and decrement usage if counted.
-     */
     public function recordVisit(Membership $membership, array $data): MembershipVisit
     {
         return DB::transaction(function () use ($membership, $data) {
@@ -180,9 +156,6 @@ class MembershipService
         });
     }
 
-    /**
-     * Change status and audit it.
-     */
     public function changeStatus(Membership $membership, string $newStatus, ?string $note = null): Membership
     {
         $before = ['status' => $membership->status];
@@ -214,9 +187,6 @@ class MembershipService
         return $membership;
     }
 
-    /**
-     * Record a payment attempt result.
-     */
     public function recordPayment(Membership $membership, array $data): MembershipPayment
     {
         $payment = MembershipPayment::create([
@@ -234,7 +204,6 @@ class MembershipService
         ]);
 
         if ($data['status'] === 'succeeded') {
-            // advance term + clear past-due
             $plan = $membership->plan;
             $membership->current_term_start = now();
             $membership->current_term_end   = $this->calcTermEnd(now(), $plan);
@@ -248,7 +217,6 @@ class MembershipService
                 "Receipt: \${$payment->amount} charged for your {$plan->name} membership.");
             $this->sendMail($membership, fn ($m) => new MembershipPaymentReceipt($m, $payment), 'MembershipPaymentReceipt');
         } elseif ($data['status'] === 'failed') {
-            // mark past-due with grace period
             $membership->status = 'past_due';
             $membership->grace_period_ends_at = now()->addDays((int) $membership->plan->grace_period_days);
             $membership->save();
@@ -261,9 +229,6 @@ class MembershipService
         return $payment;
     }
 
-    /**
-     * Audit log helper.
-     */
     public function log(Membership $membership, string $action, ?array $before = null, ?array $after = null, ?string $note = null): void
     {
         MembershipAuditLog::create([
@@ -278,9 +243,6 @@ class MembershipService
         ]);
     }
 
-    /**
-     * Send a customer notification (re-uses existing customer_notifications table).
-     */
     public function notify(int $customerId, string $title, string $message): void
     {
         try {
@@ -293,15 +255,10 @@ class MembershipService
                 'status'      => 'unread',
             ]);
         } catch (\Throwable $e) {
-            // Don't fail the parent transaction if the notifications table schema differs.
             Log::warning('Membership notify failed: ' . $e->getMessage());
         }
     }
 
-    /**
-     * Safely dispatch a membership-related email. Failures are logged but never bubble up
-     * so they cannot break the lifecycle action that triggered them.
-     */
     protected function sendMail(Membership $membership, \Closure $factory, string $label): void
     {
         try {

@@ -68,7 +68,6 @@ class MembershipReportController extends Controller
             ->limit(5)
             ->get(['id', 'name', 'price', 'billing_cycle']);
 
-        // Under / overused (visit-based)
         $underused = (clone $base)
             ->where('status', 'active')
             ->whereHas('plan', fn($q) => $q->where('unlimited_visits_per_term', false))

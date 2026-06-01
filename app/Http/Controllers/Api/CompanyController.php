@@ -18,7 +18,6 @@ class CompanyController extends Controller
     {
         $query = Company::query();
 
-        // Restrict to caller's company unless they have no company (super_admin)
         $authUser = auth()->user();
         if ($authUser && $authUser->company_id) {
             $query->where('id', $authUser->company_id);
@@ -32,9 +31,6 @@ class CompanyController extends Controller
         ]);
     }
 
-    /**
-     * Store a newly created company.
-     */
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -59,7 +55,6 @@ class CompanyController extends Controller
             'status' => 'nullable|in:active,inactive,suspended',
         ]);
 
-        // Handle logo upload if base64 image provided
         if (isset($validated['logo_path'])) {
             $validated['logo_path'] = $this->handleImageUpload($validated['logo_path']);
         }
@@ -74,9 +69,6 @@ class CompanyController extends Controller
         ], 201);
     }
 
-    /**
-     * Display the specified company.
-     */
     public function show(Company $company): JsonResponse
     {
         if ($scopeError = $this->guardCompanyAccess(null, $company->id)) {
@@ -90,9 +82,6 @@ class CompanyController extends Controller
         ]);
     }
 
-    /**
-     * Update the specified company.
-     */
     public function update(Request $request, Company $company): JsonResponse
     {
         if ($scopeError = $this->guardCompanyAccess($request, $company->id)) {
@@ -120,14 +109,11 @@ class CompanyController extends Controller
             'status' => 'sometimes|in:active,inactive,suspended',
         ]);
 
-        // Handle logo upload if base64 image provided
         if (isset($validated['logo_path'])) {
-            // Delete old logo if it exists
             if ($company->logo_path && file_exists(storage_path('app/public/' . $company->logo_path))) {
                 unlink(storage_path('app/public/' . $company->logo_path));
             }
 
-            // Upload new logo
             $validated['logo_path'] = $this->handleImageUpload($validated['logo_path']);
         }
 
@@ -141,22 +127,17 @@ class CompanyController extends Controller
         ]);
     }
 
-    /**
-     * Remove the specified company.
-     */
     public function destroy(Company $company): JsonResponse
     {
         $companyName = $company->company_name;
         $companyId = $company->id;
 
-        // Delete company logo if it exists
         if ($company->logo_path && file_exists(storage_path('app/public/' . $company->logo_path))) {
             unlink(storage_path('app/public/' . $company->logo_path));
         }
 
         $company->delete();
 
-        // Log company deletion
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Company Deleted',
@@ -186,9 +167,6 @@ class CompanyController extends Controller
         ]);
     }
 
-    /**
-     * Get company statistics.
-     */
     public function statistics(Company $company): JsonResponse
     {
         $stats = [
@@ -208,21 +186,16 @@ class CompanyController extends Controller
         ]);
     }
 
-    /**
-     * Update company logo.
-     */
     public function updateLogo(Request $request, Company $company): JsonResponse
     {
         $validated = $request->validate([
             'logo_path' => 'required|string|max:27262976', // 20MB in base64 is ~27MB
         ]);
 
-        // Delete old logo if it exists
         if ($company->logo_path && file_exists(storage_path('app/public/' . $company->logo_path))) {
             unlink(storage_path('app/public/' . $company->logo_path));
         }
 
-        // Upload new logo
         $newLogoPath = $this->handleImageUpload($validated['logo_path']);
 
         $company->update(['logo_path' => $newLogoPath]);
@@ -235,20 +208,14 @@ class CompanyController extends Controller
         ]);
     }
 
-    /**
-     * Handle image upload - base64 or file path
-     */
     private function handleImageUpload($image): string
     {
-        // Check if it's a base64 string
         if (is_string($image) && strpos($image, 'data:image') === 0) {
-            // Extract base64 data
             preg_match('/data:image\/(\w+);base64,/', $image, $matches);
             $imageType = $matches[1] ?? 'png';
             $imageData = substr($image, strpos($image, ',') + 1);
             $imageData = base64_decode($imageData);
 
-            // Generate unique filename
             $filename = uniqid() . '.' . $imageType;
             $path = 'images/company-logos';
             $fullPath = storage_path('app/public/' . $path);
@@ -260,21 +227,17 @@ class CompanyController extends Controller
                 'imageType' => $imageType
             ]);
 
-            // Create directory if it doesn't exist
             if (!file_exists($fullPath)) {
                 mkdir($fullPath, 0755, true);
                 Log::info('Created directory', ['path' => $fullPath]);
             }
 
-            // Save the file
             file_put_contents($fullPath . '/' . $filename, $imageData);
             Log::info('Company logo saved successfully', ['file' => $fullPath . '/' . $filename]);
 
-            // Return the relative path (for storage URL)
             return $path . '/' . $filename;
         }
 
-        // If it's already a file path or URL, return as is
         Log::info('Company logo path returned as-is', ['image' => $image]);
         return $image;
     }

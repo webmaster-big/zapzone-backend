@@ -29,7 +29,6 @@ class CustomerNotification extends Model
         'read_at' => 'datetime',
     ];
 
-    // Relationships
     public function customer(): BelongsTo
     {
         return $this->belongsTo(Customer::class);
@@ -40,7 +39,6 @@ class CustomerNotification extends Model
         return $this->belongsTo(Location::class);
     }
 
-    // Scopes
     public function scopeUnread($query)
     {
         return $query->where('status', 'unread');

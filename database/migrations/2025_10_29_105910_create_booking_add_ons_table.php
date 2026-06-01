@@ -6,9 +6,6 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
         Schema::create('booking_add_ons', function (Blueprint $table) {
@@ -19,14 +16,10 @@ return new class extends Migration
             $table->decimal('price_at_booking', 10, 2)->default(0);
             $table->timestamps();
 
-            // Indexes
             $table->index('booking_id');
             $table->index('add_on_id');
         });
     }
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::dropIfExists('booking_add_ons');

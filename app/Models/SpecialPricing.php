@@ -44,7 +44,6 @@ class SpecialPricing extends Model
         'is_active' => 'boolean',
     ];
 
-    // Constants
     const DISCOUNT_FIXED = 'fixed';
     const DISCOUNT_PERCENTAGE = 'percentage';
 
@@ -57,7 +56,6 @@ class SpecialPricing extends Model
     const ENTITY_EVENT = 'event';
     const ENTITY_ALL = 'all';
 
-    // Day of week constants (for recurrence_value when recurrence_type is 'weekly')
     const SUNDAY = 0;
     const MONDAY = 1;
     const TUESDAY = 2;
@@ -76,7 +74,6 @@ class SpecialPricing extends Model
         6 => 'Saturday',
     ];
 
-    // Relationships
     public function company(): BelongsTo
     {
         return $this->belongsTo(Company::class);
@@ -87,7 +84,6 @@ class SpecialPricing extends Model
         return $this->belongsTo(Location::class);
     }
 
-    // Scopes
     public function scopeActive($query)
     {
         return $query->where('is_active', true);
@@ -141,9 +137,6 @@ class SpecialPricing extends Model
         return $query->where('recurrence_type', self::RECURRENCE_MONTHLY);
     }
 
-    /**
-     * Scope to filter special pricings that are within their effective date range.
-     */
     public function scopeWithinDateRange($query, ?Carbon $date = null)
     {
         $date = $date ?? Carbon::today();
@@ -159,17 +152,12 @@ class SpecialPricing extends Model
         });
     }
 
-    /**
-     * Check if this special pricing applies to a specific entity ID.
-     */
     public function appliesToEntity(int $entityId, string $entityType): bool
     {
-        // Check if entity type matches
         if ($this->entity_type !== self::ENTITY_ALL && $this->entity_type !== $entityType) {
             return false;
         }
 
-        // If no specific IDs, applies to all of that entity type
         if (empty($this->entity_ids)) {
             return true;
         }
@@ -177,16 +165,12 @@ class SpecialPricing extends Model
         return in_array($entityId, $this->entity_ids);
     }
 
-    /**
-     * Check if this special pricing is active on a given date.
-     */
     public function isActiveOnDate(Carbon $date): bool
     {
         if (!$this->is_active) {
             return false;
         }
 
-        // Check date range
         if ($this->start_date && $date->lt($this->start_date)) {
             return false;
         }
@@ -194,7 +178,6 @@ class SpecialPricing extends Model
             return false;
         }
 
-        // Check recurrence
         switch ($this->recurrence_type) {
             case self::RECURRENCE_ONE_TIME:
                 return $this->specific_date && $date->isSameDay($this->specific_date);
@@ -210,12 +193,8 @@ class SpecialPricing extends Model
         }
     }
 
-    /**
-     * Check if this special pricing is active at a given time.
-     */
     public function isActiveAtTime(?string $time = null): bool
     {
-        // If no time restrictions, always active
         if (is_null($this->time_start) && is_null($this->time_end)) {
             return true;
         }
@@ -240,23 +219,15 @@ class SpecialPricing extends Model
         return true;
     }
 
-    /**
-     * Calculate the discount amount for a given base price.
-     */
     public function calculateDiscount(float $basePrice): float
     {
         if ($this->discount_type === self::DISCOUNT_FIXED) {
-            // Fixed discount, cap at base price
             return min((float) $this->discount_amount, $basePrice);
         }
 
-        // Percentage discount
         return round($basePrice * ((float) $this->discount_amount / 100), 2);
     }
 
-    /**
-     * Get the discount breakdown for a given base price.
-     */
     public function getDiscountBreakdown(float $basePrice): array
     {
         $discountAmount = $this->calculateDiscount($basePrice);
@@ -278,9 +249,6 @@ class SpecialPricing extends Model
         ];
     }
 
-    /**
-     * Get human-readable recurrence display text.
-     */
     public function getRecurrenceDisplay(): string
     {
         switch ($this->recurrence_type) {
@@ -302,9 +270,6 @@ class SpecialPricing extends Model
         }
     }
 
-    /**
-     * Get ordinal suffix for a number (1st, 2nd, 3rd, etc.)
-     */
     private function getOrdinalSuffix(int $number): string
     {
         if (in_array(($number % 100), [11, 12, 13])) {
@@ -318,9 +283,6 @@ class SpecialPricing extends Model
         }
     }
 
-    /**
-     * Get all active special pricings for a specific entity on a given date.
-     */
     public static function getActiveForEntity(
         string $entityType,
         int $entityId,
@@ -335,7 +297,6 @@ class SpecialPricing extends Model
             ->orderBy('priority', 'desc')
             ->orderBy('created_at', 'desc');
 
-        // Filter by entity type
         if ($entityType === self::ENTITY_PACKAGE) {
             $query->forPackages();
         } elseif ($entityType === self::ENTITY_EVENT) {
@@ -349,17 +310,14 @@ class SpecialPricing extends Model
         }
 
         return $query->get()->filter(function ($pricing) use ($entityId, $entityType, $date, $time) {
-            // Check if applies to entity
             if (!$pricing->appliesToEntity($entityId, $entityType)) {
                 return false;
             }
 
-            // Check if active on date
             if (!$pricing->isActiveOnDate($date)) {
                 return false;
             }
 
-            // Check time restriction
             if ($time && !$pricing->isActiveAtTime($time)) {
                 return false;
             }
@@ -368,10 +326,6 @@ class SpecialPricing extends Model
         })->values();
     }
 
-    /**
-     * Get full price breakdown with all applicable special pricings.
-     * Applies discounts based on priority and stacking rules.
-     */
     public static function getFullPriceBreakdown(
         string $entityType,
         int $entityId,
@@ -388,7 +342,6 @@ class SpecialPricing extends Model
         $appliedNonStackable = false;
 
         foreach ($specialPricings as $pricing) {
-            // If we've already applied a non-stackable discount, skip unless this one is stackable
             if ($appliedNonStackable && !$pricing->is_stackable) {
                 continue;
             }
@@ -411,12 +364,10 @@ class SpecialPricing extends Model
             $currentPrice -= $discountAmount;
             $totalDiscount += $discountAmount;
 
-            // If this is non-stackable and we haven't applied a non-stackable yet
             if (!$pricing->is_stackable) {
                 $appliedNonStackable = true;
             }
 
-            // Don't go below zero
             if ($currentPrice <= 0) {
                 $currentPrice = 0;
                 break;
@@ -432,15 +383,11 @@ class SpecialPricing extends Model
         ];
     }
 
-    /**
-     * Get upcoming dates when this special pricing will be active.
-     */
     public function getUpcomingDates(int $count = 5): array
     {
         $dates = [];
         $currentDate = Carbon::today();
 
-        // Respect start_date
         if ($this->start_date && $this->start_date->gt($currentDate)) {
             $currentDate = $this->start_date->copy();
         }

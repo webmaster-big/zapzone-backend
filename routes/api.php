@@ -29,6 +29,7 @@ use App\Http\Controllers\Api\LocationController;
 use App\Http\Controllers\Api\MetricsController;
 use App\Http\Controllers\Api\MembershipController;
 use App\Http\Controllers\Api\MembershipPlanController;
+use App\Http\Controllers\Api\MembershipPlanBenefitController;
 use App\Http\Controllers\Api\MembershipCheckInController;
 use App\Http\Controllers\Api\MembershipReportController;
 use App\Http\Controllers\Api\NotificationController;
@@ -48,26 +49,21 @@ use App\Http\Controllers\Api\UserController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
-// Public routes (no authentication required)
 Route::post('login', [ApiAuthController::class, 'login']);
 Route::post('customer-login', [ApiAuthController::class, 'customerLogin']);
 Route::post('customer-register', [ApiAuthController::class, 'customerRegister']);
 
-// Public Page Analytics ingest (called from customer browser).
-// Throttled to mitigate spam from open endpoints.
 Route::middleware('throttle:120,1')->group(function () {
     Route::post('analytics/track',       [PageAnalyticsController::class, 'track']);
     Route::post('analytics/track/batch', [PageAnalyticsController::class, 'trackBatch']);
     Route::post('analytics/duration',    [PageAnalyticsController::class, 'patchDuration']);
 });
 
-// Public endpoint for Accept.js integration (get API Login ID only)
 Route::get('authorize-net/public-key/{locationId}', [AuthorizeNetAccountController::class, 'getPublicKey']);
 Route::get('authorize-net/accounts/all', [AuthorizeNetAccountController::class, 'allAccounts']);
 Route::post('authorize-net/test-connection', [AuthorizeNetAccountController::class, 'testConnection'])->middleware('auth:sanctum');
 Route::post('authorize-net/test-connection/{locationId}', [AuthorizeNetAccountController::class, 'testConnectionForLocation'])->middleware('auth:sanctum');
 
-// DEBUG: Check credentials for a location (REMOVE IN PRODUCTION)
 Route::get('authorize-net/debug/{locationId}', function ($locationId) {
     $account = \App\Models\AuthorizeNetAccount::where('location_id', $locationId)->first();
     if (!$account) {
@@ -92,7 +88,6 @@ Route::get('authorize-net/debug/{locationId}', function ($locationId) {
     }
 });
 
-// DEBUG: Test Authorize.Net connection (REMOVE IN PRODUCTION)
 Route::get('authorize-net/debug-test/{locationId}', function ($locationId) {
     $account = \App\Models\AuthorizeNetAccount::where('location_id', $locationId)->first();
     if (!$account) {
@@ -143,7 +138,6 @@ Route::get('authorize-net/debug-test/{locationId}', function ($locationId) {
     }
 });
 
-// Public package and attraction browsing
 Route::get('/packages/grouped-by-name', [PackageController::class, 'packagesGroupedByName']);
 Route::get('/packages/{id}', [PackageController::class, 'show']);
 Route::get('attractions/grouped', [AttractionController::class, 'attractionsGroupedByName']);
@@ -152,63 +146,47 @@ Route::get('attractions/location/{locationId}', [AttractionController::class, 'g
 Route::get('attractions/{id}', [AttractionController::class, 'show']);
 Route::get('packages/location/{locationId}', [PackageController::class, 'getByLocation']);
 
-// Public membership plan browsing (for customer signup page)
 Route::get('membership-plans/public', [MembershipPlanController::class, 'publicIndex']);
 
-// Public customer search
 Route::get('customers/search', [CustomerController::class, 'search']);
 
-// Public customer registration (for booking frontend)
 Route::post('customers', [CustomerController::class, 'store']);
 
-// Public customer bookings lookup
 Route::get('customers/bookings', [BookingController::class, 'customerBookings']);
 
-// Public payment processing
 Route::post('payments/charge', [PaymentController::class, 'charge']);
-// Refund & Void routes are under auth middleware (see below)
 
-// Public booking creation
 Route::post('bookings', [BookingController::class, 'store']);
 Route::post('bookings/{booking}/qrcode', [BookingController::class, 'storeQrCode']);
 Route::delete('bookings/{booking}', [BookingController::class, 'destroy']);
 Route::delete('bookings/{id}/force-delete', [BookingController::class, 'publicForceDelete']);
 
-// Public attraction purchase creation
 Route::post('attraction-purchases', [AttractionPurchaseController::class, 'store']);
 Route::post('attraction-purchases/{attractionPurchase}/qrcode', [AttractionPurchaseController::class, 'storeQrCode']);
 Route::get('attraction-purchases/customer', [AttractionPurchaseController::class, 'customerPurchases']);
 Route::delete('attraction-purchases/{attractionPurchase}', [AttractionPurchaseController::class, 'destroy']);
 Route::delete('attraction-purchases/{id}/force-delete', [AttractionPurchaseController::class, 'publicForceDelete']);
 
-// Locations Route
 Route::get('locations', [LocationController::class, 'index']);
 Route::post('locations', [LocationController::class, 'store']);
 
-// User Registration
 Route::post('users', [UserController::class, 'store']);
 
-// Package Time Slot routes
 Route::apiResource('package-time-slots', PackageTimeSlotController::class);
 Route::get('package-time-slots/available-slots/{packageId}/{date}', [PackageTimeSlotController::class, 'getAvailableSlotsAuto']);
 
-// Server-Sent Events (SSE) streams - no authentication required
 Route::get('stream/bookings', [StreamController::class, 'bookingNotifications']);
 Route::get('stream/attraction-purchases', [StreamController::class, 'attractionPurchaseNotifications']);
 Route::get('stream/notifications', [StreamController::class, 'combinedNotifications']);
 
-// Shareable Token public routes
 Route::post('shareable-tokens/check', [ShareableTokenController::class, 'check']);
 Route::post('shareable-tokens', [ShareableTokenController::class, 'store']);
 
-// Public contact deactivate (for email unsubscribe links)
 Route::post('contacts/deactivate', [ContactController::class, 'deactivate']);
 
-// Public RSVP routes (no auth required - guests access via unique token)
 Route::get('rsvp/{token}', [RsvpController::class, 'show']);
 Route::post('rsvp/{token}', [RsvpController::class, 'store']);
 
-// Public Events
 Route::get('events/grouped-by-name', [EventController::class, 'eventsGroupedByName']);
 Route::get('events', [EventController::class, 'index']);
 Route::get('events/{event}', [EventController::class, 'show']);
@@ -220,21 +198,16 @@ Route::get('event-purchases/customer', [EventPurchaseController::class, 'custome
 Route::delete('event-purchases/{eventPurchase}', [EventPurchaseController::class, 'destroy']);
 Route::delete('event-purchases/{id}/force-delete', [EventPurchaseController::class, 'publicForceDelete']);
 
-// Public Day Off
 Route::get('day-offs/location/{locationId}', [DayOffController::class, 'getByLocation']);
 
-// Public Special Pricing (for booking flows)
 Route::get('special-pricings/for-entity', [SpecialPricingController::class, 'getForEntity']);
 Route::post('special-pricings/check-date', [SpecialPricingController::class, 'checkDate']);
 Route::get('special-pricings/upcoming-dates', [SpecialPricingController::class, 'getUpcomingDates']);
 
-// Public Fee Support (for booking flows)
 Route::get('fee-supports/for-entity', [FeeSupportController::class, 'getForEntity']);
 
-// Google Calendar OAuth callback (must be public - Google redirects here)
 Route::get('google-calendar/callback', [GoogleCalendarController::class, 'handleCallback']);
 
-// Mobile App - Public Availability APIs (no authentication required)
 Route::prefix('mobile')->group(function () {
     Route::get('locations', [MobileAvailabilityController::class, 'getLocations']);
     Route::get('locations/{locationId}/packages', [MobileAvailabilityController::class, 'getPackagesByLocationAndDate']);
@@ -242,34 +215,26 @@ Route::prefix('mobile')->group(function () {
 });
 
 
-// Protected routes (require authentication)
 Route::middleware('auth:sanctum')->group(function () {
-    // User info
     Route::get('/user', function (Request $request) {
         return $request->user();
     });
 
-    // Logout
     Route::post('logout', [ApiAuthController::class, 'logout']);
 
-    // Metrics and Analytics - protected, role-based
     Route::get('metrics/dashboard/{user}', [MetricsController::class, 'dashboard']);
     Route::get('metrics/attendant', [MetricsController::class, 'attendant']);
 
-    // Company Analytics (Admin/Owner)
     Route::get('analytics/company', [AnalyticsController::class, 'getCompanyAnalytics']);
     Route::post('analytics/company/export', [AnalyticsController::class, 'exportAnalytics']);
 
-    // Location Manager Analytics
     Route::get('analytics/location', [AnalyticsController::class, 'getLocationAnalytics']);
     Route::post('analytics/location/export', [AnalyticsController::class, 'exportAnalytics']);
 
-    // Accounting Analytics (detailed sales breakdown for accounting)
     Route::get('accounting-analytics/report', [AccountingAnalyticsController::class, 'getReport']);
     Route::get('accounting-analytics/summary-trend', [AccountingAnalyticsController::class, 'getSummaryTrend']);
     Route::get('accounting-analytics/export', [AccountingAnalyticsController::class, 'exportReport']);
 
-    // Page Analytics (page views, conversions, marketing — scoped per role)
     Route::get('page-analytics/overview',          [PageAnalyticsController::class, 'overview']);
     Route::get('page-analytics/timeseries',        [PageAnalyticsController::class, 'timeseries']);
     Route::get('page-analytics/top-pages',         [PageAnalyticsController::class, 'topPages']);
@@ -290,18 +255,15 @@ Route::middleware('auth:sanctum')->group(function () {
         ->whereNumber('id');
     Route::get('page-analytics/sessions/{sessionId}', [PageAnalyticsController::class, 'session']);
 
-    // Company routes
     Route::apiResource('companies', CompanyController::class);
     Route::get('companies/{company}/statistics', [CompanyController::class, 'statistics']);
     Route::patch('companies/{company}/logo', [CompanyController::class, 'updateLogo']);
 
-    // Location routes
     Route::apiResource('locations', LocationController::class)->only(['show', 'update', 'destroy']);
     Route::get('locations/company/{companyId}', [LocationController::class, 'getByCompany']);
     Route::patch('locations/{location}/toggle-status', [LocationController::class, 'toggleStatus']);
     Route::get('locations/{location}/statistics', [LocationController::class, 'statistics']);
 
-    // User routes
     Route::apiResource('users', UserController::class)->except(['store']);
     Route::post('users/staff', [UserController::class, 'createWithCredentials']);
     Route::post('users/{user}/resend-credentials', [UserController::class, 'resendCredentials']);
@@ -315,7 +277,6 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('users/{user}/update-profile-path', [UserController::class, 'updateProfilePath']);
     Route::post('users/bulk-delete', [UserController::class, 'bulkDelete']);
 
-    // Customer routes
     Route::get('customers/list/{user}', [CustomerController::class, 'fetchCustomerList']);
     Route::get('customers/analytics', [CustomerController::class, 'analytics']);
     Route::post('customers/analytics/export', [CustomerController::class, 'exportAnalytics']);
@@ -324,10 +285,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('customers/{customer}/statistics', [CustomerController::class, 'statistics']);
     Route::patch('customers/{customer}/update-last-visit', [CustomerController::class, 'updateLastVisit']);
 
-    // Category routes
     Route::apiResource('categories', CategoryController::class);
 
-    // Package routes
     Route::post('packages/room/create', [PackageController::class, 'storePackageRoom']);
     Route::patch('packages/bulk-update-min-notice', [PackageController::class, 'bulkUpdateMinBookingNotice']);
     Route::apiResource('packages', PackageController::class);
@@ -343,13 +302,11 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('packages/{package}/addons/attach', [PackageController::class, 'attachAddOns']);
     Route::post('packages/{package}/addons/detach', [PackageController::class, 'detachAddOns']);
 
-    // Package Availability Schedules
     Route::get('packages/{package}/availability-schedules', [PackageController::class, 'getAvailabilitySchedules']);
     Route::post('packages/{package}/availability-schedules', [PackageController::class, 'storeAvailabilitySchedule']);
     Route::put('packages/{package}/availability-schedules', [PackageController::class, 'updateAvailabilitySchedules']);
     Route::delete('packages/{package}/availability-schedules/{scheduleId}', [PackageController::class, 'deleteAvailabilitySchedule']);
 
-    // Attraction routes
     Route::post('attractions/bulk-import', [AttractionController::class, 'bulkImport']);
     Route::get('attractions/category/{category}', [AttractionController::class, 'getByCategory']);
     Route::apiResource('attractions', AttractionController::class)->except(['show']);
@@ -360,12 +317,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('attractions/bulk-delete', [AttractionController::class, 'bulkDelete']);
     Route::post('attractions/reorder', [AttractionController::class, 'reorder']);
 
-    // Attraction Purchase routes - static GET routes MUST be before apiResource
     Route::get('attraction-purchases/trashed', [AttractionPurchaseController::class, 'trashed']);
     Route::get('attraction-purchases/statistics', [AttractionPurchaseController::class, 'statistics']);
     Route::post('attraction-purchases/bulk-restore', [AttractionPurchaseController::class, 'bulkRestore']);
     Route::apiResource('attraction-purchases', AttractionPurchaseController::class)->except(['store', 'destroy']);
-    // update status
     Route::patch('attraction-purchases/{attractionPurchase}/update-status', [AttractionPurchaseController::class, 'updateStatus']);
     Route::get('attraction-purchases/customer/{customerId}', [AttractionPurchaseController::class, 'getByCustomer']);
     Route::get('attraction-purchases/attraction/{attractionId}', [AttractionPurchaseController::class, 'getByAttraction']);
@@ -378,7 +333,6 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('attraction-purchases/{id}/restore', [AttractionPurchaseController::class, 'restore']);
     Route::delete('attraction-purchases/{id}/force-delete', [AttractionPurchaseController::class, 'forceDelete']);
 
-    // Room routes
     Route::apiResource('rooms', RoomController::class);
     Route::get('rooms/location/{locationId}', [RoomController::class, 'getByLocation']);
     Route::patch('rooms/{room}/toggle-availability', [RoomController::class, 'toggleAvailability']);
@@ -386,24 +340,20 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('rooms/area-group/{areaGroup}/update-booking-interval', [RoomController::class, 'updateBookingIntervalByAreaGroup']);
     Route::post('rooms/bulk-delete', [RoomController::class, 'bulkDelete']);
 
-    // Day Off additional routes
     Route::apiResource('day-offs', DayOffController::class);
     Route::post('day-offs/check-date', [DayOffController::class, 'checkDate']);
     Route::post('day-offs/bulk-delete', [DayOffController::class, 'bulkDelete']);
 
-    // Special Pricing routes (protected admin routes)
     Route::get('special-pricings/location/{locationId}', [SpecialPricingController::class, 'getByLocation']);
     Route::patch('special-pricings/{specialPricing}/toggle-status', [SpecialPricingController::class, 'toggleStatus']);
     Route::post('special-pricings/bulk-delete', [SpecialPricingController::class, 'bulkDelete']);
     Route::apiResource('special-pricings', SpecialPricingController::class);
 
-    // Fee Support routes (protected admin routes)
     Route::get('fee-supports/location/{locationId}', [FeeSupportController::class, 'getByLocation']);
     Route::patch('fee-supports/{feeSupport}/toggle-status', [FeeSupportController::class, 'toggleStatus']);
     Route::post('fee-supports/bulk-delete', [FeeSupportController::class, 'bulkDelete']);
     Route::apiResource('fee-supports', FeeSupportController::class);
 
-    // Add-on routes
     Route::apiResource('addons', AddOnController::class);
     Route::get('addons/location/{locationId}', [AddOnController::class, 'getByLocation']);
     Route::patch('addons/{addOn}/toggle-status', [AddOnController::class, 'toggleStatus']);
@@ -411,20 +361,16 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('addons/bulk-delete', [AddOnController::class, 'bulkDelete']);
     Route::post('addons/bulk-import', [AddOnController::class, 'bulkImport']);
 
-    // Global Notes routes
     Route::apiResource('global-notes', GlobalNoteController::class);
     Route::get('global-notes/package/{packageId}', [GlobalNoteController::class, 'getForPackage']);
     Route::patch('global-notes/{globalNote}/toggle-status', [GlobalNoteController::class, 'toggleStatus']);
 
-    // Gift Card routes
     Route::apiResource('gift-cards', GiftCardController::class);
     Route::post('gift-cards/validate-code', [GiftCardController::class, 'validateByCode']);
     Route::post('gift-cards/{giftCard}/redeem', [GiftCardController::class, 'redeem']);
     Route::patch('gift-cards/{giftCard}/deactivate', [GiftCardController::class, 'deactivate']);
     Route::patch('gift-cards/{giftCard}/reactivate', [GiftCardController::class, 'reactivate']);
 
-    // Promo routes — static (non-parameterized) routes MUST come before apiResource
-    // to prevent GET /promos/{promo} from shadowing them via route model binding
     Route::post('promos/validate-code', [PromoController::class, 'validateByCode']);
     Route::get('promos/valid', [PromoController::class, 'getValid']);
     Route::post('promos/generate-bulk', [PromoController::class, 'generateBulk']);
@@ -437,18 +383,14 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('promos/{promo}/apply', [PromoController::class, 'apply']);
     Route::patch('promos/{promo}/toggle-status', [PromoController::class, 'toggleStatus']);
 
-    // Booking routes
     Route::get('bookings/export', [BookingController::class, 'exportIndex']);
 
-    // Booking Details Report (by package with flexible filtering) - MUST be before apiResource
     Route::get('bookings/details-report', [BookingController::class, 'bookingDetailsReport']);
 
-    // Booking Summary PDF routes - MUST be before apiResource
     Route::get('bookings/summaries/export', [BookingController::class, 'summariesExport']);
     Route::get('bookings/summaries/day/{date}', [BookingController::class, 'summariesDay']);
     Route::get('bookings/summaries/week/{week?}', [BookingController::class, 'summariesWeek']);
 
-    // Soft delete routes - MUST be before apiResource to avoid {booking} catching "trashed"
     Route::get('bookings/trashed', [BookingController::class, 'trashed']);
     Route::post('bookings/bulk-restore', [BookingController::class, 'bulkRestore']);
     Route::post('bookings/bulk-import-csv', [BookingController::class, 'bulkImportCsv']);
@@ -468,14 +410,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('bookings/{booking}/summary', [BookingController::class, 'summary']);
     Route::get('bookings/{booking}/summary/view', [BookingController::class, 'summaryView']);
 
-    // Booking Invitation routes (customer sends invitations to guests)
     Route::get('bookings/{booking}/invitations', [BookingInvitationController::class, 'index']);
     Route::post('bookings/{booking}/invitations', [BookingInvitationController::class, 'store']);
     Route::post('bookings/{booking}/invitations/{invitation}/resend', [BookingInvitationController::class, 'resend']);
     Route::delete('bookings/{booking}/invitations/{invitation}', [BookingInvitationController::class, 'destroy']);
     Route::get('bookings/{booking}/invitation-preview', [BookingInvitationController::class, 'preview']);
 
-    // Payment Invoice routes (must be before apiResource to avoid route conflicts)
     Route::get('payments/invoices/report', [PaymentController::class, 'invoicesReport']);
     Route::get('payments/invoices/export', [PaymentController::class, 'invoicesExport']);
     Route::get('payments/package-invoices/export', [PaymentController::class, 'packageInvoicesExport']);
@@ -483,7 +423,6 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('payments/invoices/week/{week?}', [PaymentController::class, 'invoicesWeek']);
     Route::post('payments/invoices/bulk', [PaymentController::class, 'invoicesBulk']);
 
-    // Payment routes
     Route::get('payments/trashed', [PaymentController::class, 'trashed']);
     Route::apiResource('payments', PaymentController::class)->except(['update']);
     Route::patch('payments/{payment}/refund', [PaymentController::class, 'refund']);
@@ -491,27 +430,22 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('payments/{payment}/void', [PaymentController::class, 'voidTransaction']);
     Route::patch('payments/{payment}/restore', [PaymentController::class, 'restore']);
     Route::delete('payments/{payment}/force-delete', [PaymentController::class, 'forceDelete']);
-    // Route::match(['put', 'patch'], 'payments/{id}/payable', [PaymentController::class, 'updatePayable']); // Deprecated: payable linking is now handled in charge()
     Route::get('payments/{payment}/invoice', [PaymentController::class, 'invoice']);
     Route::get('payments/{payment}/invoice/view', [PaymentController::class, 'invoiceView']);
 
 
-    // Activity Log routes
     Route::apiResource('activity-logs', ActivityLogController::class)->only(['index', 'store', 'show']);
 
-    // Notification routes - custom routes MUST be before apiResource
     Route::patch('notifications/mark-all-as-read', [NotificationController::class, 'markAllAsRead']);
     Route::delete('notifications/clear-all', [NotificationController::class, 'clearAll']);
     Route::patch('notifications/{notification}/mark-as-read', [NotificationController::class, 'markAsRead']);
     Route::apiResource('notifications', NotificationController::class);
 
-    // Customer Notification routes
     Route::apiResource('customer-notifications', CustomerNotificationController::class);
     Route::patch('customer-notifications/{customerNotification}/mark-as-read', [CustomerNotificationController::class, 'markAsRead']);
     Route::patch('customer-notifications/mark-all-as-read/{customerId}', [CustomerNotificationController::class, 'markAllAsRead']);
     Route::get('customer-notifications/unread-count/{customerId}', [CustomerNotificationController::class, 'getUnreadCount']);
 
-    // Authorize.Net Account Management (Protected routes for location managers)
     Route::prefix('authorize-net')->group(function () {
         Route::get('account', [AuthorizeNetAccountController::class, 'show']);
         Route::post('account', [AuthorizeNetAccountController::class, 'store']);
@@ -519,7 +453,6 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('account', [AuthorizeNetAccountController::class, 'destroy']);
     });
 
-    // Email Template routes
     Route::prefix('email-templates')->group(function () {
         Route::get('/', [EmailTemplateController::class, 'index']);
         Route::post('/', [EmailTemplateController::class, 'store']);
@@ -533,7 +466,6 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('/{emailTemplate}/status', [EmailTemplateController::class, 'updateStatus']);
     });
 
-    // Email Campaign routes
     Route::prefix('email-campaigns')->group(function () {
         Route::get('/', [EmailCampaignController::class, 'index']);
         Route::post('/', [EmailCampaignController::class, 'store']);
@@ -547,7 +479,6 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/{emailCampaign}/resend', [EmailCampaignController::class, 'resend']);
     });
 
-    // Contact routes (for email campaigns)
     Route::prefix('contacts')->group(function () {
         Route::get('/', [ContactController::class, 'index']);
         Route::post('/', [ContactController::class, 'store']);
@@ -564,7 +495,6 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/{contact}/remove-tag', [ContactController::class, 'removeTag']);
     });
 
-    // Email Notification routes (automated notifications for bookings/purchases)
     Route::prefix('email-notifications')->group(function () {
         Route::get('/', [EmailNotificationController::class, 'index']);
         Route::post('/', [EmailNotificationController::class, 'store']);
@@ -588,12 +518,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/{emailNotification}/logs/{logId}/resend', [EmailNotificationController::class, 'resendLog']);
     });
 
-    // Event routes (index + show are public; store, update, destroy, toggle-status require auth)
     Route::apiResource('events', EventController::class)->except(['index', 'show']);
     Route::patch('events/{event}/toggle-status', [EventController::class, 'toggleStatus']);
 
-    // Event Purchase routes
-    // Soft delete routes - MUST be before apiResource to avoid {eventPurchase} catching "trashed"
     Route::get('event-purchases/trashed', [EventPurchaseController::class, 'trashed']);
     Route::post('event-purchases/bulk-restore', [EventPurchaseController::class, 'bulkRestore']);
     Route::apiResource('event-purchases', EventPurchaseController::class)->except(['store']);
@@ -601,7 +528,6 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('event-purchases/{eventPurchase}/status', [EventPurchaseController::class, 'updateStatus']);
     Route::post('event-purchases/{id}/restore', [EventPurchaseController::class, 'restore']);
 
-    // Google Calendar routes
     Route::prefix('google-calendar')->group(function () {
         Route::get('/status', [GoogleCalendarController::class, 'status']);
         Route::get('/auth-url', [GoogleCalendarController::class, 'getAuthUrl']);
@@ -614,25 +540,24 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('/bookings/{bookingId}/event', [GoogleCalendarController::class, 'removeBookingEvent']);
     });
 
-    // ---------------------------------------------------------------
-    // Membership routes
-    // ---------------------------------------------------------------
 
-    // Customer-side (authenticated customer)
     Route::get('memberships/me',        [MembershipController::class, 'myMembership']);
     Route::post('memberships/purchase', [MembershipController::class, 'purchase']);
 
-    // Plan management
+    Route::post('memberships/benefits/quote', [MembershipController::class, 'quote']);
+
     Route::apiResource('membership-plans', MembershipPlanController::class);
     Route::patch('membership-plans/{membershipPlan}/toggle-status', [MembershipPlanController::class, 'toggleStatus']);
 
-    // Reports
+    Route::get('membership-plans/{membershipPlan}/benefits',                 [MembershipPlanBenefitController::class, 'index']);
+    Route::post('membership-plans/{membershipPlan}/benefits',                [MembershipPlanBenefitController::class, 'store']);
+    Route::put('membership-plans/{membershipPlan}/benefits/{benefit}',       [MembershipPlanBenefitController::class, 'update']);
+    Route::delete('membership-plans/{membershipPlan}/benefits/{benefit}',    [MembershipPlanBenefitController::class, 'destroy']);
+
     Route::get('membership-reports/summary', [MembershipReportController::class, 'summary']);
 
-    // Check-in & QR scan (static routes BEFORE apiResource)
     Route::post('memberships/scan', [MembershipCheckInController::class, 'scan']);
 
-    // Main memberships resource (admin-side list/show/store)
     Route::get('memberships',                  [MembershipController::class, 'index']);
     Route::post('memberships',                 [MembershipController::class, 'store']);
     Route::get('memberships/{membership}',     [MembershipController::class, 'show']);

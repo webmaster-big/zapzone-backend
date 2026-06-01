@@ -6,9 +6,6 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
         Schema::create('day_offs', function (Blueprint $table) {
@@ -19,16 +16,12 @@ return new class extends Migration
             $table->boolean('is_recurring')->default(false); // For annual recurring holidays
             $table->timestamps();
 
-            // Indexes
             $table->index('location_id');
             $table->index('date');
             $table->unique(['location_id', 'date']);
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::dropIfExists('day_offs');

@@ -9,10 +9,6 @@ use Illuminate\Support\Facades\Log;
 
 class DefaultEmailNotificationSeeder extends Seeder
 {
-    /**
-     * Seed default email notifications for all companies.
-     * Safe to re-run — skips companies that already have defaults.
-     */
     public function run(): void
     {
         $companies = Company::all();
@@ -24,16 +20,11 @@ class DefaultEmailNotificationSeeder extends Seeder
         $this->command?->info("Default email notifications seeded for {$companies->count()} companies.");
     }
 
-    /**
-     * Seed default email notifications for a specific company.
-     * Called from seeder and also from company creation flow.
-     */
     public static function seedForCompany(Company $company): void
     {
         $defaults = self::getDefaultDefinitions();
 
         foreach ($defaults as $definition) {
-            // Skip if already exists for this company
             $exists = EmailNotification::where('company_id', $company->id)
                 ->where('default_key', $definition['default_key'])
                 ->exists();
@@ -56,15 +47,9 @@ class DefaultEmailNotificationSeeder extends Seeder
         Log::info("Default email notifications seeded for company {$company->id}");
     }
 
-    /**
-     * Get all default email notification definitions.
-     */
     public static function getDefaultDefinitions(): array
     {
         return [
-            // ============================================
-            // BOOKING NOTIFICATIONS
-            // ============================================
             [
                 'default_key' => EmailNotification::DEFAULT_BOOKING_CONFIRMATION_CUSTOMER,
                 'name' => 'Booking Confirmation (Customer)',
@@ -136,9 +121,6 @@ class DefaultEmailNotificationSeeder extends Seeder
                 'body' => self::getBookingUpdatedCustomerBody(),
             ],
 
-            // ============================================
-            // ATTRACTION PURCHASE NOTIFICATIONS
-            // ============================================
             [
                 'default_key' => EmailNotification::DEFAULT_PURCHASE_CONFIRMATION_CUSTOMER,
                 'name' => 'Purchase Confirmation (Customer)',
@@ -166,9 +148,6 @@ class DefaultEmailNotificationSeeder extends Seeder
                 'body' => self::getPurchaseCancellationCustomerBody(),
             ],
 
-            // ============================================
-            // PAYMENT NOTIFICATIONS
-            // ============================================
             [
                 'default_key' => EmailNotification::DEFAULT_PAYMENT_RECEIVED_CUSTOMER,
                 'name' => 'Payment Received (Customer)',
@@ -198,9 +177,6 @@ class DefaultEmailNotificationSeeder extends Seeder
         ];
     }
 
-    // ============================================
-    // DEFAULT EMAIL BODY TEMPLATES
-    // ============================================
 
     protected static function getBookingConfirmationCustomerBody(): string
     {

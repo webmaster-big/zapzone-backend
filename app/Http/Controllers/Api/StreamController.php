@@ -10,43 +10,23 @@ use Illuminate\Support\Facades\DB;
 
 class StreamController extends Controller
     {
-        /**
-         * Maximum runtime for SSE streams in seconds (1 minute)
-         * Client should reconnect after stream ends
-         * Reduced from 5 minutes to prevent memory exhaustion
-         */
         private const MAX_STREAM_RUNTIME = 60;
 
-        /**
-         * Interval between iterations in seconds
-         */
         private const POLL_INTERVAL = 3;
 
-        /**
-         * Initialize SSE stream by clearing output buffers
-         * This prevents memory accumulation in long-running streams
-         */
         private function initializeStream(): void
         {
-            // Disable time limit for long-running streams
             set_time_limit(0);
 
-            // Turn off output buffering completely
-            // Clear ALL output buffers to prevent memory buildup
             while (ob_get_level() > 0) {
                 ob_end_flush();
             }
 
-            // Start a clean output buffer that flushes immediately
             ob_implicit_flush(true);
 
-            // Disable query logging to prevent memory buildup
             DB::connection()->disableQueryLog();
         }
 
-        /**
-         * Send SSE data and flush immediately
-         */
         private function sendSSE(string $data, ?string $event = null, ?string $id = null): void
         {
             if ($id) {
@@ -57,16 +37,12 @@ class StreamController extends Controller
             }
             echo "data: {$data}\n\n";
 
-            // Force immediate output - no buffering
             if (ob_get_level() > 0) {
                 ob_flush();
             }
             flush();
         }
 
-        /**
-         * Send heartbeat to keep connection alive
-         */
         private function sendHeartbeat(): void
         {
             echo ": heartbeat\n\n";
@@ -76,48 +52,33 @@ class StreamController extends Controller
             flush();
         }
 
-        /**
-         * Clean up memory to prevent exhaustion in long-running SSE streams
-         */
         private function cleanupMemory(): void
         {
-            // Force garbage collection
             gc_collect_cycles();
 
-            // Clear Eloquent's query log if enabled
             if (DB::connection()->logging()) {
                 DB::connection()->flushQueryLog();
             }
         }
 
-        /**
-         * Stream booking notifications using Server-Sent Events (SSE)
-         *
-         * @param Request $request
-         * @return \Symfony\Component\HttpFoundation\StreamedResponse
-         */
         public function bookingNotifications(Request $request)
         {
             $locationId = $request->query('location_id');
             $userId = $request->query('user_id'); // Filter out user's own notifications
 
             return response()->stream(function () use ($locationId, $userId) {
-                // Initialize stream - clear all buffers to prevent memory buildup
                 $this->initializeStream();
 
                 $lastId = 0;
                 $startTime = time();
                 $iterations = 0;
 
-                // Keep sending updates with timeout
                 while (true) {
-                    // Check timeout to prevent memory exhaustion
                     if ((time() - $startTime) >= self::MAX_STREAM_RUNTIME) {
                         $this->sendSSE(json_encode(['message' => 'Stream timeout, please reconnect']), 'timeout');
                         break;
                     }
 
-                    // Query for new bookings - select only needed fields
                     $query = Booking::select([
                             'id', 'reference_number', 'customer_id', 'package_id', 'location_id',
                             'room_id', 'guest_name', 'booking_date', 'booking_time', 'status',
@@ -131,12 +92,10 @@ class StreamController extends Controller
                         ])
                         ->where('id', '>', $lastId);
 
-                    // Filter by location if provided
                     if ($locationId) {
                         $query->where('location_id', $locationId);
                     }
 
-                    // Filter out user's own bookings (only if created_by is not null)
                     if ($userId) {
                         $query->where(function($q) use ($userId) {
                             $q->whereNull('created_by')
@@ -172,25 +131,20 @@ class StreamController extends Controller
                             $lastId = $booking->id;
                         }
 
-                        // Clear the collection to free memory
                         unset($bookings);
                     } else {
-                        // Send heartbeat to keep connection alive
                         $this->sendHeartbeat();
                     }
 
-                    // Check if connection is still alive
                     if (connection_aborted()) {
                         break;
                     }
 
-                    // Periodic memory cleanup (every 5 iterations)
                     $iterations++;
                     if ($iterations % 5 === 0) {
                         $this->cleanupMemory();
                     }
 
-                    // Wait before next update
                     sleep(self::POLL_INTERVAL);
                 }
             }, 200, [
@@ -201,34 +155,24 @@ class StreamController extends Controller
             ]);
         }
 
-        /**
-         * Stream attraction purchase notifications using Server-Sent Events (SSE)
-         *
-         * @param Request $request
-         * @return \Symfony\Component\HttpFoundation\StreamedResponse
-         */
         public function attractionPurchaseNotifications(Request $request)
         {
             $locationId = $request->query('location_id');
             $userId = $request->query('user_id'); // Filter out user's own notifications
 
             return response()->stream(function () use ($locationId, $userId) {
-                // Initialize stream - clear all buffers to prevent memory buildup
                 $this->initializeStream();
 
                 $lastId = 0;
                 $startTime = time();
                 $iterations = 0;
 
-                // Keep sending updates with timeout
                 while (true) {
-                    // Check timeout to prevent memory exhaustion
                     if ((time() - $startTime) >= self::MAX_STREAM_RUNTIME) {
                         $this->sendSSE(json_encode(['message' => 'Stream timeout, please reconnect']), 'timeout');
                         break;
                     }
 
-                    // Query for new attraction purchases - select only needed fields
                     $query = AttractionPurchase::select([
                             'id', 'attraction_id', 'customer_id', 'guest_name', 'quantity',
                             'total_amount', 'status', 'payment_method', 'purchase_date',
@@ -241,14 +185,12 @@ class StreamController extends Controller
                         ])
                         ->where('id', '>', $lastId);
 
-                    // Filter by location if provided
                     if ($locationId) {
                         $query->whereHas('attraction', function ($q) use ($locationId) {
                             $q->where('location_id', $locationId);
                         });
                     }
 
-                    // Filter out user's own purchases (only if created_by is not null)
                     if ($userId) {
                         $query->where(function($q) use ($userId) {
                             $q->whereNull('created_by')
@@ -284,25 +226,20 @@ class StreamController extends Controller
                             $lastId = $purchase->id;
                         }
 
-                        // Clear the collection to free memory
                         unset($purchases);
                     } else {
-                        // Send heartbeat to keep connection alive
                         $this->sendHeartbeat();
                     }
 
-                    // Check if connection is still alive
                     if (connection_aborted()) {
                         break;
                     }
 
-                    // Periodic memory cleanup (every 5 iterations)
                     $iterations++;
                     if ($iterations % 5 === 0) {
                         $this->cleanupMemory();
                     }
 
-                    // Wait before next update
                     sleep(self::POLL_INTERVAL);
                 }
             }, 200, [
@@ -313,19 +250,12 @@ class StreamController extends Controller
             ]);
         }
 
-        /**
-         * Stream combined notifications (bookings and attraction purchases) using Server-Sent Events (SSE)
-         *
-         * @param Request $request
-         * @return \Symfony\Component\HttpFoundation\StreamedResponse
-         */
         public function combinedNotifications(Request $request)
         {
             $locationId = $request->query('location_id');
             $userId = $request->query('user_id'); // Filter out user's own notifications
 
             return response()->stream(function () use ($locationId, $userId) {
-                // Initialize stream - clear all buffers to prevent memory buildup
                 $this->initializeStream();
 
                 $lastBookingId = 0;
@@ -333,9 +263,7 @@ class StreamController extends Controller
                 $startTime = time();
                 $iterations = 0;
 
-                // Keep sending updates with timeout
                 while (true) {
-                    // Check timeout to prevent memory exhaustion
                     if ((time() - $startTime) >= self::MAX_STREAM_RUNTIME) {
                         $this->sendSSE(json_encode(['message' => 'Stream timeout, please reconnect']), 'timeout');
                         break;
@@ -343,7 +271,6 @@ class StreamController extends Controller
 
                     $hasNewData = false;
 
-                    // Query for new bookings - select only needed fields
                     $bookingQuery = Booking::select([
                             'id', 'reference_number', 'customer_id', 'package_id', 'location_id',
                             'room_id', 'guest_name', 'booking_date', 'booking_time', 'status',
@@ -361,7 +288,6 @@ class StreamController extends Controller
                         $bookingQuery->where('location_id', $locationId);
                     }
 
-                    // Filter out user's own bookings (only if created_by is not null)
                     if ($userId) {
                         $bookingQuery->where(function($q) use ($userId) {
                             $q->whereNull('created_by')
@@ -396,11 +322,9 @@ class StreamController extends Controller
                             $hasNewData = true;
                         }
 
-                        // Clear the collection to free memory
                         unset($bookings);
                     }
 
-                    // Query for new attraction purchases - select only needed fields
                     $purchaseQuery = AttractionPurchase::select([
                             'id', 'attraction_id', 'customer_id', 'guest_name', 'quantity',
                             'total_amount', 'status', 'payment_method', 'purchase_date',
@@ -419,7 +343,6 @@ class StreamController extends Controller
                         });
                     }
 
-                    // Filter out user's own purchases (only if created_by is not null)
                     if ($userId) {
                         $purchaseQuery->where(function($q) use ($userId) {
                             $q->whereNull('created_by')
@@ -454,27 +377,22 @@ class StreamController extends Controller
                             $hasNewData = true;
                         }
 
-                        // Clear the collection to free memory
                         unset($purchases);
                     }
 
-                    // Send heartbeat if no new data
                     if (!$hasNewData) {
                         $this->sendHeartbeat();
                     }
 
-                    // Check if connection is still alive
                     if (connection_aborted()) {
                         break;
                     }
 
-                    // Periodic memory cleanup (every 5 iterations)
                     $iterations++;
                     if ($iterations % 5 === 0) {
                         $this->cleanupMemory();
                     }
 
-                    // Wait before next update
                     sleep(self::POLL_INTERVAL);
                 }
             }, 200, [

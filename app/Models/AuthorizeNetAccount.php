@@ -34,13 +34,11 @@ class AuthorizeNetAccount extends Model
         'public_client_key',
     ];
 
-    // Relationships
     public function location(): BelongsTo
     {
         return $this->belongsTo(Location::class);
     }
 
-    // Accessors & Mutators - Automatic encryption/decryption
     protected function apiLoginId(): \Illuminate\Database\Eloquent\Casts\Attribute
     {
         return \Illuminate\Database\Eloquent\Casts\Attribute::make(
@@ -65,7 +63,6 @@ class AuthorizeNetAccount extends Model
         );
     }
 
-    // Scopes
     public function scopeActive($query)
     {
         return $query->where('is_active', true);
@@ -81,7 +78,6 @@ class AuthorizeNetAccount extends Model
         return $query->where('environment', 'sandbox');
     }
 
-    // Helper methods
     public function isProduction(): bool
     {
         return $this->environment === 'production';

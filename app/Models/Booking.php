@@ -32,6 +32,7 @@ class Booking extends Model
         'guest_country',
         'gift_card_id',
         'promo_id',
+        'membership_id',
         'type',
         'booking_date',
         'booking_time',
@@ -79,7 +80,6 @@ class Booking extends Model
         'cancelled_at' => 'datetime',
     ];
 
-    // Relationships
     public function customer(): BelongsTo
     {
         return $this->belongsTo(Customer::class);
@@ -120,6 +120,11 @@ class Booking extends Model
         return $this->belongsTo(Promo::class);
     }
 
+    public function membership(): BelongsTo
+    {
+        return $this->belongsTo(Membership::class);
+    }
+
     public function attractions(): BelongsToMany
     {
         return $this->belongsToMany(Attraction::class, 'booking_attractions', 'booking_id', 'attraction_id')
@@ -134,24 +139,16 @@ class Booking extends Model
             ->withTimestamps();
     }
 
-    /**
-     * Get all payments for this booking.
-     * Uses polymorphic relationship with payable_type = 'booking'
-     */
     public function payments(): MorphMany
     {
         return $this->morphMany(Payment::class, 'payable');
     }
 
-    /**
-     * Get all invitations for this booking.
-     */
     public function invitations(): HasMany
     {
         return $this->hasMany(BookingInvitation::class);
     }
 
-    // Scopes
     public function scopeByStatus($query, $status)
     {
         return $query->where('status', $status);
@@ -177,7 +174,6 @@ class Booking extends Model
         return $query->where('booking_date', '>=', now()->toDateString());
     }
 
-    // Helpers
     public function getRemainingBalance(): float
     {
         return $this->total_amount - $this->amount_paid;

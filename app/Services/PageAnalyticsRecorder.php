@@ -18,23 +18,8 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
-/**
- * Single entry point for writing rows into `page_views`.
- *
- * Two callers:
- *   1. PageAnalyticsController (public ingest from the customer browser)
- *   2. RecordsPageAnalytics trait (server-side conversion firing from
- *      booking / purchase / signup / refund controllers)
- *
- * This is intentionally a plain service (not a façade / not bound in the
- * container as a singleton) so it can be unit-tested directly.
- */
 class PageAnalyticsRecorder
 {
-    /**
-     * entity_type => model class. Used to derive location_id/company_id
-     * from a referenced entity, and for the FE's `entity` filter.
-     */
     public const ENTITY_MAP = [
         'package'             => Package::class,
         'attraction'          => Attraction::class,
@@ -46,10 +31,6 @@ class PageAnalyticsRecorder
         'promo'               => Promo::class,
     ];
 
-    /**
-     * Record an event coming from the public ingest endpoint.
-     * The FE has already validated its own payload; we sanitise + enrich.
-     */
     public function recordFromRequest(Request $request, array $payload): PageView
     {
         $payload['event_type'] = $payload['event_type'] ?? 'page_view';
@@ -59,11 +40,6 @@ class PageAnalyticsRecorder
         return $this->persist($request, $payload);
     }
 
-    /**
-     * Fire a server-side conversion. Always idempotent when caller passes
-     * a stable tracking_id (recommended: use the entity's UUID or
-     * "{model}:{id}:{event_name}" so retries dedupe).
-     */
     public function recordConversion(
         string $eventName,
         ?Model $entity = null,
@@ -85,10 +61,6 @@ class PageAnalyticsRecorder
             $payload['entity_type'] = $payload['entity_type'] ?? $this->classToEntityType($entity);
             $payload['entity_id']   = $payload['entity_id']   ?? $entity->getKey();
 
-            // For completion entities (Booking / AttractionPurchase / EventPurchase),
-            // link the conversion to the underlying offer (Package / Attraction / Event)
-            // so that topPages(), entitiesLeaderboard() and related queries, which all
-            // filter/group by entity_type='package' etc., can credit this conversion.
             [$offerType, $offerId] = $this->resolveOfferEntity($entity);
             if ($offerType && $offerId) {
                 $payload['entity_type'] = $offerType;
@@ -96,7 +68,6 @@ class PageAnalyticsRecorder
             }
         }
 
-        // Dedupe — if a row with this tracking_id already exists, return it.
         if (!empty($payload['tracking_id'])) {
             $existing = PageView::where('tracking_id', $payload['tracking_id'])->first();
             if ($existing) {
@@ -107,7 +78,6 @@ class PageAnalyticsRecorder
         try {
             return $this->persist($request, $payload);
         } catch (\Throwable $e) {
-            // Server-side hooks must NEVER break the user's purchase.
             Log::warning('PageAnalyticsRecorder: server-side conversion failed', [
                 'event_name' => $eventName,
                 'error'      => $e->getMessage(),
@@ -116,23 +86,14 @@ class PageAnalyticsRecorder
         }
     }
 
-    // =====================================================================
-    // INTERNAL
-    // =====================================================================
 
     protected function persist(Request $request, array $payload): PageView
     {
-        // ---- Visitor identity (headers > body > generated) --------------
         $visitorId = $payload['visitor_id'] ?? $request->header('X-Visitor-Id');
         $sessionId = $payload['session_id'] ?? $request->header('X-Session-Id');
         $payload['visitor_id'] = $visitorId ?: null;
         $payload['session_id'] = $sessionId ?: null;
 
-        // ---- Page context for server-side conversions -------------------
-        // The backend doesn't know the browser URL, so conversion rows land
-        // with page_path=null, breaking topPages() and landingPages() attribution.
-        // If we have a session_id, inherit the most-recent page_view's path so
-        // that the conversion is counted on the correct page/offer.
         if (($payload['event_type'] ?? null) === 'conversion'
             && empty($payload['page_path'])
             && !empty($sessionId)) {
@@ -149,7 +110,6 @@ class PageAnalyticsRecorder
             }
         }
 
-        // ---- Tech / device ----------------------------------------------
         $ua = (string) $request->header('User-Agent', '');
         $payload['user_agent']  = $ua;
         $payload['ip_address']  = $request->ip();
@@ -157,14 +117,12 @@ class PageAnalyticsRecorder
         $payload['browser']     = $payload['browser']     ?? $this->detectBrowser($ua);
         $payload['os']          = $payload['os']          ?? $this->detectOs($ua);
 
-        // Geo via Cloudflare-style headers (no GeoIP DB required).
         $payload['country'] = $payload['country'] ?? $request->header('CF-IPCountry');
         $payload['city']    = $payload['city']    ?? $request->header('CF-IPCity');
         if ($payload['country'] === 'XX') {
             $payload['country'] = null; // CF unknown
         }
 
-        // ---- Tenancy from entity ----------------------------------------
         [$companyId, $locationId] = $this->resolveTenancy(
             $payload['entity_type'] ?? null,
             $payload['entity_id'] ?? null,
@@ -173,9 +131,6 @@ class PageAnalyticsRecorder
         $payload['company_id']  = $payload['company_id']  ?? $companyId;
         $payload['location_id'] = $payload['location_id'] ?? $locationId;
 
-        // ---- Visitor classification (cheap booleans for fast aggregates)
-        // Only meaningful for actual page views — server-side conversions
-        // and engagement events should not flip these flags.
         if (($payload['event_type'] ?? null) === 'page_view') {
             if ($payload['visitor_id']) {
                 $payload['is_new_visitor'] = !PageView::where('visitor_id', $payload['visitor_id'])
@@ -189,10 +144,6 @@ class PageAnalyticsRecorder
             }
         }
 
-        // ---- First-touch attribution ------------------------------------
-        // For every event after the visitor's first one, copy the
-        // earliest event's UTMs onto this row so attribution dashboards
-        // can group conversions by their *original* source.
         if ($payload['visitor_id']) {
             $first = PageView::where('visitor_id', $payload['visitor_id'])
                 ->whereNotNull('utm_source')
@@ -204,7 +155,6 @@ class PageAnalyticsRecorder
                 $payload['first_touch_medium']   = $payload['first_touch_medium']   ?? $first->utm_medium;
                 $payload['first_touch_campaign'] = $payload['first_touch_campaign'] ?? $first->utm_campaign;
             } elseif (!empty($payload['utm_source'])) {
-                // This is itself the first touch.
                 $payload['first_touch_source']   = $payload['utm_source'];
                 $payload['first_touch_medium']   = $payload['utm_medium']   ?? null;
                 $payload['first_touch_campaign'] = $payload['utm_campaign'] ?? null;
@@ -214,9 +164,6 @@ class PageAnalyticsRecorder
         return PageView::create($payload);
     }
 
-    /**
-     * web | email | server
-     */
     protected function detectSource(Request $request, bool $serverDefault = false): string
     {
         $hdr = $request->header('X-Analytics-Source');
@@ -226,10 +173,6 @@ class PageAnalyticsRecorder
         return $serverDefault ? 'server' : 'web';
     }
 
-    /**
-     * Build a deterministic tracking_id for server-side events so retries
-     * (e.g. payment webhook re-delivery) don't double-count.
-     */
     protected function buildServerTrackingId(string $eventName, ?Model $entity): string
     {
         if ($entity) {
@@ -249,12 +192,6 @@ class PageAnalyticsRecorder
         return null;
     }
 
-    /**
-     * For a completion entity (Booking / AttractionPurchase / EventPurchase)
-     * return the underlying bookable offer entity type + id so that analytics
-     * queries can attribute conversions to the correct package/attraction/event.
-     * Returns [null, null] when the entity is already an offer entity.
-     */
     protected function resolveOfferEntity(Model $entity): array
     {
         if ($entity instanceof Booking && !empty($entity->package_id)) {
@@ -297,7 +234,6 @@ class PageAnalyticsRecorder
         return [$companyId, $locationId];
     }
 
-    // ---- Tiny UA sniffer (no extra dep) ---------------------------------
 
     public function detectDeviceType(string $ua): string
     {
