@@ -114,6 +114,6 @@ class MembershipCheckInController extends Controller
 
         Log::debug('[CheckIn] checkIn recorded', ['visit_id' => $visit->id, 'result' => $visit->result]);
 
-        return response()->json(['success' => true, 'data' => $visit->load('staff:id,name', 'location:id,name')]);
+        return response()->json(['success' => true, 'data' => $visit->load('staff:id,first_name,last_name', 'location:id,name')]);
     }
 }
