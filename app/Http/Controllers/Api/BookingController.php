@@ -247,6 +247,11 @@ class BookingController extends Controller
             'gift_card_id' => 'nullable|exists:gift_cards,id',
             'promo_id' => 'nullable|exists:promos,id',
             'membership_id' => 'nullable|exists:memberships,id',
+            'membership_applied' => 'nullable|array',
+            'membership_applied.*.membership_plan_benefit_id' => 'nullable|integer',
+            'membership_applied.*.benefit_type' => 'nullable|string',
+            'membership_applied.*.value_mode' => 'nullable|string',
+            'membership_applied.*.value_applied' => 'nullable|numeric',
             'promo_code' => 'nullable|string',
             'gift_card_code' => 'nullable|string',
             'type' => ['required', Rule::in(['package'])],
@@ -559,6 +564,18 @@ class BookingController extends Controller
         try {
             $membership = Membership::find($validated['membership_id']);
             if (! $membership) {
+                return;
+            }
+
+            // Use pre-computed applied data if sent by frontend (correct original prices)
+            if (! empty($validated['membership_applied'])) {
+                app(MembershipBenefitService::class)->recordPurchaseRedemptions(
+                    $membership,
+                    $booking,
+                    $validated['membership_applied'],
+                    $booking->location_id,
+                    auth()->id()
+                );
                 return;
             }
 

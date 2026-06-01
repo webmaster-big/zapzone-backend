@@ -341,6 +341,7 @@ class MembershipController extends Controller
             'plan.approvedLocations:id,name',
             'plan.location:id,name',
             'plan.planBenefits' => fn($q) => $q->where('is_active', true)->orderByDesc('priority'),
+            'plan.inheritsPlan.planBenefits' => fn($q) => $q->where('is_active', true)->orderByDesc('priority'),
             'homeLocation:id,name',
             'membershipPayments' => fn($q) => $q->latest()->limit(10),
             'benefitRedemptions' => fn($q) => $q->whereNull('reversed_at')->latest()->limit(50),

@@ -216,6 +216,11 @@ class AttractionPurchaseController extends Controller
             'attraction_id' => 'required|exists:attractions,id',
             'customer_id' => 'nullable|exists:customers,id',
             'membership_id' => 'nullable|exists:memberships,id',
+            'membership_applied' => 'nullable|array',
+            'membership_applied.*.membership_plan_benefit_id' => 'nullable|integer',
+            'membership_applied.*.benefit_type' => 'nullable|string',
+            'membership_applied.*.value_mode' => 'nullable|string',
+            'membership_applied.*.value_applied' => 'nullable|numeric',
 
             'guest_name' => 'required_without:customer_id|string|max:255',
             'guest_email' => 'required_without:customer_id|email|max:255',
@@ -456,6 +461,19 @@ class AttractionPurchaseController extends Controller
         try {
             $membership = Membership::find($validated['membership_id']);
             if (! $membership) {
+                return;
+            }
+
+            // Use pre-computed applied data if sent by frontend (correct original prices)
+            if (! empty($validated['membership_applied'])) {
+                $locationId = $purchase->attraction->location_id ?? null;
+                app(MembershipBenefitService::class)->recordPurchaseRedemptions(
+                    $membership,
+                    $purchase,
+                    $validated['membership_applied'],
+                    $locationId,
+                    auth()->id()
+                );
                 return;
             }
 
