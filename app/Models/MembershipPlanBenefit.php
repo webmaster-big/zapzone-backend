@@ -27,6 +27,7 @@ class MembershipPlanBenefit extends Model
         'is_stackable',
         'conditions',
         'is_active',
+        'requires_manual_redemption',
     ];
 
     protected $casts = [
@@ -37,6 +38,7 @@ class MembershipPlanBenefit extends Model
         'priority'      => 'integer',
         'is_stackable'  => 'boolean',
         'is_active'     => 'boolean',
+        'requires_manual_redemption' => 'boolean',
         'conditions'    => 'array',
     ];
 

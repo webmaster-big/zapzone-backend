@@ -108,6 +108,7 @@ class MembershipPlanBenefitController extends Controller
             'is_stackable'    => 'boolean',
             'conditions'      => 'nullable|array',
             'is_active'       => 'boolean',
+            'requires_manual_redemption' => 'boolean',
         ]);
 
         // Enforce benefit_type <-> scope_type compatibility.

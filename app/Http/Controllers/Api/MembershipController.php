@@ -743,9 +743,9 @@ class MembershipController extends Controller
         abort_unless($membershipPayment->membership_id === $membership->id, 404);
 
         abort_unless(
-            in_array($membershipPayment->status, ['pending', 'succeeded']),
+            $membershipPayment->status === 'pending',
             422,
-            'Only pending or succeeded payments can be voided.'
+            'Only unsettled (pending) payments can be voided. For settled payments, use Refund instead.'
         );
 
         $data = $request->validate(['note' => 'nullable|string|max:500']);
@@ -756,6 +756,11 @@ class MembershipController extends Controller
         if (empty($membershipPayment->transaction_id)) {
             $membershipPayment->update(['status' => 'voided', 'failure_reason' => $note, 'failed_at' => now()]);
             $this->service->log($membership, 'payment_voided', $before, ['status' => 'voided'], $note);
+            // Voiding payment cancels the membership immediately
+            $membership->canceled_at = now();
+            $membership->cancellation_effective_at = now();
+            $membership->save();
+            $this->service->changeStatus($membership, 'canceled', 'Voided payment — ' . $note);
             return response()->json(['success' => true, 'data' => $membershipPayment->fresh()]);
         }
 
@@ -793,6 +798,11 @@ class MembershipController extends Controller
 
                     $membershipPayment->update(['status' => 'voided', 'failure_reason' => $note, 'failed_at' => now()]);
                     $this->service->log($membership, 'payment_voided', $before, ['status' => 'voided'], $note);
+                    // Voiding payment cancels the membership immediately
+                    $membership->canceled_at = now();
+                    $membership->cancellation_effective_at = now();
+                    $membership->save();
+                    $this->service->changeStatus($membership, 'canceled', 'Voided payment — ' . $note);
                     return response()->json(['success' => true, 'data' => $membershipPayment->fresh()]);
                 }
             }
@@ -849,15 +859,44 @@ class MembershipController extends Controller
         }
 
         $currentPrice = (float) ($membership->billing_amount ?? $membership->plan?->price ?? 0);
-        $priceDiff    = round((float) $newPlan->price - $currentPrice, 2);
+        $newPrice     = (float) $newPlan->price;
 
-        if ($priceDiff > 0.01) {
+        // Prorate the charge: only the remaining fraction of the current term.
+        // e.g. upgrading $30 → $60 with 15 of 30 days left = ($60-$30)/30*15 = $15 due today.
+        $today       = now()->startOfDay();
+        $termEnd     = $membership->current_term_end ? \Carbon\Carbon::parse($membership->current_term_end)->startOfDay() : null;
+        $termStart   = $membership->current_term_start ? \Carbon\Carbon::parse($membership->current_term_start)->startOfDay() : null;
+
+        // Total days in the current billing cycle
+        $billingDays = match ($membership->plan?->billing_cycle ?? 'monthly') {
+            'annual'  => 365,
+            'custom'  => max(1, (int) ($membership->plan?->custom_billing_days ?? 30)),
+            default   => 30, // monthly
+        };
+
+        // If we have real term dates, use actual remaining days; otherwise fall back to billing_days
+        $remainingDays = $billingDays;
+        if ($termEnd && $termEnd > $today) {
+            $remainingDays = max(0, (int) $today->diffInDays($termEnd, false));
+        } elseif ($termEnd && $termEnd <= $today) {
+            // Term already ended — new term started; charge full new-plan first billing
+            $remainingDays = $billingDays;
+        }
+
+        $proratedDiff = ($newPrice > $currentPrice)
+            ? round(($newPrice - $currentPrice) * $remainingDays / $billingDays, 2)
+            : 0.0; // downgrade: no charge today, billing_amount updated for next cycle
+
+        if ($proratedDiff > 0.01) {
             if (empty($data['opaque_data']['dataDescriptor']) || empty($data['opaque_data']['dataValue'])) {
                 return response()->json([
                     'success'          => false,
                     'message'          => 'Payment information is required to upgrade to this plan.',
                     'requires_payment' => true,
-                    'amount_due'       => $priceDiff,
+                    'amount_due'       => $proratedDiff,
+                    'prorated'         => true,
+                    'remaining_days'   => $remainingDays,
+                    'billing_days'     => $billingDays,
                 ], 422);
             }
 
@@ -888,7 +927,7 @@ class MembershipController extends Controller
 
                 $transactionRequest = new AnetAPI\TransactionRequestType();
                 $transactionRequest->setTransactionType('authCaptureTransaction');
-                $transactionRequest->setAmount($priceDiff);
+                $transactionRequest->setAmount($proratedDiff);
                 $transactionRequest->setPayment($paymentType);
                 $transactionRequest->setOrder($order);
 
@@ -904,10 +943,10 @@ class MembershipController extends Controller
                     $tresponse = $response->getTransactionResponse();
                     if ($tresponse && $tresponse->getMessages()) {
                         $this->service->recordPayment($membership, [
-                            'amount'         => $priceDiff,
+                            'amount'         => $proratedDiff,
                             'status'         => 'succeeded',
                             'transaction_id' => $tresponse->getTransId(),
-                            'description'    => "Plan upgrade: {$membership->plan?->name} → {$newPlan->name}",
+                            'description'    => "Plan upgrade (prorated {$remainingDays}/{$billingDays} days): {$membership->plan?->name} → {$newPlan->name}",
                         ]);
                     } else {
                         return response()->json(['success' => false, 'message' => 'Payment processing error.'], 500);
@@ -940,7 +979,13 @@ class MembershipController extends Controller
             'billing_amount'     => $newPlan->price,
         ], 'Customer plan change');
 
-        return response()->json(['success' => true, 'data' => $membership->fresh()->load('plan')]);
+        return response()->json([
+            'success'        => true,
+            'data'           => $membership->fresh()->load('plan'),
+            'prorated_charge'=> $proratedDiff,
+            'remaining_days' => $remainingDays,
+            'billing_days'   => $billingDays,
+        ]);
     }
 
     private function resolveCustomer(): ?Customer

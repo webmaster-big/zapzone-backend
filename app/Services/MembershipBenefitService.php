@@ -86,6 +86,7 @@ class MembershipBenefitService
 
             $candidates = $benefits
                 ->filter(fn (MembershipPlanBenefit $b) => $b->isDiscount() && $b->appliesToLine($type, $id, $category))
+                ->filter(fn (MembershipPlanBenefit $b) => ! $b->requires_manual_redemption)
                 ->filter(fn (MembershipPlanBenefit $b) => $this->conditionsMet($b, $lineTotal, $item))
                 ->filter(fn (MembershipPlanBenefit $b) => $this->hasRemaining($membership, $b))
                 ->sortByDesc('priority')
@@ -149,7 +150,7 @@ class MembershipBenefitService
             }
         }
 
-        foreach ($benefits->filter(fn (MembershipPlanBenefit $b) => $b->isPass()) as $b) {
+        foreach ($benefits->filter(fn (MembershipPlanBenefit $b) => $b->isPass() && ! $b->requires_manual_redemption) as $b) {
             $remaining = $this->remainingRedemptions($membership, $b);
             $result['passes'][] = [
                 'benefit_id'   => $b->id,

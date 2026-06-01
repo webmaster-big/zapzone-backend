@@ -68,14 +68,36 @@ class MembershipReportController extends Controller
             ->limit(5)
             ->get(['id', 'name', 'price', 'billing_cycle']);
 
+        // Underused: active limited-visit members who have used 0 or very few visits this term.
+        // "visits_remaining" is the unused-visit counter. A high remaining count = underused.
+        // We join plans to get the total visits_per_term, then surface those using < 30% of their allowance.
         $underused = (clone $base)
             ->where('status', 'active')
-            ->whereHas('plan', fn($q) => $q->where('unlimited_visits_per_term', false))
-            ->whereRaw('visits_remaining >= visits_remaining')
-            ->orderByDesc('visits_remaining')
+            ->whereHas('plan', fn($q) => $q->where('unlimited_visits_per_term', false)->where('visits_per_term', '>', 0))
+            ->whereNotNull('visits_remaining')
+            ->orderByDesc('visits_remaining')  // most remaining = least used
             ->limit(10)
-            ->with('customer:id,first_name,last_name', 'plan:id,name')
-            ->get(['id', 'customer_id', 'membership_plan_id', 'visits_remaining']);
+            ->with('customer:id,first_name,last_name,email', 'plan:id,name,visits_per_term')
+            ->get(['id', 'customer_id', 'membership_plan_id', 'visits_remaining', 'current_term_end']);
+
+        $underused = $underused->map(function ($m) {
+            $perTerm  = (int) ($m->plan?->visits_per_term ?? 0);
+            $remaining = (int) ($m->visits_remaining ?? $perTerm);
+            $used     = max(0, $perTerm - $remaining);
+            return [
+                'id'                   => $m->id,
+                'customer_id'          => $m->customer_id,
+                'customer_name'        => $m->customer
+                    ? trim(($m->customer->first_name ?? '') . ' ' . ($m->customer->last_name ?? ''))
+                    : null,
+                'customer_email'       => $m->customer?->email,
+                'plan_name'            => $m->plan?->name,
+                'visits_per_term'      => $perTerm,
+                'visits_used_this_term'=> $used,
+                'visits_remaining'     => $remaining,
+                'term_ends'            => $m->current_term_end,
+            ];
+        });
 
         return response()->json(['success' => true, 'data' => [
             'counts' => [
