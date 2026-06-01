@@ -4,10 +4,15 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Http\Traits\ScopesByAuthUser;
+use App\Models\AddOn;
+use App\Models\Attraction;
+use App\Models\Event;
 use App\Models\MembershipPlan;
 use App\Models\MembershipPlanBenefit;
+use App\Models\Package;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Validation\Rule;
 
 class MembershipPlanBenefitController extends Controller
@@ -16,9 +21,10 @@ class MembershipPlanBenefitController extends Controller
 
     public function index(Request $request, MembershipPlan $membershipPlan): JsonResponse
     {
+        $benefits = $membershipPlan->planBenefits()->orderByDesc('priority')->get();
         return response()->json([
             'success' => true,
-            'data'    => $membershipPlan->planBenefits()->orderByDesc('priority')->get(),
+            'data'    => static::resolveTargets($benefits),
         ]);
     }
 
@@ -149,5 +155,59 @@ class MembershipPlanBenefitController extends Controller
         }
 
         return $data;
+    }
+
+    /**
+     * Enrich a collection of MembershipPlanBenefit models with resolved scope_targets,
+     * including each target item's name, location_id, and location_name.
+     */
+    public static function resolveTargets(Collection $benefits): Collection
+    {
+        $allIds = ['package' => [], 'attraction' => [], 'event' => [], 'addon' => []];
+
+        foreach ($benefits as $b) {
+            if (! isset($allIds[$b->scope_type])) continue;
+            $bIds = is_array($b->scope_ids) && count($b->scope_ids) > 0
+                ? $b->scope_ids
+                : ($b->scope_id ? [$b->scope_id] : []);
+            $allIds[$b->scope_type] = array_unique(array_merge($allIds[$b->scope_type], $bIds));
+        }
+
+        $fetchers = [
+            'package'    => fn ($ids) => Package::with('location:id,name')->whereIn('id', $ids)->get(['id', 'name', 'location_id'])->keyBy('id'),
+            'attraction' => fn ($ids) => Attraction::with('location:id,name')->whereIn('id', $ids)->get(['id', 'name', 'location_id'])->keyBy('id'),
+            'event'      => fn ($ids) => Event::whereIn('id', $ids)->get(['id', 'name'])->keyBy('id'),
+            'addon'      => fn ($ids) => AddOn::with('location:id,name')->whereIn('id', $ids)->get(['id', 'name', 'location_id'])->keyBy('id'),
+        ];
+
+        $lookup = [];
+        foreach ($allIds as $type => $ids) {
+            if (! empty($ids)) {
+                $lookup[$type] = $fetchers[$type]($ids);
+            }
+        }
+
+        return $benefits->map(function (MembershipPlanBenefit $b) use ($lookup) {
+            $bIds = is_array($b->scope_ids) && count($b->scope_ids) > 0
+                ? $b->scope_ids
+                : ($b->scope_id ? [$b->scope_id] : []);
+
+            if (isset($lookup[$b->scope_type]) && ! empty($bIds)) {
+                $b->scope_targets = collect($bIds)->map(function (int $id) use ($b, $lookup) {
+                    $item = $lookup[$b->scope_type][$id] ?? null;
+                    if (! $item) return null;
+                    return [
+                        'id'            => $item->id,
+                        'name'          => $item->name,
+                        'location_id'   => $item->location_id ?? null,
+                        'location_name' => $item->location?->name ?? null,
+                    ];
+                })->filter()->values()->toArray();
+            } else {
+                $b->scope_targets = [];
+            }
+
+            return $b;
+        });
     }
 }

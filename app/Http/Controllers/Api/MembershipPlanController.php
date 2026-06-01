@@ -20,7 +20,20 @@ class MembershipPlanController extends Controller
         $query = MembershipPlan::with(['approvedLocations:id,name', 'location:id,name'])
             ->withCount('memberships');
 
-        $this->applyAuthScope($query, $request);
+        $authUser = $this->resolveAuthUser($request);
+        if ($authUser) {
+            $query->where('company_id', $authUser->company_id);
+            // Location managers and attendants see plans valid at their own location,
+            // including multi-location and all-location plans.
+            if (in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
+                $locId = (int) $authUser->location_id;
+                $query->where(function ($q) use ($locId) {
+                    $q->where('location_id', $locId)
+                      ->orWhere('location_access_mode', 'all')
+                      ->orWhereHas('approvedLocations', fn ($x) => $x->where('locations.id', $locId));
+                });
+            }
+        }
 
         if ($request->boolean('active_only', false)) {
             $query->where('is_active', true);
@@ -74,6 +87,12 @@ class MembershipPlanController extends Controller
                 'single' => 'Valid at your selected home location',
                 default  => null,
             };
+
+            // Enrich plan_benefits with resolved scope target names and location info.
+            if (isset($arr['plan_benefits'])) {
+                $enriched = MembershipPlanBenefitController::resolveTargets($plan->planBenefits);
+                $arr['plan_benefits'] = $enriched->map(fn ($b) => $b->toArray())->values()->toArray();
+            }
 
             return $arr;
         });
