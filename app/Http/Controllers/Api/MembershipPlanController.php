@@ -46,7 +46,11 @@ class MembershipPlanController extends Controller
 
     public function publicIndex(Request $request): JsonResponse
     {
-        $query = MembershipPlan::with(['approvedLocations:id,name', 'location:id,name'])
+        $query = MembershipPlan::with([
+                'approvedLocations:id,name',
+                'location:id,name',
+                'planBenefits' => fn($q) => $q->where('is_active', true)->orderByDesc('priority'),
+            ])
             ->where('is_active', true);
 
         if ($request->filled('location_id')) {
@@ -116,7 +120,11 @@ class MembershipPlanController extends Controller
     {
         return response()->json([
             'success' => true,
-            'data' => $membershipPlan->load(['approvedLocations', 'location:id,name']),
+            'data' => $membershipPlan->load([
+                'approvedLocations',
+                'location:id,name',
+                'planBenefits' => fn($q) => $q->where('is_active', true)->orderByDesc('priority'),
+            ]),
         ]);
     }
 

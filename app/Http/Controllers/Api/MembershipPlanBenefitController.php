@@ -67,7 +67,7 @@ class MembershipPlanBenefitController extends Controller
                 'free_entry_pass', 'guest_pass', 'priority_booking', 'member_only_access', 'birthday_reward',
             ])],
             'label'           => 'nullable|string|max:255',
-            'scope_type'      => [$partial ? 'sometimes' : 'required', Rule::in(['any', 'package', 'attraction', 'event', 'category', 'location'])],
+            'scope_type'      => [$partial ? 'sometimes' : 'required', Rule::in(['any', 'package', 'attraction', 'event', 'addon', 'category', 'location'])],
             'scope_id'        => 'nullable|integer',
             'scope_category'  => 'nullable|string|max:150',
             'value_mode'      => [$partial ? 'sometimes' : 'required', Rule::in(['percent', 'fixed', 'free', 'count', 'flag'])],

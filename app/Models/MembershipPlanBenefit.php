@@ -78,6 +78,7 @@ class MembershipPlanBenefit extends Model
             'package'  => $type === 'package' && (int) $this->scope_id === (int) $id,
             'attraction' => $type === 'attraction' && (int) $this->scope_id === (int) $id,
             'event'    => $type === 'event' && (int) $this->scope_id === (int) $id,
+            'addon'    => $type === 'addon' && (int) $this->scope_id === (int) $id,
             'category' => $category !== null && $this->scope_category !== null
                           && strcasecmp($category, $this->scope_category) === 0,
             default    => true,

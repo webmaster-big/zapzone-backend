@@ -824,8 +824,9 @@ class MetricsController extends Controller
 
             $locationBookings = $locationBookingQuery->count();
             $locationParticipants = (clone $locationBookingQuery)->sum('participants') ?? 0;
+            // Use same filter as the global metric: exclude cancelled, include pending/partial/etc.
             $locationBookingRevenue = (clone $locationBookingQuery)
-                ->whereIn('status', ['confirmed', 'completed', 'checked-in'])
+                ->whereNotIn('status', ['cancelled'])
                 ->sum('amount_paid') ?? 0;
 
             $locationPurchaseQuery = AttractionPurchase::whereHas('attraction', function ($q) use ($location) {
@@ -849,6 +850,11 @@ class MetricsController extends Controller
                 ->whereNotIn('status', ['cancelled'])
                 ->sum('total_amount') ?? 0;
 
+            // Ticket quantities count as participants for utilisation
+            $locationTicketParticipants = (int) ((clone $locationPurchaseQuery)
+                ->whereNotIn('status', ['cancelled'])
+                ->sum('quantity') ?? 0);
+
             $locationEventPurchaseQuery = EventPurchase::where('location_id', $location->id);
             if ($dateFrom) {
                 $locationEventPurchaseQuery->whereDate('created_at', '>=', is_string($dateFrom) ? $dateFrom : $dateFrom->toDateString());
@@ -861,9 +867,12 @@ class MetricsController extends Controller
             $locationEventPurchaseRevenue = (clone $locationEventPurchaseQuery)
                 ->whereNotIn('status', ['cancelled', 'refunded'])
                 ->sum('total_amount') ?? 0;
-            $locationEventTickets = (clone $locationEventPurchaseQuery)
+            $locationEventTickets = (int) ((clone $locationEventPurchaseQuery)
                 ->whereNotIn('status', ['cancelled', 'refunded'])
-                ->sum('quantity') ?? 0;
+                ->sum('quantity') ?? 0);
+
+            // Total participants = booking guests + attraction ticket quantities + event ticket quantities
+            $totalParticipants = (int) $locationParticipants + $locationTicketParticipants + $locationEventTickets;
 
             $daysInRange = 1;
             if ($dateFrom && $dateTo) {
@@ -875,16 +884,16 @@ class MetricsController extends Controller
             }
 
             $estimatedCapacity = $daysInRange * 100; // 100 participants per day capacity
-            $utilization = $estimatedCapacity > 0 ? round(($locationParticipants / $estimatedCapacity) * 100) : 0;
+            $utilization = min(100, $estimatedCapacity > 0 ? round(($totalParticipants / $estimatedCapacity) * 100) : 0);
 
             $locationStats[$location->id] = [
                 'name' => $location->name,
                 'bookings' => $locationBookings,
                 'purchases' => $locationPurchases,
                 'eventPurchases' => $locationEventPurchases,
-                'eventTickets' => (int) $locationEventTickets,
+                'eventTickets' => $locationEventTickets,
                 'revenue' => round($locationBookingRevenue + $locationPurchaseRevenue + $locationEventPurchaseRevenue, 2),
-                'participants' => $locationParticipants,
+                'participants' => $totalParticipants,
                 'utilization' => $utilization,
                 'bookingRevenue' => round($locationBookingRevenue, 2),
                 'purchaseRevenue' => round($locationPurchaseRevenue, 2),
