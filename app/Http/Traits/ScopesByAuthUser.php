@@ -11,7 +11,7 @@ trait ScopesByAuthUser
     protected function resolveAuthUser(?Request $request = null): ?User
     {
         $user = auth()->user();
-        if ($user) {
+        if ($user instanceof User) {
             return $user;
         }
 

@@ -214,7 +214,7 @@ class MembershipBenefitService
                     'value_applied'              => $row['value_applied'] ?? 0,
                     'redeemable_type'            => $redeemable->getMorphClass(),
                     'redeemable_id'              => $redeemable->getKey(),
-                    'staff_user_id'              => $staffUserId ?? Auth::id(),
+                    'staff_user_id'              => $staffUserId ?? (($u = Auth::guard('sanctum')->user()) instanceof \App\Models\User ? $u->id : null),
                 ]);
             }
         });
@@ -249,7 +249,7 @@ class MembershipBenefitService
             'value_applied'              => 1,
             'redeemable_type'            => $redeemable?->getMorphClass(),
             'redeemable_id'              => $redeemable?->getKey(),
-            'staff_user_id'              => Auth::id(),
+            'staff_user_id'              => ($u = Auth::guard('sanctum')->user()) instanceof \App\Models\User ? $u->id : null,
         ]);
     }
 

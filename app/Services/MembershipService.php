@@ -9,6 +9,7 @@ use App\Models\MembershipPlan;
 use App\Models\MembershipVisit;
 use App\Models\Customer;
 use App\Models\CustomerNotification;
+use App\Models\User;
 use App\Mail\MembershipActivated;
 use App\Mail\MembershipPaymentReceipt;
 use App\Mail\MembershipPaymentFailed;
@@ -256,12 +257,15 @@ class MembershipService
 
     public function log(Membership $membership, string $action, ?array $before = null, ?array $after = null, ?string $note = null): void
     {
+        $actor      = Auth::guard('sanctum')->user();
+        $isCustomer = $actor instanceof Customer;
+
         MembershipAuditLog::create([
             'membership_id' => $membership->id,
-            'user_id'       => Auth::id(),
+            'user_id'       => $isCustomer ? null : ($actor instanceof User ? $actor->id : null),
             'customer_id'   => $membership->customer_id,
             'action'        => $action,
-            'actor_type'    => Auth::guard('sanctum')->user() instanceof Customer ? 'customer' : (Auth::id() ? 'staff' : 'system'),
+            'actor_type'    => $isCustomer ? 'customer' : ($actor ? 'staff' : 'system'),
             'before'        => $before,
             'after'         => $after,
             'note'          => $note,
