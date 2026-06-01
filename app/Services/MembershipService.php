@@ -23,6 +23,8 @@ class MembershipService
 {
     public function activate(Membership $membership, ?array $context = []): Membership
     {
+        Log::debug('[Membership] activate', ['membership_id' => $membership->id, 'customer_id' => $membership->customer_id]);
+
         return DB::transaction(function () use ($membership, $context) {
             $plan = $membership->plan()->firstOrFail();
 
@@ -77,9 +79,12 @@ class MembershipService
 
     public function eligibility(Membership $membership, ?int $locationId = null): array
     {
+        Log::debug('[Membership] eligibility check', ['membership_id' => $membership->id, 'location_id' => $locationId]);
+
         $membership->loadMissing('plan.approvedLocations');
 
         if (! $membership->isUsable()) {
+            Log::debug('[Membership] eligibility denied — not usable', ['membership_id' => $membership->id, 'status' => $membership->status]);
             return ['eligible' => false, 'reason' => "Status: {$membership->status}"];
         }
 
@@ -105,9 +110,11 @@ class MembershipService
         }
 
         if (! $membership->hasPhoto()) {
+            Log::debug('[Membership] eligibility — photo required', ['membership_id' => $membership->id]);
             return ['eligible' => true, 'reason' => null, 'photo_required' => true];
         }
 
+        Log::debug('[Membership] eligibility passed', ['membership_id' => $membership->id]);
         return ['eligible' => true, 'reason' => null, 'photo_required' => false];
     }
 
@@ -124,6 +131,12 @@ class MembershipService
 
     public function recordVisit(Membership $membership, array $data): MembershipVisit
     {
+        Log::debug('[Membership] recordVisit', [
+            'membership_id' => $membership->id,
+            'result'        => $data['result'] ?? null,
+            'location_id'   => $data['location_id'] ?? null,
+        ]);
+
         return DB::transaction(function () use ($membership, $data) {
             $allowed = $data['result'] === 'allowed' || $data['result'] === 'override';
             $counted = $allowed
@@ -158,6 +171,12 @@ class MembershipService
 
     public function changeStatus(Membership $membership, string $newStatus, ?string $note = null): Membership
     {
+        Log::debug('[Membership] changeStatus', [
+            'membership_id' => $membership->id,
+            'from'          => $membership->status,
+            'to'            => $newStatus,
+        ]);
+
         $before = ['status' => $membership->status];
         $membership->status = $newStatus;
 
@@ -189,6 +208,12 @@ class MembershipService
 
     public function recordPayment(Membership $membership, array $data): MembershipPayment
     {
+        Log::debug('[Membership] recordPayment', [
+            'membership_id' => $membership->id,
+            'status'        => $data['status'] ?? null,
+            'amount'        => $data['amount'] ?? null,
+        ]);
+
         $payment = MembershipPayment::create([
             'membership_id'   => $membership->id,
             'customer_id'     => $membership->customer_id,

@@ -9,6 +9,7 @@ use App\Services\MembershipService;
 use App\Services\MembershipBenefitService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
 
 class MembershipCheckInController extends Controller
@@ -30,6 +31,8 @@ class MembershipCheckInController extends Controller
             'location_id' => 'nullable|exists:locations,id',
         ]);
 
+        Log::debug('[CheckIn] scan', ['qr_token' => $data['qr_token'], 'location_id' => $data['location_id'] ?? null]);
+
         $membership = Membership::with([
             'customer:id,first_name,last_name,email,phone',
             'plan.approvedLocations:id,name',
@@ -38,11 +41,18 @@ class MembershipCheckInController extends Controller
         ])->where('qr_token', $data['qr_token'])->first();
 
         if (! $membership) {
+            Log::debug('[CheckIn] scan — membership not found', ['qr_token' => $data['qr_token']]);
             return response()->json(['success' => false, 'message' => 'Membership not found'], 404);
         }
 
-        $locationId = $data['location_id'] ?? $authUser->location_id;
+        $locationId  = $data['location_id'] ?? $authUser->location_id;
         $eligibility = $this->service->eligibility($membership, $locationId);
+
+        Log::debug('[CheckIn] scan eligibility', [
+            'membership_id' => $membership->id,
+            'eligible'      => $eligibility['eligible'],
+            'reason'        => $eligibility['reason'] ?? null,
+        ]);
 
         $benefitQuote = $this->benefits->quote($membership, $locationId, []);
 
@@ -78,6 +88,12 @@ class MembershipCheckInController extends Controller
             ], $data['override_note']);
         }
 
+        Log::debug('[CheckIn] checkIn', [
+            'membership_id' => $membership->id,
+            'result'        => $data['result'],
+            'location_id'   => $data['location_id'] ?? $authUser->location_id,
+        ]);
+
         $visit = $this->service->recordVisit($membership, [
             'result'                => $data['result'],
             'location_id'           => $data['location_id'] ?? $authUser->location_id,
@@ -85,6 +101,8 @@ class MembershipCheckInController extends Controller
             'counted_against_usage' => $data['counted_against_usage'] ?? true,
             'notes'                 => $data['notes'] ?? null,
         ]);
+
+        Log::debug('[CheckIn] checkIn recorded', ['visit_id' => $visit->id, 'result' => $visit->result]);
 
         return response()->json(['success' => true, 'data' => $visit->load('staff:id,name', 'location:id,name')]);
     }

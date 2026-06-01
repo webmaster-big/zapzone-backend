@@ -11,21 +11,36 @@ use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class MembershipBenefitService
 {
     public function activeMembershipFor(Customer $customer): ?Membership
     {
-        return Membership::with(['plan.planBenefits', 'plan.inheritsPlan.planBenefits'])
+        $membership = Membership::with(['plan.planBenefits', 'plan.inheritsPlan.planBenefits'])
             ->where('customer_id', $customer->id)
             ->whereIn('status', ['active', 'past_due'])
             ->latest()
             ->get()
             ->first(fn (Membership $m) => $m->isUsable());
+
+        Log::debug('[MembershipBenefit] activeMembershipFor', [
+            'customer_id'   => $customer->id,
+            'membership_id' => $membership?->id,
+            'found'         => $membership !== null,
+        ]);
+
+        return $membership;
     }
 
     public function quote(Membership $membership, ?int $locationId, array $items): array
     {
+        Log::debug('[MembershipBenefit] quote start', [
+            'membership_id' => $membership->id,
+            'location_id'   => $locationId,
+            'item_count'    => count($items),
+        ]);
+
         $membership->loadMissing('plan.planBenefits', 'plan.inheritsPlan.planBenefits', 'plan.approvedLocations');
 
         $result = [
@@ -147,6 +162,14 @@ class MembershipBenefitService
         $result['currency_discount'] = round($totalDiscount, 2);
         $result['eligible'] = true;
 
+        Log::debug('[MembershipBenefit] quote result', [
+            'membership_id'     => $membership->id,
+            'eligible'          => $result['eligible'],
+            'currency_discount' => $result['currency_discount'],
+            'lines_matched'     => count($result['lines']),
+            'passes'            => count($result['passes']),
+        ]);
+
         return $result;
     }
 
@@ -203,7 +226,16 @@ class MembershipBenefitService
         ?int $locationId = null,
         ?Model $redeemable = null
     ): ?MembershipBenefitRedemption {
+        Log::debug('[MembershipBenefit] redeemPass attempt', [
+            'membership_id' => $membership->id,
+            'benefit_id'    => $benefit->id,
+            'benefit_type'  => $benefit->benefit_type,
+            'is_pass'       => $benefit->isPass(),
+            'has_remaining' => $this->hasRemaining($membership, $benefit),
+        ]);
+
         if (! $benefit->isPass() || ! $this->hasRemaining($membership, $benefit)) {
+            Log::debug('[MembershipBenefit] redeemPass blocked', ['membership_id' => $membership->id, 'benefit_id' => $benefit->id]);
             return null;
         }
 
@@ -300,6 +332,7 @@ class MembershipBenefitService
     {
         $cap = $this->redemptionCap($b);
         if ($cap === null) {
+            Log::debug('[MembershipBenefit] remainingRedemptions unlimited', ['membership_id' => $membership->id, 'benefit_id' => $b->id]);
             return null;
         }
 
@@ -322,7 +355,18 @@ class MembershipBenefitService
                 break;
         }
 
-        $used = $q->count();
-        return max(0, $cap - $used);
+        $used  = $q->count();
+        $remaining = max(0, $cap - $used);
+
+        Log::debug('[MembershipBenefit] remainingRedemptions', [
+            'membership_id' => $membership->id,
+            'benefit_id'    => $b->id,
+            'period'        => $b->period,
+            'cap'           => $cap,
+            'used'          => $used,
+            'remaining'     => $remaining,
+        ]);
+
+        return $remaining;
     }
 }
