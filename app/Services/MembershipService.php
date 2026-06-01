@@ -180,10 +180,12 @@ class MembershipService
                 'notes'                   => $data['notes'] ?? null,
             ]);
 
-            $this->log($membership, 'check_in', null, [
-                'result' => $data['result'],
-                'location_id' => $data['location_id'] ?? null,
-            ]);
+            if (empty($data['skip_audit_log'])) {
+                $this->log($membership, 'check_in', null, [
+                    'result' => $data['result'],
+                    'location_id' => $data['location_id'] ?? null,
+                ]);
+            }
 
             return $visit;
         });

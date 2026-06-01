@@ -576,5 +576,6 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('memberships/{membership}/notes',           [MembershipController::class, 'addNote']);
     Route::get('memberships/{membership}/eligibility',      [MembershipController::class, 'eligibility']);
     Route::post('memberships/{membership}/check-in',        [MembershipCheckInController::class, 'checkIn']);
+    Route::post('memberships/{membership}/redeem-pass',     [MembershipCheckInController::class, 'redeemPassCheckIn']);
 });
 

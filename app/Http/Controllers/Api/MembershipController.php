@@ -79,6 +79,7 @@ class MembershipController extends Controller
         $membership->load([
             'customer',
             'plan.approvedLocations:id,name',
+            'plan.planBenefits' => fn($q) => $q->where('is_active', true)->orderByDesc('priority'),
             'homeLocation:id,name',
             'visits' => fn($q) => $q->latest('visited_at')->limit(50),
             'visits.location:id,name',
@@ -88,6 +89,9 @@ class MembershipController extends Controller
             'notes.user:id,first_name,last_name',
             'auditLogs' => fn($q) => $q->latest()->limit(50),
             'auditLogs.user:id,first_name,last_name',
+            'benefitRedemptions' => fn($q) => $q->whereNull('reversed_at')->latest()->limit(100),
+            'benefitRedemptions.benefit:id,label,benefit_type',
+            'benefitRedemptions.staff:id,first_name,last_name',
         ]);
 
         // Compute visits used this term for the detail page

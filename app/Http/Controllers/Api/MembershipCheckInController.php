@@ -116,4 +116,69 @@ class MembershipCheckInController extends Controller
 
         return response()->json(['success' => true, 'data' => $visit->load('staff:id,first_name,last_name', 'location:id,name')]);
     }
+
+    public function redeemPassCheckIn(Request $request, Membership $membership): JsonResponse
+    {
+        $authUser = $this->resolveAuthUser($request);
+        abort_unless($authUser, 403);
+
+        $data = $request->validate([
+            'benefit_id'  => 'required|integer',
+            'location_id' => 'nullable|exists:locations,id',
+            'note'        => 'nullable|string|max:255',
+        ]);
+
+        $locationId = $data['location_id'] ?? $authUser->location_id;
+
+        $membership->loadMissing('plan.planBenefits', 'plan.inheritsPlan.planBenefits');
+
+        // Use resolvedBenefits() so inherited plan benefits are also searchable
+        $allBenefits = collect($membership->plan?->resolvedBenefits() ?? []);
+        $benefit = $allBenefits->firstWhere('id', (int) $data['benefit_id']);
+
+        if (! $benefit || ! $benefit->isPass()) {
+            return response()->json(['success' => false, 'message' => 'Benefit not found or is not a redeemable pass'], 422);
+        }
+
+        $redemption = $this->benefits->redeemPass($membership, $benefit, $locationId);
+
+        if (! $redemption) {
+            return response()->json(['success' => false, 'message' => 'No passes remaining for this period'], 422);
+        }
+
+        $noteText = $data['note'] ?? ('Pass redeemed: ' . ($benefit->label ?: $benefit->benefit_type));
+
+        $visit = $this->service->recordVisit($membership, [
+            'result'                => 'allowed',
+            'location_id'           => $locationId,
+            'counted_against_usage' => false,
+            'notes'                 => $noteText,
+            'skip_audit_log'        => true,
+        ]);
+
+        $this->service->log($membership, 'pass_redeemed', null, [
+            'benefit_id'   => $benefit->id,
+            'benefit_type' => $benefit->benefit_type,
+            'label'        => $benefit->label ?: $benefit->benefit_type,
+            'location_id'  => $locationId,
+        ], $noteText);
+
+        Log::debug('[CheckIn] redeemPassCheckIn', [
+            'membership_id' => $membership->id,
+            'benefit_id'    => $benefit->id,
+            'visit_id'      => $visit->id,
+        ]);
+
+        // Refresh pass counts so caller can update UI without a re-scan
+        $updatedPasses = $this->benefits->quote($membership, $locationId, [])['passes'] ?? [];
+
+        return response()->json([
+            'success' => true,
+            'data'    => [
+                'redemption' => $redemption,
+                'visit'      => $visit->load('staff:id,first_name,last_name', 'location:id,name'),
+                'passes'     => $updatedPasses,
+            ],
+        ]);
+    }
 }
