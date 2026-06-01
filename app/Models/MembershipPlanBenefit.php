@@ -17,6 +17,7 @@ class MembershipPlanBenefit extends Model
         'label',
         'scope_type',
         'scope_id',
+        'scope_ids',
         'scope_category',
         'value_mode',
         'value',
@@ -31,6 +32,7 @@ class MembershipPlanBenefit extends Model
     protected $casts = [
         'value'         => 'decimal:2',
         'scope_id'      => 'integer',
+        'scope_ids'     => 'array',
         'max_redemptions' => 'integer',
         'priority'      => 'integer',
         'is_stackable'  => 'boolean',
@@ -74,14 +76,31 @@ class MembershipPlanBenefit extends Model
         }
 
         return match ($this->scope_type) {
-            'any'      => true,
-            'package'  => $type === 'package' && (int) $this->scope_id === (int) $id,
-            'attraction' => $type === 'attraction' && (int) $this->scope_id === (int) $id,
-            'event'    => $type === 'event' && (int) $this->scope_id === (int) $id,
-            'addon'    => $type === 'addon' && (int) $this->scope_id === (int) $id,
-            'category' => $category !== null && $this->scope_category !== null
+            'any'        => true,
+            'package'    => $type === 'package' && $this->scopeIdMatches($id),
+            'attraction' => $type === 'attraction' && $this->scopeIdMatches($id),
+            'event'      => $type === 'event' && $this->scopeIdMatches($id),
+            'addon'      => $type === 'addon' && $this->scopeIdMatches($id),
+            'category'   => $category !== null && $this->scope_category !== null
                           && strcasecmp($category, $this->scope_category) === 0,
-            default    => true,
+            default      => true,
         };
+    }
+
+    /**
+     * Match a line id against the benefit's targets.
+     * Supports multiple targets (scope_ids) with single-target (scope_id) fallback.
+     * When no specific targets are set, the benefit applies to every item of the scope type.
+     */
+    protected function scopeIdMatches(?int $id): bool
+    {
+        $ids = is_array($this->scope_ids) ? array_map('intval', $this->scope_ids) : [];
+        if (count($ids) > 0) {
+            return in_array((int) $id, $ids, true);
+        }
+        if ($this->scope_id !== null) {
+            return (int) $this->scope_id === (int) $id;
+        }
+        return true; // no specific targets -> all items of this scope type
     }
 }

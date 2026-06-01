@@ -41,7 +41,7 @@ class MembershipPlanBenefitController extends Controller
         abort_unless($authUser && in_array($authUser->role, ['company_admin', 'location_manager']), 403);
         abort_unless((int) $benefit->membership_plan_id === (int) $membershipPlan->id, 404);
 
-        $benefit->update($this->validateData($request, true));
+        $benefit->update($this->validateData($request, true, $benefit));
 
         return response()->json(['success' => true, 'data' => $benefit->fresh()]);
     }
@@ -57,11 +57,27 @@ class MembershipPlanBenefitController extends Controller
         return response()->json(['success' => true]);
     }
 
-    private function validateData(Request $request, bool $partial = false): array
+    /**
+     * Which scope types are valid for each benefit type.
+     * Prevents nonsensical combinations like a package_discount scoped to an attraction.
+     */
+    private const SCOPE_MATRIX = [
+        'package_discount'    => ['any', 'package', 'category'],
+        'attraction_discount' => ['any', 'attraction', 'category'],
+        'event_discount'      => ['any', 'event', 'category'],
+        'addon_discount'      => ['any', 'addon'],
+        'free_entry_pass'     => ['any', 'attraction'],
+        'guest_pass'          => ['any', 'attraction'],
+        'priority_booking'    => ['any'],
+        'member_only_access'  => ['any', 'location'],
+        'birthday_reward'     => ['any'],
+    ];
+
+    private function validateData(Request $request, bool $partial = false, ?MembershipPlanBenefit $existing = null): array
     {
         $req = fn (string $rule) => $partial ? 'sometimes|' . $rule : $rule;
 
-        return $request->validate([
+        $data = $request->validate([
             'benefit_type'    => [$partial ? 'sometimes' : 'required', Rule::in([
                 'package_discount', 'attraction_discount', 'event_discount', 'addon_discount',
                 'free_entry_pass', 'guest_pass', 'priority_booking', 'member_only_access', 'birthday_reward',
@@ -69,15 +85,41 @@ class MembershipPlanBenefitController extends Controller
             'label'           => 'nullable|string|max:255',
             'scope_type'      => [$partial ? 'sometimes' : 'required', Rule::in(['any', 'package', 'attraction', 'event', 'addon', 'category', 'location'])],
             'scope_id'        => 'nullable|integer',
+            'scope_ids'       => 'nullable|array',
+            'scope_ids.*'     => 'integer',
             'scope_category'  => 'nullable|string|max:150',
             'value_mode'      => [$partial ? 'sometimes' : 'required', Rule::in(['percent', 'fixed', 'free', 'count', 'flag'])],
             'value'           => $req('numeric|min:0'),
-            'period'          => ['nullable', Rule::in(['per_term', 'per_day', 'per_visit', 'lifetime', 'once'])],
+            'period'          => ['nullable', Rule::in(['per_term', 'per_day', 'lifetime'])],
             'max_redemptions' => 'nullable|integer|min:1',
             'priority'        => 'nullable|integer|min:0',
             'is_stackable'    => 'boolean',
             'conditions'      => 'nullable|array',
             'is_active'       => 'boolean',
         ]);
+
+        // Enforce benefit_type <-> scope_type compatibility.
+        $benefitType = $data['benefit_type'] ?? $existing?->benefit_type;
+        $scopeType   = array_key_exists('scope_type', $data) ? $data['scope_type'] : $existing?->scope_type;
+        if ($benefitType && $scopeType) {
+            $allowed = self::SCOPE_MATRIX[$benefitType] ?? ['any'];
+            if (! in_array($scopeType, $allowed, true)) {
+                abort(response()->json([
+                    'success' => false,
+                    'message' => "Scope \"{$scopeType}\" is not valid for benefit \"{$benefitType}\". Allowed: " . implode(', ', $allowed) . '.',
+                ], 422));
+            }
+        }
+
+        // Normalise targets: dedupe scope_ids, clear single scope_id when a list is provided.
+        if (array_key_exists('scope_ids', $data)) {
+            $ids = array_values(array_unique(array_map('intval', $data['scope_ids'] ?? [])));
+            $data['scope_ids'] = count($ids) > 0 ? $ids : null;
+            if (! empty($data['scope_ids'])) {
+                $data['scope_id'] = null;
+            }
+        }
+
+        return $data;
     }
 }
