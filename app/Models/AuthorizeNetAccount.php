@@ -13,6 +13,7 @@ class AuthorizeNetAccount extends Model
 
     protected $fillable = [
         'location_id',
+        'label',
         'api_login_id',
         'transaction_key',
         'public_client_key',

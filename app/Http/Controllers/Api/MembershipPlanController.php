@@ -17,7 +17,7 @@ class MembershipPlanController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        $query = MembershipPlan::with(['approvedLocations:id,name', 'location:id,name', 'billingLocation:id,name'])
+        $query = MembershipPlan::with(['approvedLocations:id,name', 'location:id,name', 'billingAccount:id,label,location_id,environment,is_active'])
             ->withCount('memberships');
 
         $authUser = $this->resolveAuthUser($request);
@@ -62,7 +62,7 @@ class MembershipPlanController extends Controller
         $query = MembershipPlan::with([
                 'approvedLocations:id,name',
                 'location:id,name',
-                'billingLocation:id,name',
+                'billingAccount:id,label,location_id,environment,is_active',
                 'planBenefits' => fn($q) => $q->where('is_active', true)->orderByDesc('priority'),
             ])
             ->where('is_active', true);
@@ -236,7 +236,7 @@ class MembershipPlanController extends Controller
             'no_show_counts_as_visit'       => 'boolean',
             'location_id'                   => 'nullable|exists:locations,id',
             'location_name'                 => 'nullable|string|max:150',
-            'billing_location_id'           => 'nullable|exists:locations,id',
+            'billing_account_id'             => 'nullable|exists:authorize_net_accounts,id',
             'location_access_mode'          => ['required', Rule::in(['single','multi','all'])],
             'approved_location_ids'         => 'nullable|array',
             'approved_location_ids.*'       => 'exists:locations,id',

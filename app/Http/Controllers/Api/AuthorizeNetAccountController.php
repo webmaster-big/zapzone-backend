@@ -21,18 +21,19 @@ class AuthorizeNetAccountController extends Controller
             'success' => true,
             'data' => $accounts->map(function ($account) {
                 return [
-                    'id' => $account->id,
-                    'location_id' => $account->location_id,
-                    'environment' => $account->environment,
-                    'is_active' => $account->is_active,
-                    'connected_at' => $account->connected_at,
-                    'last_tested_at' => $account->last_tested_at,
-                    'location' => [
-                        'id' => $account->location->id,
-                        'name' => $account->location->name,
-                        'city' => $account->location->city,
+                    'id'            => $account->id,
+                    'location_id'   => $account->location_id,
+                    'label'         => $account->label,
+                    'environment'   => $account->environment,
+                    'is_active'     => $account->is_active,
+                    'connected_at'  => $account->connected_at,
+                    'last_tested_at'=> $account->last_tested_at,
+                    'location'      => $account->location ? [
+                        'id'    => $account->location->id,
+                        'name'  => $account->location->name,
+                        'city'  => $account->location->city,
                         'state' => $account->location->state,
-                    ],
+                    ] : null,
                 ];
             }),
         ]);
@@ -97,96 +98,80 @@ class AuthorizeNetAccountController extends Controller
     public function store(Request $request)
     {
         $user = $request->user();
+        $isCompanyAdmin = $user->role === 'company_admin';
 
-        if (!$user->location_id) {
-            return response()->json([
-                'message' => 'No location assigned to your account'
-            ], 403);
+        // company_admin: may pass location_id (or omit for a centralized account with no location).
+        // location_manager/attendant: must use their own location_id.
+        if ($isCompanyAdmin) {
+            $targetLocationId = $request->filled('location_id') ? (int) $request->location_id : null;
+        } else {
+            if (!$user->location_id) {
+                return response()->json(['success' => false, 'message' => 'No location assigned to your account.'], 403);
+            }
+            $targetLocationId = (int) $user->location_id;
         }
 
         $validator = Validator::make($request->all(), [
-            'api_login_id' => 'required|string|max:255',
-            'transaction_key' => 'required|string|max:255',
+            'api_login_id'      => 'required|string|max:255',
+            'transaction_key'   => 'required|string|max:255',
             'public_client_key' => 'required|string|max:1000',
-            'environment' => 'required|in:sandbox,production',
+            'environment'       => 'required|in:sandbox,production',
+            'label'             => 'nullable|string|max:100',
+            'location_id'       => 'nullable|exists:locations,id',
         ]);
 
         if ($validator->fails()) {
-            Log::warning('Authorize.Net account creation validation failed', [
-                'location_id' => $user->location_id,
-                'user_id' => $user->id,
-                'errors' => $validator->errors()->toArray(),
-                'provided_fields' => array_keys($request->only(['api_login_id', 'transaction_key', 'environment']))
-            ]);
-            return response()->json([
-                'message' => 'Validation failed',
-                'errors' => $validator->errors()
-            ], 422);
+            return response()->json(['success' => false, 'message' => 'Validation failed', 'errors' => $validator->errors()], 422);
         }
 
-        $existingAccount = AuthorizeNetAccount::where('location_id', $user->location_id)->first();
-
-        if ($existingAccount) {
-            Log::warning('Attempt to create duplicate Authorize.Net account', [
-                'location_id' => $user->location_id,
-                'user_id' => $user->id,
-                'existing_account_id' => $existingAccount->id,
-                'existing_environment' => $existingAccount->environment,
-                'existing_connected_at' => $existingAccount->connected_at
-            ]);
-            return response()->json([
-                'message' => 'An Authorize.Net account is already connected to this location. Please disconnect it first.'
-            ], 409);
+        // Prevent duplicate per-location accounts
+        if ($targetLocationId !== null) {
+            $existingAccount = AuthorizeNetAccount::where('location_id', $targetLocationId)->first();
+            if ($existingAccount) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'An Authorize.Net account is already connected to this location. Please disconnect it first.',
+                ], 409);
+            }
         }
 
         try {
             $account = AuthorizeNetAccount::create([
-                'location_id' => $user->location_id,
-                'api_login_id' => trim($request->api_login_id),
-                'transaction_key' => trim($request->transaction_key),
+                'location_id'       => $targetLocationId,
+                'label'             => $targetLocationId === null ? trim($request->label ?? 'Centralized Account') : null,
+                'api_login_id'      => trim($request->api_login_id),
+                'transaction_key'   => trim($request->transaction_key),
                 'public_client_key' => trim($request->public_client_key),
-                'environment' => $request->environment,
-                'is_active' => true,
-                'connected_at' => now(),
+                'environment'       => $request->environment,
+                'is_active'         => true,
+                'connected_at'      => now(),
             ]);
 
-            Log::info('Authorize.Net account connected successfully', [
-                'location_id' => $user->location_id,
-                'environment' => $request->environment,
-                'user_id' => $user->id,
-                'account_id' => $account->id,
-                'api_login_id_length' => strlen($request->api_login_id),
-                'transaction_key_length' => strlen($request->transaction_key),
-                'encrypted_successfully' => true
+            Log::info('Authorize.Net account connected', [
+                'location_id'  => $targetLocationId,
+                'centralized'  => $targetLocationId === null,
+                'label'        => $account->label,
+                'environment'  => $request->environment,
+                'user_id'      => $user->id,
+                'account_id'   => $account->id,
             ]);
 
             return response()->json([
+                'success' => true,
                 'message' => 'Authorize.Net account connected successfully',
-                'account' => [
-                    'id' => $account->id,
-                    'location_id' => $account->location_id,
-                    'environment' => $account->environment,
-                    'is_active' => $account->is_active,
+                'data' => [
+                    'id'           => $account->id,
+                    'location_id'  => $account->location_id,
+                    'label'        => $account->label,
+                    'environment'  => $account->environment,
+                    'is_active'    => $account->is_active,
                     'connected_at' => $account->connected_at,
-                ]
+                ],
             ], 201);
 
         } catch (\Exception $e) {
-            Log::error('Failed to connect Authorize.Net account', [
-                'location_id' => $user->location_id,
-                'user_id' => $user->id,
-                'error_message' => $e->getMessage(),
-                'error_class' => get_class($e),
-                'error_code' => $e->getCode(),
-                'error_file' => $e->getFile(),
-                'error_line' => $e->getLine(),
-                'stack_trace' => $e->getTraceAsString()
-            ]);
-
-            return response()->json([
-                'message' => 'Failed to connect Authorize.Net account',
-                'error' => $e->getMessage()
-            ], 500);
+            Log::error('Failed to connect Authorize.Net account', ['error' => $e->getMessage(), 'user_id' => $user->id]);
+            return response()->json(['success' => false, 'message' => 'Failed to connect Authorize.Net account', 'error' => $e->getMessage()], 500);
         }
     }
 

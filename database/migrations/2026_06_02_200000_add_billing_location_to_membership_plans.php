@@ -9,20 +9,20 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('membership_plans', function (Blueprint $table) {
-            $table->foreignId('billing_location_id')
+            $table->foreignId('billing_account_id')
                 ->nullable()
                 ->after('location_id')
-                ->constrained('locations')
+                ->constrained('authorize_net_accounts')
                 ->nullOnDelete()
-                ->comment('When set, membership payments for this plan are processed through this location\'s Authorize.Net account instead of the member\'s home location.');
+                ->comment('When set, all membership payments for this plan are processed through this Authorize.Net account directly (overrides member home-location lookup).');
         });
     }
 
     public function down(): void
     {
         Schema::table('membership_plans', function (Blueprint $table) {
-            $table->dropForeign(['billing_location_id']);
-            $table->dropColumn('billing_location_id');
+            $table->dropForeign(['billing_account_id']);
+            $table->dropColumn('billing_account_id');
         });
     }
 };

@@ -38,13 +38,20 @@ class MembershipController extends Controller
     private function resolveAccountForMembership(Membership $membership): ?AuthorizeNetAccount
     {
         $plan = $membership->plan ?? $membership->load('plan')->plan;
-        $billingLocationId = $plan?->billing_location_id ?? $membership->home_location_id;
 
-        if (!$billingLocationId) {
+        // If plan has a direct billing account set, use it
+        if ($plan?->billing_account_id) {
+            return AuthorizeNetAccount::where('id', $plan->billing_account_id)
+                ->where('is_active', true)
+                ->first();
+        }
+
+        // Fall back to member's home location account
+        if (!$membership->home_location_id) {
             return null;
         }
 
-        return AuthorizeNetAccount::where('location_id', $billingLocationId)
+        return AuthorizeNetAccount::where('location_id', $membership->home_location_id)
             ->where('is_active', true)
             ->first();
     }
@@ -236,9 +243,9 @@ class MembershipController extends Controller
             return response()->json(['success' => false, 'message' => 'Payment information is required.'], 422);
         }
 
-        $account = AuthorizeNetAccount::where('location_id', $plan->billing_location_id ?? $homeLocId)
-            ->where('is_active', true)
-            ->first();
+        $account = $plan->billing_account_id
+            ? AuthorizeNetAccount::where('id', $plan->billing_account_id)->where('is_active', true)->first()
+            : AuthorizeNetAccount::where('location_id', $homeLocId)->where('is_active', true)->first();
 
         if (!$account) {
             $membership->delete();
