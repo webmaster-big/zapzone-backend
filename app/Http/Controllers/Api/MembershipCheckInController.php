@@ -78,6 +78,11 @@ class MembershipCheckInController extends Controller
         $authUser = $this->resolveAuthUser($request);
         abort_unless($authUser, 403);
 
+        Log::debug('[CheckIn] checkIn request', [
+            'membership_id' => $membership->id,
+            'body'          => $request->only('result','location_id','denial_reason','counted_against_usage','override_note'),
+        ]);
+
         $data = $request->validate([
             'result'                => ['required', Rule::in(['allowed','denied','override'])],
             'location_id'           => 'nullable|exists:locations,id',
