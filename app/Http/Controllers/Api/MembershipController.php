@@ -90,6 +90,19 @@ class MembershipController extends Controller
             'auditLogs.user:id,first_name,last_name',
         ]);
 
+        // Compute visits used this term for the detail page
+        $plan = $membership->plan;
+        if ($plan?->unlimited_visits_per_term) {
+            $visitsUsed = $membership->visits
+                ->filter(fn($v) => $v->counted_against_usage && $membership->current_term_start && $v->visited_at >= $membership->current_term_start)
+                ->count();
+        } else {
+            $perTerm  = (int) ($plan?->visits_per_term ?? 0);
+            $remaining = $membership->visits_remaining ?? $perTerm;
+            $visitsUsed = max(0, $perTerm - $remaining);
+        }
+        $membership->setAttribute('visits_used_this_term', $visitsUsed);
+
         return response()->json(['success' => true, 'data' => $membership]);
     }
 

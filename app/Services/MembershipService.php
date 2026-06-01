@@ -40,7 +40,7 @@ class MembershipService
             $membership->grace_period_ends_at = null;
 
             $membership->uses_remaining     = $plan->unlimited_uses_per_term ? null : ($plan->uses_per_term ?? null);
-            $membership->visits_remaining   = $plan->unlimited_visits_per_term ? null : (int) ($plan->visits_per_term ?? 0);
+            $membership->visits_remaining   = $plan->unlimited_visits_per_term ? null : ($plan->visits_per_term !== null ? (int) $plan->visits_per_term : null);
             $membership->services_remaining = $plan->services_per_term;
 
             $membership->save();
@@ -148,7 +148,22 @@ class MembershipService
                 && ! $membership->plan->unlimited_visits_per_term
                 && ! empty($data['counted_against_usage']);
 
-            if ($counted && $membership->visits_remaining !== null && $membership->visits_remaining > 0) {
+            // Initialize visits_remaining for legacy memberships where activate() stored null
+            if ($counted && $membership->visits_remaining === null && ! $membership->plan->unlimited_visits_per_term) {
+                $perTerm = (int) ($membership->plan->visits_per_term ?? 0);
+                $usedThisTerm = $membership->visits()
+                    ->where('counted_against_usage', true)
+                    ->where('visited_at', '>=', ($membership->current_term_start ?? now())->toDateTimeString())
+                    ->count();
+                $membership->visits_remaining = max(0, $perTerm - $usedThisTerm - 1);
+                $membership->save();
+                Log::debug('[Membership] recordVisit — initialized visits_remaining from plan', [
+                    'membership_id'    => $membership->id,
+                    'visits_per_term'  => $perTerm,
+                    'used_this_term'   => $usedThisTerm,
+                    'visits_remaining' => $membership->visits_remaining,
+                ]);
+            } elseif ($counted && $membership->visits_remaining !== null && $membership->visits_remaining > 0) {
                 $membership->decrement('visits_remaining');
             }
 
