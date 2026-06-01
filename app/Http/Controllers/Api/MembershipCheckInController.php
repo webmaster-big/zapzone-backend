@@ -56,6 +56,11 @@ class MembershipCheckInController extends Controller
 
         $benefitQuote = $this->benefits->quote($membership, $locationId, []);
 
+        $plan = $membership->plan;
+        $visitsRemaining = $membership->visits_remaining
+            ?? ($plan->unlimited_visits_per_term ? null : (isset($plan->visits_per_term) ? (int) $plan->visits_per_term : null));
+        $membership->visits_remaining = $visitsRemaining;
+
         return response()->json([
             'success' => true,
             'data' => [

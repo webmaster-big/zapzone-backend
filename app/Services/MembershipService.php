@@ -39,8 +39,8 @@ class MembershipService
                 : null;
             $membership->grace_period_ends_at = null;
 
-            $membership->uses_remaining     = $plan->unlimited_uses_per_term ? null : $plan->uses_per_term;
-            $membership->visits_remaining   = $plan->unlimited_visits_per_term ? null : $plan->visits_per_term;
+            $membership->uses_remaining     = $plan->unlimited_uses_per_term ? null : ($plan->uses_per_term ?? null);
+            $membership->visits_remaining   = $plan->unlimited_visits_per_term ? null : (int) ($plan->visits_per_term ?? 0);
             $membership->services_remaining = $plan->services_per_term;
 
             $membership->save();
@@ -96,8 +96,12 @@ class MembershipService
             }
         }
 
-        if (! $membership->plan->unlimited_visits_per_term && ($membership->visits_remaining ?? 0) <= 0) {
-            return ['eligible' => false, 'reason' => 'No visits remaining for this term'];
+        if (! $membership->plan->unlimited_visits_per_term) {
+            $effectiveRemaining = $membership->visits_remaining
+                ?? (int) ($membership->plan->visits_per_term ?? 0);
+            if ($effectiveRemaining <= 0) {
+                return ['eligible' => false, 'reason' => 'No visits remaining for this term'];
+            }
         }
 
         if ($membership->plan->max_visits_per_day) {
