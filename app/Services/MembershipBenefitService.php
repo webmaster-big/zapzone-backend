@@ -288,9 +288,18 @@ class MembershipBenefitService
         return $remaining === null || $remaining > 0;
     }
 
+    protected function redemptionCap(MembershipPlanBenefit $b): ?int
+    {
+        if ($b->value_mode === 'count') {
+            return max(0, (int) $b->value);
+        }
+        return empty($b->max_redemptions) ? null : (int) $b->max_redemptions;
+    }
+
     protected function remainingRedemptions(Membership $membership, MembershipPlanBenefit $b): ?int
     {
-        if (empty($b->max_redemptions)) {
+        $cap = $this->redemptionCap($b);
+        if ($cap === null) {
             return null;
         }
 
@@ -309,12 +318,11 @@ class MembershipBenefitService
                 }
                 break;
             case 'lifetime':
-            case 'once':
             default:
                 break;
         }
 
         $used = $q->count();
-        return max(0, (int) $b->max_redemptions - $used);
+        return max(0, $cap - $used);
     }
 }

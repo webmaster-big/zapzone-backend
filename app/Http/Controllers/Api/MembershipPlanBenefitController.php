@@ -73,6 +73,18 @@ class MembershipPlanBenefitController extends Controller
         'birthday_reward'     => ['any'],
     ];
 
+    private const VALUE_MODE_MATRIX = [
+        'package_discount'    => ['percent', 'fixed', 'free'],
+        'attraction_discount' => ['percent', 'fixed', 'free'],
+        'event_discount'      => ['percent', 'fixed', 'free'],
+        'addon_discount'      => ['percent', 'fixed', 'free'],
+        'free_entry_pass'     => ['count'],
+        'guest_pass'          => ['count'],
+        'priority_booking'    => ['flag'],
+        'member_only_access'  => ['flag'],
+        'birthday_reward'     => ['free', 'percent', 'fixed', 'count'],
+    ];
+
     private function validateData(Request $request, bool $partial = false, ?MembershipPlanBenefit $existing = null): array
     {
         $req = fn (string $rule) => $partial ? 'sometimes|' . $rule : $rule;
@@ -109,6 +121,21 @@ class MembershipPlanBenefitController extends Controller
                     'message' => "Scope \"{$scopeType}\" is not valid for benefit \"{$benefitType}\". Allowed: " . implode(', ', $allowed) . '.',
                 ], 422));
             }
+        }
+
+        $valueMode = array_key_exists('value_mode', $data) ? $data['value_mode'] : $existing?->value_mode;
+        if ($benefitType && $valueMode) {
+            $allowedModes = self::VALUE_MODE_MATRIX[$benefitType] ?? ['percent'];
+            if (! in_array($valueMode, $allowedModes, true)) {
+                abort(response()->json([
+                    'success' => false,
+                    'message' => "Value mode \"{$valueMode}\" is not valid for benefit \"{$benefitType}\". Allowed: " . implode(', ', $allowedModes) . '.',
+                ], 422));
+            }
+        }
+
+        if (in_array($valueMode, ['count', 'flag'], true) && array_key_exists('value_mode', $data)) {
+            $data['max_redemptions'] = null;
         }
 
         // Normalise targets: dedupe scope_ids, clear single scope_id when a list is provided.
