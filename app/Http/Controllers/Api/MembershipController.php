@@ -82,12 +82,12 @@ class MembershipController extends Controller
             'homeLocation:id,name',
             'visits' => fn($q) => $q->latest('visited_at')->limit(50),
             'visits.location:id,name',
-            'visits.staff:id,name',
+            'visits.staff:id,first_name,last_name',
             'membershipPayments' => fn($q) => $q->latest()->limit(50),
             'notes' => fn($q) => $q->latest(),
-            'notes.user:id,name',
+            'notes.user:id,first_name,last_name',
             'auditLogs' => fn($q) => $q->latest()->limit(50),
-            'auditLogs.user:id,name',
+            'auditLogs.user:id,first_name,last_name',
         ]);
 
         return response()->json(['success' => true, 'data' => $membership]);
