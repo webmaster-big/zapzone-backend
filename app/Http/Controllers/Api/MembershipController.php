@@ -345,6 +345,7 @@ class MembershipController extends Controller
             'homeLocation:id,name',
             'membershipPayments' => fn($q) => $q->latest()->limit(10),
             'benefitRedemptions' => fn($q) => $q->whereNull('reversed_at')->latest()->limit(50),
+            'benefitRedemptions.benefit:id,label,benefit_type',
         ])
         ->where('customer_id', $customer->id)
         ->latest()
@@ -465,6 +466,13 @@ class MembershipController extends Controller
             'effective'          => ['nullable', Rule::in(['immediate','next_cycle'])],
             'note'               => 'nullable|string',
         ]);
+        // Customers may only change their own membership; staff can change any
+        $customer = $this->resolveCustomer();
+        $authUser = $this->resolveAuthUser($request);
+        abort_unless(
+            ($customer && (int) $customer->id === (int) $membership->customer_id) || $authUser,
+            403
+        );
         $before = ['membership_plan_id' => $membership->membership_plan_id];
         $membership->membership_plan_id = $data['membership_plan_id'];
         $membership->save();
@@ -525,11 +533,19 @@ class MembershipController extends Controller
         abort_unless($ownsIt || $authUser, 403);
 
         $data = $request->validate([
-            'payment_method_label'  => 'required|string|max:120',
-            'payment_profile_token' => 'nullable|string|max:120',
+            'payment_method_label'       => 'required|string|max:120',
+            'payment_profile_token'      => 'nullable|string|max:255',
+            'opaque_data'                => 'nullable|array',
+            'opaque_data.dataDescriptor' => 'nullable|string',
+            'opaque_data.dataValue'      => 'nullable|string',
         ]);
-        $membership->fill($data)->save();
-        $this->service->log($membership, 'payment_method_update', null, $data);
+        $token = $data['payment_profile_token']
+            ?? (!empty($data['opaque_data']['dataValue']) ? $data['opaque_data']['dataValue'] : null)
+            ?? $membership->payment_profile_token;
+        $membership->payment_method_label  = $data['payment_method_label'];
+        $membership->payment_profile_token = $token;
+        $membership->save();
+        $this->service->log($membership, 'payment_method_update', null, ['payment_method_label' => $data['payment_method_label']]);
         return response()->json(['success' => true, 'data' => $membership->fresh()]);
     }
 
@@ -811,6 +827,120 @@ class MembershipController extends Controller
         $this->service->changeStatus($membership, 'active', $data['note'] ?? null);
 
         return response()->json(['success' => true, 'data' => $membership->fresh()]);
+    }
+
+    public function upgradePlan(Request $request, Membership $membership): JsonResponse
+    {
+        $customer = $this->resolveCustomer();
+        abort_unless($customer && (int) $customer->id === (int) $membership->customer_id, 403);
+        abort_unless(in_array($membership->status, ['active', 'past_due', 'pending']), 422);
+
+        $data = $request->validate([
+            'membership_plan_id'         => 'required|exists:membership_plans,id',
+            'opaque_data'                => 'nullable|array',
+            'opaque_data.dataDescriptor' => 'nullable|string',
+            'opaque_data.dataValue'      => 'nullable|string',
+        ]);
+
+        $newPlan = MembershipPlan::findOrFail($data['membership_plan_id']);
+
+        if ((int) $newPlan->id === (int) $membership->membership_plan_id) {
+            return response()->json(['success' => false, 'message' => 'You are already on this plan.'], 422);
+        }
+
+        $currentPrice = (float) ($membership->billing_amount ?? $membership->plan?->price ?? 0);
+        $priceDiff    = round((float) $newPlan->price - $currentPrice, 2);
+
+        if ($priceDiff > 0.01) {
+            if (empty($data['opaque_data']['dataDescriptor']) || empty($data['opaque_data']['dataValue'])) {
+                return response()->json([
+                    'success'          => false,
+                    'message'          => 'Payment information is required to upgrade to this plan.',
+                    'requires_payment' => true,
+                    'amount_due'       => $priceDiff,
+                ], 422);
+            }
+
+            $account = AuthorizeNetAccount::where('location_id', $membership->home_location_id)
+                ->where('is_active', true)
+                ->first();
+
+            if (!$account) {
+                return response()->json(['success' => false, 'message' => 'Payment gateway not configured for this location.'], 503);
+            }
+
+            try {
+                $merchantAuthentication = new AnetAPI\MerchantAuthenticationType();
+                $merchantAuthentication->setName(trim($account->api_login_id));
+                $merchantAuthentication->setTransactionKey(trim($account->transaction_key));
+                $environment = $account->isProduction() ? ANetEnvironment::PRODUCTION : ANetEnvironment::SANDBOX;
+
+                $opaqueData = new AnetAPI\OpaqueDataType();
+                $opaqueData->setDataDescriptor($data['opaque_data']['dataDescriptor']);
+                $opaqueData->setDataValue($data['opaque_data']['dataValue']);
+
+                $paymentType = new AnetAPI\PaymentType();
+                $paymentType->setOpaqueData($opaqueData);
+
+                $order = new AnetAPI\OrderType();
+                $order->setInvoiceNumber(substr('UPG-' . $membership->id, 0, 20));
+                $order->setDescription(substr("Plan upgrade: {$newPlan->name}", 0, 255));
+
+                $transactionRequest = new AnetAPI\TransactionRequestType();
+                $transactionRequest->setTransactionType('authCaptureTransaction');
+                $transactionRequest->setAmount($priceDiff);
+                $transactionRequest->setPayment($paymentType);
+                $transactionRequest->setOrder($order);
+
+                $apiRequest = new AnetAPI\CreateTransactionRequest();
+                $apiRequest->setMerchantAuthentication($merchantAuthentication);
+                $apiRequest->setRefId('UPG' . $membership->id);
+                $apiRequest->setTransactionRequest($transactionRequest);
+
+                $controller = new AnetController\CreateTransactionController($apiRequest);
+                $response   = $controller->executeWithApiResponse($environment);
+
+                if ($response && $response->getMessages()->getResultCode() === 'Ok') {
+                    $tresponse = $response->getTransactionResponse();
+                    if ($tresponse && $tresponse->getMessages()) {
+                        $this->service->recordPayment($membership, [
+                            'amount'         => $priceDiff,
+                            'status'         => 'succeeded',
+                            'transaction_id' => $tresponse->getTransId(),
+                            'description'    => "Plan upgrade: {$membership->plan?->name} → {$newPlan->name}",
+                        ]);
+                    } else {
+                        return response()->json(['success' => false, 'message' => 'Payment processing error.'], 500);
+                    }
+                } else {
+                    $errorMessage = 'Payment declined';
+                    if ($response) {
+                        $tresponse = $response->getTransactionResponse();
+                        if ($tresponse && $tresponse->getErrors()) {
+                            $errorMessage = $tresponse->getErrors()[0]->getErrorText();
+                        } elseif ($response->getMessages()) {
+                            $errorMessage = $response->getMessages()->getMessage()[0]->getText();
+                        }
+                    }
+                    return response()->json(['success' => false, 'message' => $errorMessage], 402);
+                }
+            } catch (\Exception $e) {
+                Log::error('Plan upgrade payment exception', ['membership_id' => $membership->id, 'error' => $e->getMessage()]);
+                return response()->json(['success' => false, 'message' => 'Payment processing error.'], 500);
+            }
+        }
+
+        $before = ['membership_plan_id' => $membership->membership_plan_id, 'billing_amount' => $membership->billing_amount];
+        $membership->membership_plan_id = $newPlan->id;
+        $membership->billing_amount     = $newPlan->price;
+        $membership->save();
+
+        $this->service->log($membership, 'plan_change', $before, [
+            'membership_plan_id' => $newPlan->id,
+            'billing_amount'     => $newPlan->price,
+        ], 'Customer plan change');
+
+        return response()->json(['success' => true, 'data' => $membership->fresh()->load('plan')]);
     }
 
     private function resolveCustomer(): ?Customer
