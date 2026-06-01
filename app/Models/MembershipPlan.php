@@ -14,7 +14,7 @@ class MembershipPlan extends Model
     use HasFactory, SoftDeletes;
 
     protected $fillable = [
-        'company_id', 'location_id', 'name', 'slug', 'description', 'benefits',
+        'company_id', 'location_id', 'billing_location_id', 'name', 'slug', 'description', 'benefits',
         'tier', 'inherits_plan_id', 'price', 'billing_cycle', 'custom_billing_days', 'term_length_months',
         'trial_days',
         'usage_type', 'uses_per_term', 'visits_per_term', 'services_per_term',
@@ -81,6 +81,11 @@ class MembershipPlan extends Model
     public function location(): BelongsTo
     {
         return $this->belongsTo(Location::class);
+    }
+
+    public function billingLocation(): BelongsTo
+    {
+        return $this->belongsTo(Location::class, 'billing_location_id');
     }
 
     public function approvedLocations(): BelongsToMany

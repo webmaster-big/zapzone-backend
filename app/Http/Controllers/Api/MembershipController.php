@@ -35,6 +35,21 @@ class MembershipController extends Controller
     ) {}
 
 
+    private function resolveAccountForMembership(Membership $membership): ?AuthorizeNetAccount
+    {
+        $plan = $membership->plan ?? $membership->load('plan')->plan;
+        $billingLocationId = $plan?->billing_location_id ?? $membership->home_location_id;
+
+        if (!$billingLocationId) {
+            return null;
+        }
+
+        return AuthorizeNetAccount::where('location_id', $billingLocationId)
+            ->where('is_active', true)
+            ->first();
+    }
+
+
     public function index(Request $request): JsonResponse
     {
         $query = Membership::with(['customer:id,first_name,last_name,email,phone', 'plan:id,name,tier,price,billing_cycle', 'homeLocation:id,name']);
@@ -221,7 +236,7 @@ class MembershipController extends Controller
             return response()->json(['success' => false, 'message' => 'Payment information is required.'], 422);
         }
 
-        $account = AuthorizeNetAccount::where('location_id', $homeLocId)
+        $account = AuthorizeNetAccount::where('location_id', $plan->billing_location_id ?? $homeLocId)
             ->where('is_active', true)
             ->first();
 
@@ -317,7 +332,7 @@ class MembershipController extends Controller
                 'failure_reason' => $errorMessage,
             ]);
 
-            $membership->delete(); // Soft-delete the pending membership.
+            $membership->delete();
 
             return response()->json(['success' => false, 'message' => $errorMessage], 402);
 
@@ -367,6 +382,20 @@ class MembershipController extends Controller
         $data                           = $membership->toArray();
         $data['valid_locations']        = $validLocations;
         $data['location_access_label']  = $locationAccessLabel;
+
+        if ($plan && $plan->planBenefits->isNotEmpty()) {
+            $enriched = MembershipPlanBenefitController::resolveTargets($plan->planBenefits);
+            if (isset($data['plan'])) {
+                $data['plan']['plan_benefits'] = $enriched->map(fn ($b) => $b->toArray())->values()->toArray();
+            }
+        }
+
+        if ($plan?->inheritsPlan && $plan->inheritsPlan->planBenefits?->isNotEmpty()) {
+            $enrichedInherited = MembershipPlanBenefitController::resolveTargets($plan->inheritsPlan->planBenefits);
+            if (isset($data['plan']['inherits_plan'])) {
+                $data['plan']['inherits_plan']['plan_benefits'] = $enrichedInherited->map(fn ($b) => $b->toArray())->values()->toArray();
+            }
+        }
 
         return response()->json(['success' => true, 'data' => $data]);
     }
@@ -466,7 +495,7 @@ class MembershipController extends Controller
             'effective'          => ['nullable', Rule::in(['immediate','next_cycle'])],
             'note'               => 'nullable|string',
         ]);
-        // Customers may only change their own membership; staff can change any
+        // Customers may only change their own membership; staff can change any.
         $customer = $this->resolveCustomer();
         $authUser = $this->resolveAuthUser($request);
         abort_unless(
@@ -610,8 +639,7 @@ class MembershipController extends Controller
             return response()->json(['success' => true, 'data' => $membershipPayment->fresh()]);
         }
 
-        $account = AuthorizeNetAccount::where('location_id', $membership->home_location_id)
-            ->where('is_active', true)->first();
+        $account = $this->resolveAccountForMembership($membership);
 
         if (!$account) {
             return response()->json(['success' => false, 'message' => 'Payment gateway not configured for this location.'], 503);
@@ -764,8 +792,7 @@ class MembershipController extends Controller
             return response()->json(['success' => true, 'data' => $membershipPayment->fresh()]);
         }
 
-        $account = AuthorizeNetAccount::where('location_id', $membership->home_location_id)
-            ->where('is_active', true)->first();
+        $account = $this->resolveAccountForMembership($membership);
 
         if (!$account) {
             return response()->json(['success' => false, 'message' => 'Payment gateway not configured for this location.'], 503);
@@ -900,9 +927,7 @@ class MembershipController extends Controller
                 ], 422);
             }
 
-            $account = AuthorizeNetAccount::where('location_id', $membership->home_location_id)
-                ->where('is_active', true)
-                ->first();
+            $account = $this->resolveAccountForMembership($membership);
 
             if (!$account) {
                 return response()->json(['success' => false, 'message' => 'Payment gateway not configured for this location.'], 503);

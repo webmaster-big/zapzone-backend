@@ -17,7 +17,7 @@ class MembershipPlanController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        $query = MembershipPlan::with(['approvedLocations:id,name', 'location:id,name'])
+        $query = MembershipPlan::with(['approvedLocations:id,name', 'location:id,name', 'billingLocation:id,name'])
             ->withCount('memberships');
 
         $authUser = $this->resolveAuthUser($request);
@@ -62,6 +62,7 @@ class MembershipPlanController extends Controller
         $query = MembershipPlan::with([
                 'approvedLocations:id,name',
                 'location:id,name',
+                'billingLocation:id,name',
                 'planBenefits' => fn($q) => $q->where('is_active', true)->orderByDesc('priority'),
             ])
             ->where('is_active', true);
@@ -88,7 +89,6 @@ class MembershipPlanController extends Controller
                 default  => null,
             };
 
-            // Enrich plan_benefits with resolved scope target names and location info.
             if (isset($arr['plan_benefits'])) {
                 $enriched = MembershipPlanBenefitController::resolveTargets($plan->planBenefits);
                 $arr['plan_benefits'] = $enriched->map(fn ($b) => $b->toArray())->values()->toArray();
@@ -196,7 +196,7 @@ class MembershipPlanController extends Controller
             $merge['billing_cycle'] = $request->billing_interval;
         }
         if ($request->has('usage_type') && $request->usage_type === 'limited_visits') {
-            $merge['usage_type'] = 'limited_visits'; // kept as-is; migration adds this enum value
+            $merge['usage_type'] = 'limited_visits';
         }
         if ($request->has('unlimited_uses') && !$request->has('unlimited_uses_per_term')) {
             $merge['unlimited_uses_per_term'] = $request->unlimited_uses;
@@ -236,6 +236,7 @@ class MembershipPlanController extends Controller
             'no_show_counts_as_visit'       => 'boolean',
             'location_id'                   => 'nullable|exists:locations,id',
             'location_name'                 => 'nullable|string|max:150',
+            'billing_location_id'           => 'nullable|exists:locations,id',
             'location_access_mode'          => ['required', Rule::in(['single','multi','all'])],
             'approved_location_ids'         => 'nullable|array',
             'approved_location_ids.*'       => 'exists:locations,id',
