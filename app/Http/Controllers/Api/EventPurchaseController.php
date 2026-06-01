@@ -167,6 +167,16 @@ class EventPurchaseController extends Controller
             $smsConsent = $validated['sms_consent'] ?? false;
             unset($validated['add_ons'], $validated['send_email'], $validated['sms_consent']);
 
+            // Derive membership_discount from applied_discounts entries
+            if (! empty($validated['applied_discounts'])) {
+                $membershipDiscount = collect($validated['applied_discounts'])
+                    ->filter(fn($d) => str_starts_with($d['discount_name'] ?? '', 'Member Savings'))
+                    ->sum('discount_amount');
+                if ($membershipDiscount > 0) {
+                    $validated['membership_discount'] = $membershipDiscount;
+                }
+            }
+
             $purchase = EventPurchase::create($validated);
 
             if (!empty($addOns)) {

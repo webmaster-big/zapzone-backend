@@ -18,6 +18,7 @@ class EventPurchase extends Model
         'event_id',
         'customer_id',
         'membership_id',
+        'membership_discount',
         'location_id',
         'guest_name',
         'guest_email',
@@ -49,7 +50,7 @@ class EventPurchase extends Model
         'applied_discounts' => 'array',
         'amount_paid' => 'decimal:2',
         'discount_amount' => 'decimal:2',
-        'checked_in_at' => 'datetime',
+        'membership_discount' => 'decimal:2',
         'completed_at' => 'datetime',
         'cancelled_at' => 'datetime',
     ];

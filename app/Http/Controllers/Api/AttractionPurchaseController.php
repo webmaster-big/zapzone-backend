@@ -297,6 +297,16 @@ class AttractionPurchaseController extends Controller
 
         $validated['created_by'] = auth()->id() ?? null;
 
+        // Derive membership_discount from applied_discounts entries
+        if (! empty($validated['applied_discounts'])) {
+            $membershipDiscount = collect($validated['applied_discounts'])
+                ->filter(fn($d) => str_starts_with($d['discount_name'] ?? '', 'Member Savings'))
+                ->sum('discount_amount');
+            if ($membershipDiscount > 0) {
+                $validated['membership_discount'] = $membershipDiscount;
+            }
+        }
+
         $purchase = AttractionPurchase::create($validated);
 
         if (isset($validated['additional_addons']) && is_array($validated['additional_addons'])) {

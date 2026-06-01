@@ -342,6 +342,16 @@ class BookingController extends Controller
             $validated['payment_status'] = 'pending';
         }
 
+        // Derive membership_discount from applied_discounts entries
+        if (! empty($validated['applied_discounts'])) {
+            $membershipDiscount = collect($validated['applied_discounts'])
+                ->filter(fn($d) => str_starts_with($d['discount_name'] ?? '', 'Member Savings'))
+                ->sum('discount_amount');
+            if ($membershipDiscount > 0) {
+                $validated['membership_discount'] = $membershipDiscount;
+            }
+        }
+
         $booking = Booking::create($validated);
 
         if (isset($validated['additional_attractions']) && is_array($validated['additional_attractions'])) {

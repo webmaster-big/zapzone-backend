@@ -108,7 +108,7 @@ class MembershipBenefitService
                 if ($remainingLine <= 0) {
                     break;
                 }
-                $off = $this->discountAmount($b, $remainingLine);
+                $off = $this->discountAmount($b, $remainingLine, $qty);
                 if ($off <= 0) {
                     continue;
                 }
@@ -276,11 +276,11 @@ class MembershipBenefitService
         return $resolved instanceof Collection ? $resolved : Collection::make($resolved->all());
     }
 
-    protected function discountAmount(MembershipPlanBenefit $b, float $base): float
+    protected function discountAmount(MembershipPlanBenefit $b, float $base, int $qty = 1): float
     {
         return match ($b->value_mode) {
             'percent' => round($base * ((float) $b->value / 100), 2),
-            'fixed'   => round(min((float) $b->value, $base), 2),
+            'fixed'   => round(min((float) $b->value * $qty, $base), 2),
             'free'    => round($base, 2),
             default   => 0.0,
         };

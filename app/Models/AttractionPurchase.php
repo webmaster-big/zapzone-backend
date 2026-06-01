@@ -29,6 +29,7 @@ class AttractionPurchase extends Model
         'attraction_id',
         'customer_id',
         'membership_id',
+        'membership_discount',
         'created_by',
         'guest_name',
         'guest_email',
@@ -62,7 +63,7 @@ class AttractionPurchase extends Model
         'total_amount' => 'decimal:2',
         'applied_fees' => 'array',
         'discount_amount' => 'decimal:2',
-        'applied_discounts' => 'array',
+        'membership_discount' => 'decimal:2',
         'amount_paid' => 'decimal:2',
         'checked_in_at' => 'datetime',
     ];
