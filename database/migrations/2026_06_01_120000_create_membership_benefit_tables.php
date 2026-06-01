@@ -76,8 +76,8 @@ return new class extends Migration
 
             $table->index(['membership_id', 'created_at']);
             $table->index(['location_id', 'created_at']);
-            $table->index(['redeemable_type', 'redeemable_id']);
-            $table->index(['membership_plan_benefit_id', 'reversed_at']);
+            $table->index(['redeemable_type', 'redeemable_id'], 'mbr_redemptions_redeemable_idx');
+            $table->index(['membership_plan_benefit_id', 'reversed_at'], 'mbr_redemptions_benefit_rev_idx');
         });
 
         Schema::table('bookings', function (Blueprint $table) {
