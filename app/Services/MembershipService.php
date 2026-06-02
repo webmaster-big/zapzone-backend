@@ -319,6 +319,8 @@ class MembershipService
                 return;
             }
 
+            Log::info("[{$label}] Preparing email", ['membership_id' => $membership->id, 'to' => $email]);
+
             $mailable = $factory($membership);
             $html     = $mailable->render();
             $subject  = $mailable->subject ?? $label;
@@ -334,22 +336,26 @@ class MembershipService
                 ];
             }
 
-            $useGmailApi = config('gmail.enabled', false) &&
-                (config('gmail.credentials.client_email') ||
-                 file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
-
-            if ($useGmailApi) {
+            // Try Gmail API unconditionally (mirrors EmailNotificationService pattern),
+            // fall back to SMTP only if Gmail is unavailable or fails.
+            try {
                 (new GmailApiService())->sendEmail($email, $subject, $html, $fromName, $attachments);
-            } else {
+                Log::info("[{$label}] Sent via Gmail API", ['membership_id' => $membership->id, 'to' => $email]);
+            } catch (\Throwable $gmailEx) {
+                Log::warning("[{$label}] Gmail failed, falling back to SMTP: " . $gmailEx->getMessage(), [
+                    'membership_id' => $membership->id,
+                ]);
                 Mail::html($html, function ($message) use ($email, $subject, $fromName) {
                     $message->to($email)
                         ->subject($subject)
                         ->from(config('mail.from.address'), $fromName);
                 });
+                Log::info("[{$label}] Sent via SMTP fallback", ['membership_id' => $membership->id, 'to' => $email]);
             }
         } catch (\Throwable $e) {
-            Log::warning("[{$label}] Send failed: " . $e->getMessage(), [
+            Log::error("[{$label}] Send failed: " . $e->getMessage(), [
                 'membership_id' => $membership->id,
+                'trace'         => $e->getTraceAsString(),
             ]);
         }
     }
