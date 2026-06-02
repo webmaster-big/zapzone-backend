@@ -318,7 +318,35 @@ class MembershipService
                 Log::info("[{$label}] Skipped — customer has no email", ['membership_id' => $membership->id]);
                 return;
             }
-            Mail::to($email)->send($factory($membership));
+
+            $mailable = $factory($membership);
+            $html     = $mailable->render();
+            $subject  = $mailable->subject ?? $label;
+            $fromName = $membership->homeLocation?->company?->company_name
+                      ?? config('gmail.sender_name', 'Zap Zone');
+
+            $attachments = [];
+            if ($mailable instanceof \App\Mail\MembershipActivated && $mailable->qrCodeBase64) {
+                $attachments[] = [
+                    'data'      => $mailable->qrCodeBase64,
+                    'filename'  => 'membership-qr.png',
+                    'mime_type' => 'image/png',
+                ];
+            }
+
+            $useGmailApi = config('gmail.enabled', false) &&
+                (config('gmail.credentials.client_email') ||
+                 file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
+
+            if ($useGmailApi) {
+                (new GmailApiService())->sendEmail($email, $subject, $html, $fromName, $attachments);
+            } else {
+                Mail::html($html, function ($message) use ($email, $subject, $fromName) {
+                    $message->to($email)
+                        ->subject($subject)
+                        ->from(config('mail.from.address'), $fromName);
+                });
+            }
         } catch (\Throwable $e) {
             Log::warning("[{$label}] Send failed: " . $e->getMessage(), [
                 'membership_id' => $membership->id,

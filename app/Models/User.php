@@ -11,6 +11,10 @@ class User extends Authenticatable
 {
     use HasFactory, Notifiable, HasApiTokens;
 
+    protected $appends = [
+        'name',
+    ];
+
     protected $fillable = [
         'company_id',
         'location_id',
@@ -45,6 +49,11 @@ class User extends Authenticatable
             'hire_date' => 'date',
             'last_login' => 'datetime',
         ];
+    }
+
+    public function getNameAttribute(): string
+    {
+        return trim(($this->first_name ?? '') . ' ' . ($this->last_name ?? ''));
     }
 
     public function company()

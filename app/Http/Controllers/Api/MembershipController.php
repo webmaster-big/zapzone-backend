@@ -549,7 +549,7 @@ class MembershipController extends Controller
         $data['membership_id'] = $membership->id;
 
         $note = MembershipNote::create($data);
-        return response()->json(['success' => true, 'data' => $note->load('user:id,name')], 201);
+        return response()->json(['success' => true, 'data' => $note->load('user:id,first_name,last_name')], 201);
     }
 
     public function eligibility(Request $request, Membership $membership): JsonResponse
