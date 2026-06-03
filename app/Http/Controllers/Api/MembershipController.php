@@ -390,6 +390,20 @@ class MembershipController extends Controller
         $data['valid_locations']        = $validLocations;
         $data['location_access_label']  = $locationAccessLabel;
 
+        // Compute visits used this term so the customer dashboard can display accurate usage
+        if ($plan?->unlimited_visits_per_term) {
+            $termStart = $membership->current_term_start;
+            $data['visits_used_this_term'] = $membership->visits()
+                ->where('counted_against_usage', true)
+                ->where('result', 'allowed')
+                ->when($termStart, fn ($q) => $q->where('visited_at', '>=', $termStart))
+                ->count();
+        } else {
+            $perTerm  = (int) ($plan?->visits_per_term ?? 0);
+            $remaining = $membership->visits_remaining ?? $perTerm;
+            $data['visits_used_this_term'] = max(0, $perTerm - $remaining);
+        }
+
         if ($plan && $plan->planBenefits->isNotEmpty()) {
             $enriched = MembershipPlanBenefitController::resolveTargets($plan->planBenefits);
             if (isset($data['plan'])) {
@@ -903,9 +917,11 @@ class MembershipController extends Controller
 
         // Total days in the current billing cycle
         $billingDays = match ($membership->plan?->billing_cycle ?? 'monthly') {
-            'annual'  => 365,
-            'custom'  => max(1, (int) ($membership->plan?->custom_billing_days ?? 30)),
-            default   => 30, // monthly
+            'annual'    => 365,
+            'quarterly' => 90,
+            'one_time'  => 0,   // one-time plans never get prorated
+            'custom'    => max(1, (int) ($membership->plan?->custom_billing_days ?? 30)),
+            default     => 30, // monthly
         };
 
         // If we have real term dates, use actual remaining days; otherwise fall back to billing_days
