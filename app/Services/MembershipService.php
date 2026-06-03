@@ -34,7 +34,7 @@ class MembershipService
             $membership->started_at          = $membership->started_at ?? $now;
             $membership->current_term_start  = $now;
             $membership->current_term_end    = $this->calcTermEnd($now, $plan);
-            $membership->next_billing_at     = $plan->price > 0 && ! $membership->is_comped
+            $membership->next_billing_at     = $plan->price > 0 && ! $membership->is_comped && $plan->billing_cycle !== 'one_time'
                 ? $membership->current_term_end
                 : null;
             $membership->grace_period_ends_at = null;
@@ -57,10 +57,12 @@ class MembershipService
     public function calcTermEnd(Carbon $from, MembershipPlan $plan): Carbon
     {
         return match ($plan->billing_cycle) {
-            'monthly' => $from->copy()->addMonth(),
-            'annual'  => $from->copy()->addYear(),
-            'custom'  => $from->copy()->addDays(max(1, (int) $plan->custom_billing_days)),
-            default   => $from->copy()->addMonth(),
+            'monthly'   => $from->copy()->addMonth(),
+            'quarterly' => $from->copy()->addMonths(3),
+            'annual'    => $from->copy()->addYear(),
+            'one_time'  => $from->copy()->addYears(100), // non-renewing; far-future sentinel
+            'custom'    => $from->copy()->addDays(max(1, (int) $plan->custom_billing_days)),
+            default     => $from->copy()->addMonth(),
         };
     }
 
@@ -254,7 +256,7 @@ class MembershipService
             $plan = $membership->plan;
             $membership->current_term_start = now();
             $membership->current_term_end   = $this->calcTermEnd(now(), $plan);
-            $membership->next_billing_at    = $membership->current_term_end;
+            $membership->next_billing_at    = $plan->billing_cycle !== 'one_time' ? $membership->current_term_end : null;
             $membership->grace_period_ends_at = null;
             if ($membership->status === 'past_due' || $membership->status === 'suspended') {
                 $membership->status = 'active';
