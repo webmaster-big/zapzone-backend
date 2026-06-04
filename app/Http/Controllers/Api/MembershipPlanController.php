@@ -217,6 +217,7 @@ class MembershipPlanController extends Controller
             'description'                   => 'nullable|string',
             'benefits'                      => 'nullable|array',
             'tier'                          => ['nullable', Rule::in(['basic','premium','unlimited','family','discounted','comped','custom'])],
+            'inherits_plan_id'              => 'nullable|exists:membership_plans,id',
             'price'                         => 'required|numeric|min:0',
             'billing_cycle'                 => ['required', Rule::in(['monthly','quarterly','annual','one_time','custom'])],
             'custom_billing_days'           => 'nullable|integer|min:1',

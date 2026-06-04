@@ -108,7 +108,7 @@ class MembershipPlanBenefitController extends Controller
             'scope_category'  => 'nullable|string|max:150',
             'value_mode'      => [$partial ? 'sometimes' : 'required', Rule::in(['percent', 'fixed', 'free', 'count', 'flag'])],
             'value'           => $req('numeric|min:0'),
-            'period'          => ['nullable', Rule::in(['per_term', 'per_day', 'lifetime'])],
+            'period'          => ['nullable', Rule::in(['per_term', 'per_day', 'per_visit', 'lifetime', 'once'])],
             'max_redemptions' => 'nullable|integer|min:1',
             'priority'        => 'nullable|integer|min:0',
             'is_stackable'    => 'boolean',

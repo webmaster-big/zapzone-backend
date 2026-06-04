@@ -351,6 +351,14 @@ class MembershipBenefitService
                     $q->where('created_at', '>=', $membership->current_term_start);
                 }
                 break;
+            case 'per_visit':
+                // Resets each visit: count only redemptions from the current visit session
+                // (same calendar day + same membership, capped per day like per_day but tracked separately)
+                $q->whereDate('created_at', Carbon::today());
+                break;
+            case 'once':
+                // Lifetime cap — never resets. No extra filter needed; count all-time.
+                break;
             case 'lifetime':
             default:
                 break;
