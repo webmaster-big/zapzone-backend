@@ -127,6 +127,12 @@ class MembershipPlanController extends Controller
         }
         unset($data['location_name']);
 
+        // Ensure location managers' plans are always tied to their own location
+        // so the plan appears in their own index view.
+        if (empty($data['location_id']) && $authUser->role === 'location_manager' && $authUser->location_id) {
+            $data['location_id'] = $authUser->location_id;
+        }
+
         $plan = MembershipPlan::create($data);
         if (! empty($approved)) {
             $plan->approvedLocations()->sync($approved);
