@@ -8,6 +8,10 @@ return new class extends Migration
 {
     public function up(): void
     {
+        if (Schema::hasColumn('membership_plans', 'billing_account_id')) {
+            return;
+        }
+
         Schema::table('membership_plans', function (Blueprint $table) {
             $table->foreignId('billing_account_id')
                 ->nullable()
@@ -20,6 +24,10 @@ return new class extends Migration
 
     public function down(): void
     {
+        if (! Schema::hasColumn('membership_plans', 'billing_account_id')) {
+            return;
+        }
+
         Schema::table('membership_plans', function (Blueprint $table) {
             $table->dropForeign(['billing_account_id']);
             $table->dropColumn('billing_account_id');
