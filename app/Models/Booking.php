@@ -71,6 +71,7 @@ class Booking extends Model
         'discount_amount' => 'decimal:2',
         'membership_discount' => 'decimal:2',
         'applied_discounts' => 'array',
+        'applied_fees' => 'array',
         'duration' => 'decimal:2',
         'guest_of_honor_age' => 'integer',
         'reminder_sent' => 'boolean',
