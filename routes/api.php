@@ -168,7 +168,6 @@ Route::delete('attraction-purchases/{attractionPurchase}', [AttractionPurchaseCo
 Route::delete('attraction-purchases/{id}/force-delete', [AttractionPurchaseController::class, 'publicForceDelete']);
 
 Route::get('locations', [LocationController::class, 'index']);
-Route::post('locations', [LocationController::class, 'store']);
 
 Route::post('users', [UserController::class, 'store']);
 
@@ -259,6 +258,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('companies/{company}/statistics', [CompanyController::class, 'statistics']);
     Route::patch('companies/{company}/logo', [CompanyController::class, 'updateLogo']);
 
+    Route::post('locations', [LocationController::class, 'store']);
     Route::apiResource('locations', LocationController::class)->only(['show', 'update', 'destroy']);
     Route::get('locations/company/{companyId}', [LocationController::class, 'getByCompany']);
     Route::patch('locations/{location}/toggle-status', [LocationController::class, 'toggleStatus']);
