@@ -92,6 +92,17 @@ class MembershipCheckInController extends Controller
             'override_note'         => 'required_if:result,override|string',
         ]);
 
+        // Task 5: a membership that requires a member photo cannot be used until the
+        // photo is on file. Staff can still record a 'denied' result or deliberately
+        // 'override' (which is audit-logged), but a plain 'allowed' entry is blocked.
+        if ($data['result'] === 'allowed' && $membership->photoRequiredAndMissing()) {
+            return response()->json([
+                'success'        => false,
+                'photo_required' => true,
+                'message'        => 'A member photo is required before this membership can be used. Capture the photo first.',
+            ], 422);
+        }
+
         if ($data['result'] === 'override') {
             $this->service->log($membership, 'manual_override', null, [
                 'location_id' => $data['location_id'] ?? null,

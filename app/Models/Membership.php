@@ -18,6 +18,7 @@ class Membership extends Model
         'home_location_id', 'sold_at_location_id',
         'status',
         'started_at', 'current_term_start', 'current_term_end',
+        'manually_extended_at', 'manually_extended_by_user_id',
         'next_billing_at', 'canceled_at', 'cancellation_effective_at',
         'frozen_until', 'grace_period_ends_at',
         'uses_remaining', 'visits_remaining', 'services_remaining',
@@ -33,6 +34,7 @@ class Membership extends Model
         'started_at' => 'datetime',
         'current_term_start' => 'datetime',
         'current_term_end' => 'datetime',
+        'manually_extended_at' => 'datetime',
         'next_billing_at' => 'datetime',
         'canceled_at' => 'datetime',
         'cancellation_effective_at' => 'datetime',
@@ -95,6 +97,11 @@ class Membership extends Model
         return $this->belongsTo(User::class, 'photo_taken_by_user_id');
     }
 
+    public function manuallyExtendedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'manually_extended_by_user_id');
+    }
+
     public function visits(): HasMany
     {
         return $this->hasMany(MembershipVisit::class);
@@ -132,5 +139,14 @@ class Membership extends Model
     public function hasPhoto(): bool
     {
         return ! empty($this->photo_path);
+    }
+
+    /**
+     * True when the plan requires a member photo but none has been captured yet.
+     * Such memberships must not be utilized until the photo is taken.
+     */
+    public function photoRequiredAndMissing(): bool
+    {
+        return (bool) ($this->plan?->requires_photo) && ! $this->hasPhoto();
     }
 }

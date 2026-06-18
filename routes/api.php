@@ -542,6 +542,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
 
     Route::get('memberships/me',        [MembershipController::class, 'myMembership']);
+    Route::get('memberships/mine/all',  [MembershipController::class, 'myMemberships']);
     Route::post('memberships/purchase', [MembershipController::class, 'purchase']);
 
     Route::post('memberships/benefits/quote', [MembershipController::class, 'quote']);
@@ -566,6 +567,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('memberships/{membership}/freeze',         [MembershipController::class, 'freeze']);
     Route::patch('memberships/{membership}/unfreeze',       [MembershipController::class, 'unfreeze']);
     Route::patch('memberships/{membership}/cancel',         [MembershipController::class, 'cancel']);
+    Route::patch('memberships/{membership}/extend',         [MembershipController::class, 'extend']);
+    Route::delete('memberships/{membership}',               [MembershipController::class, 'destroy']);
     Route::patch('memberships/{membership}/change-plan',    [MembershipController::class, 'changePlan']);
     Route::post('memberships/{membership}/upgrade-plan',    [MembershipController::class, 'upgradePlan']);
     Route::patch('memberships/{membership}/payment-method', [MembershipController::class, 'updatePaymentMethod']);

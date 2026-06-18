@@ -16,9 +16,11 @@ use App\Support\CompanyLocations;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use net\authorize\api\contract\v1 as AnetAPI;
@@ -54,6 +56,84 @@ class MembershipController extends Controller
         return AuthorizeNetAccount::where('location_id', $membership->home_location_id)
             ->where('is_active', true)
             ->first();
+    }
+
+    /**
+     * Charge a card via Authorize.Net using an Accept.js opaque token.
+     * Never throws — always returns ['success', 'transaction_id', 'error'] so callers
+     * can decide what to do with the membership without an exception deleting a
+     * record that may already have been charged.
+     */
+    private function processAuthorizeNetCharge(
+        AuthorizeNetAccount $account,
+        float $amount,
+        array $opaqueData,
+        Customer $customer,
+        string $invoiceNumber,
+        int $refId,
+        string $description
+    ): array {
+        try {
+            $merchantAuthentication = new AnetAPI\MerchantAuthenticationType();
+            $merchantAuthentication->setName(trim($account->api_login_id));
+            $merchantAuthentication->setTransactionKey(trim($account->transaction_key));
+            $environment = $account->isProduction() ? ANetEnvironment::PRODUCTION : ANetEnvironment::SANDBOX;
+
+            $opaque = new AnetAPI\OpaqueDataType();
+            $opaque->setDataDescriptor($opaqueData['dataDescriptor']);
+            $opaque->setDataValue($opaqueData['dataValue']);
+
+            $paymentType = new AnetAPI\PaymentType();
+            $paymentType->setOpaqueData($opaque);
+
+            $billTo = new AnetAPI\CustomerAddressType();
+            $billTo->setFirstName(substr($customer->first_name ?? '', 0, 50));
+            $billTo->setLastName(substr($customer->last_name ?? '', 0, 50));
+            if (! empty($customer->email)) $billTo->setEmail(substr($customer->email, 0, 255));
+            if (! empty($customer->phone)) $billTo->setPhoneNumber(substr($customer->phone, 0, 25));
+
+            $order = new AnetAPI\OrderType();
+            $order->setInvoiceNumber(substr($invoiceNumber, 0, 20));
+            $order->setDescription(substr($description, 0, 255));
+
+            $transactionRequest = new AnetAPI\TransactionRequestType();
+            $transactionRequest->setTransactionType('authCaptureTransaction');
+            $transactionRequest->setAmount($amount);
+            $transactionRequest->setPayment($paymentType);
+            $transactionRequest->setBillTo($billTo);
+            $transactionRequest->setOrder($order);
+
+            $apiRequest = new AnetAPI\CreateTransactionRequest();
+            $apiRequest->setMerchantAuthentication($merchantAuthentication);
+            $apiRequest->setRefId('MEM' . $refId);
+            $apiRequest->setTransactionRequest($transactionRequest);
+
+            $controller = new AnetController\CreateTransactionController($apiRequest);
+            $response   = $controller->executeWithApiResponse($environment);
+
+            if ($response && $response->getMessages()->getResultCode() === 'Ok') {
+                $tresponse = $response->getTransactionResponse();
+                if ($tresponse && $tresponse->getMessages()) {
+                    return ['success' => true, 'transaction_id' => $tresponse->getTransId(), 'error' => null];
+                }
+            }
+
+            $errorMessage = 'Payment declined';
+            if ($response) {
+                $tresponse = $response->getTransactionResponse();
+                if ($tresponse && $tresponse->getErrors()) {
+                    $errorMessage = $tresponse->getErrors()[0]->getErrorText();
+                } elseif ($response->getMessages()) {
+                    $errorMessage = $response->getMessages()->getMessage()[0]->getText();
+                }
+            }
+
+            Log::warning('Membership charge failed', ['ref_id' => $refId, 'error' => $errorMessage]);
+            return ['success' => false, 'transaction_id' => null, 'error' => $errorMessage];
+        } catch (\Exception $e) {
+            Log::error('Membership charge exception', ['ref_id' => $refId, 'error' => $e->getMessage()]);
+            return ['success' => false, 'transaction_id' => null, 'error' => 'Payment processing error.'];
+        }
     }
 
 
@@ -152,43 +232,133 @@ class MembershipController extends Controller
             'terms_accepted'       => 'boolean',
             'payment_method_label' => 'nullable|string|max:120',
             'payment_profile_token'=> 'nullable|string|max:120',
+            // In-person payment (task 1): how staff are settling this membership.
+            'payment_type'                 => ['nullable', Rule::in(['charge', 'external', 'comp', 'none'])],
+            'amount'                       => 'nullable|numeric|min:0',
+            'opaque_data'                  => 'nullable|array',
+            'opaque_data.dataDescriptor'   => 'nullable|string',
+            'opaque_data.dataValue'        => 'nullable|string',
         ]);
 
-        if (empty($data['customer_id'])) {
-            $existing = Customer::where('email', $data['email'])->first();
-            if ($existing) {
-                $customerId = $existing->id;
-            } else {
-                $customer = Customer::create([
-                    'first_name' => $data['first_name'],
-                    'last_name'  => $data['last_name'],
-                    'email'      => $data['email'],
-                    'phone'      => $data['phone'] ?? null,
-                    'password'   => Hash::make(Str::random(32)),
-                    'status'     => 'active',
-                ]);
-                $customerId = $customer->id;
-            }
-        } else {
-            $customerId = (int) $data['customer_id'];
+        $plan = MembershipPlan::findOrFail($data['membership_plan_id']);
+
+        // Resolve (or create) the customer. New customers are de-duplicated by email.
+        $customer = $this->resolveOrCreateCustomer($data);
+        $customerId = $customer->id;
+
+        // Idempotency guard (task 3): a 500/timeout previously caused the client to
+        // retry and pile up duplicate memberships for the same person. If an identical
+        // membership was just created, return it instead of creating another.
+        $recent = Membership::where('customer_id', $customerId)
+            ->where('membership_plan_id', $plan->id)
+            ->whereIn('status', ['pending', 'active'])
+            ->where('created_at', '>=', now()->subMinutes(2))
+            ->latest()
+            ->first();
+        if ($recent) {
+            return response()->json([
+                'success' => true,
+                'data'    => $recent->fresh()->load('plan', 'customer'),
+                'message' => 'An identical membership was just created.',
+            ], 200);
         }
 
-        $membershipData = array_intersect_key($data, array_flip([
-            'membership_plan_id', 'home_location_id', 'sold_at_location_id',
-            'is_comped', 'discount_amount', 'recurring_billing_authorized',
-            'terms_accepted', 'payment_method_label', 'payment_profile_token',
-        ]));
-        $membershipData['customer_id'] = $customerId;
+        $isComped    = (bool) ($data['is_comped'] ?? false);
+        $paymentType = $data['payment_type'] ?? ($isComped ? 'comp' : 'none');
+        $chargeAmount = isset($data['amount']) ? (float) $data['amount'] : (float) $plan->price;
 
-        $plan = MembershipPlan::findOrFail($membershipData['membership_plan_id']);
-        $membershipData['billing_amount'] = $plan->price;
-        if (! empty($membershipData['terms_accepted'])) $membershipData['terms_accepted_at'] = now();
-        if (! empty($membershipData['recurring_billing_authorized'])) $membershipData['recurring_billing_authorized_at'] = now();
+        // Create the membership atomically with any customer creation above.
+        $membership = DB::transaction(function () use ($data, $plan, $customerId, $isComped) {
+            $membershipData = array_intersect_key($data, array_flip([
+                'home_location_id', 'sold_at_location_id',
+                'discount_amount', 'recurring_billing_authorized',
+                'terms_accepted', 'payment_method_label', 'payment_profile_token',
+            ]));
+            $membershipData['customer_id']        = $customerId;
+            $membershipData['membership_plan_id'] = $plan->id;
+            $membershipData['is_comped']          = $isComped;
+            $membershipData['billing_amount']     = $plan->price;
+            $membershipData['status']             = 'pending';
+            if (! empty($membershipData['terms_accepted'])) {
+                $membershipData['terms_accepted_at'] = now();
+            }
+            if (! empty($membershipData['recurring_billing_authorized'])) {
+                $membershipData['recurring_billing_authorized_at'] = now();
+            }
+            return Membership::create($membershipData);
+        });
 
-        $membership = Membership::create($membershipData);
+        // Settle payment per the chosen method. The card charge happens OUTSIDE any
+        // DB transaction so a slow gateway call never holds locks open.
+        if ($paymentType === 'charge' && $chargeAmount > 0 && ! $isComped) {
+            if (empty($data['opaque_data']['dataDescriptor']) || empty($data['opaque_data']['dataValue'])) {
+                $membership->delete();
+                return response()->json(['success' => false, 'message' => 'Payment information is required to charge a card.'], 422);
+            }
+
+            $account = $this->resolveAccountForMembership($membership);
+            if (! $account) {
+                $membership->delete();
+                return response()->json(['success' => false, 'message' => 'Payment gateway not configured for this location.'], 503);
+            }
+
+            $result = $this->processAuthorizeNetCharge(
+                $account, $chargeAmount, $data['opaque_data'], $customer,
+                'MEM-' . $membership->id, $membership->id, "Membership: {$plan->name}"
+            );
+
+            if (! $result['success']) {
+                // The card was declined. Drop the pending membership and surface the
+                // gateway message to staff. We deliberately don't record a failed
+                // payment here (it would email the customer a dunning notice for a
+                // membership that never existed).
+                $membership->delete();
+                return response()->json(['success' => false, 'message' => $result['error']], 402);
+            }
+
+            $this->service->recordPayment($membership, [
+                'amount'         => $chargeAmount,
+                'status'         => 'succeeded',
+                'transaction_id' => $result['transaction_id'],
+                'description'    => "In-person charge: {$plan->name}",
+            ]);
+            if (empty($membership->payment_method_label)) {
+                $membership->payment_method_label = $data['payment_method_label'] ?? 'Card (in person)';
+                $membership->save();
+            }
+        } elseif ($paymentType === 'external' && $chargeAmount > 0 && ! $isComped) {
+            // Cash / external terminal — record the payment without touching the gateway.
+            $this->service->recordPayment($membership, [
+                'amount'      => $chargeAmount,
+                'status'      => 'succeeded',
+                'description' => 'External/cash payment recorded by staff',
+            ]);
+        }
+
         $this->service->activate($membership, ['note' => 'Created by staff']);
 
         return response()->json(['success' => true, 'data' => $membership->fresh()->load('plan', 'customer')], 201);
+    }
+
+    private function resolveOrCreateCustomer(array $data): Customer
+    {
+        if (! empty($data['customer_id'])) {
+            return Customer::findOrFail($data['customer_id']);
+        }
+
+        $existing = Customer::where('email', $data['email'])->first();
+        if ($existing) {
+            return $existing;
+        }
+
+        return Customer::create([
+            'first_name' => $data['first_name'],
+            'last_name'  => $data['last_name'],
+            'email'      => $data['email'],
+            'phone'      => $data['phone'] ?? null,
+            'password'   => Hash::make(Str::random(32)),
+            'status'     => 'active',
+        ]);
     }
 
     public function purchase(Request $request): JsonResponse
@@ -252,105 +422,50 @@ class MembershipController extends Controller
             return response()->json(['success' => false, 'message' => 'Payment gateway not configured for this location.'], 503);
         }
 
-        try {
-            $merchantAuthentication = new AnetAPI\MerchantAuthenticationType();
-            $merchantAuthentication->setName(trim($account->api_login_id));
-            $merchantAuthentication->setTransactionKey(trim($account->transaction_key));
-            $environment = $account->isProduction() ? ANetEnvironment::PRODUCTION : ANetEnvironment::SANDBOX;
+        $result = $this->processAuthorizeNetCharge(
+            $account, (float) $plan->price, $data['opaque_data'], $customer,
+            'MEM-' . $membership->id, $membership->id, "Membership: {$plan->name}"
+        );
 
-            $opaqueData = new AnetAPI\OpaqueDataType();
-            $opaqueData->setDataDescriptor($data['opaque_data']['dataDescriptor']);
-            $opaqueData->setDataValue($data['opaque_data']['dataValue']);
-
-            $paymentType = new AnetAPI\PaymentType();
-            $paymentType->setOpaqueData($opaqueData);
-
-            $billTo = new AnetAPI\CustomerAddressType();
-            $billTo->setFirstName(substr($customer->first_name ?? '', 0, 50));
-            $billTo->setLastName(substr($customer->last_name ?? '', 0, 50));
-            if (!empty($customer->email))  $billTo->setEmail(substr($customer->email, 0, 255));
-            if (!empty($customer->phone))  $billTo->setPhoneNumber(substr($customer->phone, 0, 25));
-
-            $order = new AnetAPI\OrderType();
-            $order->setInvoiceNumber(substr('MEM-' . $membership->id, 0, 20));
-            $order->setDescription(substr("Membership: {$plan->name}", 0, 255));
-
-            $transactionRequest = new AnetAPI\TransactionRequestType();
-            $transactionRequest->setTransactionType('authCaptureTransaction');
-            $transactionRequest->setAmount($plan->price);
-            $transactionRequest->setPayment($paymentType);
-            $transactionRequest->setBillTo($billTo);
-            $transactionRequest->setOrder($order);
-
-            $apiRequest = new AnetAPI\CreateTransactionRequest();
-            $apiRequest->setMerchantAuthentication($merchantAuthentication);
-            $apiRequest->setRefId('MEM' . $membership->id);
-            $apiRequest->setTransactionRequest($transactionRequest);
-
-            $controller = new AnetController\CreateTransactionController($apiRequest);
-            $response   = $controller->executeWithApiResponse($environment);
-
-            if ($response && $response->getMessages()->getResultCode() === 'Ok') {
-                $tresponse = $response->getTransactionResponse();
-                if ($tresponse && $tresponse->getMessages()) {
-                    $transactionId = $tresponse->getTransId();
-
-                    Log::info('Membership charged via Authorize.Net', [
-                        'membership_id'  => $membership->id,
-                        'transaction_id' => $transactionId,
-                        'amount'         => $plan->price,
-                    ]);
-
-                    $this->service->recordPayment($membership, [
-                        'amount'         => $plan->price,
-                        'status'         => 'succeeded',
-                        'transaction_id' => $transactionId,
-                        'description'    => "Initial purchase: {$plan->name}",
-                    ]);
-
-                    $this->service->activate($membership);
-
-                    return response()->json([
-                        'success' => true,
-                        'data'    => $membership->fresh()->load('plan'),
-                    ], 201);
-                }
-            }
-
-            $errorMessage = 'Payment declined';
-            if ($response) {
-                $tresponse = $response->getTransactionResponse();
-                if ($tresponse && $tresponse->getErrors()) {
-                    $errorMessage = $tresponse->getErrors()[0]->getErrorText();
-                } elseif ($response->getMessages()) {
-                    $errorMessage = $response->getMessages()->getMessage()[0]->getText();
-                }
-            }
-
-            Log::warning('Membership charge failed', [
-                'membership_id' => $membership->id,
-                'error'         => $errorMessage,
-            ]);
-
+        if (! $result['success']) {
             $this->service->recordPayment($membership, [
                 'amount'         => $plan->price,
                 'status'         => 'failed',
                 'description'    => "Purchase failed: {$plan->name}",
-                'failure_reason' => $errorMessage,
+                'failure_reason' => $result['error'],
             ]);
-
             $membership->delete();
+            return response()->json(['success' => false, 'message' => $result['error']], 402);
+        }
 
-            return response()->json(['success' => false, 'message' => $errorMessage], 402);
+        // Payment captured. From this point the membership is paid for and must NOT
+        // be deleted even if recording the payment or activation hiccups (task 2).
+        Log::info('Membership charged via Authorize.Net', [
+            'membership_id'  => $membership->id,
+            'transaction_id' => $result['transaction_id'],
+            'amount'         => $plan->price,
+        ]);
 
-        } catch (\Exception $e) {
-            Log::error('Membership purchase exception', [
+        $this->service->recordPayment($membership, [
+            'amount'         => $plan->price,
+            'status'         => 'succeeded',
+            'transaction_id' => $result['transaction_id'],
+            'description'    => "Initial purchase: {$plan->name}",
+        ]);
+
+        try {
+            $this->service->activate($membership);
+        } catch (\Throwable $e) {
+            Log::error('Membership activation failed after successful charge', [
                 'membership_id' => $membership->id,
                 'error'         => $e->getMessage(),
             ]);
-            $membership->delete();
-            return response()->json(['success' => false, 'message' => 'Payment processing error.'], 500);
         }
+
+        return response()->json([
+            'success' => true,
+            'data'    => $membership->fresh()->load('plan'),
+        ], 201);
     }
 
     public function myMembership(): JsonResponse
@@ -419,6 +534,34 @@ class MembershipController extends Controller
         }
 
         return response()->json(['success' => true, 'data' => $data]);
+    }
+
+    /**
+     * Return every membership belonging to the authenticated customer (task 9).
+     * Supports customers who hold more than one membership at once. The legacy
+     * myMembership() endpoint still returns the single most recent one.
+     */
+    public function myMemberships(): JsonResponse
+    {
+        $customer = $this->resolveCustomer();
+        abort_unless($customer, 401);
+
+        $memberships = Membership::with([
+            'plan:id,name,billing_cycle,price,location_access_mode,requires_photo,season_end_date',
+            'plan.location:id,name',
+            'homeLocation:id,name',
+        ])
+        ->where('customer_id', $customer->id)
+        ->latest()
+        ->get()
+        ->map(function (Membership $membership) {
+            $data = $membership->toArray();
+            $data['valid_locations'] = $this->resolveValidLocations($membership->plan, $membership);
+            return $data;
+        })
+        ->values();
+
+        return response()->json(['success' => true, 'data' => $memberships]);
     }
 
     public function quote(Request $request): JsonResponse
@@ -507,6 +650,51 @@ class MembershipController extends Controller
         }
 
         return response()->json(['success' => true, 'data' => $membership->fresh()]);
+    }
+
+    /**
+     * Manually extend a membership term (task 4). Staff can push the term end past
+     * the plan's season end date or revive an expired/past-due membership.
+     */
+    public function extend(Request $request, Membership $membership): JsonResponse
+    {
+        $authUser = $this->resolveAuthUser($request);
+        abort_unless($authUser && in_array($authUser->role, ['company_admin', 'location_manager']), 403);
+
+        $data = $request->validate([
+            'new_term_end' => 'required|date',
+            'note'         => 'nullable|string|max:1000',
+        ]);
+
+        $newTermEnd = Carbon::parse($data['new_term_end'])->endOfDay();
+        $membership = $this->service->extend($membership, $newTermEnd, $authUser->id, $data['note'] ?? null);
+
+        return response()->json(['success' => true, 'data' => $membership->load('plan', 'customer')]);
+    }
+
+    /**
+     * Permanently delete a membership (task 6). Company admins only, and only after
+     * the membership has been canceled.
+     */
+    public function destroy(Request $request, Membership $membership): JsonResponse
+    {
+        $authUser = $this->resolveAuthUser($request);
+        abort_unless($authUser && $authUser->role === 'company_admin', 403);
+
+        if ($membership->status !== 'canceled') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only canceled memberships can be deleted. Cancel the membership first.',
+            ], 422);
+        }
+
+        $this->service->log($membership, 'deleted', [
+            'status' => $membership->status,
+        ], null, 'Deleted by ' . ($authUser->name ?? 'admin'));
+
+        $membership->delete();
+
+        return response()->json(['success' => true, 'message' => 'Membership deleted.']);
     }
 
     public function changePlan(Request $request, Membership $membership): JsonResponse

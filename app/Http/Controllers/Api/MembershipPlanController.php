@@ -228,6 +228,8 @@ class MembershipPlanController extends Controller
             'billing_cycle'                 => ['required', Rule::in(['monthly','quarterly','annual','one_time','custom'])],
             'custom_billing_days'           => 'nullable|integer|min:1',
             'term_length_months'            => 'nullable|integer|min:1',
+            'season_start_date'             => 'nullable|date',
+            'season_end_date'               => 'nullable|date|after_or_equal:season_start_date',
             'trial_days'                    => 'nullable|integer|min:0',
             'usage_type'                    => ['required', Rule::in(['limited','unlimited','limited_visits','punch_card'])],
             'uses_per_term'                 => 'nullable|integer|min:0',

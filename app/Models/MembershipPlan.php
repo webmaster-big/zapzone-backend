@@ -17,6 +17,7 @@ class MembershipPlan extends Model
     protected $fillable = [
         'company_id', 'location_id', 'billing_account_id', 'name', 'slug', 'description', 'benefits',
         'tier', 'inherits_plan_id', 'price', 'billing_cycle', 'custom_billing_days', 'term_length_months',
+        'season_start_date', 'season_end_date',
         'trial_days',
         'usage_type', 'uses_per_term', 'visits_per_term', 'services_per_term',
         'punch_card_total',
@@ -35,6 +36,8 @@ class MembershipPlan extends Model
         'benefits' => 'array',
         'price' => 'decimal:2',
         'discount_percent' => 'decimal:2',
+        'season_start_date' => 'date',
+        'season_end_date' => 'date',
         'unlimited_uses_per_term' => 'boolean',
         'unlimited_visits_per_term' => 'boolean',
         'member_only_booking' => 'boolean',

@@ -26,7 +26,7 @@ class MembershipService
     {
         Log::debug('[Membership] activate', ['membership_id' => $membership->id, 'customer_id' => $membership->customer_id]);
 
-        return DB::transaction(function () use ($membership, $context) {
+        $activated = DB::transaction(function () use ($membership, $context) {
             $plan = $membership->plan()->firstOrFail();
 
             $now = now();
@@ -34,7 +34,9 @@ class MembershipService
             $membership->started_at          = $membership->started_at ?? $now;
             $membership->current_term_start  = $now;
             $membership->current_term_end    = $this->calcTermEnd($now, $plan);
-            $membership->next_billing_at     = $plan->price > 0 && ! $membership->is_comped && $plan->billing_cycle !== 'one_time'
+            // Fixed-season plans don't auto-renew, so there is no next billing date.
+            $membership->next_billing_at     = $plan->price > 0 && ! $membership->is_comped
+                && $plan->billing_cycle !== 'one_time' && ! $plan->season_end_date
                 ? $membership->current_term_end
                 : null;
             $membership->grace_period_ends_at = null;
@@ -46,16 +48,29 @@ class MembershipService
             $membership->save();
 
             $this->log($membership, 'activated', null, $membership->fresh()->toArray(), $context['note'] ?? null);
-            $this->notify($membership->customer_id, 'Membership activated',
-                "Your {$plan->name} membership is now active.");
-            $this->sendMail($membership, fn ($m) => new MembershipActivated($m), 'MembershipActivated');
 
             return $membership->fresh();
         });
+
+        // Side effects run AFTER the transaction commits so a slow or failing email
+        // can never roll back activation, hold DB locks open, or surface a 500 to the
+        // caller. (Fixes duplicate-member creation on retry + missing activation email.)
+        $plan = $activated->plan;
+        $this->notify($activated->customer_id, 'Membership activated',
+            "Your {$plan->name} membership is now active.");
+        $this->sendMail($activated, fn ($m) => new MembershipActivated($m), 'MembershipActivated');
+
+        return $activated;
     }
 
     public function calcTermEnd(Carbon $from, MembershipPlan $plan): Carbon
     {
+        // Fixed-season plans (e.g. a season pass) expire for everyone on the plan's
+        // season end date, regardless of when the member joined.
+        if ($plan->season_end_date) {
+            return Carbon::parse($plan->season_end_date)->endOfDay();
+        }
+
         return match ($plan->billing_cycle) {
             'monthly'   => $from->copy()->addMonth(),
             'quarterly' => $from->copy()->addMonths(3),
@@ -78,6 +93,46 @@ class MembershipService
         $membership->save();
 
         $this->log($membership, 'term_reset');
+    }
+
+    /**
+     * Manually extend a membership's term end date. Staff may extend beyond the
+     * plan's fixed season end date or past an expired / past-due term, which
+     * reactivates a lapsed membership.
+     */
+    public function extend(Membership $membership, Carbon $newTermEnd, ?int $staffUserId = null, ?string $note = null): Membership
+    {
+        Log::debug('[Membership] extend', [
+            'membership_id' => $membership->id,
+            'new_term_end'  => $newTermEnd->toIso8601String(),
+        ]);
+
+        $before = [
+            'status'           => $membership->status,
+            'current_term_end' => optional($membership->current_term_end)->toIso8601String(),
+        ];
+
+        $membership->current_term_end              = $newTermEnd;
+        $membership->manually_extended_at          = now();
+        $membership->manually_extended_by_user_id  = $staffUserId;
+
+        // Reactivate a lapsed membership when extended to a future date.
+        if (in_array($membership->status, ['expired', 'past_due', 'suspended'], true) && $newTermEnd->isFuture()) {
+            $membership->status               = 'active';
+            $membership->grace_period_ends_at = null;
+        }
+
+        $membership->save();
+
+        $this->log($membership, 'manual_extension', $before, [
+            'current_term_end' => $newTermEnd->toIso8601String(),
+            'status'           => $membership->status,
+        ], $note);
+
+        $this->notify($membership->customer_id, 'Membership extended',
+            'Your membership has been extended to ' . $newTermEnd->toFormattedDateString() . '.');
+
+        return $membership->fresh();
     }
 
     public function eligibility(Membership $membership, ?int $locationId = null): array
@@ -116,13 +171,15 @@ class MembershipService
             }
         }
 
-        if (! $membership->hasPhoto()) {
-            Log::debug('[Membership] eligibility — photo required', ['membership_id' => $membership->id]);
-            return ['eligible' => true, 'reason' => null, 'photo_required' => true];
+        // Hard gate: a plan that requires a member photo cannot be used until the
+        // photo has been captured. Staff must take the photo (or explicitly override).
+        if ($membership->photoRequiredAndMissing()) {
+            Log::debug('[Membership] eligibility — blocked, required photo missing', ['membership_id' => $membership->id]);
+            return ['eligible' => false, 'reason' => 'Member photo required before first use', 'photo_required' => true];
         }
 
         Log::debug('[Membership] eligibility passed', ['membership_id' => $membership->id]);
-        return ['eligible' => true, 'reason' => null, 'photo_required' => false];
+        return ['eligible' => true, 'reason' => null, 'photo_required' => ! $membership->hasPhoto()];
     }
 
     public function locationAllowed(Membership $membership, int $locationId): bool

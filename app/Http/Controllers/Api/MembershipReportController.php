@@ -60,7 +60,13 @@ class MembershipReportController extends Controller
             ->whereBetween('visited_at', [$from, $to])
             ->groupBy('location_id')
             ->with('location:id,name')
-            ->get();
+            ->get()
+            ->map(fn ($row) => [
+                'location_id'   => $row->location_id,
+                'location_name' => $row->location?->name ?? ($row->location_id ? "Location #{$row->location_id}" : 'Unknown'),
+                'visits'        => (int) $row->visits,
+            ])
+            ->values();
 
         $topPlans = MembershipPlan::withCount(['memberships as active_count' => fn($q) => $q->where('status', 'active')])
             ->when($companyId, fn($q) => $q->where('company_id', $companyId))

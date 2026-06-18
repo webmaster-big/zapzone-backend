@@ -28,6 +28,21 @@ class ResetMembershipUsage extends Command
                 }
             });
 
+        // Expire non-renewing memberships (e.g. season passes) once their term ends.
+        // Manually-extended members have a future current_term_end and are skipped here.
+        $expired = 0;
+        Membership::with('plan')
+            ->where('status', 'active')
+            ->whereNotNull('current_term_end')
+            ->where('current_term_end', '<=', $now)
+            ->chunkById(100, function ($chunk) use ($service, &$expired) {
+                foreach ($chunk as $m) {
+                    if ($m->plan?->renewable) continue;
+                    $service->changeStatus($m, 'expired', 'Auto: term ended');
+                    $expired++;
+                }
+            });
+
         $suspended = 0;
         Membership::where('status', 'past_due')
             ->whereNotNull('grace_period_ends_at')
@@ -50,7 +65,7 @@ class ResetMembershipUsage extends Command
                 }
             });
 
-        $this->info("Term roll-over: {$rolled}, Suspended: {$suspended}, Canceled: {$canceled}");
+        $this->info("Term roll-over: {$rolled}, Expired: {$expired}, Suspended: {$suspended}, Canceled: {$canceled}");
         return self::SUCCESS;
     }
 }
