@@ -49,9 +49,9 @@ use App\Http\Controllers\Api\UserController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
-Route::post('login', [ApiAuthController::class, 'login']);
-Route::post('customer-login', [ApiAuthController::class, 'customerLogin']);
-Route::post('customer-register', [ApiAuthController::class, 'customerRegister']);
+Route::post('login', [ApiAuthController::class, 'login']); // include
+Route::post('customer-login', [ApiAuthController::class, 'customerLogin']); // include
+Route::post('customer-register', [ApiAuthController::class, 'customerRegister']); // include
 
 Route::middleware('throttle:120,1')->group(function () {
     Route::post('analytics/track',       [PageAnalyticsController::class, 'track']);
@@ -59,7 +59,7 @@ Route::middleware('throttle:120,1')->group(function () {
     Route::post('analytics/duration',    [PageAnalyticsController::class, 'patchDuration']);
 });
 
-Route::get('authorize-net/public-key/{locationId}', [AuthorizeNetAccountController::class, 'getPublicKey']);
+Route::get('authorize-net/public-key/{locationId}', [AuthorizeNetAccountController::class, 'getPublicKey']); // include
 Route::get('authorize-net/accounts/all', [AuthorizeNetAccountController::class, 'allAccounts']);
 Route::post('authorize-net/test-connection', [AuthorizeNetAccountController::class, 'testConnection'])->middleware('auth:sanctum');
 Route::post('authorize-net/test-connection/{locationId}', [AuthorizeNetAccountController::class, 'testConnectionForLocation'])->middleware('auth:sanctum');
@@ -138,32 +138,32 @@ Route::get('authorize-net/debug-test/{locationId}', function ($locationId) {
     }
 });
 
-Route::get('/packages/grouped-by-name', [PackageController::class, 'packagesGroupedByName']);
-Route::get('/packages/{id}', [PackageController::class, 'show']);
-Route::get('attractions/grouped', [AttractionController::class, 'attractionsGroupedByName']);
+Route::get('/packages/grouped-by-name', [PackageController::class, 'packagesGroupedByName']); // include
+Route::get('/packages/{id}', [PackageController::class, 'show']); // include
+Route::get('attractions/grouped', [AttractionController::class, 'attractionsGroupedByName']);  // include
 Route::get('attractions/popular', [AttractionController::class, 'getPopular']);
 Route::get('attractions/location/{locationId}', [AttractionController::class, 'getByLocation']);
-Route::get('attractions/{id}', [AttractionController::class, 'show']);
+Route::get('attractions/{id}', [AttractionController::class, 'show']); // include
 Route::get('packages/location/{locationId}', [PackageController::class, 'getByLocation']);
 
-Route::get('membership-plans/public', [MembershipPlanController::class, 'publicIndex']);
+Route::get('membership-plans/public', [MembershipPlanController::class, 'publicIndex']); // include
 
-Route::get('customers/search', [CustomerController::class, 'search']);
+Route::get('customers/search', [CustomerController::class, 'search']); // include
 
-Route::post('customers', [CustomerController::class, 'store']);
+Route::post('customers', [CustomerController::class, 'store']); // include
 
-Route::get('customers/bookings', [BookingController::class, 'customerBookings']);
+Route::get('customers/bookings', [BookingController::class, 'customerBookings']); //include
 
-Route::post('payments/charge', [PaymentController::class, 'charge']);
+Route::post('payments/charge', [PaymentController::class, 'charge']); // include
 
-Route::post('bookings', [BookingController::class, 'store']);
-Route::post('bookings/{booking}/qrcode', [BookingController::class, 'storeQrCode']);
+Route::post('bookings', [BookingController::class, 'store']); // include
+Route::post('bookings/{booking}/qrcode', [BookingController::class, 'storeQrCode']); // include
 Route::delete('bookings/{booking}', [BookingController::class, 'destroy']);
 Route::delete('bookings/{id}/force-delete', [BookingController::class, 'publicForceDelete']);
 
-Route::post('attraction-purchases', [AttractionPurchaseController::class, 'store']);
-Route::post('attraction-purchases/{attractionPurchase}/qrcode', [AttractionPurchaseController::class, 'storeQrCode']);
-Route::get('attraction-purchases/customer', [AttractionPurchaseController::class, 'customerPurchases']);
+Route::post('attraction-purchases', [AttractionPurchaseController::class, 'store']); // include
+Route::post('attraction-purchases/{attractionPurchase}/qrcode', [AttractionPurchaseController::class, 'storeQrCode']); // include
+Route::get('attraction-purchases/customer', [AttractionPurchaseController::class, 'customerPurchases']); // include
 Route::delete('attraction-purchases/{attractionPurchase}', [AttractionPurchaseController::class, 'destroy']);
 Route::delete('attraction-purchases/{id}/force-delete', [AttractionPurchaseController::class, 'publicForceDelete']);
 
@@ -171,55 +171,54 @@ Route::get('locations', [LocationController::class, 'index']);
 
 Route::post('users', [UserController::class, 'store']);
 
-Route::apiResource('package-time-slots', PackageTimeSlotController::class);
-Route::get('package-time-slots/available-slots/{packageId}/{date}', [PackageTimeSlotController::class, 'getAvailableSlotsAuto']);
+Route::apiResource('package-time-slots', PackageTimeSlotController::class); // include
+Route::get('package-time-slots/available-slots/{packageId}/{date}', [PackageTimeSlotController::class, 'getAvailableSlotsAuto']); // include
 
-Route::get('stream/bookings', [StreamController::class, 'bookingNotifications']);
-Route::get('stream/attraction-purchases', [StreamController::class, 'attractionPurchaseNotifications']);
-Route::get('stream/notifications', [StreamController::class, 'combinedNotifications']);
+Route::get('stream/bookings', [StreamController::class, 'bookingNotifications']); 
+Route::get('stream/attraction-purchases', [StreamController::class, 'attractionPurchaseNotifications']); 
+Route::get('stream/notifications', [StreamController::class, 'combinedNotifications']); 
 
-Route::post('shareable-tokens/check', [ShareableTokenController::class, 'check']);
+Route::post('shareable-tokens/check', [ShareableTokenController::class, 'check']); 
 Route::post('shareable-tokens', [ShareableTokenController::class, 'store']);
 
 Route::post('contacts/deactivate', [ContactController::class, 'deactivate']);
 
-Route::get('rsvp/{token}', [RsvpController::class, 'show']);
-Route::post('rsvp/{token}', [RsvpController::class, 'store']);
+Route::get('rsvp/{token}', [RsvpController::class, 'show']); // include
+Route::post('rsvp/{token}', [RsvpController::class, 'store']); // include
 
-Route::get('events/grouped-by-name', [EventController::class, 'eventsGroupedByName']);
+Route::get('events/grouped-by-name', [EventController::class, 'eventsGroupedByName']); // include
 Route::get('events', [EventController::class, 'index']);
-Route::get('events/{event}', [EventController::class, 'show']);
+Route::get('events/{event}', [EventController::class, 'show']); // include
 Route::get('events/location/{locationId}', [EventController::class, 'getByLocation']);
-Route::get('events/{event}/available-dates', [EventController::class, 'getAvailableDates']);
-Route::get('events/{event}/available-time-slots/{date}', [EventController::class, 'getAvailableTimeSlots']);
+Route::get('events/{event}/available-dates', [EventController::class, 'getAvailableDates']); // include
+Route::get('events/{event}/available-time-slots/{date}', [EventController::class, 'getAvailableTimeSlots']); // include
 Route::post('event-purchases', [EventPurchaseController::class, 'store']);
-Route::get('event-purchases/customer', [EventPurchaseController::class, 'customerPurchases']);
+Route::get('event-purchases/customer', [EventPurchaseController::class, 'customerPurchases']); // include
 Route::delete('event-purchases/{eventPurchase}', [EventPurchaseController::class, 'destroy']);
 Route::delete('event-purchases/{id}/force-delete', [EventPurchaseController::class, 'publicForceDelete']);
 
-Route::get('day-offs/location/{locationId}', [DayOffController::class, 'getByLocation']);
+Route::get('day-offs/location/{locationId}', [DayOffController::class, 'getByLocation']); // include
 
-Route::get('special-pricings/for-entity', [SpecialPricingController::class, 'getForEntity']);
-Route::post('special-pricings/check-date', [SpecialPricingController::class, 'checkDate']);
-Route::get('special-pricings/upcoming-dates', [SpecialPricingController::class, 'getUpcomingDates']);
-
-Route::get('fee-supports/for-entity', [FeeSupportController::class, 'getForEntity']);
+Route::get('special-pricings/for-entity', [SpecialPricingController::class, 'getForEntity']); // include
+Route::post('special-pricings/check-date', [SpecialPricingController::class, 'checkDate']); // include
+Route::get('special-pricings/upcoming-dates', [SpecialPricingController::class, 'getUpcomingDates']); // include
+Route::get('fee-supports/for-entity', [FeeSupportController::class, 'getForEntity']); // include
 
 Route::get('google-calendar/callback', [GoogleCalendarController::class, 'handleCallback']);
 
+//ignore
 Route::prefix('mobile')->group(function () {
     Route::get('locations', [MobileAvailabilityController::class, 'getLocations']);
     Route::get('locations/{locationId}/packages', [MobileAvailabilityController::class, 'getPackagesByLocationAndDate']);
     Route::get('packages/{packageId}/availability', [MobileAvailabilityController::class, 'getPackageAvailability']);
 });
 
-
 Route::middleware('auth:sanctum')->group(function () {
     Route::get('/user', function (Request $request) {
         return $request->user();
     });
 
-    Route::post('logout', [ApiAuthController::class, 'logout']);
+    Route::post('logout', [ApiAuthController::class, 'logout']); // include
 
     Route::get('metrics/dashboard/{user}', [MetricsController::class, 'dashboard']);
     Route::get('metrics/attendant', [MetricsController::class, 'attendant']);
