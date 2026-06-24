@@ -105,6 +105,12 @@ class LocationController extends Controller
             return response()->json(['success' => false, 'message' => 'Forbidden'], 403);
         }
 
+        $authUser = $request->user();
+
+        if ($authUser && $authUser->role === 'attendant') {
+            return response()->json(['success' => false, 'message' => 'Forbidden'], 403);
+        }
+
         $validated = $request->validate([
             'company_id' => 'sometimes|exists:companies,id',
             'name' => 'sometimes|string|max:255',
@@ -118,8 +124,35 @@ class LocationController extends Controller
             'is_active' => 'boolean',
         ]);
 
+        $trackFields = ['name', 'address', 'city', 'state', 'zip_code', 'phone', 'email', 'timezone', 'is_active'];
+        $oldValues = array_intersect_key($location->toArray(), array_flip($trackFields));
+
         $location->update($validated);
         $location->load(['company', 'packages']);
+
+        $newValues = array_intersect_key($location->fresh()->toArray(), array_flip($trackFields));
+        $changedFields = array_filter($newValues, fn($v, $k) => ($oldValues[$k] ?? null) != $v, ARRAY_FILTER_USE_BOTH);
+
+        ActivityLog::log(
+            action: 'Location Updated',
+            category: 'configuration',
+            description: "Location '{$location->name}' was updated",
+            userId: auth()->id(),
+            locationId: $location->id,
+            entityType: 'location',
+            entityId: $location->id,
+            metadata: [
+                'updated_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $authUser ? $authUser->first_name . ' ' . $authUser->last_name : null,
+                    'email' => $authUser?->email,
+                ],
+                'updated_at' => now()->toIso8601String(),
+                'changed_fields' => array_keys($changedFields),
+                'previous_values' => array_intersect_key($oldValues, $changedFields),
+                'new_values' => $changedFields,
+            ]
+        );
 
         return response()->json([
             'success' => true,
