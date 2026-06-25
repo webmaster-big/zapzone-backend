@@ -11,6 +11,7 @@ use App\Models\Contact;
 use App\Models\CustomerNotification;
 use App\Models\EventPurchase;
 use App\Models\Event;
+use App\Models\EmailNotification;
 use App\Models\Notification;
 use App\Models\Membership;
 use App\Services\MembershipBenefitService;
@@ -302,12 +303,10 @@ class EventPurchaseController extends Controller
 
             if ($sendEmail && $purchase->status === 'confirmed') {
                 try {
-                    $recipientEmail = $purchase->customer?->email ?? $purchase->guest_email;
-                    if ($recipientEmail) {
-                        $this->sendConfirmationEmail($purchase, $recipientEmail);
-                    }
+                    app(EmailNotificationService::class)
+                        ->triggerEventNotification($purchase, EmailNotification::TRIGGER_EVENT_CONFIRMED);
                 } catch (\Exception $e) {
-                    Log::warning('Failed to send event purchase confirmation email', [
+                    Log::warning('Failed to send event purchase confirmation notification', [
                         'purchase_id' => $purchase->id,
                         'error' => $e->getMessage(),
                     ]);
@@ -419,6 +418,10 @@ class EventPurchaseController extends Controller
             $addOns = $validated['add_ons'] ?? null;
             unset($validated['add_ons']);
 
+            $originalDate = optional($eventPurchase->purchase_date)->format('Y-m-d');
+            $originalTime = $eventPurchase->purchase_time;
+            $originalStatus = $eventPurchase->status;
+
             if (isset($validated['status'])) {
                 switch ($validated['status']) {
                     case 'checked-in':
@@ -434,6 +437,25 @@ class EventPurchaseController extends Controller
             }
 
             $eventPurchase->update($validated);
+
+            $newDate = optional($eventPurchase->fresh()->purchase_date)->format('Y-m-d');
+            $dateChanged = (array_key_exists('purchase_date', $validated) && $newDate !== $originalDate)
+                || (array_key_exists('purchase_time', $validated) && (string) $eventPurchase->purchase_time !== (string) $originalTime);
+            $nowCancelled = ($validated['status'] ?? null) === 'cancelled' && $originalStatus !== 'cancelled';
+
+            try {
+                $service = app(EmailNotificationService::class);
+                if ($nowCancelled) {
+                    $service->triggerEventNotification($eventPurchase, EmailNotification::TRIGGER_EVENT_CANCELLED);
+                } elseif ($dateChanged) {
+                    $service->triggerEventNotification($eventPurchase, EmailNotification::TRIGGER_EVENT_RESCHEDULED);
+                }
+            } catch (\Exception $e) {
+                Log::warning('Failed to send event update notification', [
+                    'purchase_id' => $eventPurchase->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
 
             if ($addOns !== null) {
                 $syncData = [];
@@ -547,10 +569,24 @@ class EventPurchaseController extends Controller
 
     public function cancel(EventPurchase $eventPurchase): JsonResponse
     {
+        $wasCancelled = $eventPurchase->status === 'cancelled';
+
         $eventPurchase->update([
             'status' => 'cancelled',
             'cancelled_at' => now(),
         ]);
+
+        if (!$wasCancelled) {
+            try {
+                app(EmailNotificationService::class)
+                    ->triggerEventNotification($eventPurchase, EmailNotification::TRIGGER_EVENT_CANCELLED);
+            } catch (\Exception $e) {
+                Log::warning('Failed to send event cancellation notification', [
+                    'purchase_id' => $eventPurchase->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
 
         $this->recordConversion(
             'event_purchase_cancelled',
@@ -582,10 +618,25 @@ class EventPurchaseController extends Controller
                 break;
         }
 
+        $originalStatus = $eventPurchase->status;
         $eventPurchase->update($updates);
 
         if ($validated['status'] === 'cancelled') {
             app(MembershipBenefitService::class)->reverseForRedeemable($eventPurchase, 'purchase_cancelled');
+        }
+
+        try {
+            $service = app(EmailNotificationService::class);
+            if ($validated['status'] === 'cancelled' && $originalStatus !== 'cancelled') {
+                $service->triggerEventNotification($eventPurchase, EmailNotification::TRIGGER_EVENT_CANCELLED);
+            } elseif ($validated['status'] === 'confirmed' && $originalStatus !== 'confirmed') {
+                $service->triggerEventNotification($eventPurchase, EmailNotification::TRIGGER_EVENT_CONFIRMED);
+            }
+        } catch (\Exception $e) {
+            Log::warning('Failed to send event status notification', [
+                'purchase_id' => $eventPurchase->id,
+                'error' => $e->getMessage(),
+            ]);
         }
 
         return response()->json($eventPurchase->fresh());

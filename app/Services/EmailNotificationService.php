@@ -43,6 +43,8 @@ class EmailNotificationService
                     $this->sendDefaultBookingNotification($booking, $triggerType);
                 }
             }
+
+            $this->dispatchSms(fn ($sms) => $sms->triggerBookingNotification($booking, $triggerType));
         } catch (\Exception $e) {
             Log::error('Error processing booking notification', [
                 'booking_id' => $booking->id,
@@ -70,6 +72,8 @@ class EmailNotificationService
                     $this->sendDefaultPurchaseNotification($purchase, $triggerType);
                 }
             }
+
+            $this->dispatchSms(fn ($sms) => $sms->triggerPurchaseNotification($purchase, $triggerType));
         } catch (\Exception $e) {
             Log::error('Error processing purchase notification', [
                 'purchase_id' => $purchase->id,
@@ -102,6 +106,8 @@ class EmailNotificationService
             foreach ($notifications as $notification) {
                 $this->sendNotification($notification, $payment, 'payment');
             }
+
+            $this->dispatchSms(fn ($sms) => $sms->triggerPaymentNotification($payment, $triggerType));
         } catch (\Exception $e) {
             Log::error('Error processing payment notification', [
                 'payment_id' => $payment->id,
@@ -111,6 +117,73 @@ class EmailNotificationService
         }
     }
 
+
+    public function triggerEventNotification(EventPurchase $purchase, string $triggerType): void
+    {
+        try {
+            $purchase->load(['customer', 'event', 'location.company', 'addOns']);
+
+            $this->ensureDefaultsSeeded($purchase->location?->company);
+
+            $notifications = EmailNotification::findForEvent($purchase, $triggerType);
+
+            if ($notifications->isNotEmpty()) {
+                foreach ($notifications as $notification) {
+                    $this->sendNotification($notification, $purchase, 'event');
+                }
+            } else {
+                if ($triggerType === EmailNotification::TRIGGER_EVENT_CONFIRMED) {
+                    $this->sendDefaultEventNotification($purchase);
+                }
+            }
+
+            $this->dispatchSms(fn ($sms) => $sms->triggerEventNotification($purchase, $triggerType));
+        } catch (\Exception $e) {
+            Log::error('Error processing event notification', [
+                'event_purchase_id' => $purchase->id,
+                'trigger_type' => $triggerType,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Fire the matching SMS notification for the same trigger. SMS failures are
+     * swallowed so they can never interfere with the email send.
+     */
+    protected function dispatchSms(callable $callback): void
+    {
+        try {
+            $callback(app(SmsNotificationService::class));
+        } catch (\Throwable $e) {
+            Log::warning('SMS dispatch from email notification failed', [
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    protected function sendDefaultEventNotification(EventPurchase $purchase): void
+    {
+        $customerEmail = $purchase->customer?->email ?? $purchase->guest_email;
+
+        if (!$customerEmail) {
+            return;
+        }
+
+        try {
+            $mailable = new \App\Mail\EventPurchaseConfirmation($purchase);
+            $htmlBody = $mailable->render();
+            $subject = 'Event Purchase Confirmation - ' . ($purchase->reference_number ?? '');
+            $variables = $this->buildEventVariables($purchase);
+
+            $this->sendEmail($customerEmail, $subject, $htmlBody, $variables);
+        } catch (\Exception $e) {
+            Log::error('Failed to send default event notification', [
+                'event_purchase_id' => $purchase->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
 
     protected function ensureDefaultsSeeded(?Company $company): void
     {
@@ -346,18 +419,51 @@ class EmailNotificationService
             ->toArray();
     }
 
-    protected function buildVariables($entity, string $type, bool $includeQrCode = true): array
+    public function buildVariables($entity, string $type, bool $includeQrCode = true): array
     {
         switch ($type) {
             case 'booking':
                 return $this->buildBookingVariables($entity, $includeQrCode);
             case 'purchase':
                 return $this->buildPurchaseVariables($entity, $includeQrCode);
+            case 'event':
+                return $this->buildEventVariables($entity);
             case 'payment':
                 return $this->buildPaymentVariables($entity);
             default:
                 return $this->buildCommonVariables();
         }
+    }
+
+    public function buildEventVariables(EventPurchase $purchase): array
+    {
+        $customer = $purchase->customer;
+        $event = $purchase->event;
+        $location = $purchase->location;
+        $company = $location?->company;
+
+        $total = (float) ($purchase->total_amount ?? 0);
+        $paid = (float) ($purchase->amount_paid ?? 0);
+
+        return array_merge($this->buildCommonVariables($location, $company), [
+            'customer_name' => $customer ? trim($customer->first_name . ' ' . $customer->last_name) : ($purchase->guest_name ?? 'Guest'),
+            'customer_first_name' => $customer?->first_name ?? explode(' ', $purchase->guest_name ?? 'Guest')[0],
+            'customer_last_name' => $customer?->last_name ?? '',
+            'customer_email' => $customer?->email ?? $purchase->guest_email ?? '',
+            'customer_phone' => $customer?->phone ?? $purchase->guest_phone ?? '',
+
+            'event_reference' => $purchase->reference_number ?? '',
+            'event_name' => $event?->name ?? '',
+            'event_date' => $purchase->purchase_date?->format('F j, Y') ?? '',
+            'event_time' => $purchase->purchase_time?->format('g:i A') ?? '',
+            'event_quantity' => (string) ($purchase->quantity ?? 1),
+            'event_status' => ucfirst($purchase->status ?? ''),
+            'event_total' => '$' . number_format($total, 2),
+            'event_amount_paid' => '$' . number_format($paid, 2),
+            'event_balance' => '$' . number_format(max($total - $paid, 0), 2),
+            'event_notes' => $purchase->notes ?? '',
+            'event_created_at' => $purchase->created_at?->format('F j, Y g:i A') ?? '',
+        ]);
     }
 
     protected function buildCommonVariables(?Location $location = null, ?Company $company = null): array

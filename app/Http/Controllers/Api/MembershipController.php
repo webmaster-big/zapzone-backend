@@ -149,7 +149,12 @@ class MembershipController extends Controller
                       ->orWhere('sold_at_location_id', $authUser->location_id);
                 });
             } elseif ($authUser->company_id) {
-                $query->whereHas('plan', fn($q) => $q->where('company_id', $authUser->company_id));
+                $companyId = $authUser->company_id;
+                $query->where(function ($q) use ($companyId) {
+                    $q->whereHas('plan', fn($p) => $p->where('company_id', $companyId))
+                      ->orWhereHas('homeLocation', fn($l) => $l->where('company_id', $companyId))
+                      ->orWhereHas('soldAtLocation', fn($l) => $l->where('company_id', $companyId));
+                });
             }
         }
 
@@ -221,8 +226,12 @@ class MembershipController extends Controller
             'customer_id'          => 'nullable|exists:customers,id',
             'first_name'           => 'required_without:customer_id|string|max:100',
             'last_name'            => 'required_without:customer_id|string|max:100',
-            'email'                => 'required_without:customer_id|email|max:255',
+            // Email is optional: walk-in members are often accepted in person with no
+            // email on file. When supplied, a new customer is emailed login credentials.
+            'email'                => 'nullable|email|max:255',
             'phone'                => 'nullable|string|max:30',
+            // The pass holder / authorized user — distinct from the account guardian.
+            'holder_name'          => 'nullable|string|max:150',
             'membership_plan_id'   => 'required|exists:membership_plans,id',
             'home_location_id'     => 'nullable|exists:locations,id',
             'sold_at_location_id'  => 'nullable|exists:locations,id',
@@ -270,7 +279,7 @@ class MembershipController extends Controller
         // Create the membership atomically with any customer creation above.
         $membership = DB::transaction(function () use ($data, $plan, $customerId, $isComped) {
             $membershipData = array_intersect_key($data, array_flip([
-                'home_location_id', 'sold_at_location_id',
+                'home_location_id', 'sold_at_location_id', 'holder_name',
                 'discount_amount', 'recurring_billing_authorized',
                 'terms_accepted', 'payment_method_label', 'payment_profile_token',
             ]));
@@ -346,19 +355,73 @@ class MembershipController extends Controller
             return Customer::findOrFail($data['customer_id']);
         }
 
-        $existing = Customer::where('email', $data['email'])->first();
-        if ($existing) {
-            return $existing;
+        $email = $data['email'] ?? null;
+
+        // De-dupe by email only when one was provided — email-less walk-ins always
+        // create a fresh record (there is nothing to match on).
+        if ($email) {
+            $existing = Customer::where('email', $email)->first();
+            if ($existing) {
+                return $existing;
+            }
         }
 
-        return Customer::create([
+        // A member WITH an email gets a readable temporary password so we can send
+        // them working portal credentials. Email-less walk-ins (who can't log in
+        // anyway) get a random unusable password to keep the column populated.
+        $plainPassword = $email
+            ? Str::upper(Str::random(4)) . random_int(1000, 9999)
+            : Str::random(32);
+
+        $customer = Customer::create([
             'first_name' => $data['first_name'],
             'last_name'  => $data['last_name'],
-            'email'      => $data['email'],
+            'email'      => $email,
             'phone'      => $data['phone'] ?? null,
-            'password'   => Hash::make(Str::random(32)),
+            'password'   => Hash::make($plainPassword),
             'status'     => 'active',
         ]);
+
+        if ($email) {
+            $this->sendCustomerCredentials($customer, $plainPassword);
+        }
+
+        return $customer;
+    }
+
+    /**
+     * Email a newly-created member their portal login credentials. Failures are
+     * swallowed (logged) so a flaky mail transport never blocks creating the member.
+     */
+    private function sendCustomerCredentials(Customer $customer, string $plainPassword): void
+    {
+        try {
+            $actor = Auth::guard('sanctum')->user();
+            $createdByName = $actor instanceof \App\Models\User
+                ? trim($actor->first_name . ' ' . $actor->last_name)
+                : null;
+
+            $mailable = new \App\Mail\CustomerAccountCredentialsMail($customer, $plainPassword, null, $createdByName);
+            $html     = $mailable->render();
+            $subject  = 'Your Zap Zone Account & Membership Login';
+            $fromName = config('gmail.sender_name', 'Zap Zone');
+
+            try {
+                app(\App\Services\GmailApiService::class)->sendEmail($customer->email, $subject, $html, $fromName);
+                Log::info('[CustomerCredentials] Sent via Gmail API', ['customer_id' => $customer->id]);
+            } catch (\Throwable $gmailEx) {
+                Log::warning('[CustomerCredentials] Gmail failed, falling back to SMTP: ' . $gmailEx->getMessage(), [
+                    'customer_id' => $customer->id,
+                ]);
+                \Illuminate\Support\Facades\Mail::html($html, function ($message) use ($customer, $subject, $fromName) {
+                    $message->to($customer->email)
+                        ->subject($subject)
+                        ->from(config('mail.from.address'), $fromName);
+                });
+            }
+        } catch (\Throwable $e) {
+            Log::error('[CustomerCredentials] Send failed: ' . $e->getMessage(), ['customer_id' => $customer->id]);
+        }
     }
 
     public function purchase(Request $request): JsonResponse

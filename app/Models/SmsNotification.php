@@ -7,62 +7,57 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
-class EmailNotification extends Model
+class SmsNotification extends Model
 {
     use HasFactory;
 
-
-    const TRIGGER_BOOKING_CREATED = 'booking_created';
+    // Booking (party) triggers — mirror EmailNotification trigger strings.
     const TRIGGER_BOOKING_CONFIRMED = 'booking_confirmed';
     const TRIGGER_BOOKING_UPDATED = 'booking_updated';
     const TRIGGER_BOOKING_RESCHEDULED = 'booking_rescheduled';
     const TRIGGER_BOOKING_CANCELLED = 'booking_cancelled';
-    const TRIGGER_BOOKING_CHECKED_IN = 'booking_checked_in';
-    const TRIGGER_BOOKING_COMPLETED = 'booking_completed';
-    const TRIGGER_BOOKING_REMINDER = 'booking_reminder'; // Uses send_before_hours
-    const TRIGGER_BOOKING_FOLLOWUP = 'booking_followup'; // Uses send_after_hours
-    const TRIGGER_BOOKING_NO_SHOW = 'booking_no_show';
+    const TRIGGER_BOOKING_REMINDER = 'booking_reminder';
 
-    const TRIGGER_PAYMENT_RECEIVED = 'payment_received';
-    const TRIGGER_PAYMENT_FAILED = 'payment_failed';
-    const TRIGGER_PAYMENT_REFUNDED = 'payment_refunded';
-    const TRIGGER_PAYMENT_PARTIAL = 'payment_partial';
-    const TRIGGER_PAYMENT_PENDING = 'payment_pending';
-
-    const TRIGGER_PURCHASE_CREATED = 'purchase_created';
+    // Attraction purchase triggers.
     const TRIGGER_PURCHASE_CONFIRMED = 'purchase_confirmed';
+    const TRIGGER_PURCHASE_RESCHEDULED = 'purchase_rescheduled';
     const TRIGGER_PURCHASE_CANCELLED = 'purchase_cancelled';
-    const TRIGGER_PURCHASE_COMPLETED = 'purchase_completed';
-    const TRIGGER_PURCHASE_CHECKED_IN = 'purchase_checked_in';
-    const TRIGGER_PURCHASE_REFUNDED = 'purchase_refunded';
     const TRIGGER_PURCHASE_REMINDER = 'purchase_reminder';
-    const TRIGGER_PURCHASE_FOLLOWUP = 'purchase_followup';
 
+    // Event purchase triggers.
     const TRIGGER_EVENT_CONFIRMED = 'event_confirmed';
     const TRIGGER_EVENT_RESCHEDULED = 'event_rescheduled';
     const TRIGGER_EVENT_CANCELLED = 'event_cancelled';
     const TRIGGER_EVENT_REMINDER = 'event_reminder';
 
+    // Payment triggers.
+    const TRIGGER_PAYMENT_RECEIVED = 'payment_received';
+    const TRIGGER_PAYMENT_REFUNDED = 'payment_refunded';
+
+    // Invitation (party guest) trigger — sent per-guest by InvitationService.
     const TRIGGER_INVITATION_SENT = 'invitation_sent';
-    const TRIGGER_INVITATION_RSVP_RECEIVED = 'invitation_rsvp_received';
 
+    // Default keys (one row per template). Segment x lifecycle.
     const DEFAULT_BOOKING_CONFIRMATION_CUSTOMER = 'booking_confirmation_customer';
-    const DEFAULT_BOOKING_CONFIRMATION_STAFF = 'booking_confirmation_staff';
-    const DEFAULT_BOOKING_CANCELLATION_CUSTOMER = 'booking_cancellation_customer';
     const DEFAULT_BOOKING_REMINDER_CUSTOMER = 'booking_reminder_customer';
-    const DEFAULT_BOOKING_UPDATED_CUSTOMER = 'booking_updated_customer';
-    const DEFAULT_PURCHASE_CONFIRMATION_CUSTOMER = 'purchase_confirmation_customer';
-    const DEFAULT_PURCHASE_CANCELLATION_CUSTOMER = 'purchase_cancellation_customer';
-    const DEFAULT_PAYMENT_RECEIVED_CUSTOMER = 'payment_received_customer';
-    const DEFAULT_PAYMENT_REFUNDED_CUSTOMER = 'payment_refunded_customer';
-
     const DEFAULT_BOOKING_RESCHEDULE_CUSTOMER = 'booking_reschedule_customer';
+    const DEFAULT_BOOKING_CANCELLATION_CUSTOMER = 'booking_cancellation_customer';
+    const DEFAULT_BOOKING_CONFIRMATION_STAFF = 'booking_confirmation_staff';
+
+    const DEFAULT_PURCHASE_CONFIRMATION_CUSTOMER = 'purchase_confirmation_customer';
     const DEFAULT_PURCHASE_REMINDER_CUSTOMER = 'purchase_reminder_customer';
     const DEFAULT_PURCHASE_RESCHEDULE_CUSTOMER = 'purchase_reschedule_customer';
+    const DEFAULT_PURCHASE_CANCELLATION_CUSTOMER = 'purchase_cancellation_customer';
+
     const DEFAULT_EVENT_CONFIRMATION_CUSTOMER = 'event_confirmation_customer';
     const DEFAULT_EVENT_REMINDER_CUSTOMER = 'event_reminder_customer';
     const DEFAULT_EVENT_RESCHEDULE_CUSTOMER = 'event_reschedule_customer';
     const DEFAULT_EVENT_CANCELLATION_CUSTOMER = 'event_cancellation_customer';
+
+    const DEFAULT_PAYMENT_RECEIVED_CUSTOMER = 'payment_received_customer';
+    const DEFAULT_PAYMENT_REFUNDED_CUSTOMER = 'payment_refunded_customer';
+
+    const DEFAULT_INVITATION_GUEST = 'invitation_guest';
 
     const ENTITY_PACKAGE = 'package';
     const ENTITY_ATTRACTION = 'attraction';
@@ -83,14 +78,10 @@ class EmailNotification extends Model
         'trigger_type',
         'entity_type',
         'entity_ids',
-        'email_template_id',
-        'subject',
-        'default_subject',
         'body',
         'default_body',
         'recipient_types',
-        'custom_emails',
-        'include_qr_code',
+        'custom_phones',
         'is_active',
         'is_default',
         'default_key',
@@ -101,8 +92,7 @@ class EmailNotification extends Model
     protected $casts = [
         'entity_ids' => 'array',
         'recipient_types' => 'array',
-        'custom_emails' => 'array',
-        'include_qr_code' => 'boolean',
+        'custom_phones' => 'array',
         'is_active' => 'boolean',
         'is_default' => 'boolean',
         'send_before_hours' => 'integer',
@@ -119,14 +109,9 @@ class EmailNotification extends Model
         return $this->belongsTo(Location::class);
     }
 
-    public function template(): BelongsTo
-    {
-        return $this->belongsTo(EmailTemplate::class, 'email_template_id');
-    }
-
     public function logs(): HasMany
     {
-        return $this->hasMany(EmailNotificationLog::class);
+        return $this->hasMany(SmsNotificationLog::class);
     }
 
     public function scopeActive($query)
@@ -139,11 +124,6 @@ class EmailNotification extends Model
         return $query->where('trigger_type', $triggerType);
     }
 
-    public function scopeForEntityType($query, string $entityType)
-    {
-        return $query->where('entity_type', $entityType);
-    }
-
     public function scopeDefaults($query)
     {
         return $query->where('is_default', true);
@@ -152,11 +132,6 @@ class EmailNotification extends Model
     public function scopeCustom($query)
     {
         return $query->where('is_default', false);
-    }
-
-    public function scopeForDefaultKey($query, string $defaultKey)
-    {
-        return $query->where('default_key', $defaultKey);
     }
 
     public function appliesToEntity(?int $entityId): bool
@@ -174,27 +149,10 @@ class EmailNotification extends Model
         return in_array($entityId, $entityIds);
     }
 
-    public function getEffectiveSubject(): string
-    {
-        if ($this->subject !== null) {
-            return $this->subject;
-        }
-
-        if ($this->template) {
-            return $this->template->subject;
-        }
-
-        return $this->default_subject ?? 'Notification';
-    }
-
     public function getEffectiveBody(): string
     {
         if ($this->body !== null) {
             return $this->body;
-        }
-
-        if ($this->template) {
-            return $this->template->body;
         }
 
         return $this->default_body ?? '';
@@ -209,36 +167,18 @@ class EmailNotification extends Model
         return $this->body !== null && $this->body !== $this->default_body;
     }
 
-    public function isSubjectCustomized(): bool
-    {
-        if (!$this->is_default) {
-            return false;
-        }
-
-        return $this->subject !== null && $this->subject !== $this->default_subject;
-    }
-
     public function resetToDefault(): void
     {
-        $this->update([
-            'subject' => null,
-            'body' => null,
-        ]);
+        $this->update(['body' => null]);
     }
 
-    public static function getDefaultKeys(): array
+    public function isReminderType(): bool
     {
-        return [
-            self::DEFAULT_BOOKING_CONFIRMATION_CUSTOMER => 'Booking Confirmation (Customer)',
-            self::DEFAULT_BOOKING_CONFIRMATION_STAFF => 'Booking Confirmation (Staff)',
-            self::DEFAULT_BOOKING_CANCELLATION_CUSTOMER => 'Booking Cancellation (Customer)',
-            self::DEFAULT_BOOKING_REMINDER_CUSTOMER => 'Booking Reminder (Customer)',
-            self::DEFAULT_BOOKING_UPDATED_CUSTOMER => 'Booking Updated (Customer)',
-            self::DEFAULT_PURCHASE_CONFIRMATION_CUSTOMER => 'Purchase Confirmation (Customer)',
-            self::DEFAULT_PURCHASE_CANCELLATION_CUSTOMER => 'Purchase Cancellation (Customer)',
-            self::DEFAULT_PAYMENT_RECEIVED_CUSTOMER => 'Payment Received (Customer)',
-            self::DEFAULT_PAYMENT_REFUNDED_CUSTOMER => 'Payment Refunded (Customer)',
-        ];
+        return in_array($this->trigger_type, [
+            self::TRIGGER_BOOKING_REMINDER,
+            self::TRIGGER_PURCHASE_REMINDER,
+            self::TRIGGER_EVENT_REMINDER,
+        ]);
     }
 
     public static function findDefault(int $companyId, string $defaultKey): ?self
@@ -249,7 +189,7 @@ class EmailNotification extends Model
             ->first();
     }
 
-    public static function findForBooking(Booking $booking, string $triggerType = self::TRIGGER_BOOKING_CREATED): \Illuminate\Support\Collection
+    public static function findForBooking(Booking $booking, string $triggerType): \Illuminate\Support\Collection
     {
         $companyId = $booking->location?->company_id;
 
@@ -269,12 +209,10 @@ class EmailNotification extends Model
                     ->orWhere('location_id', $booking->location_id);
             })
             ->get()
-            ->filter(function ($notification) use ($booking) {
-                return $notification->appliesToEntity($booking->package_id);
-            });
+            ->filter(fn ($n) => $n->appliesToEntity($booking->package_id));
     }
 
-    public static function findForPurchase(AttractionPurchase $purchase, string $triggerType = self::TRIGGER_PURCHASE_CREATED): \Illuminate\Support\Collection
+    public static function findForPurchase(AttractionPurchase $purchase, string $triggerType): \Illuminate\Support\Collection
     {
         $companyId = $purchase->attraction?->location?->company_id;
 
@@ -294,9 +232,7 @@ class EmailNotification extends Model
                     ->orWhere('location_id', $purchase->attraction->location_id ?? null);
             })
             ->get()
-            ->filter(function ($notification) use ($purchase) {
-                return $notification->appliesToEntity($purchase->attraction_id);
-            });
+            ->filter(fn ($n) => $n->appliesToEntity($purchase->attraction_id));
     }
 
     public static function findForEvent(EventPurchase $purchase, string $triggerType): \Illuminate\Support\Collection
@@ -354,37 +290,43 @@ class EmailNotification extends Model
             ->get();
     }
 
+    public static function getDefaultKeys(): array
+    {
+        return [
+            self::DEFAULT_BOOKING_CONFIRMATION_CUSTOMER => 'Party Booking Confirmation (Customer)',
+            self::DEFAULT_BOOKING_REMINDER_CUSTOMER => 'Party Booking Reminder (Customer)',
+            self::DEFAULT_BOOKING_RESCHEDULE_CUSTOMER => 'Party Booking Reschedule (Customer)',
+            self::DEFAULT_BOOKING_CANCELLATION_CUSTOMER => 'Party Booking Cancellation (Customer)',
+            self::DEFAULT_BOOKING_CONFIRMATION_STAFF => 'Party Booking Alert (Staff)',
+            self::DEFAULT_PURCHASE_CONFIRMATION_CUSTOMER => 'Attraction Confirmation (Customer)',
+            self::DEFAULT_PURCHASE_REMINDER_CUSTOMER => 'Attraction Reminder (Customer)',
+            self::DEFAULT_PURCHASE_RESCHEDULE_CUSTOMER => 'Attraction Reschedule (Customer)',
+            self::DEFAULT_PURCHASE_CANCELLATION_CUSTOMER => 'Attraction Cancellation (Customer)',
+            self::DEFAULT_EVENT_CONFIRMATION_CUSTOMER => 'Event Confirmation (Customer)',
+            self::DEFAULT_EVENT_REMINDER_CUSTOMER => 'Event Reminder (Customer)',
+            self::DEFAULT_EVENT_RESCHEDULE_CUSTOMER => 'Event Reschedule (Customer)',
+            self::DEFAULT_EVENT_CANCELLATION_CUSTOMER => 'Event Cancellation (Customer)',
+            self::DEFAULT_PAYMENT_RECEIVED_CUSTOMER => 'Payment Received (Customer)',
+            self::DEFAULT_PAYMENT_REFUNDED_CUSTOMER => 'Payment Refunded (Customer)',
+            self::DEFAULT_INVITATION_GUEST => 'Party Invitation (Guest)',
+        ];
+    }
+
     public static function getTriggerTypes(): array
     {
         return [
             'booking' => [
-                self::TRIGGER_BOOKING_CREATED => 'Booking Created',
-                self::TRIGGER_BOOKING_CONFIRMED => 'Booking Confirmed',
-                self::TRIGGER_BOOKING_UPDATED => 'Booking Updated',
-                self::TRIGGER_BOOKING_RESCHEDULED => 'Booking Rescheduled',
-                self::TRIGGER_BOOKING_CANCELLED => 'Booking Cancelled',
-                self::TRIGGER_BOOKING_CHECKED_IN => 'Booking Checked In',
-                self::TRIGGER_BOOKING_COMPLETED => 'Booking Completed',
-                self::TRIGGER_BOOKING_REMINDER => 'Booking Reminder (Before)',
-                self::TRIGGER_BOOKING_FOLLOWUP => 'Booking Follow-up (After)',
-                self::TRIGGER_BOOKING_NO_SHOW => 'Booking No-Show',
-            ],
-            'payment' => [
-                self::TRIGGER_PAYMENT_RECEIVED => 'Payment Received',
-                self::TRIGGER_PAYMENT_FAILED => 'Payment Failed',
-                self::TRIGGER_PAYMENT_REFUNDED => 'Payment Refunded',
-                self::TRIGGER_PAYMENT_PARTIAL => 'Partial Payment',
-                self::TRIGGER_PAYMENT_PENDING => 'Payment Pending',
+                self::TRIGGER_BOOKING_CONFIRMED => 'Party Booking Confirmed',
+                self::TRIGGER_BOOKING_UPDATED => 'Party Booking Updated',
+                self::TRIGGER_BOOKING_RESCHEDULED => 'Party Booking Rescheduled',
+                self::TRIGGER_BOOKING_CANCELLED => 'Party Booking Cancelled',
+                self::TRIGGER_BOOKING_REMINDER => 'Party Booking Reminder (Before)',
             ],
             'purchase' => [
-                self::TRIGGER_PURCHASE_CREATED => 'Purchase Created',
-                self::TRIGGER_PURCHASE_CONFIRMED => 'Purchase Confirmed',
-                self::TRIGGER_PURCHASE_CANCELLED => 'Purchase Cancelled',
-                self::TRIGGER_PURCHASE_COMPLETED => 'Purchase Completed',
-                self::TRIGGER_PURCHASE_CHECKED_IN => 'Purchase Checked In',
-                self::TRIGGER_PURCHASE_REFUNDED => 'Purchase Refunded',
-                self::TRIGGER_PURCHASE_REMINDER => 'Purchase Reminder',
-                self::TRIGGER_PURCHASE_FOLLOWUP => 'Purchase Follow-up',
+                self::TRIGGER_PURCHASE_CONFIRMED => 'Attraction Confirmed',
+                self::TRIGGER_PURCHASE_RESCHEDULED => 'Attraction Rescheduled',
+                self::TRIGGER_PURCHASE_CANCELLED => 'Attraction Cancelled',
+                self::TRIGGER_PURCHASE_REMINDER => 'Attraction Reminder (Before)',
             ],
             'event' => [
                 self::TRIGGER_EVENT_CONFIRMED => 'Event Confirmed',
@@ -392,9 +334,12 @@ class EmailNotification extends Model
                 self::TRIGGER_EVENT_CANCELLED => 'Event Cancelled',
                 self::TRIGGER_EVENT_REMINDER => 'Event Reminder (Before)',
             ],
+            'payment' => [
+                self::TRIGGER_PAYMENT_RECEIVED => 'Payment Received',
+                self::TRIGGER_PAYMENT_REFUNDED => 'Payment Refunded',
+            ],
             'invitation' => [
-                self::TRIGGER_INVITATION_SENT => 'Invitation Sent',
-                self::TRIGGER_INVITATION_RSVP_RECEIVED => 'RSVP Received',
+                self::TRIGGER_INVITATION_SENT => 'Party Invitation Sent',
             ],
         ];
     }
@@ -402,38 +347,12 @@ class EmailNotification extends Model
     public static function getAllTriggerTypes(): array
     {
         $types = [];
-        foreach (self::getTriggerTypes() as $category => $triggers) {
+        foreach (self::getTriggerTypes() as $triggers) {
             foreach ($triggers as $key => $label) {
                 $types[$key] = $label;
             }
         }
         return $types;
-    }
-
-    public static function getTriggerCategory(string $triggerType): ?string
-    {
-        foreach (self::getTriggerTypes() as $category => $triggers) {
-            if (isset($triggers[$triggerType])) {
-                return $category;
-            }
-        }
-        return null;
-    }
-
-    public function isReminderType(): bool
-    {
-        return in_array($this->trigger_type, [
-            self::TRIGGER_BOOKING_REMINDER,
-            self::TRIGGER_PURCHASE_REMINDER,
-        ]);
-    }
-
-    public function isFollowUpType(): bool
-    {
-        return in_array($this->trigger_type, [
-            self::TRIGGER_BOOKING_FOLLOWUP,
-            self::TRIGGER_PURCHASE_FOLLOWUP,
-        ]);
     }
 
     public static function getEntityTypes(): array
@@ -453,7 +372,29 @@ class EmailNotification extends Model
             self::RECIPIENT_STAFF => 'Staff (Attendants)',
             self::RECIPIENT_COMPANY_ADMIN => 'Company Admin',
             self::RECIPIENT_LOCATION_MANAGER => 'Location Manager',
-            self::RECIPIENT_CUSTOM => 'Custom Emails',
+            self::RECIPIENT_CUSTOM => 'Custom Phone Numbers',
         ];
+    }
+
+    /**
+     * GSM-7 messages fit 160 chars/segment (153 in a multi-segment message).
+     * If any non-GSM char is present the encoding falls back to UCS-2 (70/67).
+     */
+    public static function segmentCount(string $message): int
+    {
+        $length = mb_strlen($message);
+        if ($length === 0) {
+            return 0;
+        }
+
+        $isUnicode = (bool) preg_match('/[^\x00-\x7F]/', $message);
+        $single = $isUnicode ? 70 : 160;
+        $multi = $isUnicode ? 67 : 153;
+
+        if ($length <= $single) {
+            return 1;
+        }
+
+        return (int) ceil($length / $multi);
     }
 }

@@ -18,6 +18,7 @@ use App\Http\Controllers\Api\CustomerNotificationController;
 use App\Http\Controllers\Api\DayOffController;
 use App\Http\Controllers\Api\EmailCampaignController;
 use App\Http\Controllers\Api\EmailNotificationController;
+use App\Http\Controllers\Api\SmsNotificationController;
 use App\Http\Controllers\Api\EmailTemplateController;
 use App\Http\Controllers\Api\EventController;
 use App\Http\Controllers\Api\EventPurchaseController;
@@ -515,6 +516,20 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/{emailNotification}/reset-default', [EmailNotificationController::class, 'resetDefault']);
         Route::get('/{emailNotification}/logs', [EmailNotificationController::class, 'getLogs']);
         Route::post('/{emailNotification}/logs/{logId}/resend', [EmailNotificationController::class, 'resendLog']);
+    });
+
+    Route::prefix('sms-notifications')->group(function () {
+        Route::get('/', [SmsNotificationController::class, 'index']);
+        Route::post('/', [SmsNotificationController::class, 'store']);
+        Route::get('/options', [SmsNotificationController::class, 'options']);
+        Route::post('/seed-defaults', [SmsNotificationController::class, 'seedDefaults']);
+        Route::get('/{smsNotification}', [SmsNotificationController::class, 'show']);
+        Route::put('/{smsNotification}', [SmsNotificationController::class, 'update']);
+        Route::delete('/{smsNotification}', [SmsNotificationController::class, 'destroy']);
+        Route::patch('/{smsNotification}/toggle-status', [SmsNotificationController::class, 'toggleStatus']);
+        Route::post('/{smsNotification}/send-test', [SmsNotificationController::class, 'sendTest']);
+        Route::post('/{smsNotification}/reset-default', [SmsNotificationController::class, 'resetDefault']);
+        Route::get('/{smsNotification}/logs', [SmsNotificationController::class, 'logs']);
     });
 
     Route::apiResource('events', EventController::class)->except(['index', 'show']);

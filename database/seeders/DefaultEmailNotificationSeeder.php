@@ -174,6 +174,105 @@ class DefaultEmailNotificationSeeder extends Seeder
                 'subject' => 'Refund Processed - {{payment_reference}}',
                 'body' => self::getPaymentRefundedCustomerBody(),
             ],
+
+            // ---- Party reschedule ----
+            [
+                'default_key' => EmailNotification::DEFAULT_BOOKING_RESCHEDULE_CUSTOMER,
+                'name' => 'Party Booking Reschedule (Customer)',
+                'description' => 'Sent to the customer when a party booking is rescheduled.',
+                'trigger_type' => EmailNotification::TRIGGER_BOOKING_RESCHEDULED,
+                'entity_type' => EmailNotification::ENTITY_PACKAGE,
+                'entity_ids' => [],
+                'recipient_types' => [EmailNotification::RECIPIENT_CUSTOMER],
+                'custom_emails' => [],
+                'include_qr_code' => true,
+                'subject' => 'Booking Rescheduled - {{booking_reference}}',
+                'body' => self::getBookingUpdatedCustomerBody(),
+            ],
+
+            // ---- Attraction reminder + reschedule ----
+            [
+                'default_key' => EmailNotification::DEFAULT_PURCHASE_REMINDER_CUSTOMER,
+                'name' => 'Attraction Reminder (Customer)',
+                'description' => 'Sent to the customer before their attraction visit. Uses send_before_hours.',
+                'trigger_type' => EmailNotification::TRIGGER_PURCHASE_REMINDER,
+                'entity_type' => EmailNotification::ENTITY_ATTRACTION,
+                'entity_ids' => [],
+                'recipient_types' => [EmailNotification::RECIPIENT_CUSTOMER],
+                'custom_emails' => [],
+                'include_qr_code' => true,
+                'send_before_hours' => 24,
+                'subject' => 'Reminder: Your {{attraction_name}} Visit is Coming Up',
+                'body' => self::getPurchaseReminderCustomerBody(),
+            ],
+            [
+                'default_key' => EmailNotification::DEFAULT_PURCHASE_RESCHEDULE_CUSTOMER,
+                'name' => 'Attraction Reschedule (Customer)',
+                'description' => 'Sent to the customer when an attraction purchase is rescheduled.',
+                'trigger_type' => EmailNotification::TRIGGER_PURCHASE_RESCHEDULED,
+                'entity_type' => EmailNotification::ENTITY_ATTRACTION,
+                'entity_ids' => [],
+                'recipient_types' => [EmailNotification::RECIPIENT_CUSTOMER],
+                'custom_emails' => [],
+                'include_qr_code' => false,
+                'subject' => 'Purchase Updated - {{attraction_name}}',
+                'body' => self::getPurchaseRescheduleCustomerBody(),
+            ],
+
+            // ---- Events ----
+            [
+                'default_key' => EmailNotification::DEFAULT_EVENT_CONFIRMATION_CUSTOMER,
+                'name' => 'Event Confirmation (Customer)',
+                'description' => 'Sent to the customer when an event purchase is confirmed.',
+                'trigger_type' => EmailNotification::TRIGGER_EVENT_CONFIRMED,
+                'entity_type' => EmailNotification::ENTITY_EVENT,
+                'entity_ids' => [],
+                'recipient_types' => [EmailNotification::RECIPIENT_CUSTOMER],
+                'custom_emails' => [],
+                'include_qr_code' => false,
+                'subject' => 'Your Tickets for {{event_name}}',
+                'body' => self::getEventConfirmationCustomerBody(),
+            ],
+            [
+                'default_key' => EmailNotification::DEFAULT_EVENT_REMINDER_CUSTOMER,
+                'name' => 'Event Reminder (Customer)',
+                'description' => 'Sent to the customer before an event. Uses send_before_hours.',
+                'trigger_type' => EmailNotification::TRIGGER_EVENT_REMINDER,
+                'entity_type' => EmailNotification::ENTITY_EVENT,
+                'entity_ids' => [],
+                'recipient_types' => [EmailNotification::RECIPIENT_CUSTOMER],
+                'custom_emails' => [],
+                'include_qr_code' => false,
+                'send_before_hours' => 24,
+                'subject' => 'Reminder: {{event_name}} is Coming Up',
+                'body' => self::getEventReminderCustomerBody(),
+            ],
+            [
+                'default_key' => EmailNotification::DEFAULT_EVENT_RESCHEDULE_CUSTOMER,
+                'name' => 'Event Reschedule (Customer)',
+                'description' => 'Sent to the customer when an event is rescheduled.',
+                'trigger_type' => EmailNotification::TRIGGER_EVENT_RESCHEDULED,
+                'entity_type' => EmailNotification::ENTITY_EVENT,
+                'entity_ids' => [],
+                'recipient_types' => [EmailNotification::RECIPIENT_CUSTOMER],
+                'custom_emails' => [],
+                'include_qr_code' => false,
+                'subject' => '{{event_name}} Has Been Rescheduled',
+                'body' => self::getEventRescheduleCustomerBody(),
+            ],
+            [
+                'default_key' => EmailNotification::DEFAULT_EVENT_CANCELLATION_CUSTOMER,
+                'name' => 'Event Cancellation (Customer)',
+                'description' => 'Sent to the customer when an event purchase is cancelled.',
+                'trigger_type' => EmailNotification::TRIGGER_EVENT_CANCELLED,
+                'entity_type' => EmailNotification::ENTITY_EVENT,
+                'entity_ids' => [],
+                'recipient_types' => [EmailNotification::RECIPIENT_CUSTOMER],
+                'custom_emails' => [],
+                'include_qr_code' => false,
+                'subject' => 'Event Cancelled - {{event_name}}',
+                'body' => self::getEventCancellationCustomerBody(),
+            ],
         ];
     }
 
@@ -809,5 +908,164 @@ HTML;
     </div>
 </div>
 HTML;
+    }
+
+    /**
+     * Branded shell shared by the newer templates. $rows is an array of
+     * [label, value] pairs rendered as a detail table.
+     */
+    protected static function shell(string $headerColor, string $title, string $subtitle, string $intro, array $rows, string $outro): string
+    {
+        $rowsHtml = '';
+        $count = count($rows);
+        foreach (array_values($rows) as $i => $row) {
+            $border = $i === $count - 1 ? '' : 'border-bottom: 1px solid #e5e7eb;';
+            $label = $row[0];
+            $value = $row[1];
+            $rowsHtml .= <<<ROW
+            <tr>
+                <td style="padding: 12px 16px; $border font-size: 14px;">
+                    <strong style="color: #6b7280;">$label</strong>
+                    <span style="color: #111827; float: right;">$value</span>
+                </td>
+            </tr>
+ROW;
+        }
+
+        return <<<HTML
+<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; color: #374151;">
+    <div style="background-color: $headerColor; color: #ffffff; padding: 24px 32px; border-radius: 8px 8px 0 0; text-align: center;">
+        <h1 style="margin: 0 0 8px 0; font-size: 22px; font-weight: 600;">$title</h1>
+        <p style="margin: 0; font-size: 14px; opacity: 0.9;">$subtitle</p>
+    </div>
+    <div style="background-color: #ffffff; padding: 32px; border: 1px solid #e5e7eb; border-top: none;">
+        <p style="margin: 0 0 16px 0; font-size: 14px; line-height: 1.6;">Dear {{customer_name}},</p>
+        <p style="margin: 0 0 24px 0; font-size: 14px; line-height: 1.6;">$intro</p>
+        <table width="100%" cellpadding="0" cellspacing="0" style="background: #f9fafb; border-radius: 6px; border: 1px solid #e5e7eb; margin: 0 0 24px 0;">
+            $rowsHtml
+        </table>
+        <div style="background: #f0f8ff; padding: 20px; border-radius: 8px; margin: 0 0 24px 0;">
+            <h3 style="margin: 0 0 8px 0; font-size: 16px; color: $headerColor;">Location</h3>
+            <p style="margin: 0 0 4px 0; font-size: 14px; font-weight: 600;">{{location_name}}</p>
+            <p style="margin: 0 0 4px 0; font-size: 14px; color: #4b5563;">{{location_address}}</p>
+            <p style="margin: 0; font-size: 14px; color: #4b5563;">Phone: {{location_phone}}</p>
+        </div>
+        <p style="margin: 0 0 24px 0; font-size: 14px; line-height: 1.6;">$outro</p>
+        <p style="margin: 0; font-size: 14px;">Best regards,<br><strong>{{company_name}} Team</strong></p>
+    </div>
+    <div style="padding: 16px 32px; text-align: center; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px; background: #f9fafb;">
+        <p style="color: #9ca3af; font-size: 12px; margin: 0;">&copy; {{current_year}} {{company_name}}. All rights reserved.</p>
+    </div>
+</div>
+HTML;
+    }
+
+    protected static function getPurchaseReminderCustomerBody(): string
+    {
+        return self::shell(
+            '#7c3aed',
+            'Visit Reminder',
+            'Your visit is coming up!',
+            'This is a friendly reminder about your upcoming attraction visit. We can\'t wait to see you!',
+            [
+                ['Attraction:', '{{attraction_name}}'],
+                ['Quantity:', '{{purchase_quantity}}'],
+                ['Date:', '{{purchase_date}}'],
+                ['Reference:', '{{purchase_reference}}'],
+            ],
+            'If you have any questions, contact us at {{location_email}} or {{location_phone}}.'
+        );
+    }
+
+    protected static function getPurchaseRescheduleCustomerBody(): string
+    {
+        return self::shell(
+            '#d97706',
+            'Purchase Updated',
+            '{{attraction_name}}',
+            'Your attraction purchase has been updated. Please review the latest details below:',
+            [
+                ['Attraction:', '{{attraction_name}}'],
+                ['Quantity:', '{{purchase_quantity}}'],
+                ['Date:', '{{purchase_date}}'],
+                ['Total:', '{{purchase_total}}'],
+                ['Reference:', '{{purchase_reference}}'],
+            ],
+            'If you did not request this change, contact us at {{location_email}} or {{location_phone}}.'
+        );
+    }
+
+    protected static function getEventConfirmationCustomerBody(): string
+    {
+        return self::shell(
+            '#1e40af',
+            'You\'re Going!',
+            '{{event_name}}',
+            'Thank you for your purchase! Here are your event details:',
+            [
+                ['Event:', '{{event_name}}'],
+                ['Date:', '{{event_date}}'],
+                ['Time:', '{{event_time}}'],
+                ['Tickets:', '{{event_quantity}}'],
+                ['Total:', '{{event_total}}'],
+                ['Balance Due:', '{{event_balance}}'],
+                ['Reference:', '{{event_reference}}'],
+            ],
+            'If you have any questions, contact us at {{location_email}} or {{location_phone}}. Enjoy the event!'
+        );
+    }
+
+    protected static function getEventReminderCustomerBody(): string
+    {
+        return self::shell(
+            '#7c3aed',
+            'Event Reminder',
+            '{{event_name}} is coming up!',
+            'This is a friendly reminder about the upcoming event. We can\'t wait to see you there!',
+            [
+                ['Event:', '{{event_name}}'],
+                ['Date:', '{{event_date}}'],
+                ['Time:', '{{event_time}}'],
+                ['Tickets:', '{{event_quantity}}'],
+                ['Reference:', '{{event_reference}}'],
+            ],
+            'If you have any questions, contact us at {{location_email}} or {{location_phone}}.'
+        );
+    }
+
+    protected static function getEventRescheduleCustomerBody(): string
+    {
+        return self::shell(
+            '#d97706',
+            'Event Rescheduled',
+            '{{event_name}}',
+            'The event you purchased tickets for has been rescheduled. Your tickets remain valid for the new date and time below:',
+            [
+                ['Event:', '{{event_name}}'],
+                ['New Date:', '{{event_date}}'],
+                ['New Time:', '{{event_time}}'],
+                ['Tickets:', '{{event_quantity}}'],
+                ['Reference:', '{{event_reference}}'],
+            ],
+            'If the new date does not work for you, contact us at {{location_email}} or {{location_phone}}.'
+        );
+    }
+
+    protected static function getEventCancellationCustomerBody(): string
+    {
+        return self::shell(
+            '#dc2626',
+            'Event Cancelled',
+            '{{event_name}}',
+            'Your event order has been cancelled. If a refund is applicable, it will be processed to your original payment method. Please allow 5-10 business days for the refund to appear.',
+            [
+                ['Event:', '{{event_name}}'],
+                ['Date:', '{{event_date}}'],
+                ['Tickets:', '{{event_quantity}}'],
+                ['Amount Paid:', '{{event_amount_paid}}'],
+                ['Reference:', '{{event_reference}}'],
+            ],
+            'If you have any questions, contact us at {{location_email}} or {{location_phone}}.'
+        );
     }
 }

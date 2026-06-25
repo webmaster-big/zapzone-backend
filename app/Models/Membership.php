@@ -14,7 +14,7 @@ class Membership extends Model
     use HasFactory, SoftDeletes;
 
     protected $fillable = [
-        'customer_id', 'membership_plan_id', 'membership_group_id',
+        'customer_id', 'holder_name', 'membership_plan_id', 'membership_group_id',
         'home_location_id', 'sold_at_location_id',
         'status',
         'started_at', 'current_term_start', 'current_term_end',

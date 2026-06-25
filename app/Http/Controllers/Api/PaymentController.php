@@ -2287,38 +2287,28 @@ class PaymentController extends Controller
                                         ]);
                                     }
                                 }
+
+                                // Pair an SMS with the receipt (fail-safe; never blocks the response).
+                                try {
+                                    app(\App\Services\SmsNotificationService::class)
+                                        ->triggerPurchaseNotification($purchase, \App\Models\SmsNotification::TRIGGER_PURCHASE_CONFIRMED);
+                                } catch (\Throwable $e) {
+                                    Log::warning('Attraction confirmation SMS failed from charge()', ['error' => $e->getMessage()]);
+                                }
                             } elseif ($payment->payable_type === Payment::TYPE_EVENT_PURCHASE) {
                                 $eventPurchase = $payable;
-                                $eventPurchase->loadMissing(['event.location.company', 'customer', 'location', 'addOns']);
 
-                                $recipientEmail = $eventPurchase->customer
-                                    ? $eventPurchase->customer->email
-                                    : $eventPurchase->guest_email;
-
-                                if ($recipientEmail) {
-                                    $useGmailApi = config('gmail.enabled', false) &&
-                                        (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
-
-                                    $mailable = new EventPurchaseConfirmation($eventPurchase);
-                                    $emailBody = $mailable->render();
-                                    $subject = 'Event Purchase Confirmation - ' . $eventPurchase->reference_number;
-
-                                    if ($useGmailApi) {
-                                        $gmailService = new GmailApiService();
-                                        $gmailService->sendEmail($recipientEmail, $subject, $emailBody);
-                                    } else {
-                                        Mail::send([], [], function ($message) use ($recipientEmail, $subject, $emailBody) {
-                                            $message->to($recipientEmail)
-                                                ->subject($subject)
-                                                ->html($emailBody);
-                                        });
-                                    }
-
+                                // Event confirmation goes through the engine so the admin-editable
+                                // Email + SMS Notifications templates are the single source of truth.
+                                try {
+                                    app(EmailNotificationService::class)
+                                        ->triggerEventNotification($eventPurchase, EmailNotification::TRIGGER_EVENT_CONFIRMED);
                                     $emailSent = true;
-                                    Log::info('Event purchase confirmation email sent from charge()', [
+                                    Log::info('Event purchase confirmation notification sent from charge()', [
                                         'event_purchase_id' => $eventPurchase->id,
-                                        'email' => $recipientEmail,
                                     ]);
+                                } catch (\Throwable $e) {
+                                    Log::warning('Event confirmation notification failed from charge()', ['error' => $e->getMessage()]);
                                 }
                             }
                         } catch (\Exception $e) {

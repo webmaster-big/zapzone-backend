@@ -397,8 +397,10 @@ class MembershipService
 
             // Try Gmail API unconditionally (mirrors EmailNotificationService pattern),
             // fall back to SMTP only if Gmail is unavailable or fails.
+            // Resolve from the container (not `new`) so it can be mocked in tests —
+            // this is what the activation-email regression test asserts against.
             try {
-                (new GmailApiService())->sendEmail($email, $subject, $html, $fromName, $attachments);
+                app(GmailApiService::class)->sendEmail($email, $subject, $html, $fromName, $attachments);
                 Log::info("[{$label}] Sent via Gmail API", ['membership_id' => $membership->id, 'to' => $email]);
             } catch (\Throwable $gmailEx) {
                 Log::warning("[{$label}] Gmail failed, falling back to SMTP: " . $gmailEx->getMessage(), [

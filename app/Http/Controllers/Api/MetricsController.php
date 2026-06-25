@@ -9,6 +9,7 @@ use App\Models\AttractionPurchase;
 use App\Models\EventPurchase;
 use App\Models\Customer;
 use App\Models\Location;
+use App\Models\Membership;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -41,14 +42,22 @@ class MetricsController extends Controller
         $dateTo = $request->query('date_to');
         $useDateTime = false; // Flag to determine if we should use datetime or date-only comparison
 
+        $timezone = $request->query('timezone', config('app.timezone', 'UTC'));
+        try { new \DateTimeZone($timezone); } catch (\Exception $e) { $timezone = 'UTC'; }
+
         if ($dateFrom || $dateTo) {
             $timeframe = 'custom';
         } else {
             switch ($timeframe) {
+                case 'today':
+                    $dateFrom = \Carbon\Carbon::today($timezone);
+                    $dateTo = \Carbon\Carbon::tomorrow($timezone)->subSecond();
+                    $useDateTime = true;
+                    break;
                 case 'last_24h':
                     $dateFrom = now()->subHours(24);
                     $dateTo = now();
-                    $useDateTime = true; // Use datetime comparison for precise 24-hour window
+                    $useDateTime = true;
                     break;
                 case 'last_7d':
                     $dateFrom = now()->subDays(7);
@@ -159,6 +168,120 @@ class MetricsController extends Controller
             'total_revenue' => $totalRevenue,
         ]);
 
+        // --- Membership metrics (graceful fallback if feature incomplete) ---
+        $totalMemberships = 0;
+        $activeMemberships = 0;
+        $newMemberships = 0;
+        $membershipBreakdownData = [];
+        try {
+            $membershipQuery = Membership::query();
+            if ($locationId) {
+                $membershipQuery->where(function ($q) use ($locationId) {
+                    $q->where('home_location_id', $locationId)
+                      ->orWhere('sold_at_location_id', $locationId);
+                });
+            }
+            $newMembershipQuery = (clone $membershipQuery);
+            if ($dateFrom) {
+                $useDateTime
+                    ? $newMembershipQuery->where('created_at', '>=', $dateFrom)
+                    : $newMembershipQuery->whereDate('created_at', '>=', $dateFrom);
+            }
+            if ($dateTo) {
+                $useDateTime
+                    ? $newMembershipQuery->where('created_at', '<=', $dateTo)
+                    : $newMembershipQuery->whereDate('created_at', '<=', $dateTo);
+            }
+            $newMemberships    = $newMembershipQuery->count();
+            $activeMemberships = (clone $membershipQuery)->where('status', 'active')->count();
+            $totalMemberships  = $membershipQuery->count();
+
+            $tierCounts = [];
+            foreach ($newMembershipQuery->with('plan:id,tier,name')->get() as $m) {
+                $tier = $m->plan?->tier ?? 'other';
+                $tierCounts[$tier] = ($tierCounts[$tier] ?? 0) + 1;
+            }
+            $mTotal = array_sum($tierCounts);
+            foreach ($tierCounts as $tier => $cnt) {
+                $membershipBreakdownData[] = [
+                    'label'      => ucfirst($tier),
+                    'count'      => $cnt,
+                    'percentage' => $mTotal > 0 ? round(($cnt / $mTotal) * 100) : 0,
+                ];
+            }
+        } catch (\Exception $e) {
+            Log::warning('Membership metrics unavailable', ['error' => $e->getMessage()]);
+        }
+
+        // --- Package (booking) breakdown by package category ---
+        $packageBreakdownData = [];
+        try {
+            $pkgRows = (clone $bookingQuery)
+                ->leftJoin('packages', 'bookings.package_id', '=', 'packages.id')
+                ->whereNotNull('bookings.package_id')
+                ->select('packages.category', DB::raw('COUNT(*) as cnt'))
+                ->groupBy('packages.category')
+                ->get();
+            $pkgTotal = $pkgRows->sum('cnt');
+            foreach ($pkgRows as $row) {
+                $packageBreakdownData[] = [
+                    'label'      => $row->category ?? 'Other',
+                    'count'      => (int) $row->cnt,
+                    'percentage' => $pkgTotal > 0 ? round(($row->cnt / $pkgTotal) * 100) : 0,
+                ];
+            }
+        } catch (\Exception $e) {
+            Log::warning('Package breakdown unavailable', ['error' => $e->getMessage()]);
+        }
+
+        // --- Attraction breakdown by category ---
+        $attractionBreakdownData = [];
+        try {
+            $attrRows = (clone $purchaseQuery)
+                ->join('attractions', 'attraction_purchases.attraction_id', '=', 'attractions.id')
+                ->select('attractions.category', DB::raw('SUM(attraction_purchases.quantity) as cnt'))
+                ->groupBy('attractions.category')
+                ->get();
+            $attrTotal = $attrRows->sum('cnt');
+            foreach ($attrRows as $row) {
+                $attractionBreakdownData[] = [
+                    'label'      => $row->category ?? 'Other',
+                    'count'      => (int) $row->cnt,
+                    'percentage' => $attrTotal > 0 ? round(($row->cnt / $attrTotal) * 100) : 0,
+                ];
+            }
+        } catch (\Exception $e) {
+            Log::warning('Attraction breakdown unavailable', ['error' => $e->getMessage()]);
+        }
+
+        // --- Event breakdown by event name ---
+        $eventBreakdownData = [];
+        try {
+            $evtRows = (clone $eventPurchaseQuery)
+                ->join('events', 'event_purchases.event_id', '=', 'events.id')
+                ->select('events.name', DB::raw('SUM(event_purchases.quantity) as cnt'))
+                ->groupBy('events.name')
+                ->get();
+            $evtTotal = $evtRows->sum('cnt');
+            foreach ($evtRows as $row) {
+                $eventBreakdownData[] = [
+                    'label'      => $row->name ?? 'Other',
+                    'count'      => (int) $row->cnt,
+                    'percentage' => $evtTotal > 0 ? round(($row->cnt / $evtTotal) * 100) : 0,
+                ];
+            }
+        } catch (\Exception $e) {
+            Log::warning('Event breakdown unavailable', ['error' => $e->getMessage()]);
+        }
+
+        // --- Confirmed bookings breakdown: packages vs events vs attractions ---
+        $confirmedTotal = $confirmedBookings + $totalEventPurchases + $totalPurchases;
+        $confirmedBreakdownData = [
+            ['label' => 'Packages',    'count' => $confirmedBookings,   'percentage' => $confirmedTotal > 0 ? round(($confirmedBookings   / $confirmedTotal) * 100) : 0],
+            ['label' => 'Events',      'count' => $totalEventPurchases, 'percentage' => $confirmedTotal > 0 ? round(($totalEventPurchases / $confirmedTotal) * 100) : 0],
+            ['label' => 'Attractions', 'count' => $totalPurchases,      'percentage' => $confirmedTotal > 0 ? round(($totalPurchases      / $confirmedTotal) * 100) : 0],
+        ];
+
         $customerQuery = Customer::query();
         if ($locationId || $dateFrom || $dateTo) {
             $customerQuery->whereHas('bookings', function ($q) use ($locationId, $dateFrom, $dateTo, $useDateTime) {
@@ -221,7 +344,37 @@ class MetricsController extends Controller
         }
         $totalCustomers = $customerQuery->count();
 
-        Log::info('Customer count calculated', ['total_customers' => $totalCustomers]);
+        // New vs returning: customers first created within the timeframe = new; rest = returning
+        $newCustomers = 0;
+        $returningCustomers = 0;
+        if ($dateFrom) {
+            $newCustomerQuery = Customer::query();
+            if ($useDateTime) {
+                $newCustomerQuery->where('created_at', '>=', $dateFrom);
+            } else {
+                $newCustomerQuery->whereDate('created_at', '>=', $dateFrom);
+            }
+            if ($dateTo) {
+                if ($useDateTime) {
+                    $newCustomerQuery->where('created_at', '<=', $dateTo);
+                } else {
+                    $newCustomerQuery->whereDate('created_at', '<=', $dateTo);
+                }
+            }
+            if ($locationId) {
+                $newCustomerQuery->whereHas('bookings', fn($q) => $q->where('location_id', $locationId));
+            }
+            $newCustomers = $newCustomerQuery->count();
+            $returningCustomers = max(0, $totalCustomers - $newCustomers);
+        } else {
+            $returningCustomers = $totalCustomers;
+        }
+        $customerBreakdownData = [
+            ['label' => 'New Customers',       'count' => $newCustomers,       'percentage' => $totalCustomers > 0 ? round(($newCustomers       / $totalCustomers) * 100) : 0],
+            ['label' => 'Returning Customers', 'count' => $returningCustomers, 'percentage' => $totalCustomers > 0 ? round(($returningCustomers / $totalCustomers) * 100) : 0],
+        ];
+
+        Log::info('Customer count calculated', ['total_customers' => $totalCustomers, 'new' => $newCustomers, 'returning' => $returningCustomers]);
 
         $recentEventPurchasesQuery = EventPurchase::with(['customer', 'event']);
         if ($locationId) {
@@ -310,6 +463,7 @@ class MetricsController extends Controller
                 'date_from' => $dateFrom ? ($useDateTime ? $dateFrom->toDateTimeString() : $dateFrom) : null,
                 'date_to' => $dateTo ? ($useDateTime ? $dateTo->toDateTimeString() : $dateTo) : null,
                 'description' => match($timeframe) {
+                    'today'   => 'Today',
                     'last_24h' => 'Last 24 Hours',
                     'last_7d' => 'Last 7 Days',
                     'last_30d' => 'Last 30 Days',
@@ -321,11 +475,13 @@ class MetricsController extends Controller
                 'totalBookings' => $totalBookings,
                 'totalRevenue' => round($totalRevenue, 2),
                 'totalCustomers' => $totalCustomers,
-                'confirmedBookings' => $confirmedBookings,  // Filtered by timeframe
-                'pendingBookings' => $pendingBookings,      // Filtered by timeframe
-                'completedBookings' => $completedBookings,  // Filtered by timeframe
-                'cancelledBookings' => $cancelledBookings,  // Filtered by timeframe
-                'checkedInBookings' => $checkedInBookings,  // Filtered by timeframe
+                'newCustomers' => $newCustomers,
+                'returningCustomers' => $returningCustomers,
+                'confirmedBookings' => $confirmedBookings,
+                'pendingBookings' => $pendingBookings,
+                'completedBookings' => $completedBookings,
+                'cancelledBookings' => $cancelledBookings,
+                'checkedInBookings' => $checkedInBookings,
                 'totalParticipants' => (int) $totalParticipants,
                 'bookingRevenue' => round($bookingRevenue, 2),
                 'purchaseRevenue' => round($allPurchaseRevenue, 2),
@@ -334,13 +490,24 @@ class MetricsController extends Controller
                 'eventPurchaseRevenue' => round($eventPurchaseRevenue, 2),
                 'totalEventPurchases' => $totalEventPurchases,
                 'totalEventTickets' => (int) $totalEventTickets,
+                'totalMemberships' => $totalMemberships,
+                'activeMemberships' => $activeMemberships,
+                'newMemberships' => $newMemberships,
+            ],
+            'breakdowns' => [
+                'packageBreakdown'   => $packageBreakdownData,
+                'attractionBreakdown' => $attractionBreakdownData,
+                'eventBreakdown'     => $eventBreakdownData,
+                'membershipBreakdown' => $membershipBreakdownData,
+                'customerBreakdown'  => $customerBreakdownData,
+                'confirmedBreakdown' => $confirmedBreakdownData,
             ],
             'recentPurchases' => $recentPurchases,
             'recentEventPurchases' => $recentEventPurchases,
         ];
 
         if ($user->role === 'company_admin') {
-            $locationStats = $this->getLocationStats($dateFrom, $dateTo);
+            $locationStats = $this->getLocationStats($dateFrom, $dateTo, $useDateTime);
             $response['locationStats'] = $locationStats;
             Log::info('Added location stats for company_admin', ['locations_count' => count($locationStats)]);
         }
@@ -413,14 +580,22 @@ class MetricsController extends Controller
             $dateTo = $request->query('date_to');
             $useDateTime = false; // Flag to determine if we should use datetime or date-only comparison
 
+            $timezone = $request->query('timezone', config('app.timezone', 'UTC'));
+            try { new \DateTimeZone($timezone); } catch (\Exception $e) { $timezone = 'UTC'; }
+
             if ($dateFrom || $dateTo) {
                 $timeframe = 'custom';
             } else {
                 switch ($timeframe) {
+                    case 'today':
+                        $dateFrom = \Carbon\Carbon::today($timezone);
+                        $dateTo = \Carbon\Carbon::tomorrow($timezone)->subSecond();
+                        $useDateTime = true;
+                        break;
                     case 'last_24h':
                         $dateFrom = now()->subHours(24);
                         $dateTo = now();
-                        $useDateTime = true; // Use datetime comparison for precise 24-hour window
+                        $useDateTime = true;
                         break;
                     case 'last_7d':
                         $dateFrom = now()->subDays(7);
@@ -736,6 +911,7 @@ class MetricsController extends Controller
                 'date_from' => $dateFrom ? ($useDateTime ? $dateFrom->toDateTimeString() : $dateFrom) : null,
                 'date_to' => $dateTo ? ($useDateTime ? $dateTo->toDateTimeString() : $dateTo) : null,
                 'description' => match($timeframe) {
+                    'today'   => 'Today',
                     'last_24h' => 'Last 24 Hours',
                     'last_7d' => 'Last 7 Days',
                     'last_30d' => 'Last 30 Days',
@@ -747,10 +923,10 @@ class MetricsController extends Controller
                 'totalBookings' => $totalBookings,
                 'totalRevenue' => round($totalRevenue, 2),
                 'totalCustomers' => $totalCustomers,
-                'confirmedBookings' => $confirmedBookings,  // Filtered by timeframe
-                'pendingBookings' => $pendingBookings,      // Filtered by timeframe
-                'completedBookings' => $completedBookings,  // Filtered by timeframe
-                'cancelledBookings' => $cancelledBookings,  // Filtered by timeframe
+                'confirmedBookings' => $confirmedBookings,
+                'pendingBookings' => $pendingBookings,
+                'completedBookings' => $completedBookings,
+                'cancelledBookings' => $cancelledBookings,
                 'totalParticipants' => (int) $totalParticipants,
                 'bookingRevenue' => round($bookingRevenue, 2),
                 'purchaseRevenue' => round($allPurchaseRevenue, 2),
@@ -805,7 +981,7 @@ class MetricsController extends Controller
         }
     }
 
-    private function getLocationStats($dateFrom = null, $dateTo = null)
+    private function getLocationStats($dateFrom = null, $dateTo = null, $useDateTime = false)
     {
         $locationStats = [];
 
@@ -816,15 +992,18 @@ class MetricsController extends Controller
         foreach ($locations as $location) {
             $locationBookingQuery = Booking::where('location_id', $location->id);
             if ($dateFrom) {
-                $locationBookingQuery->whereDate('created_at', '>=', is_string($dateFrom) ? $dateFrom : $dateFrom->toDateString());
+                $useDateTime
+                    ? $locationBookingQuery->where('created_at', '>=', $dateFrom)
+                    : $locationBookingQuery->whereDate('created_at', '>=', is_string($dateFrom) ? $dateFrom : $dateFrom->toDateString());
             }
             if ($dateTo) {
-                $locationBookingQuery->whereDate('created_at', '<=', is_string($dateTo) ? $dateTo : $dateTo->toDateString());
+                $useDateTime
+                    ? $locationBookingQuery->where('created_at', '<=', $dateTo)
+                    : $locationBookingQuery->whereDate('created_at', '<=', is_string($dateTo) ? $dateTo : $dateTo->toDateString());
             }
 
             $locationBookings = $locationBookingQuery->count();
             $locationParticipants = (clone $locationBookingQuery)->sum('participants') ?? 0;
-            // Use same filter as the global metric: exclude cancelled, include pending/partial/etc.
             $locationBookingRevenue = (clone $locationBookingQuery)
                 ->whereNotIn('status', ['cancelled'])
                 ->sum('amount_paid') ?? 0;
@@ -833,10 +1012,14 @@ class MetricsController extends Controller
                 $q->where('location_id', $location->id);
             });
             if ($dateFrom) {
-                $locationPurchaseQuery->whereDate('created_at', '>=', is_string($dateFrom) ? $dateFrom : $dateFrom->toDateString());
+                $useDateTime
+                    ? $locationPurchaseQuery->where('created_at', '>=', $dateFrom)
+                    : $locationPurchaseQuery->whereDate('created_at', '>=', is_string($dateFrom) ? $dateFrom : $dateFrom->toDateString());
             }
             if ($dateTo) {
-                $locationPurchaseQuery->whereDate('created_at', '<=', is_string($dateTo) ? $dateTo : $dateTo->toDateString());
+                $useDateTime
+                    ? $locationPurchaseQuery->where('created_at', '<=', $dateTo)
+                    : $locationPurchaseQuery->whereDate('created_at', '<=', is_string($dateTo) ? $dateTo : $dateTo->toDateString());
             }
 
             $locationPurchases = $locationPurchaseQuery->count();
@@ -850,17 +1033,20 @@ class MetricsController extends Controller
                 ->whereNotIn('status', ['cancelled'])
                 ->sum('total_amount') ?? 0;
 
-            // Ticket quantities count as participants for utilisation
             $locationTicketParticipants = (int) ((clone $locationPurchaseQuery)
                 ->whereNotIn('status', ['cancelled'])
                 ->sum('quantity') ?? 0);
 
             $locationEventPurchaseQuery = EventPurchase::where('location_id', $location->id);
             if ($dateFrom) {
-                $locationEventPurchaseQuery->whereDate('created_at', '>=', is_string($dateFrom) ? $dateFrom : $dateFrom->toDateString());
+                $useDateTime
+                    ? $locationEventPurchaseQuery->where('created_at', '>=', $dateFrom)
+                    : $locationEventPurchaseQuery->whereDate('created_at', '>=', is_string($dateFrom) ? $dateFrom : $dateFrom->toDateString());
             }
             if ($dateTo) {
-                $locationEventPurchaseQuery->whereDate('created_at', '<=', is_string($dateTo) ? $dateTo : $dateTo->toDateString());
+                $useDateTime
+                    ? $locationEventPurchaseQuery->where('created_at', '<=', $dateTo)
+                    : $locationEventPurchaseQuery->whereDate('created_at', '<=', is_string($dateTo) ? $dateTo : $dateTo->toDateString());
             }
 
             $locationEventPurchases = (clone $locationEventPurchaseQuery)->count();

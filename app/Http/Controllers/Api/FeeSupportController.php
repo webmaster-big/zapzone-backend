@@ -110,7 +110,7 @@ class FeeSupportController extends Controller
             'fee_application_type' => 'required|in:additive,inclusive',
             'entity_ids' => 'required|array|min:1',
             'entity_ids.*' => 'integer',
-            'entity_type' => 'required|in:package,attraction,event',
+            'entity_type' => 'required|in:package,attraction,event,membership',
             'is_active' => 'boolean',
         ]);
 
@@ -169,7 +169,7 @@ class FeeSupportController extends Controller
             'fee_application_type' => 'sometimes|in:additive,inclusive',
             'entity_ids' => 'sometimes|array|min:1',
             'entity_ids.*' => 'integer',
-            'entity_type' => 'sometimes|in:package,attraction,event',
+            'entity_type' => 'sometimes|in:package,attraction,event,membership',
             'is_active' => 'sometimes|boolean',
         ]);
 
@@ -286,7 +286,7 @@ class FeeSupportController extends Controller
     public function getForEntity(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'entity_type' => 'required|in:package,attraction,event',
+            'entity_type' => 'required|in:package,attraction,event,membership',
             'entity_id' => 'required|integer',
             'base_price' => 'required|numeric|min:0',
             'location_id' => 'nullable|integer|exists:locations,id',

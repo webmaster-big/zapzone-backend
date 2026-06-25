@@ -121,17 +121,52 @@ class InvitationService
         $bookingDate = $booking->booking_date?->format('F j, Y') ?? '';
         $bookingTime = $booking->booking_time ? $booking->booking_time->format('g:i A') : '';
         $locationName = $booking->location?->name ?? '';
+        $companyName = $booking->location?->company?->company_name ?? 'Zap Zone';
         $rsvpUrl = $invitation->getRsvpUrl();
+        $guestFirst = explode(' ', trim($invitation->guest_name ?? ''))[0] ?: 'there';
 
-        $guestFirst = explode(' ', trim($invitation->guest_name ?? ''))[0] ?? 'Hi';
-
-        $message = "Hi {$guestFirst}! You're invited by {$hostName} to a celebration at Zap Zone {$locationName} on {$bookingDate} at {$bookingTime}. Confirm your attendance here: {$rsvpUrl}";
-
-        if (strlen($message) > 320) {
-            $message = "Hi {$guestFirst}! You're invited to a celebration at Zap Zone {$locationName} on {$bookingDate}. Confirm your attendance: {$rsvpUrl}";
-        }
+        $message = $this->renderInvitationSmsTemplate($booking, [
+            'guest_first_name' => $guestFirst,
+            'guest_name' => $invitation->guest_name ?? 'Guest',
+            'host_name' => $hostName,
+            'company_name' => $companyName,
+            'location_name' => $locationName,
+            'booking_date' => $bookingDate,
+            'booking_time' => $bookingTime,
+            'rsvp_url' => $rsvpUrl,
+            'rsvp_link' => $rsvpUrl,
+        ]);
 
         $this->smsService->sendSms($invitation->guest_phone, $message);
+    }
+
+    /**
+     * Resolve the invitation SMS body from the editable sms_notifications
+     * template for the company; fall back to the built-in copy if none exists.
+     */
+    protected function renderInvitationSmsTemplate(Booking $booking, array $vars): string
+    {
+        $companyId = $booking->location?->company_id;
+
+        $template = $companyId
+            ? \App\Models\SmsNotification::findDefault($companyId, \App\Models\SmsNotification::DEFAULT_INVITATION_GUEST)
+            : null;
+
+        if ($template && $template->is_active && trim((string) $template->getEffectiveBody()) !== '') {
+            $body = $template->getEffectiveBody();
+            foreach ($vars as $key => $value) {
+                $body = preg_replace('/\{\{\s*' . preg_quote($key, '/') . '\s*\}\}/', (string) $value, $body);
+            }
+            return trim(strip_tags($body));
+        }
+
+        $message = "Hi {$vars['guest_first_name']}! You're invited by {$vars['host_name']} to a celebration at {$vars['company_name']} {$vars['location_name']} on {$vars['booking_date']} at {$vars['booking_time']}. Confirm your attendance here: {$vars['rsvp_url']}";
+
+        if (strlen($message) > 320) {
+            $message = "Hi {$vars['guest_first_name']}! You're invited to a celebration at {$vars['company_name']} {$vars['location_name']} on {$vars['booking_date']}. Confirm your attendance: {$vars['rsvp_url']}";
+        }
+
+        return $message;
     }
 
     protected function buildInvitationVariables(BookingInvitation $invitation, Booking $booking): array

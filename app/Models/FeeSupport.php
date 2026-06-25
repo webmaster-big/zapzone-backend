@@ -37,6 +37,7 @@ class FeeSupport extends Model
     const ENTITY_PACKAGE = 'package';
     const ENTITY_ATTRACTION = 'attraction';
     const ENTITY_EVENT = 'event';
+    const ENTITY_MEMBERSHIP = 'membership';
 
     public function company(): BelongsTo
     {
@@ -76,6 +77,11 @@ class FeeSupport extends Model
     public function scopeForEvents($query)
     {
         return $query->where('entity_type', self::ENTITY_EVENT);
+    }
+
+    public function scopeForMemberships($query)
+    {
+        return $query->where('entity_type', self::ENTITY_MEMBERSHIP);
     }
 
     public function calculateFee(float $basePrice): float
