@@ -36,6 +36,7 @@ class EmailNotification extends Model
     const TRIGGER_PURCHASE_CHECKED_IN = 'purchase_checked_in';
     const TRIGGER_PURCHASE_REFUNDED = 'purchase_refunded';
     const TRIGGER_PURCHASE_REMINDER = 'purchase_reminder';
+    const TRIGGER_PURCHASE_RESCHEDULED = 'purchase_rescheduled';
     const TRIGGER_PURCHASE_FOLLOWUP = 'purchase_followup';
 
     const TRIGGER_EVENT_CONFIRMED = 'event_confirmed';
