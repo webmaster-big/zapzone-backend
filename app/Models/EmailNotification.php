@@ -239,6 +239,13 @@ class EmailNotification extends Model
             self::DEFAULT_PURCHASE_CANCELLATION_CUSTOMER => 'Purchase Cancellation (Customer)',
             self::DEFAULT_PAYMENT_RECEIVED_CUSTOMER => 'Payment Received (Customer)',
             self::DEFAULT_PAYMENT_REFUNDED_CUSTOMER => 'Payment Refunded (Customer)',
+            self::DEFAULT_BOOKING_RESCHEDULE_CUSTOMER => 'Booking Reschedule (Customer)',
+            self::DEFAULT_PURCHASE_REMINDER_CUSTOMER => 'Purchase Reminder (Customer)',
+            self::DEFAULT_PURCHASE_RESCHEDULE_CUSTOMER => 'Purchase Reschedule (Customer)',
+            self::DEFAULT_EVENT_CONFIRMATION_CUSTOMER => 'Event Confirmation (Customer)',
+            self::DEFAULT_EVENT_REMINDER_CUSTOMER => 'Event Reminder (Customer)',
+            self::DEFAULT_EVENT_RESCHEDULE_CUSTOMER => 'Event Reschedule (Customer)',
+            self::DEFAULT_EVENT_CANCELLATION_CUSTOMER => 'Event Cancellation (Customer)',
         ];
     }
 
