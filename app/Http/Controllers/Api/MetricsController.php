@@ -81,6 +81,12 @@ class MetricsController extends Controller
         $locationId = null;
         if (in_array($user->role, ['location_manager', 'attendant'])) {
             $locationId = $user->location_id;
+        } else {
+            // company_admin (or higher) may filter to a specific location; omitted/"all" = company-wide
+            $requestedLocation = $request->query('location_id');
+            if ($requestedLocation !== null && $requestedLocation !== '' && $requestedLocation !== 'all') {
+                $locationId = (int) $requestedLocation;
+            }
         }
 
         $bookingQuery = Booking::query();
@@ -196,15 +202,15 @@ class MetricsController extends Controller
             $activeMemberships = (clone $membershipQuery)->where('status', 'active')->count();
             $totalMemberships  = $membershipQuery->count();
 
-            $tierCounts = [];
-            foreach ($newMembershipQuery->with('plan:id,tier,name')->get() as $m) {
-                $tier = $m->plan?->tier ?? 'other';
-                $tierCounts[$tier] = ($tierCounts[$tier] ?? 0) + 1;
+            $planCounts = [];
+            foreach ($newMembershipQuery->with('plan:id,name,tier')->get() as $m) {
+                $label = $m->plan?->name ?: ($m->plan?->tier ? ucfirst($m->plan->tier) : 'No Plan');
+                $planCounts[$label] = ($planCounts[$label] ?? 0) + 1;
             }
-            $mTotal = array_sum($tierCounts);
-            foreach ($tierCounts as $tier => $cnt) {
+            $mTotal = array_sum($planCounts);
+            foreach ($planCounts as $label => $cnt) {
                 $membershipBreakdownData[] = [
-                    'label'      => ucfirst($tier),
+                    'label'      => $label,
                     'count'      => $cnt,
                     'percentage' => $mTotal > 0 ? round(($cnt / $mTotal) * 100) : 0,
                 ];
@@ -213,25 +219,50 @@ class MetricsController extends Controller
             Log::warning('Membership metrics unavailable', ['error' => $e->getMessage()]);
         }
 
-        // --- Package (booking) breakdown by package category ---
+        // --- Package (booking) breakdown by specific package ---
         $packageBreakdownData = [];
         try {
             $pkgRows = (clone $bookingQuery)
                 ->leftJoin('packages', 'bookings.package_id', '=', 'packages.id')
                 ->whereNotNull('bookings.package_id')
-                ->select('packages.category', DB::raw('COUNT(*) as cnt'))
-                ->groupBy('packages.category')
+                ->select('packages.name', DB::raw('COUNT(*) as cnt'))
+                ->groupBy('packages.name')
+                ->orderByDesc('cnt')
                 ->get();
             $pkgTotal = $pkgRows->sum('cnt');
             foreach ($pkgRows as $row) {
                 $packageBreakdownData[] = [
-                    'label'      => $row->category ?? 'Other',
+                    'label'      => $row->name ?? 'Other',
                     'count'      => (int) $row->cnt,
                     'percentage' => $pkgTotal > 0 ? round(($row->cnt / $pkgTotal) * 100) : 0,
                 ];
             }
         } catch (\Exception $e) {
             Log::warning('Package breakdown unavailable', ['error' => $e->getMessage()]);
+        }
+
+        // --- Party participants breakdown by package ---
+        $participantBreakdownData = [];
+        try {
+            $partRows = (clone $bookingQuery)
+                ->leftJoin('packages', 'bookings.package_id', '=', 'packages.id')
+                ->select('packages.name', DB::raw('SUM(bookings.participants) as cnt'))
+                ->groupBy('packages.name')
+                ->orderByDesc('cnt')
+                ->get();
+            $partTotal = $partRows->sum('cnt');
+            foreach ($partRows as $row) {
+                if ((int) $row->cnt === 0) {
+                    continue;
+                }
+                $participantBreakdownData[] = [
+                    'label'      => $row->name ?? 'Other',
+                    'count'      => (int) $row->cnt,
+                    'percentage' => $partTotal > 0 ? round(($row->cnt / $partTotal) * 100) : 0,
+                ];
+            }
+        } catch (\Exception $e) {
+            Log::warning('Participant breakdown unavailable', ['error' => $e->getMessage()]);
         }
 
         // --- Attraction breakdown by category ---
@@ -496,6 +527,7 @@ class MetricsController extends Controller
             ],
             'breakdowns' => [
                 'packageBreakdown'   => $packageBreakdownData,
+                'participantBreakdown' => $participantBreakdownData,
                 'attractionBreakdown' => $attractionBreakdownData,
                 'eventBreakdown'     => $eventBreakdownData,
                 'membershipBreakdown' => $membershipBreakdownData,
