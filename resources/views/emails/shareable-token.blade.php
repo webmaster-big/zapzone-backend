@@ -15,7 +15,7 @@
                                 @php
                                     $logoUrl = $company->logo_path;
                                     if (!str_starts_with($logoUrl, 'http://') && !str_starts_with($logoUrl, 'https://') && !str_starts_with($logoUrl, 'data:')) {
-                                        $logoUrl = 'https://zapzone-backend-yt1lm2w5.on-forge.com/storage/' . $logoUrl;
+                                        $logoUrl = (rtrim(config('app.url'), '/') . '/storage/') . $logoUrl;
                                     }
                                 @endphp
                                 <img src="{{ $logoUrl }}" alt="{{ $company->company_name }}" style="max-height: 50px; max-width: 180px; margin-bottom: 16px;" />

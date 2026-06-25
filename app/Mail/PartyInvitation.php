@@ -86,7 +86,7 @@ class PartyInvitation extends Mailable
                 return 'data:' . $mimeType . ';base64,' . base64_encode($imageData);
             }
 
-            $publicUrl = 'https://zapzone-backend-yt1lm2w5.on-forge.com/storage/' . $logoPath;
+            $publicUrl = rtrim(config('app.url'), '/') . '/storage/' . $logoPath;
             $context = stream_context_create([
                 'http' => ['timeout' => 10, 'user_agent' => 'Mozilla/5.0'],
                 'ssl' => ['verify_peer' => false, 'verify_peer_name' => false],

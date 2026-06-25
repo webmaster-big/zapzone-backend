@@ -2,7 +2,7 @@
     $customer = $membership->customer;
     $plan = $membership->plan;
     $company = $membership->homeLocation?->company;
-    $appUrl = config('app.url', 'https://zapzone-backend-yt1lm2w5.on-forge.com');
+    $appUrl = config('app.url', 'http://localhost');
     $logoUrl = $company?->logo_path;
     if ($logoUrl && !str_starts_with($logoUrl, 'http')) {
         $logoUrl = rtrim($appUrl, '/') . '/storage/' . $logoUrl;
