@@ -172,7 +172,7 @@ class CompanyController extends Controller
         $stats = [
             'total_locations' => $company->locations()->count(),
             'total_users' => $company->users()->count(),
-            'active_users' => $company->users()->where('is_active', true)->count(),
+            'active_users' => $company->users()->where('status', 'active')->count(),
             'recent_bookings' => $company->locations()->withCount(['packages' => function ($query) {
                 $query->whereHas('bookings', function ($q) {
                     $q->where('created_at', '>=', now()->subDays(30));
