@@ -62,6 +62,7 @@ class AttractionPurchase extends Model
         'scheduled_time' => 'datetime:H:i',
         'total_amount' => 'decimal:2',
         'applied_fees' => 'array',
+        'applied_discounts' => 'array',
         'discount_amount' => 'decimal:2',
         'membership_discount' => 'decimal:2',
         'amount_paid' => 'decimal:2',
