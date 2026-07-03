@@ -239,7 +239,16 @@ class WaiverTemplateController extends Controller
             $query->where('location_id', $authUser->location_id);
         }
 
-        return $query->whereNotIn('id', $excludeIds)->get(['id', 'name', 'location_id']);
+        return $query
+            ->with('location:id,name')
+            ->whereNotIn('id', $excludeIds)
+            ->get(['id', 'name', 'location_id'])
+            ->map(fn ($item) => [
+                'id'            => $item->id,
+                'name'          => $item->name,
+                'location_id'   => $item->location_id,
+                'location_name' => $item->location?->name ?? null,
+            ]);
     }
 
     private function assignmentConflict(int $companyId, array $payload, ?int $exceptTemplateId): ?JsonResponse
