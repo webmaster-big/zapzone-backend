@@ -131,12 +131,44 @@ class WaiverPublicController extends Controller
 
         $settings = WaiverSetting::forCompany($template->company_id);
 
+        // Resolve static tokens that are known at display time (company, location, dates).
+        // Signer-specific tokens (full_name, booking_date, activity_name) are left blank
+        // because the kiosk has no booking context — they are filled in after submission.
+        $template->loadMissing(['company', 'location']);
+        $company  = $template->company;
+        $location = $template->location;
+
+        $staticVars = [
+            'business_legal_name' => $company?->company_name ?? '',
+            'company_name'        => $company?->company_name ?? '',
+            'company_email'       => $company?->email ?? '',
+            'company_phone'       => $company?->phone ?? '',
+            'location_name'       => $location?->name ?? '',
+            'location_address'    => trim(implode(', ', array_filter([
+                $location?->address, $location?->city, $location?->state, $location?->zip_code,
+            ]))),
+            'current_date' => \Carbon\Carbon::now()->format('F j, Y'),
+            'current_year' => \Carbon\Carbon::now()->format('Y'),
+            // signer-specific — left empty; shown as blank in the read-only body
+            'full_name'       => '',
+            'adult_first_name'=> '',
+            'adult_last_name' => '',
+            'adult_email'     => '',
+            'adult_phone'     => '',
+            'relationship'    => '',
+            'activity_name'   => '',
+            'booking_date'    => '',
+            'visit_date'      => '',
+        ];
+
+        $body = $this->waivers->render($version->body_text, $staticVars);
+
         return response()->json([
             'success' => true,
             'data' => [
                 'kiosk' => true,
                 'template' => $this->templatePayload($template, $version),
-                'body' => $version->body_text, // tokens left in place; kiosk has no booking context
+                'body' => $body,
                 'settings' => [
                     'inactivity_timeout_seconds' => $settings->kiosk_inactivity_timeout_seconds,
                     'disable_autofill' => $settings->kiosk_disable_autofill,
