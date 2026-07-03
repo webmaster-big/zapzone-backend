@@ -322,6 +322,17 @@ class AttractionPurchaseController extends Controller
 
         $purchase->load(['attraction', 'customer', 'createdBy', 'addOns']);
 
+        // Create a pending waiver if a template covers this attraction, so the
+        // confirmation can include the {{waiver_link}}. Non-fatal.
+        try {
+            app(\App\Services\WaiverService::class)->ensureForAttractionPurchase($purchase);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('Failed to create waiver for attraction purchase', [
+                'attraction_purchase_id' => $purchase->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
         $this->recordMembershipRedemptions($purchase, $validated);
 
         if ($purchase->customer_id && $purchase->status !== AttractionPurchase::STATUS_PENDING && (float) ($purchase->amount_paid ?? 0) > 0) {

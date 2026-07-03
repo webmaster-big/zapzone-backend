@@ -376,6 +376,20 @@ class BookingController extends Controller
             }
         }
 
+        // Create a pending waiver if a template covers this booking's package/attractions,
+        // so the confirmation email/SMS can include the {{waiver_link}}. Non-fatal.
+        // The signing URL is also surfaced in the create response so the post-checkout
+        // "Complete Waiver Now" prompt can link the customer straight to their waiver.
+        $bookingWaiver = null;
+        try {
+            $bookingWaiver = app(\App\Services\WaiverService::class)->ensureForBooking($booking);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('Failed to create waiver for booking', [
+                'booking_id' => $booking->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
         if ($validated['room_id']) {
             PackageTimeSlot::create([
                 'package_id' => $validated['package_id'],
@@ -557,6 +571,12 @@ class BookingController extends Controller
         }
 
         $this->recordConversion('booking_completed', $booking, (float) ($booking->total_amount ?? 0));
+
+        // Surface the pending waiver link for the post-checkout "Complete Waiver Now" prompt.
+        if ($bookingWaiver && $bookingWaiver->status === \App\Models\Waiver::STATUS_PENDING) {
+            $booking->setAttribute('waiver_signing_url', $bookingWaiver->signing_url);
+            $booking->setAttribute('waiver_status', $bookingWaiver->status);
+        }
 
         return response()->json([
             'success' => true,

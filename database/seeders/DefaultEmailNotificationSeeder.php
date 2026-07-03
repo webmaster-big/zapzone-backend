@@ -273,7 +273,181 @@ class DefaultEmailNotificationSeeder extends Seeder
                 'subject' => 'Event Cancelled - {{event_name}}',
                 'body' => self::getEventCancellationCustomerBody(),
             ],
+
+            // ---- Waivers ----
+            [
+                'default_key' => EmailNotification::DEFAULT_WAIVER_STAFF_SENT_CUSTOMER,
+                'name' => 'Waiver Link Sent (Customer)',
+                'description' => 'Sent when a staff member or the booking flow sends a waiver link to the customer/guardian to complete before their visit.',
+                'trigger_type' => EmailNotification::TRIGGER_WAIVER_STAFF_SENT,
+                'entity_type' => EmailNotification::ENTITY_WAIVER,
+                'entity_ids' => [],
+                'recipient_types' => [EmailNotification::RECIPIENT_CUSTOMER],
+                'custom_emails' => [],
+                'include_qr_code' => false,
+                'subject' => 'Complete Your Waiver - {{company_name}}',
+                'body' => self::getWaiverLinkCustomerBody(),
+            ],
+            [
+                'default_key' => EmailNotification::DEFAULT_WAIVER_REMINDER_CUSTOMER,
+                'name' => 'Waiver Reminder (Customer)',
+                'description' => 'Sent when a waiver is still incomplete within the reminder window before the selected visit date.',
+                'trigger_type' => EmailNotification::TRIGGER_WAIVER_REMINDER,
+                'entity_type' => EmailNotification::ENTITY_WAIVER,
+                'entity_ids' => [],
+                'recipient_types' => [EmailNotification::RECIPIENT_CUSTOMER],
+                'custom_emails' => [],
+                'include_qr_code' => false,
+                'subject' => 'Reminder: Please Complete Your Waiver - {{company_name}}',
+                'body' => self::getWaiverReminderCustomerBody(),
+            ],
+            [
+                'default_key' => EmailNotification::DEFAULT_WAIVER_SIGNED_CUSTOMER,
+                'name' => 'Waiver Signed (Customer)',
+                'description' => 'Sent to the customer/guardian after their waiver is completed and accepted electronically.',
+                'trigger_type' => EmailNotification::TRIGGER_WAIVER_SIGNED,
+                'entity_type' => EmailNotification::ENTITY_WAIVER,
+                'entity_ids' => [],
+                'recipient_types' => [EmailNotification::RECIPIENT_CUSTOMER],
+                'custom_emails' => [],
+                'include_qr_code' => false,
+                'subject' => 'Waiver Completed - {{company_name}}',
+                'body' => self::getWaiverSignedCustomerBody(),
+            ],
+            [
+                'default_key' => EmailNotification::DEFAULT_WAIVER_BULK_CHAPERONE,
+                'name' => 'Bulk Waiver Invite (Chaperone)',
+                'description' => 'Sent to a group organizer/chaperone so they can invite parents/guardians to complete waivers for their group.',
+                'trigger_type' => EmailNotification::TRIGGER_WAIVER_BULK_CHAPERONE,
+                'entity_type' => EmailNotification::ENTITY_WAIVER,
+                'entity_ids' => [],
+                'recipient_types' => [EmailNotification::RECIPIENT_CUSTOMER],
+                'custom_emails' => [],
+                'include_qr_code' => false,
+                'subject' => 'Waivers Needed for Your Group - {{company_name}}',
+                'body' => self::getWaiverBulkChaperoneBody(),
+            ],
+            [
+                'default_key' => EmailNotification::DEFAULT_WAIVER_PARENT_INVITE,
+                'name' => 'Waiver Invite (Parent/Guardian)',
+                'description' => 'Sent to a parent/guardian by a chaperone to complete a waiver for their minor(s).',
+                'trigger_type' => EmailNotification::TRIGGER_WAIVER_PARENT_INVITE,
+                'entity_type' => EmailNotification::ENTITY_WAIVER,
+                'entity_ids' => [],
+                'recipient_types' => [EmailNotification::RECIPIENT_CUSTOMER],
+                'custom_emails' => [],
+                'include_qr_code' => false,
+                'subject' => 'Please Complete a Waiver - {{company_name}}',
+                'body' => self::getWaiverParentInviteBody(),
+            ],
         ];
+    }
+
+    protected static function getWaiverLinkCustomerBody(): string
+    {
+        return <<<'HTML'
+<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; color: #374151;">
+    <div style="background-color: #1e40af; color: #ffffff; padding: 24px 32px; border-radius: 8px 8px 0 0; text-align: center;">
+        <h1 style="margin: 0 0 8px 0; font-size: 22px; font-weight: 600;">Complete Your Waiver</h1>
+        <p style="margin: 0; font-size: 14px; opacity: 0.9;">{{activity_name}}</p>
+    </div>
+    <div style="background-color: #ffffff; padding: 32px; border: 1px solid #e5e7eb; border-top: none;">
+        <p style="margin: 0 0 16px 0; font-size: 14px; line-height: 1.6;">Hi {{customer_name}},</p>
+        <p style="margin: 0 0 24px 0; font-size: 14px; line-height: 1.6;">To save time when you arrive at {{location_name}}, please complete your waiver before your visit on {{waiver_date}}.</p>
+        <div style="text-align: center; margin: 30px 0;">
+            <a href="{{waiver_link}}" style="display: inline-block; background-color: #1e40af; color: #ffffff; padding: 12px 28px; text-decoration: none; border-radius: 6px; font-weight: 600;">Complete Waiver</a>
+        </div>
+        <p style="margin: 0 0 8px 0; font-size: 13px; color: #6b7280; line-height: 1.6;">If the button doesn't work, copy and paste this link:<br><span style="color: #1e40af;">{{waiver_link}}</span></p>
+    </div>
+    <div style="padding: 16px 32px; text-align: center; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px; background: #f9fafb;">
+        <p style="color: #9ca3af; font-size: 12px; margin: 0;">&copy; {{current_year}} {{company_name}}. All rights reserved.</p>
+    </div>
+</div>
+HTML;
+    }
+
+    protected static function getWaiverReminderCustomerBody(): string
+    {
+        return <<<'HTML'
+<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; color: #374151;">
+    <div style="background-color: #b45309; color: #ffffff; padding: 24px 32px; border-radius: 8px 8px 0 0; text-align: center;">
+        <h1 style="margin: 0 0 8px 0; font-size: 22px; font-weight: 600;">Your Visit Is Coming Up</h1>
+        <p style="margin: 0; font-size: 14px; opacity: 0.9;">{{activity_name}}</p>
+    </div>
+    <div style="background-color: #ffffff; padding: 32px; border: 1px solid #e5e7eb; border-top: none;">
+        <p style="margin: 0 0 16px 0; font-size: 14px; line-height: 1.6;">Hi {{customer_name}},</p>
+        <p style="margin: 0 0 24px 0; font-size: 14px; line-height: 1.6;">This is a friendly reminder to complete your waiver before arriving at {{location_name}}. Completing it ahead of time saves you time at check-in.</p>
+        <div style="text-align: center; margin: 30px 0;">
+            <a href="{{waiver_link}}" style="display: inline-block; background-color: #b45309; color: #ffffff; padding: 12px 28px; text-decoration: none; border-radius: 6px; font-weight: 600;">Complete Waiver Now</a>
+        </div>
+    </div>
+    <div style="padding: 16px 32px; text-align: center; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px; background: #f9fafb;">
+        <p style="color: #9ca3af; font-size: 12px; margin: 0;">&copy; {{current_year}} {{company_name}}. All rights reserved.</p>
+    </div>
+</div>
+HTML;
+    }
+
+    protected static function getWaiverSignedCustomerBody(): string
+    {
+        return <<<'HTML'
+<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; color: #374151;">
+    <div style="background-color: #059669; color: #ffffff; padding: 24px 32px; border-radius: 8px 8px 0 0; text-align: center;">
+        <h1 style="margin: 0 0 8px 0; font-size: 22px; font-weight: 600;">Waiver Completed</h1>
+        <p style="margin: 0; font-size: 14px; opacity: 0.9;">{{activity_name}}</p>
+    </div>
+    <div style="background-color: #ffffff; padding: 32px; border: 1px solid #e5e7eb; border-top: none;">
+        <p style="margin: 0 0 16px 0; font-size: 14px; line-height: 1.6;">Hi {{customer_name}},</p>
+        <p style="margin: 0 0 24px 0; font-size: 14px; line-height: 1.6;">Thank you &mdash; your waiver has been completed and recorded. You're all set for your visit to {{location_name}}.</p>
+        <p style="margin: 0; font-size: 14px;">See you soon,<br><strong>{{company_name}}</strong></p>
+    </div>
+    <div style="padding: 16px 32px; text-align: center; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px; background: #f9fafb;">
+        <p style="color: #9ca3af; font-size: 12px; margin: 0;">&copy; {{current_year}} {{company_name}}. All rights reserved.</p>
+    </div>
+</div>
+HTML;
+    }
+
+    protected static function getWaiverBulkChaperoneBody(): string
+    {
+        return <<<'HTML'
+<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; color: #374151;">
+    <div style="background-color: #1e40af; color: #ffffff; padding: 24px 32px; border-radius: 8px 8px 0 0; text-align: center;">
+        <h1 style="margin: 0 0 8px 0; font-size: 22px; font-weight: 600;">Waivers Needed for Your Group</h1>
+    </div>
+    <div style="background-color: #ffffff; padding: 32px; border: 1px solid #e5e7eb; border-top: none;">
+        <p style="margin: 0 0 16px 0; font-size: 14px; line-height: 1.6;">Hi {{customer_name}},</p>
+        <p style="margin: 0 0 24px 0; font-size: 14px; line-height: 1.6;">Your group needs each participant (or a parent/guardian for minors) to complete a waiver before visiting {{location_name}}. Use the link below to add your group's contacts and send them their waiver invites, and to track who has completed theirs.</p>
+        <div style="text-align: center; margin: 30px 0;">
+            <a href="{{waiver_link}}" style="display: inline-block; background-color: #1e40af; color: #ffffff; padding: 12px 28px; text-decoration: none; border-radius: 6px; font-weight: 600;">Manage Group Waivers</a>
+        </div>
+    </div>
+    <div style="padding: 16px 32px; text-align: center; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px; background: #f9fafb;">
+        <p style="color: #9ca3af; font-size: 12px; margin: 0;">&copy; {{current_year}} {{company_name}}. All rights reserved.</p>
+    </div>
+</div>
+HTML;
+    }
+
+    protected static function getWaiverParentInviteBody(): string
+    {
+        return <<<'HTML'
+<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; color: #374151;">
+    <div style="background-color: #1e40af; color: #ffffff; padding: 24px 32px; border-radius: 8px 8px 0 0; text-align: center;">
+        <h1 style="margin: 0 0 8px 0; font-size: 22px; font-weight: 600;">Please Complete a Waiver</h1>
+    </div>
+    <div style="background-color: #ffffff; padding: 32px; border: 1px solid #e5e7eb; border-top: none;">
+        <p style="margin: 0 0 16px 0; font-size: 14px; line-height: 1.6;">Hi {{customer_name}},</p>
+        <p style="margin: 0 0 24px 0; font-size: 14px; line-height: 1.6;">You've been asked to complete a waiver for an upcoming visit to {{location_name}}. You can sign for yourself and any minors in your care using the link below.</p>
+        <div style="text-align: center; margin: 30px 0;">
+            <a href="{{waiver_link}}" style="display: inline-block; background-color: #1e40af; color: #ffffff; padding: 12px 28px; text-decoration: none; border-radius: 6px; font-weight: 600;">Complete Waiver</a>
+        </div>
+    </div>
+    <div style="padding: 16px 32px; text-align: center; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px; background: #f9fafb;">
+        <p style="color: #9ca3af; font-size: 12px; margin: 0;">&copy; {{current_year}} {{company_name}}. All rights reserved.</p>
+    </div>
+</div>
+HTML;
     }
 
 
@@ -346,6 +520,8 @@ class DefaultEmailNotificationSeeder extends Seeder
             {{qr_code}}
             <p style="color: #6b7280; font-size: 12px; margin: 8px 0 0 0;">Show this QR code at check-in</p>
         </div>
+
+        {{waiver_section}}
 
         <p style="margin: 0 0 8px 0; font-size: 14px; line-height: 1.6;">If you have any questions, please contact us at {{location_email}} or {{location_phone}}.</p>
         <p style="margin: 0 0 24px 0; font-size: 14px; line-height: 1.6;">We look forward to seeing you!</p>
@@ -728,6 +904,8 @@ HTML;
             <p style="color: #6b7280; font-size: 12px; margin: 8px 0 0 0;">Show this QR code when you arrive</p>
         </div>
 
+        {{waiver_section}}
+
         <p style="margin: 0 0 8px 0; font-size: 14px; line-height: 1.6;">If you have any questions, please contact us at {{location_email}} or {{location_phone}}.</p>
         <p style="margin: 0 0 24px 0; font-size: 14px; line-height: 1.6;">Enjoy your experience!</p>
 
@@ -914,7 +1092,7 @@ HTML;
      * Branded shell shared by the newer templates. $rows is an array of
      * [label, value] pairs rendered as a detail table.
      */
-    protected static function shell(string $headerColor, string $title, string $subtitle, string $intro, array $rows, string $outro): string
+    protected static function shell(string $headerColor, string $title, string $subtitle, string $intro, array $rows, string $outro, string $extra = ''): string
     {
         $rowsHtml = '';
         $count = count($rows);
@@ -951,6 +1129,7 @@ ROW;
             <p style="margin: 0; font-size: 14px; color: #4b5563;">Phone: {{location_phone}}</p>
         </div>
         <p style="margin: 0 0 24px 0; font-size: 14px; line-height: 1.6;">$outro</p>
+        $extra
         <p style="margin: 0; font-size: 14px;">Best regards,<br><strong>{{company_name}} Team</strong></p>
     </div>
     <div style="padding: 16px 32px; text-align: center; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px; background: #f9fafb;">
@@ -1011,7 +1190,8 @@ HTML;
                 ['Balance Due:', '{{event_balance}}'],
                 ['Reference:', '{{event_reference}}'],
             ],
-            'If you have any questions, contact us at {{location_email}} or {{location_phone}}. Enjoy the event!'
+            'If you have any questions, contact us at {{location_email}} or {{location_phone}}. Enjoy the event!',
+            '{{waiver_section}}'
         );
     }
 

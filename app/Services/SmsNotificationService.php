@@ -10,6 +10,7 @@ use App\Models\Payment;
 use App\Models\SmsNotification;
 use App\Models\SmsNotificationLog;
 use App\Models\User;
+use App\Models\Waiver;
 use Database\Seeders\DefaultSmsNotificationSeeder;
 use Illuminate\Support\Facades\Log;
 
@@ -80,6 +81,22 @@ class SmsNotificationService
 
         foreach ($notifications as $notification) {
             $this->send($notification, $purchase, 'event');
+        }
+    }
+
+    public function triggerWaiverNotification(Waiver $waiver, string $triggerType): void
+    {
+        if (!$this->enabled()) {
+            return;
+        }
+
+        $waiver->loadMissing(['customer', 'location.company', 'company', 'booking', 'event', 'template']);
+        $this->ensureDefaultsSeeded($waiver->company ?? $waiver->location?->company);
+
+        $notifications = SmsNotification::findForWaiver($waiver, $triggerType);
+
+        foreach ($notifications as $notification) {
+            $this->send($notification, $waiver, 'waiver');
         }
     }
 
@@ -238,12 +255,16 @@ class SmsNotificationService
             return $phone;
         }
 
+        if ($type === 'waiver') {
+            return $entity->adult_phone ?? $entity->customer?->phone;
+        }
+
         return $entity->customer?->phone ?? ($entity->guest_phone ?? null);
     }
 
     protected function resolveLocationId($entity, string $type): ?int
     {
-        if ($type === 'booking' || $type === 'event') {
+        if ($type === 'booking' || $type === 'event' || $type === 'waiver') {
             return $entity->location_id;
         }
         if ($type === 'purchase') {
@@ -259,6 +280,9 @@ class SmsNotificationService
 
     protected function resolveCompanyId($entity, string $type): ?int
     {
+        if ($type === 'waiver') {
+            return $entity->company_id ?? $entity->location?->company_id;
+        }
         if ($type === 'booking' || $type === 'event') {
             return $entity->location?->company_id;
         }

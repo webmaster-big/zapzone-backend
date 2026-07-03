@@ -47,6 +47,12 @@ class EmailNotification extends Model
     const TRIGGER_INVITATION_SENT = 'invitation_sent';
     const TRIGGER_INVITATION_RSVP_RECEIVED = 'invitation_rsvp_received';
 
+    const TRIGGER_WAIVER_REMINDER = 'waiver_reminder';
+    const TRIGGER_WAIVER_SIGNED = 'waiver_signed';
+    const TRIGGER_WAIVER_STAFF_SENT = 'waiver_staff_sent';
+    const TRIGGER_WAIVER_BULK_CHAPERONE = 'waiver_bulk_chaperone';
+    const TRIGGER_WAIVER_PARENT_INVITE = 'waiver_parent_invite';
+
     const DEFAULT_BOOKING_CONFIRMATION_CUSTOMER = 'booking_confirmation_customer';
     const DEFAULT_BOOKING_CONFIRMATION_STAFF = 'booking_confirmation_staff';
     const DEFAULT_BOOKING_CANCELLATION_CUSTOMER = 'booking_cancellation_customer';
@@ -65,9 +71,16 @@ class EmailNotification extends Model
     const DEFAULT_EVENT_RESCHEDULE_CUSTOMER = 'event_reschedule_customer';
     const DEFAULT_EVENT_CANCELLATION_CUSTOMER = 'event_cancellation_customer';
 
+    const DEFAULT_WAIVER_REMINDER_CUSTOMER = 'waiver_reminder_customer';
+    const DEFAULT_WAIVER_SIGNED_CUSTOMER = 'waiver_signed_customer';
+    const DEFAULT_WAIVER_STAFF_SENT_CUSTOMER = 'waiver_staff_sent_customer';
+    const DEFAULT_WAIVER_BULK_CHAPERONE = 'waiver_bulk_chaperone';
+    const DEFAULT_WAIVER_PARENT_INVITE = 'waiver_parent_invite';
+
     const ENTITY_PACKAGE = 'package';
     const ENTITY_ATTRACTION = 'attraction';
     const ENTITY_EVENT = 'event';
+    const ENTITY_WAIVER = 'waiver';
     const ENTITY_ALL = 'all';
 
     const RECIPIENT_CUSTOMER = 'customer';
@@ -246,6 +259,11 @@ class EmailNotification extends Model
             self::DEFAULT_EVENT_REMINDER_CUSTOMER => 'Event Reminder (Customer)',
             self::DEFAULT_EVENT_RESCHEDULE_CUSTOMER => 'Event Reschedule (Customer)',
             self::DEFAULT_EVENT_CANCELLATION_CUSTOMER => 'Event Cancellation (Customer)',
+            self::DEFAULT_WAIVER_REMINDER_CUSTOMER => 'Waiver Reminder (Customer)',
+            self::DEFAULT_WAIVER_SIGNED_CUSTOMER => 'Waiver Signed (Customer)',
+            self::DEFAULT_WAIVER_STAFF_SENT_CUSTOMER => 'Waiver Link Sent (Customer)',
+            self::DEFAULT_WAIVER_BULK_CHAPERONE => 'Bulk Waiver Invite (Chaperone)',
+            self::DEFAULT_WAIVER_PARENT_INVITE => 'Waiver Invite (Parent/Guardian)',
         ];
     }
 
@@ -330,6 +348,29 @@ class EmailNotification extends Model
             ->filter(fn ($n) => $n->appliesToEntity($purchase->event_id));
     }
 
+    public static function findForWaiver(Waiver $waiver, string $triggerType): \Illuminate\Support\Collection
+    {
+        $companyId = $waiver->company_id ?? $waiver->location?->company_id;
+
+        if (!$companyId) {
+            return collect();
+        }
+
+        return self::active()
+            ->forTrigger($triggerType)
+            ->where('company_id', $companyId)
+            ->where(function ($query) {
+                $query->where('entity_type', self::ENTITY_WAIVER)
+                    ->orWhere('entity_type', self::ENTITY_ALL);
+            })
+            ->where(function ($query) use ($waiver) {
+                $query->whereNull('location_id')
+                    ->orWhere('location_id', $waiver->location_id);
+            })
+            ->get()
+            ->filter(fn ($n) => $n->appliesToEntity($waiver->waiver_template_id));
+    }
+
     public static function findForPayment($payment, string $triggerType): \Illuminate\Support\Collection
     {
         $locationId = null;
@@ -404,6 +445,13 @@ class EmailNotification extends Model
                 self::TRIGGER_INVITATION_SENT => 'Invitation Sent',
                 self::TRIGGER_INVITATION_RSVP_RECEIVED => 'RSVP Received',
             ],
+            'waiver' => [
+                self::TRIGGER_WAIVER_REMINDER => 'Waiver Reminder (Incomplete)',
+                self::TRIGGER_WAIVER_SIGNED => 'Waiver Signed',
+                self::TRIGGER_WAIVER_STAFF_SENT => 'Waiver Link Sent (Staff)',
+                self::TRIGGER_WAIVER_BULK_CHAPERONE => 'Bulk Waiver Invite (Chaperone)',
+                self::TRIGGER_WAIVER_PARENT_INVITE => 'Waiver Invite (Parent/Guardian)',
+            ],
         ];
     }
 
@@ -451,6 +499,7 @@ class EmailNotification extends Model
             self::ENTITY_PACKAGE => 'Parties (Packages)',
             self::ENTITY_ATTRACTION => 'Attractions',
             self::ENTITY_EVENT => 'Events',
+            self::ENTITY_WAIVER => 'Waivers',
         ];
     }
 

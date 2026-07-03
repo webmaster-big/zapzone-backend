@@ -20,6 +20,13 @@ return Application::configure(basePath: dirname(__DIR__))
 
         // Prune raw page-view rows older than 365 days nightly (keeps conversions).
         $schedule->command('analytics:prune')->dailyAt('03:30');
+
+        // Send reminders for incomplete waivers whose visit date is within the
+        // reminder window (default 24h). Hourly so per-company windows are honored.
+        $schedule->command('waivers:send-reminders')->hourly();
+
+        // Reset membership usage counters on term roll-over and enforce grace-period expiry.
+        $schedule->command('memberships:reset-usage')->dailyAt('00:30');
     })
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->use([

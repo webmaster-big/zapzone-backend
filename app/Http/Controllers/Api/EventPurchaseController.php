@@ -191,6 +191,17 @@ class EventPurchaseController extends Controller
 
             $purchase->load(['event.location.company', 'customer', 'location:id,name', 'addOns']);
 
+            // Create a pending waiver if a template covers this event, so the
+            // confirmation can include the {{waiver_link}}. Non-fatal.
+            try {
+                app(\App\Services\WaiverService::class)->ensureForEventPurchase($purchase);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('Failed to create waiver for event purchase', [
+                    'event_purchase_id' => $purchase->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
             $this->recordMembershipRedemptions($purchase, $validated);
 
             if ($purchase->customer_id && $purchase->status === 'confirmed' && (float) ($purchase->amount_paid ?? 0) > 0) {

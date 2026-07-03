@@ -37,6 +37,13 @@ class SmsNotification extends Model
     // Invitation (party guest) trigger — sent per-guest by InvitationService.
     const TRIGGER_INVITATION_SENT = 'invitation_sent';
 
+    // Waiver triggers — mirror EmailNotification trigger strings.
+    const TRIGGER_WAIVER_REMINDER = 'waiver_reminder';
+    const TRIGGER_WAIVER_SIGNED = 'waiver_signed';
+    const TRIGGER_WAIVER_STAFF_SENT = 'waiver_staff_sent';
+    const TRIGGER_WAIVER_BULK_CHAPERONE = 'waiver_bulk_chaperone';
+    const TRIGGER_WAIVER_PARENT_INVITE = 'waiver_parent_invite';
+
     // Default keys (one row per template). Segment x lifecycle.
     const DEFAULT_BOOKING_CONFIRMATION_CUSTOMER = 'booking_confirmation_customer';
     const DEFAULT_BOOKING_REMINDER_CUSTOMER = 'booking_reminder_customer';
@@ -59,9 +66,16 @@ class SmsNotification extends Model
 
     const DEFAULT_INVITATION_GUEST = 'invitation_guest';
 
+    const DEFAULT_WAIVER_REMINDER_CUSTOMER = 'waiver_reminder_customer';
+    const DEFAULT_WAIVER_SIGNED_CUSTOMER = 'waiver_signed_customer';
+    const DEFAULT_WAIVER_STAFF_SENT_CUSTOMER = 'waiver_staff_sent_customer';
+    const DEFAULT_WAIVER_BULK_CHAPERONE = 'waiver_bulk_chaperone';
+    const DEFAULT_WAIVER_PARENT_INVITE = 'waiver_parent_invite';
+
     const ENTITY_PACKAGE = 'package';
     const ENTITY_ATTRACTION = 'attraction';
     const ENTITY_EVENT = 'event';
+    const ENTITY_WAIVER = 'waiver';
     const ENTITY_ALL = 'all';
 
     const RECIPIENT_CUSTOMER = 'customer';
@@ -258,6 +272,29 @@ class SmsNotification extends Model
             ->filter(fn ($n) => $n->appliesToEntity($purchase->event_id));
     }
 
+    public static function findForWaiver(Waiver $waiver, string $triggerType): \Illuminate\Support\Collection
+    {
+        $companyId = $waiver->company_id ?? $waiver->location?->company_id;
+
+        if (!$companyId) {
+            return collect();
+        }
+
+        return self::active()
+            ->forTrigger($triggerType)
+            ->where('company_id', $companyId)
+            ->where(function ($query) {
+                $query->where('entity_type', self::ENTITY_WAIVER)
+                    ->orWhere('entity_type', self::ENTITY_ALL);
+            })
+            ->where(function ($query) use ($waiver) {
+                $query->whereNull('location_id')
+                    ->orWhere('location_id', $waiver->location_id);
+            })
+            ->get()
+            ->filter(fn ($n) => $n->appliesToEntity($waiver->waiver_template_id));
+    }
+
     public static function findForPayment($payment, string $triggerType): \Illuminate\Support\Collection
     {
         $locationId = null;
@@ -309,6 +346,11 @@ class SmsNotification extends Model
             self::DEFAULT_PAYMENT_RECEIVED_CUSTOMER => 'Payment Received (Customer)',
             self::DEFAULT_PAYMENT_REFUNDED_CUSTOMER => 'Payment Refunded (Customer)',
             self::DEFAULT_INVITATION_GUEST => 'Party Invitation (Guest)',
+            self::DEFAULT_WAIVER_REMINDER_CUSTOMER => 'Waiver Reminder (Customer)',
+            self::DEFAULT_WAIVER_SIGNED_CUSTOMER => 'Waiver Signed (Customer)',
+            self::DEFAULT_WAIVER_STAFF_SENT_CUSTOMER => 'Waiver Link Sent (Customer)',
+            self::DEFAULT_WAIVER_BULK_CHAPERONE => 'Bulk Waiver Invite (Chaperone)',
+            self::DEFAULT_WAIVER_PARENT_INVITE => 'Waiver Invite (Parent/Guardian)',
         ];
     }
 
@@ -341,6 +383,13 @@ class SmsNotification extends Model
             'invitation' => [
                 self::TRIGGER_INVITATION_SENT => 'Party Invitation Sent',
             ],
+            'waiver' => [
+                self::TRIGGER_WAIVER_REMINDER => 'Waiver Reminder (Incomplete)',
+                self::TRIGGER_WAIVER_SIGNED => 'Waiver Signed',
+                self::TRIGGER_WAIVER_STAFF_SENT => 'Waiver Link Sent (Staff)',
+                self::TRIGGER_WAIVER_BULK_CHAPERONE => 'Bulk Waiver Invite (Chaperone)',
+                self::TRIGGER_WAIVER_PARENT_INVITE => 'Waiver Invite (Parent/Guardian)',
+            ],
         ];
     }
 
@@ -362,6 +411,7 @@ class SmsNotification extends Model
             self::ENTITY_PACKAGE => 'Parties (Packages)',
             self::ENTITY_ATTRACTION => 'Attractions',
             self::ENTITY_EVENT => 'Events',
+            self::ENTITY_WAIVER => 'Waivers',
         ];
     }
 

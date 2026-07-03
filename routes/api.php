@@ -47,12 +47,30 @@ use App\Http\Controllers\Api\MobileAvailabilityController;
 use App\Http\Controllers\Api\StreamController;
 use App\Http\Controllers\Api\StripeController;
 use App\Http\Controllers\Api\UserController;
+use App\Http\Controllers\Api\WaiverBulkInviteController;
+use App\Http\Controllers\Api\WaiverController;
+use App\Http\Controllers\Api\WaiverPublicController;
+use App\Http\Controllers\Api\WaiverReportController;
+use App\Http\Controllers\Api\WaiverSettingController;
+use App\Http\Controllers\Api\WaiverTemplateController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
 Route::post('login', [ApiAuthController::class, 'login']); // include
 Route::post('customer-login', [ApiAuthController::class, 'customerLogin']); // include
 Route::post('customer-register', [ApiAuthController::class, 'customerRegister']); // include
+
+// --- Public waiver flows (token-addressed, no auth) ---
+Route::get('waivers/access/{token}',          [WaiverPublicController::class, 'show']);
+Route::get('waivers/status/{token}',          [WaiverPublicController::class, 'status']);
+Route::post('waivers/access/{token}/submit',  [WaiverPublicController::class, 'submit'])->middleware('throttle:30,1');
+Route::get('waivers/kiosk/{templateId}',      [WaiverPublicController::class, 'kioskShow'])->whereNumber('templateId');
+Route::post('waivers/kiosk/{templateId}/submit', [WaiverPublicController::class, 'kioskSubmit'])->middleware('throttle:60,1')->whereNumber('templateId');
+// Bulk / chaperone (manage-token addressed, no auth)
+Route::get('waivers/bulk/{manageToken}',             [WaiverPublicController::class, 'bulkShow']);
+Route::post('waivers/bulk/{manageToken}/recipients', [WaiverPublicController::class, 'bulkAddRecipients'])->middleware('throttle:30,1');
+Route::post('waivers/bulk/{manageToken}/send',       [WaiverPublicController::class, 'bulkSend'])->middleware('throttle:10,1');
+Route::post('waivers/bulk/{manageToken}/recipients/{recipientId}/resend', [WaiverPublicController::class, 'bulkResendRecipient'])->middleware('throttle:10,1')->whereNumber('recipientId');
 
 Route::middleware('throttle:120,1')->group(function () {
     Route::post('analytics/track',       [PageAnalyticsController::class, 'track']);
@@ -595,5 +613,32 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('memberships/{membership}/eligibility',      [MembershipController::class, 'eligibility']);
     Route::post('memberships/{membership}/check-in',        [MembershipCheckInController::class, 'checkIn']);
     Route::post('memberships/{membership}/redeem-pass',     [MembershipCheckInController::class, 'redeemPassCheckIn']);
+
+    // --- Waivers (staff/admin) ---
+    // Waiver templates (builder)
+    Route::get('waiver-templates/content-tokens',        [WaiverTemplateController::class, 'contentTokens']);
+    Route::get('waiver-templates/available-activities',  [WaiverTemplateController::class, 'availableActivities']);
+    Route::get('waiver-templates/{waiverTemplate}/versions', [WaiverTemplateController::class, 'versions']);
+    Route::patch('waiver-templates/{waiverTemplate}/status',  [WaiverTemplateController::class, 'updateStatus']);
+    Route::apiResource('waiver-templates', WaiverTemplateController::class)->except(['destroy']);
+
+    // Waiver settings (admin)
+    Route::get('waiver-settings',  [WaiverSettingController::class, 'show']);
+    Route::put('waiver-settings',  [WaiverSettingController::class, 'update']);
+
+    // Bulk waiver invites (staff-initiated)
+    Route::post('waiver-bulk-invites/{waiverBulkInvite}/resend', [WaiverBulkInviteController::class, 'resend']);
+    Route::apiResource('waiver-bulk-invites', WaiverBulkInviteController::class)->only(['index', 'show', 'store']);
+
+    // Waiver records — specific routes BEFORE the resource so they aren't shadowed
+    Route::get('waivers/deletion-log',      [WaiverController::class, 'deletionLog']);
+    Route::get('waivers/export',            [WaiverController::class, 'export']);
+    Route::get('waivers/for',               [WaiverController::class, 'entityWaivers']);
+    Route::get('waivers/reports/{type}',    [WaiverReportController::class, 'report']);
+    Route::post('waivers/assign',           [WaiverController::class, 'assign']);
+    Route::get('waivers/{waiver}/print',    [WaiverController::class, 'print']);
+    Route::get('waivers',                   [WaiverController::class, 'index']);
+    Route::get('waivers/{waiver}',          [WaiverController::class, 'show']);
+    Route::delete('waivers/{waiver}',       [WaiverController::class, 'destroy']);
 });
 

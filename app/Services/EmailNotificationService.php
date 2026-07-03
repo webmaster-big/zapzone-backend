@@ -11,6 +11,7 @@ use App\Models\EmailNotificationLog;
 use App\Models\Location;
 use App\Models\Payment;
 use App\Models\User;
+use App\Models\Waiver;
 use Database\Seeders\DefaultEmailNotificationSeeder;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -141,6 +142,29 @@ class EmailNotificationService
         } catch (\Exception $e) {
             Log::error('Error processing event notification', [
                 'event_purchase_id' => $purchase->id,
+                'trigger_type' => $triggerType,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    public function triggerWaiverNotification(Waiver $waiver, string $triggerType): void
+    {
+        try {
+            $waiver->load(['customer', 'location.company', 'company', 'booking', 'event', 'template']);
+
+            $this->ensureDefaultsSeeded($waiver->company ?? $waiver->location?->company);
+
+            $notifications = EmailNotification::findForWaiver($waiver, $triggerType);
+
+            foreach ($notifications as $notification) {
+                $this->sendNotification($notification, $waiver, 'waiver');
+            }
+
+            $this->dispatchSms(fn ($sms) => $sms->triggerWaiverNotification($waiver, $triggerType));
+        } catch (\Exception $e) {
+            Log::error('Error processing waiver notification', [
+                'waiver_id' => $waiver->id,
                 'trigger_type' => $triggerType,
                 'error' => $e->getMessage(),
             ]);
@@ -332,12 +356,16 @@ class EmailNotificationService
             return $email;
         }
 
+        if ($type === 'waiver') {
+            return $entity->adult_email ?? $entity->customer?->email;
+        }
+
         return $entity->customer?->email ?? $entity->guest_email;
     }
 
     protected function resolveLocationId($entity, string $type): ?int
     {
-        if ($type === 'booking') {
+        if ($type === 'booking' || $type === 'waiver') {
             return $entity->location_id;
         }
 
@@ -355,7 +383,7 @@ class EmailNotificationService
 
     protected function resolveLocation($entity, string $type)
     {
-        if ($type === 'booking') {
+        if ($type === 'booking' || $type === 'waiver') {
             return $entity->location;
         }
 
@@ -421,18 +449,83 @@ class EmailNotificationService
 
     public function buildVariables($entity, string $type, bool $includeQrCode = true): array
     {
-        switch ($type) {
-            case 'booking':
-                return $this->buildBookingVariables($entity, $includeQrCode);
-            case 'purchase':
-                return $this->buildPurchaseVariables($entity, $includeQrCode);
-            case 'event':
-                return $this->buildEventVariables($entity);
-            case 'payment':
-                return $this->buildPaymentVariables($entity);
-            default:
-                return $this->buildCommonVariables();
+        $variables = match ($type) {
+            'booking' => $this->buildBookingVariables($entity, $includeQrCode),
+            'purchase' => $this->buildPurchaseVariables($entity, $includeQrCode),
+            'event' => $this->buildEventVariables($entity),
+            'payment' => $this->buildPaymentVariables($entity),
+            'waiver' => $this->buildWaiverVariables($entity),
+            default => $this->buildCommonVariables(),
+        };
+
+        // Always expose the waiver link in booking/event/attraction confirmations so it
+        // rides along with the confirmation message. {{waiver_section}} (HTML) and
+        // {{waiver_line}} (plain text, for SMS) render the call-to-action when a waiver
+        // applies and collapse to an empty string when none does (no dangling buttons).
+        if (in_array($type, ['booking', 'event', 'purchase'], true)) {
+            $link = $variables['waiver_link'] ?? $this->waiverLinkFor($entity, $type);
+            $variables['waiver_link'] = $link;
+            $variables['waiver_section'] = $link ? $this->waiverSectionHtml($link) : '';
+            $variables['waiver_line'] = $link
+                ? 'To save time at check-in, please complete your waiver before you arrive: ' . $link
+                : '';
         }
+
+        return $variables;
+    }
+
+    /** Resolve the public waiver link for a booking / event / attraction purchase. */
+    protected function waiverLinkFor($entity, string $type): string
+    {
+        $waiver = match ($type) {
+            'booking' => Waiver::where('booking_id', $entity->id)->latest('id')->first(),
+            'event' => Waiver::where('event_id', $entity->event_id ?? null)
+                ->where('customer_id', $entity->customer_id ?? null)
+                ->latest('id')->first(),
+            'purchase' => Waiver::where('attraction_purchase_id', $entity->id)->latest('id')->first(),
+            default => null,
+        };
+
+        return $waiver?->signing_url ?? '';
+    }
+
+    /** Pre-rendered waiver call-to-action block embedded in confirmation emails. */
+    protected function waiverSectionHtml(string $link): string
+    {
+        return <<<HTML
+<div style="margin: 24px 0; padding: 20px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; text-align: center;">
+    <p style="margin: 0 0 14px 0; font-size: 14px; color: #1e3a8a; line-height: 1.5;">Save time when you arrive &mdash; please complete your waiver before your visit.</p>
+    <a href="{$link}" style="display: inline-block; background-color: #1e40af; color: #ffffff; padding: 11px 26px; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 14px;">Complete Your Waiver</a>
+</div>
+HTML;
+    }
+
+    public function buildWaiverVariables(Waiver $waiver): array
+    {
+        $customer = $waiver->customer;
+        $location = $waiver->location;
+        $company = $waiver->company ?? $location?->company;
+
+        $name = $waiver->adult_full_name !== ''
+            ? $waiver->adult_full_name
+            : ($customer ? trim($customer->first_name . ' ' . $customer->last_name) : 'Guest');
+
+        $activityName = $waiver->event?->name ?? $waiver->booking?->package?->name ?? '';
+
+        return array_merge($this->buildCommonVariables($location, $company), [
+            'customer_name' => $name,
+            'customer_first_name' => $waiver->adult_first_name ?? $customer?->first_name ?? explode(' ', $name)[0],
+            'customer_last_name' => $waiver->adult_last_name ?? $customer?->last_name ?? '',
+            'customer_email' => $waiver->adult_email ?? $customer?->email ?? '',
+            'customer_phone' => $waiver->adult_phone ?? $customer?->phone ?? '',
+
+            'waiver_link' => $waiver->signing_url,
+            'waiver_status' => ucfirst($waiver->status ?? ''),
+            'waiver_date' => $waiver->selected_date?->format('F j, Y') ?? '',
+            'waiver_title' => $waiver->template?->title ?? 'Waiver',
+            'activity_name' => $activityName,
+            'business_legal_name' => $company?->company_name ?? '',
+        ]);
     }
 
     public function buildEventVariables(EventPurchase $purchase): array
