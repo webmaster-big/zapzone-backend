@@ -138,6 +138,21 @@ class WaiverPublicController extends Controller
         $company  = $template->company;
         $location = $template->location;
 
+        $packageIds    = $template->assigned_package_ids ?? [];
+        $attractionIds = $template->assigned_attraction_ids ?? [];
+        $eventIds      = $template->assigned_event_ids ?? [];
+        $totalAssigned = count($packageIds) + count($attractionIds) + count($eventIds);
+        $activityName  = '';
+        if ($totalAssigned === 1) {
+            if (count($packageIds) === 1) {
+                $activityName = \App\Models\Package::find($packageIds[0])?->name ?? '';
+            } elseif (count($attractionIds) === 1) {
+                $activityName = \App\Models\Attraction::find($attractionIds[0])?->name ?? '';
+            } else {
+                $activityName = \App\Models\Event::find($eventIds[0])?->name ?? '';
+            }
+        }
+
         $staticVars = [
             'business_legal_name' => $company?->company_name ?? '',
             'company_name'        => $company?->company_name ?? '',
@@ -149,14 +164,13 @@ class WaiverPublicController extends Controller
             ]))),
             'current_date' => \Carbon\Carbon::now()->format('F j, Y'),
             'current_year' => \Carbon\Carbon::now()->format('Y'),
-            // signer-specific — left empty; shown as blank in the read-only body
             'full_name'       => '',
             'adult_first_name'=> '',
             'adult_last_name' => '',
             'adult_email'     => '',
             'adult_phone'     => '',
             'relationship'    => '',
-            'activity_name'   => '',
+            'activity_name'   => $activityName,
             'booking_date'    => '',
             'visit_date'      => '',
         ];
