@@ -131,6 +131,26 @@ class WaiverController extends Controller
             return $this->forbidden();
         }
 
+        if (in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
+            foreach ([
+                'booking_id'            => \App\Models\Booking::class,
+                'attraction_purchase_id' => \App\Models\AttractionPurchase::class,
+            ] as $field => $model) {
+                if (!empty($validated[$field])) {
+                    $rec = $model::find($validated[$field]);
+                    if ($rec && !$this->locAllowed($authUser, $rec->location_id)) {
+                        return $this->forbidden('This record belongs to a different location.');
+                    }
+                }
+            }
+            if (!empty($validated['event_id'])) {
+                $event = \App\Models\Event::find($validated['event_id']);
+                if ($event && !$this->locAllowed($authUser, $event->location_id)) {
+                    return $this->forbidden('This event belongs to a different location.');
+                }
+            }
+        }
+
         $version = $this->waivers->syncVersion($template, $authUser->id);
 
         $waiver = Waiver::create([
@@ -189,6 +209,10 @@ class WaiverController extends Controller
         if (!empty($validated['template_id'])) {
             $templateOverride = WaiverTemplate::where('id', $validated['template_id'])
                 ->where('company_id', $authUser->company_id)
+                ->when(
+                    in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id,
+                    fn ($q) => $q->where(fn ($inner) => $inner->where('location_id', $authUser->location_id)->orWhereNull('location_id'))
+                )
                 ->whereNotIn('status', ['archived'])
                 ->first();
         }
@@ -226,6 +250,10 @@ class WaiverController extends Controller
     private function kioskForBooking($authUser, array $data, ?WaiverTemplate $template): ?Waiver
     {
         $booking = \App\Models\Booking::with(['location', 'customer', 'attractions'])->findOrFail($data['source_id']);
+
+        if (!$this->locAllowed($authUser, $booking->location_id)) {
+            return null;
+        }
 
         $existing = Waiver::where('booking_id', $booking->id)->first();
         if ($existing) {
@@ -267,6 +295,10 @@ class WaiverController extends Controller
     {
         $purchase = \App\Models\AttractionPurchase::with(['location', 'customer', 'attraction'])->findOrFail($data['source_id']);
 
+        if (!$this->locAllowed($authUser, $purchase->location_id)) {
+            return null;
+        }
+
         $existing = $this->waivers->ensureForAttractionPurchase($purchase);
         if ($existing) {
             return $existing;
@@ -300,6 +332,10 @@ class WaiverController extends Controller
     private function kioskForEventPurchase($authUser, array $data, ?WaiverTemplate $template): ?Waiver
     {
         $purchase = \App\Models\EventPurchase::with(['location', 'customer', 'event'])->findOrFail($data['source_id']);
+
+        if (!$this->locAllowed($authUser, $purchase->location_id)) {
+            return null;
+        }
 
         $existing = $this->waivers->ensureForEventPurchase($purchase);
         if ($existing) {
@@ -344,7 +380,7 @@ class WaiverController extends Controller
 
         if ($data['source_type'] === 'package') {
             $model = \App\Models\Package::find($id);
-            if (!$model) {
+            if (!$model || !$this->locAllowed($authUser, $model->location_id)) {
                 return null;
             }
             $packageId = $model->id;
@@ -352,7 +388,7 @@ class WaiverController extends Controller
             $locationId = $locationId ?? $model->location_id;
         } elseif ($data['source_type'] === 'attraction') {
             $model = \App\Models\Attraction::find($id);
-            if (!$model) {
+            if (!$model || !$this->locAllowed($authUser, $model->location_id)) {
                 return null;
             }
             $attractionIds = [$model->id];
@@ -360,7 +396,7 @@ class WaiverController extends Controller
             $locationId = $locationId ?? $model->location_id;
         } else {
             $model = \App\Models\Event::find($id);
-            if (!$model) {
+            if (!$model || !$this->locAllowed($authUser, $model->location_id)) {
                 return null;
             }
             $eventId = $model->id;
@@ -613,6 +649,17 @@ class WaiverController extends Controller
     }
 
     // ---- helpers ----
+
+    private function locAllowed($authUser, ?int $locationId): bool
+    {
+        if (!in_array($authUser->role, ['location_manager', 'attendant'], true)) {
+            return true;
+        }
+        if (!$authUser->location_id) {
+            return true;
+        }
+        return (int) $authUser->location_id === (int) $locationId;
+    }
 
     private function applySearchFilters($query, Request $request): void
     {

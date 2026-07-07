@@ -85,6 +85,23 @@ class WaiverBulkInviteController extends Controller
             return $this->forbidden();
         }
 
+        if (in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
+            $validated['location_id'] = $authUser->location_id;
+
+            if (!empty($validated['booking_id'])) {
+                $booking = \App\Models\Booking::find($validated['booking_id']);
+                if ($booking && (int) $booking->location_id !== (int) $authUser->location_id) {
+                    return $this->forbidden('This booking belongs to a different location.');
+                }
+            }
+            if (!empty($validated['event_id'])) {
+                $event = \App\Models\Event::find($validated['event_id']);
+                if ($event && (int) $event->location_id !== (int) $authUser->location_id) {
+                    return $this->forbidden('This event belongs to a different location.');
+                }
+            }
+        }
+
         $invite = WaiverBulkInvite::create([
             'company_id' => $template->company_id,
             'location_id' => $validated['location_id'] ?? $template->location_id,

@@ -30,7 +30,7 @@ class WaiverTemplateController extends Controller
             } else {
                 $query = WaiverTemplate::with(['location:id,name', 'creator:id,first_name,last_name']);
             }
-            $this->applyAuthScope($query, $request);
+            $this->applyTemplateScope($query, $request);
 
             if ($request->filled('status')) {
                 $query->where('status', $request->string('status'));
@@ -81,6 +81,10 @@ class WaiverTemplateController extends Controller
 
             $validated['company_id'] = $authUser->company_id;
             $validated['created_by'] = $authUser->id;
+
+            if (in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
+                $validated['location_id'] = $authUser->location_id;
+            }
 
             if ($conflict = $this->assignmentConflict($authUser->company_id, $validated, null)) {
                 return $conflict;
@@ -305,6 +309,18 @@ class WaiverTemplateController extends Controller
     }
 
     // ---- helpers ----
+
+    private function applyTemplateScope($query, Request $request): void
+    {
+        $authUser = $this->resolveAuthUser($request);
+        if (!$authUser) {
+            return;
+        }
+        $query->where('company_id', $authUser->company_id);
+        if (in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
+            $query->where(fn ($q) => $q->where('location_id', $authUser->location_id)->orWhereNull('location_id'));
+        }
+    }
 
     private function activityList(string $type, $authUser, array $excludeIds)
     {
