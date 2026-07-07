@@ -178,22 +178,31 @@ class WaiverController extends Controller
 
         $validated = $request->validate([
             'source_type' => 'required|in:booking,attraction_purchase,event_purchase,package,attraction,event',
-            'source_id' => 'required|integer',
+            'source_id'   => 'required|integer',
+            'template_id' => 'nullable|integer',
             'selected_date' => 'nullable|date',
             'location_id' => 'nullable|exists:locations,id',
         ]);
 
+        $templateOverride = null;
+        if (!empty($validated['template_id'])) {
+            $templateOverride = WaiverTemplate::where('id', $validated['template_id'])
+                ->where('company_id', $authUser->company_id)
+                ->whereNotIn('status', ['archived'])
+                ->first();
+        }
+
         $waiver = match ($validated['source_type']) {
-            'booking' => $this->waivers->ensureForBooking(\App\Models\Booking::findOrFail($validated['source_id'])),
-            'attraction_purchase' => $this->waivers->ensureForAttractionPurchase(\App\Models\AttractionPurchase::findOrFail($validated['source_id'])),
-            'event_purchase' => $this->waivers->ensureForEventPurchase(\App\Models\EventPurchase::findOrFail($validated['source_id'])),
-            default => $this->resolveActivityKioskWaiver($authUser, $validated),
+            'booking'             => $this->kioskForBooking($authUser, $validated, $templateOverride),
+            'attraction_purchase' => $this->kioskForAttractionPurchase($authUser, $validated, $templateOverride),
+            'event_purchase'      => $this->kioskForEventPurchase($authUser, $validated, $templateOverride),
+            default               => $this->resolveActivityKioskWaiver($authUser, $validated, $templateOverride),
         };
 
         if (!$waiver) {
             return response()->json([
                 'success' => false,
-                'message' => 'No active waiver template is assigned to this activity.',
+                'message' => 'No waiver template is assigned to this activity. Activate a template or assign one to this activity first.',
             ], 422);
         }
         if (!$this->authorizeRecordScope($waiver)) {
@@ -205,15 +214,123 @@ class WaiverController extends Controller
         return response()->json([
             'success' => true,
             'data' => [
-                'access_token' => $waiver->access_token,
-                'kiosk_url' => $base . '/waiver/kiosk-session/' . $waiver->access_token,
-                'status' => $waiver->status,
+                'access_token'     => $waiver->access_token,
+                'kiosk_url'        => $base . '/waiver/kiosk-session/' . $waiver->access_token,
+                'status'           => $waiver->status,
                 'already_completed' => $waiver->status === Waiver::STATUS_COMPLETED,
             ],
         ]);
     }
 
-    private function resolveActivityKioskWaiver($authUser, array $data): ?Waiver
+    private function kioskForBooking($authUser, array $data, ?WaiverTemplate $template): ?Waiver
+    {
+        $booking = \App\Models\Booking::with(['location', 'customer', 'attractions'])->findOrFail($data['source_id']);
+
+        $existing = Waiver::where('booking_id', $booking->id)->first();
+        if ($existing) {
+            return $existing;
+        }
+
+        $resolved = $template ?? WaiverTemplate::resolveForActivity(
+            $booking->location?->company_id ?? $authUser->company_id,
+            $booking->location_id,
+            $booking->package_id,
+            $booking->attractions?->pluck('id')->all() ?? [],
+        );
+        if (!$resolved) {
+            return null;
+        }
+
+        $companyId = $booking->location?->company_id ?? $authUser->company_id;
+        $version = $this->waivers->syncVersion($resolved, $authUser->id);
+
+        return Waiver::create([
+            'company_id'                => $companyId,
+            'location_id'               => $booking->location_id,
+            'waiver_template_id'        => $resolved->id,
+            'waiver_template_version_id' => $version->id,
+            'status'                    => Waiver::STATUS_PENDING,
+            'customer_id'               => $booking->customer_id,
+            'booking_id'                => $booking->id,
+            'selected_date'             => $booking->booking_date,
+            'adult_email'               => $booking->customer?->email ?? $booking->guest_email,
+            'adult_phone'               => $booking->customer?->phone ?? $booking->guest_phone,
+            'source'                    => Waiver::SOURCE_KIOSK,
+            'created_by'                => $authUser->id,
+            'assigned_by'               => $authUser->id,
+            'is_manager_assigned'       => true,
+        ]);
+    }
+
+    private function kioskForAttractionPurchase($authUser, array $data, ?WaiverTemplate $template): ?Waiver
+    {
+        $purchase = \App\Models\AttractionPurchase::with(['location', 'customer', 'attraction'])->findOrFail($data['source_id']);
+
+        $existing = $this->waivers->ensureForAttractionPurchase($purchase);
+        if ($existing) {
+            return $existing;
+        }
+
+        if (!$template) {
+            return null;
+        }
+
+        $companyId = $purchase->location?->company_id ?? $authUser->company_id;
+        $version = $this->waivers->syncVersion($template, $authUser->id);
+
+        return Waiver::create([
+            'company_id'                => $companyId,
+            'location_id'               => $purchase->location_id,
+            'waiver_template_id'        => $template->id,
+            'waiver_template_version_id' => $version->id,
+            'status'                    => Waiver::STATUS_PENDING,
+            'customer_id'               => $purchase->customer_id,
+            'attraction_purchase_id'    => $purchase->id,
+            'selected_date'             => $purchase->purchase_date ?? now()->toDateString(),
+            'adult_email'               => $purchase->customer?->email ?? $purchase->guest_email,
+            'adult_phone'               => $purchase->customer?->phone ?? $purchase->guest_phone,
+            'source'                    => Waiver::SOURCE_KIOSK,
+            'created_by'                => $authUser->id,
+            'assigned_by'               => $authUser->id,
+            'is_manager_assigned'       => true,
+        ]);
+    }
+
+    private function kioskForEventPurchase($authUser, array $data, ?WaiverTemplate $template): ?Waiver
+    {
+        $purchase = \App\Models\EventPurchase::with(['location', 'customer', 'event'])->findOrFail($data['source_id']);
+
+        $existing = $this->waivers->ensureForEventPurchase($purchase);
+        if ($existing) {
+            return $existing;
+        }
+
+        if (!$template) {
+            return null;
+        }
+
+        $companyId = $purchase->location?->company_id ?? $authUser->company_id;
+        $version = $this->waivers->syncVersion($template, $authUser->id);
+
+        return Waiver::create([
+            'company_id'                => $companyId,
+            'location_id'               => $purchase->location_id,
+            'waiver_template_id'        => $template->id,
+            'waiver_template_version_id' => $version->id,
+            'status'                    => Waiver::STATUS_PENDING,
+            'customer_id'               => $purchase->customer_id,
+            'event_id'                  => $purchase->event_id,
+            'selected_date'             => $purchase->purchase_date ?? now()->toDateString(),
+            'adult_email'               => $purchase->customer?->email ?? $purchase->guest_email,
+            'adult_phone'               => $purchase->customer?->phone ?? $purchase->guest_phone,
+            'source'                    => Waiver::SOURCE_KIOSK,
+            'created_by'                => $authUser->id,
+            'assigned_by'               => $authUser->id,
+            'is_manager_assigned'       => true,
+        ]);
+    }
+
+    private function resolveActivityKioskWaiver($authUser, array $data, ?WaiverTemplate $templateOverride = null): ?Waiver
     {
         $companyId = $authUser->company_id;
         $locationId = $data['location_id'] ?? $authUser->location_id;
@@ -250,7 +367,8 @@ class WaiverController extends Controller
             $locationId = $locationId ?? $model->location_id;
         }
 
-        $template = WaiverTemplate::resolveForActivity($companyId, $locationId, $packageId, $attractionIds, $eventId);
+        $template = $templateOverride
+            ?? WaiverTemplate::resolveForActivity($companyId, $locationId, $packageId, $attractionIds, $eventId);
         if (!$template) {
             return null;
         }
