@@ -169,6 +169,109 @@ class WaiverController extends Controller
         ], 201);
     }
 
+    public function kioskSession(Request $request): JsonResponse
+    {
+        $authUser = $this->resolveAuthUser($request);
+        if ($guard = $this->guardManager($authUser)) {
+            return $guard;
+        }
+
+        $validated = $request->validate([
+            'source_type' => 'required|in:booking,attraction_purchase,event_purchase,package,attraction,event',
+            'source_id' => 'required|integer',
+            'selected_date' => 'nullable|date',
+            'location_id' => 'nullable|exists:locations,id',
+        ]);
+
+        $waiver = match ($validated['source_type']) {
+            'booking' => $this->waivers->ensureForBooking(\App\Models\Booking::findOrFail($validated['source_id'])),
+            'attraction_purchase' => $this->waivers->ensureForAttractionPurchase(\App\Models\AttractionPurchase::findOrFail($validated['source_id'])),
+            'event_purchase' => $this->waivers->ensureForEventPurchase(\App\Models\EventPurchase::findOrFail($validated['source_id'])),
+            default => $this->resolveActivityKioskWaiver($authUser, $validated),
+        };
+
+        if (!$waiver) {
+            return response()->json([
+                'success' => false,
+                'message' => 'No active waiver template is assigned to this activity.',
+            ], 422);
+        }
+        if (!$this->authorizeRecordScope($waiver)) {
+            return $this->forbidden();
+        }
+
+        $base = rtrim(config('app.frontend_url', config('app.url', '')), '/');
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'access_token' => $waiver->access_token,
+                'kiosk_url' => $base . '/waiver/kiosk-session/' . $waiver->access_token,
+                'status' => $waiver->status,
+                'already_completed' => $waiver->status === Waiver::STATUS_COMPLETED,
+            ],
+        ]);
+    }
+
+    private function resolveActivityKioskWaiver($authUser, array $data): ?Waiver
+    {
+        $companyId = $authUser->company_id;
+        $locationId = $data['location_id'] ?? $authUser->location_id;
+        $id = (int) $data['source_id'];
+
+        $packageId = null;
+        $attractionIds = [];
+        $eventId = null;
+        $activityName = null;
+
+        if ($data['source_type'] === 'package') {
+            $model = \App\Models\Package::find($id);
+            if (!$model) {
+                return null;
+            }
+            $packageId = $model->id;
+            $activityName = $model->name;
+            $locationId = $locationId ?? $model->location_id;
+        } elseif ($data['source_type'] === 'attraction') {
+            $model = \App\Models\Attraction::find($id);
+            if (!$model) {
+                return null;
+            }
+            $attractionIds = [$model->id];
+            $activityName = $model->name;
+            $locationId = $locationId ?? $model->location_id;
+        } else {
+            $model = \App\Models\Event::find($id);
+            if (!$model) {
+                return null;
+            }
+            $eventId = $model->id;
+            $activityName = $model->name;
+            $locationId = $locationId ?? $model->location_id;
+        }
+
+        $template = WaiverTemplate::resolveForActivity($companyId, $locationId, $packageId, $attractionIds, $eventId);
+        if (!$template) {
+            return null;
+        }
+
+        $version = $this->waivers->syncVersion($template, $authUser->id);
+
+        return Waiver::create([
+            'company_id' => $companyId,
+            'location_id' => $locationId ?? $template->location_id,
+            'waiver_template_id' => $template->id,
+            'waiver_template_version_id' => $version->id,
+            'status' => Waiver::STATUS_PENDING,
+            'selected_date' => $data['selected_date'] ?? now()->toDateString(),
+            'manual_activity_name' => $activityName,
+            'source' => Waiver::SOURCE_KIOSK,
+            'created_by' => $authUser->id,
+            'assigned_by' => $authUser->id,
+            'is_manager_assigned' => true,
+        ]);
+    }
+
     /**
      * Admin-only delete. Writes a deletion-log row (which survives the soft delete)
      * and an activity-log entry before soft-deleting.

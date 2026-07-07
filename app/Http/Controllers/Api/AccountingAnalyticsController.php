@@ -62,6 +62,14 @@ class AccountingAnalyticsController extends Controller
 
         $location = Location::with('company')->findOrFail($locationId);
 
+        $cacheKey = 'dashboards:accounting:' . $locationId . ':' . md5(json_encode([
+            $request->start_date, $request->end_date, $request->compare_start_date, $request->compare_end_date,
+            $viewMode, $paymentStatus, $includeAddonsBreakdown, $categoryFilter,
+        ]));
+        if (($cached = \App\Support\CacheGroups::get([\App\Support\CacheGroups::DASHBOARDS], $cacheKey)) !== null) {
+            return response()->json(['success' => true, 'data' => $cached]);
+        }
+
         try {
             $filters = [
                 'payment_status' => $paymentStatus,
@@ -76,27 +84,28 @@ class AccountingAnalyticsController extends Controller
                 $comparisonData = $this->buildReportData($locationId, $compareStartDate, $compareEndDate, $viewMode, $filters);
             }
 
-            return response()->json([
-                'success' => true,
-                'data' => [
-                    'location' => [
-                        'id' => $location->id,
-                        'name' => $location->name,
-                        'company_name' => $location->company?->name,
-                        'timezone' => $location->timezone ?? 'UTC',
-                    ],
-                    'start_date' => $startDate->toDateString(),
-                    'end_date' => $endDate->toDateString(),
-                    'compare_start_date' => $compareStartDate?->toDateString(),
-                    'compare_end_date' => $compareEndDate?->toDateString(),
-                    'view_mode' => $viewMode,
-                    'view_mode_label' => $viewMode === 'booked_on' ? 'Created On' : 'Booked For',
-                    'filters_applied' => $filters,
-                    'primary' => $primaryData,
-                    'comparison' => $comparisonData,
-                    'generated_at' => now()->toIso8601String(),
+            $data = [
+                'location' => [
+                    'id' => $location->id,
+                    'name' => $location->name,
+                    'company_name' => $location->company?->name,
+                    'timezone' => $location->timezone ?? 'UTC',
                 ],
-            ]);
+                'start_date' => $startDate->toDateString(),
+                'end_date' => $endDate->toDateString(),
+                'compare_start_date' => $compareStartDate?->toDateString(),
+                'compare_end_date' => $compareEndDate?->toDateString(),
+                'view_mode' => $viewMode,
+                'view_mode_label' => $viewMode === 'booked_on' ? 'Created On' : 'Booked For',
+                'filters_applied' => $filters,
+                'primary' => $primaryData,
+                'comparison' => $comparisonData,
+                'generated_at' => now()->toIso8601String(),
+            ];
+
+            \App\Support\CacheGroups::put([\App\Support\CacheGroups::DASHBOARDS], $cacheKey, $data, \App\Support\CacheGroups::TTL_DASHBOARD);
+
+            return response()->json(['success' => true, 'data' => $data]);
         } catch (\Exception $e) {
             Log::error('Error generating accounting analytics report', [
                 'error' => $e->getMessage(),

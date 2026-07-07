@@ -15,19 +15,29 @@ class LocationController extends Controller
 
     public function index(): JsonResponse
     {
-        $query = Location::with(['company', 'packages'])->active();
-
         $authUser = auth()->user();
-        if ($authUser) {
-            if ($authUser->company_id) {
-                $query->where('company_id', $authUser->company_id);
-            }
-            if (in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
-                $query->where('id', $authUser->location_id);
-            }
-        }
+        $companyKey = $authUser?->company_id ?? 'all';
+        $locKey = ($authUser && in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id)
+            ? $authUser->location_id
+            : 'all';
 
-        $locations = $query->orderBy('name')->get();
+        $locations = \App\Support\CacheGroups::remember(
+            [\App\Support\CacheGroups::LOCATIONS],
+            "locations:index:{$companyKey}:{$locKey}",
+            \App\Support\CacheGroups::TTL_CATALOG,
+            function () use ($authUser) {
+                $query = Location::with(['company', 'packages'])->active();
+                if ($authUser) {
+                    if ($authUser->company_id) {
+                        $query->where('company_id', $authUser->company_id);
+                    }
+                    if (in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
+                        $query->where('id', $authUser->location_id);
+                    }
+                }
+                return $query->orderBy('name')->get();
+            }
+        );
 
         return response()->json([
             'success' => true,

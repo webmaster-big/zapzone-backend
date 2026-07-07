@@ -43,6 +43,12 @@ class AnalyticsController extends Controller
             $locationIds = [$authUser->location_id];
         }
 
+        $cacheKey = 'dashboards:company-analytics:' . $companyId . ':' . $dateRange . ':'
+            . md5(json_encode([$request->start_date, $request->end_date, $locationIds]));
+        if (($cached = \App\Support\CacheGroups::get([\App\Support\CacheGroups::DASHBOARDS], $cacheKey)) !== null) {
+            return response()->json($cached);
+        }
+
         if ($dateRange === 'custom' && $request->filled('start_date') && $request->filled('end_date')) {
             $startDate = Carbon::parse($request->start_date)->startOfDay();
             $endDate = Carbon::parse($request->end_date)->endOfDay();
@@ -102,6 +108,8 @@ class AnalyticsController extends Controller
             'top_events' => $this->getTopEvents($locationIdList, $startDate, $endDate),
         ];
 
+        \App\Support\CacheGroups::put([\App\Support\CacheGroups::DASHBOARDS], $cacheKey, $analytics, \App\Support\CacheGroups::TTL_DASHBOARD);
+
         return response()->json($analytics);
     }
 
@@ -122,6 +130,12 @@ class AnalyticsController extends Controller
             && $authUser->location_id
             && (int) $authUser->location_id !== (int) $locationId) {
             return response()->json(['message' => 'Forbidden: cannot access another location analytics'], 403);
+        }
+
+        $cacheKey = 'dashboards:location-analytics:' . $locationId . ':' . $dateRange . ':'
+            . md5(json_encode([$request->start_date, $request->end_date]));
+        if (($cached = \App\Support\CacheGroups::get([\App\Support\CacheGroups::DASHBOARDS], $cacheKey)) !== null) {
+            return response()->json($cached);
         }
 
         if ($dateRange === 'custom' && $request->filled('start_date') && $request->filled('end_date')) {
@@ -158,6 +172,8 @@ class AnalyticsController extends Controller
             'event_performance' => $this->getEventPerformance($locationId, $startDate, $endDate),
             'time_slot_performance' => $this->getTimeSlotPerformance($locationId, $startDate, $endDate),
         ];
+
+        \App\Support\CacheGroups::put([\App\Support\CacheGroups::DASHBOARDS], $cacheKey, $analytics, \App\Support\CacheGroups::TTL_DASHBOARD);
 
         return response()->json($analytics);
     }

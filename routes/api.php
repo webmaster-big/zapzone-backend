@@ -619,6 +619,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('waiver-templates/content-tokens',        [WaiverTemplateController::class, 'contentTokens']);
     Route::get('waiver-templates/available-activities',  [WaiverTemplateController::class, 'availableActivities']);
     Route::get('waiver-templates/{waiverTemplate}/versions', [WaiverTemplateController::class, 'versions']);
+    Route::get('waiver-templates/{waiverTemplate}/kiosk-preview', [WaiverTemplateController::class, 'kioskPreview']);
     Route::patch('waiver-templates/{waiverTemplate}/status',  [WaiverTemplateController::class, 'updateStatus']);
     Route::apiResource('waiver-templates', WaiverTemplateController::class)->except(['destroy']);
 
@@ -636,6 +637,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('waivers/for',               [WaiverController::class, 'entityWaivers']);
     Route::get('waivers/reports/{type}',    [WaiverReportController::class, 'report']);
     Route::post('waivers/assign',           [WaiverController::class, 'assign']);
+    Route::post('waivers/kiosk-session',    [WaiverController::class, 'kioskSession']);
     Route::get('waivers/{waiver}/print',    [WaiverController::class, 'print']);
     Route::get('waivers',                   [WaiverController::class, 'index']);
     Route::get('waivers/{waiver}',          [WaiverController::class, 'show']);

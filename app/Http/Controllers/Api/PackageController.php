@@ -87,6 +87,26 @@ class PackageController extends Controller
         $search = $request->get('search', null);
         $date = $request->get('date') ? Carbon::parse($request->get('date')) : Carbon::today();
 
+        $cacheKey = 'packages:grouped:' . md5(($search ?? '') . '|' . $date->toDateString());
+
+        $result = \App\Support\CacheGroups::remember(
+            [\App\Support\CacheGroups::PACKAGES],
+            $cacheKey,
+            \App\Support\CacheGroups::TTL_CATALOG,
+            function () use ($search, $date) {
+                return $this->buildGroupedPackages($search, $date);
+            }
+        );
+
+        return response()->json([
+            'success' => true,
+            'data' => $result,
+            'total' => count($result),
+        ]);
+    }
+
+    private function buildGroupedPackages(?string $search, Carbon $date): array
+    {
         $groupedPackages = [];
 
         $query = Package::with(['location', 'availabilitySchedules'])
@@ -160,13 +180,7 @@ class PackageController extends Controller
             ];
         }
 
-        $result = array_values($groupedPackages);
-
-        return response()->json([
-            'success' => true,
-            'data' => $result,
-            'total' => count($result),
-        ]);
+        return array_values($groupedPackages);
     }
 
     public function store(StorePackageRequest $request): JsonResponse

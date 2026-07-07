@@ -26,6 +26,12 @@ class MembershipReportController extends Controller
         $from = $request->date('from') ?: Carbon::now()->startOfMonth();
         $to   = $request->date('to')   ?: Carbon::now()->endOfMonth();
 
+        $cacheKey = 'dashboards:membership-report:' . ($companyId ?? 'all') . ':' . ($locationFilter ?? 'all')
+            . ':' . $from->toDateString() . ':' . $to->toDateString();
+        if (($cached = \App\Support\CacheGroups::get([\App\Support\CacheGroups::DASHBOARDS], $cacheKey)) !== null) {
+            return response()->json(['success' => true, 'data' => $cached]);
+        }
+
         $base = Membership::query()->whereHas('plan', function ($q) use ($companyId) {
             if ($companyId) $q->where('company_id', $companyId);
         });
@@ -105,7 +111,7 @@ class MembershipReportController extends Controller
             ];
         });
 
-        return response()->json(['success' => true, 'data' => [
+        $payload = [
             'counts' => [
                 'active'             => $active,
                 'past_due'           => $pastDue,
@@ -122,6 +128,10 @@ class MembershipReportController extends Controller
             'top_plans'            => $topPlans,
             'underused_sample'     => $underused,
             'date_range'           => ['from' => $from->toIso8601String(), 'to' => $to->toIso8601String()],
-        ]]);
+        ];
+
+        \App\Support\CacheGroups::put([\App\Support\CacheGroups::DASHBOARDS], $cacheKey, $payload, \App\Support\CacheGroups::TTL_DASHBOARD);
+
+        return response()->json(['success' => true, 'data' => $payload]);
     }
 }

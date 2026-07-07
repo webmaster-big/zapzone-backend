@@ -83,6 +83,26 @@ class AttractionController extends Controller
         $search = $request->get('search', null);
         $date = $request->get('date') ? Carbon::parse($request->get('date')) : Carbon::today();
 
+        $cacheKey = 'attractions:grouped:' . md5(($search ?? '') . '|' . $date->toDateString());
+
+        $result = \App\Support\CacheGroups::remember(
+            [\App\Support\CacheGroups::ATTRACTIONS],
+            $cacheKey,
+            \App\Support\CacheGroups::TTL_CATALOG,
+            function () use ($search, $date) {
+                return $this->buildGroupedAttractions($search, $date);
+            }
+        );
+
+        return response()->json([
+            'success' => true,
+            'data' => $result,
+            'total' => count($result),
+        ]);
+    }
+
+    private function buildGroupedAttractions(?string $search, Carbon $date): array
+    {
         $query = Attraction::with(['location', 'packages', 'addOns'])
             ->select(['id', 'name', 'description', 'price', 'pricing_type', 'category', 'max_capacity', 'display_capacity_to_customers', 'duration', 'duration_unit', 'rating', 'min_age', 'availability', 'display_order', 'location_id', 'is_active'])
             ->where('is_active', true);
@@ -158,13 +178,7 @@ class AttractionController extends Controller
             ];
         }
 
-        $result = array_values($groupedAttractions);
-
-        return response()->json([
-            'success' => true,
-            'data' => $result,
-            'total' => count($result),
-        ]);
+        return array_values($groupedAttractions);
     }
 
 

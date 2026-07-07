@@ -184,6 +184,26 @@ class EventController extends Controller
     {
         $search = $request->get('search', null);
 
+        $cacheKey = 'events:grouped:' . md5($search ?? '');
+
+        $result = \App\Support\CacheGroups::remember(
+            [\App\Support\CacheGroups::EVENTS],
+            $cacheKey,
+            \App\Support\CacheGroups::TTL_CATALOG,
+            function () use ($search) {
+                return $this->buildGroupedEvents($search);
+            }
+        );
+
+        return response()->json([
+            'success' => true,
+            'data' => $result,
+            'total' => count($result),
+        ]);
+    }
+
+    private function buildGroupedEvents(?string $search): array
+    {
         $groupedEvents = [];
 
         $query = Event::with(['location', 'addOns'])
@@ -245,13 +265,7 @@ class EventController extends Controller
             }
         });
 
-        $result = array_values($groupedEvents);
-
-        return response()->json([
-            'success' => true,
-            'data' => $result,
-            'total' => count($result),
-        ]);
+        return array_values($groupedEvents);
     }
 
     public function getByLocation(int $locationId): JsonResponse

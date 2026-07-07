@@ -28,6 +28,12 @@ class MetricsController extends Controller
             }
             $user = $authUser;
 
+            $cacheKey = 'dashboards:metrics:' . $user->id . ':' . $user->role . ':' . ($user->location_id ?? 'all')
+                . ':' . md5(json_encode($request->query()));
+            if (($cached = \App\Support\CacheGroups::get([\App\Support\CacheGroups::DASHBOARDS], $cacheKey)) !== null) {
+                return response()->json($cached);
+            }
+
             Log::info('=== Dashboard Metrics API Called ===', [
                 'user_role' => $user->role,
                 'user_location_id' => $user->location_id,
@@ -575,6 +581,8 @@ class MetricsController extends Controller
             'timestamp' => now()->toDateTimeString(),
         ]);
 
+        \App\Support\CacheGroups::put([\App\Support\CacheGroups::DASHBOARDS], $cacheKey, $response, \App\Support\CacheGroups::TTL_DASHBOARD);
+
         return response()->json($response);
 
         } catch (\PDOException $e) {
@@ -606,6 +614,11 @@ class MetricsController extends Controller
     {
         try {
             $locationId = $request->query('location_id');
+
+            $cacheKey = 'dashboards:attendant:' . (auth()->id() ?? 'x') . ':' . md5(json_encode($request->query()));
+            if (($cached = \App\Support\CacheGroups::get([\App\Support\CacheGroups::DASHBOARDS], $cacheKey)) !== null) {
+                return response()->json($cached);
+            }
 
             $timeframe = $request->query('timeframe', 'all_time');
             $dateFrom = $request->query('date_from');
@@ -985,6 +998,8 @@ class MetricsController extends Controller
             ],
             'timestamp' => now()->toDateTimeString(),
         ]);
+
+        \App\Support\CacheGroups::put([\App\Support\CacheGroups::DASHBOARDS], $cacheKey, $response, \App\Support\CacheGroups::TTL_DASHBOARD);
 
         return response()->json($response);
 

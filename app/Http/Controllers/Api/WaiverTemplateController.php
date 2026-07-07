@@ -180,6 +180,45 @@ class WaiverTemplateController extends Controller
         ]);
     }
 
+    public function kioskPreview(Request $request, WaiverTemplate $waiverTemplate): JsonResponse
+    {
+        $authUser = $this->resolveAuthUser($request);
+        if ($guard = $this->guardCanManageTemplates($authUser)) {
+            return $guard;
+        }
+        if (!$this->authorizeRecordScope($waiverTemplate)) {
+            return $this->forbidden();
+        }
+
+        $version = $waiverTemplate->versions()->first() ?: $this->waivers->syncVersion($waiverTemplate, $authUser->id);
+        $clauses = $version->clause_config ?? [];
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'kiosk' => true,
+                'preview' => true,
+                'template' => [
+                    'id' => $waiverTemplate->id,
+                    'title' => $waiverTemplate->title,
+                    'version' => $version->version,
+                    'max_minors' => $waiverTemplate->max_minors,
+                    'minor_section_enabled' => $waiverTemplate->minor_section_enabled,
+                    'dob_required' => $waiverTemplate->dob_required,
+                    'relationship_required' => $waiverTemplate->relationship_required,
+                    'photo_video_release_enabled' => $waiverTemplate->photo_video_release_enabled,
+                    'electronic_consent_enabled' => $waiverTemplate->electronic_consent_enabled,
+                    'marketing_consent_enabled' => $waiverTemplate->marketing_consent_enabled,
+                    'marketing_consent_text' => $waiverTemplate->marketing_consent_text,
+                    'marketing_helper_text' => $waiverTemplate->marketing_helper_text,
+                    'clause_config' => $clauses,
+                ],
+                'body' => $version->body_text,
+                'status' => $waiverTemplate->status,
+            ],
+        ]);
+    }
+
     /**
      * Activities (packages/attractions/events) still available to assign — i.e. not
      * already tied to another template. The template being edited keeps its own items.

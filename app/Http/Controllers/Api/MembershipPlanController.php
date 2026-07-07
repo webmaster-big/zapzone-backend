@@ -59,6 +59,24 @@ class MembershipPlanController extends Controller
 
     public function publicIndex(Request $request): JsonResponse
     {
+        $locationId = $request->filled('location_id') ? (int) $request->location_id : null;
+        $cacheKey = 'membership-plans:public:' . ($locationId ?? 'all');
+
+        $data = \App\Support\CacheGroups::remember(
+            [\App\Support\CacheGroups::MEMBERSHIP_PLANS],
+            $cacheKey,
+            \App\Support\CacheGroups::TTL_CATALOG,
+            fn () => $this->buildPublicPlans($locationId)
+        );
+
+        return response()->json([
+            'success' => true,
+            'data'    => $data,
+        ]);
+    }
+
+    private function buildPublicPlans(?int $locationId): array
+    {
         $query = MembershipPlan::with([
                 'approvedLocations:id,name',
                 'location:id,name',
@@ -67,12 +85,11 @@ class MembershipPlanController extends Controller
             ])
             ->where('is_active', true);
 
-        if ($request->filled('location_id')) {
-            $locId = (int) $request->location_id;
-            $query->where(function ($q) use ($locId) {
-                $q->where('location_id', $locId)
+        if ($locationId !== null) {
+            $query->where(function ($q) use ($locationId) {
+                $q->where('location_id', $locationId)
                   ->orWhere('location_access_mode', 'all')
-                  ->orWhereHas('approvedLocations', fn($x) => $x->where('locations.id', $locId));
+                  ->orWhereHas('approvedLocations', fn($x) => $x->where('locations.id', $locationId));
             });
         }
 
@@ -97,10 +114,7 @@ class MembershipPlanController extends Controller
             return $arr;
         });
 
-        return response()->json([
-            'success' => true,
-            'data'    => $data,
-        ]);
+        return $data->values()->toArray();
     }
 
     public function store(Request $request): JsonResponse
