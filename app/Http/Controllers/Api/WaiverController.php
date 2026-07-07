@@ -456,7 +456,7 @@ class WaiverController extends Controller
             return $this->forbidden();
         }
 
-        $waiver->load(['template:id,title', 'location:id,name', 'minors', 'company:id,name']);
+        $waiver->load(['template:id,title', 'location:id,name', 'minors', 'company']);
 
         $pdf = Pdf::loadView('waivers.print', [
             'waiver' => $waiver,

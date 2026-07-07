@@ -25,7 +25,7 @@ class WaiverPublicController extends Controller
      */
     public function show(string $token): JsonResponse
     {
-        $waiver = Waiver::with(['template', 'version', 'company:id,name', 'location:id,name'])
+        $waiver = Waiver::with(['template', 'version', 'company', 'location:id,name'])
             ->where('access_token', $token)
             ->first();
 
