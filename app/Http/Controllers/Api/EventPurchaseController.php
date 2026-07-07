@@ -41,6 +41,15 @@ class EventPurchaseController extends Controller
 
             $this->applyAuthScope($query, $request);
 
+            // event_purchases has no direct company_id — scope through location instead
+            $authUser = $this->resolveAuthUser($request);
+            if ($authUser && $authUser->company_id) {
+                $companyId = $authUser->company_id;
+                $query->whereHas('location', function ($q) use ($companyId) {
+                    $q->where('company_id', $companyId);
+                });
+            }
+
             if ($request->has('event_id')) {
                 $query->byEvent($request->event_id);
             }

@@ -59,6 +59,15 @@ class BookingController extends Controller
 
             $this->applyAuthScope($query, $request);
 
+            // bookings table has no direct company_id — scope through location instead
+            $authUser = $this->resolveAuthUser($request);
+            if ($authUser && $authUser->company_id) {
+                $companyId = $authUser->company_id;
+                $query->whereHas('location', function ($q) use ($companyId) {
+                    $q->where('company_id', $companyId);
+                });
+            }
+
             if ($request->has('location_id')) {
                 $query->byLocation($request->location_id);
             }
