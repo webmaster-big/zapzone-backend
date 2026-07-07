@@ -621,7 +621,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('waiver-templates/{waiverTemplate}/versions', [WaiverTemplateController::class, 'versions']);
     Route::get('waiver-templates/{waiverTemplate}/kiosk-preview', [WaiverTemplateController::class, 'kioskPreview']);
     Route::patch('waiver-templates/{waiverTemplate}/status',  [WaiverTemplateController::class, 'updateStatus']);
-    Route::apiResource('waiver-templates', WaiverTemplateController::class)->except(['destroy']);
+    Route::post('waiver-templates/{id}/restore',         [WaiverTemplateController::class, 'restore']);
+    Route::delete('waiver-templates/{id}/force-delete',  [WaiverTemplateController::class, 'forceDestroy']);
+    Route::apiResource('waiver-templates', WaiverTemplateController::class);
 
     // Waiver settings (admin)
     Route::get('waiver-settings',  [WaiverSettingController::class, 'show']);

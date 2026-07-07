@@ -25,7 +25,11 @@ class WaiverTemplateController extends Controller
     public function index(Request $request): JsonResponse
     {
         try {
-            $query = WaiverTemplate::with(['location:id,name', 'creator:id,first_name,last_name']);
+            if ($request->boolean('trashed')) {
+                $query = WaiverTemplate::onlyTrashed()->with(['location:id,name', 'creator:id,first_name,last_name']);
+            } else {
+                $query = WaiverTemplate::with(['location:id,name', 'creator:id,first_name,last_name']);
+            }
             $this->applyAuthScope($query, $request);
 
             if ($request->filled('status')) {
@@ -134,6 +138,50 @@ class WaiverTemplateController extends Controller
         } catch (\Throwable $e) {
             return $this->error('Failed to update waiver template', $e);
         }
+    }
+
+    public function destroy(Request $request, WaiverTemplate $waiverTemplate): JsonResponse
+    {
+        $authUser = $this->resolveAuthUser($request);
+        if ($guard = $this->guardCanManageTemplates($authUser)) {
+            return $guard;
+        }
+        if (!$this->authorizeRecordScope($waiverTemplate)) {
+            return $this->forbidden();
+        }
+        $waiverTemplate->delete();
+        return response()->json(['success' => true, 'message' => 'Template deleted']);
+    }
+
+    public function restore(Request $request, int $id): JsonResponse
+    {
+        $authUser = $this->resolveAuthUser($request);
+        if ($guard = $this->guardCanManageTemplates($authUser)) {
+            return $guard;
+        }
+        $template = WaiverTemplate::withTrashed()->find($id);
+        if (!$template || !$this->authorizeRecordScope($template)) {
+            return $this->forbidden();
+        }
+        $template->restore();
+        return response()->json(['success' => true, 'message' => 'Template restored', 'data' => $template]);
+    }
+
+    public function forceDestroy(Request $request, int $id): JsonResponse
+    {
+        $authUser = $this->resolveAuthUser($request);
+        if ($guard = $this->guardCanManageTemplates($authUser)) {
+            return $guard;
+        }
+        if (!in_array($authUser->role, ['company_admin', 'admin'])) {
+            return $this->forbidden();
+        }
+        $template = WaiverTemplate::withTrashed()->find($id);
+        if (!$template || !$this->authorizeRecordScope($template)) {
+            return $this->forbidden();
+        }
+        $template->forceDelete();
+        return response()->json(['success' => true, 'message' => 'Template permanently deleted']);
     }
 
     public function updateStatus(Request $request, WaiverTemplate $waiverTemplate): JsonResponse
