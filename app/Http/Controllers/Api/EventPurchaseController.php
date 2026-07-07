@@ -66,6 +66,23 @@ class EventPurchaseController extends Controller
                 $query->byDate($request->purchase_date);
             }
 
+            if ($request->has('search')) {
+                $search = $request->search;
+                $query->where(function ($q) use ($search) {
+                    $q->whereHas('customer', function ($sub) use ($search) {
+                        $sub->where('first_name', 'like', "%{$search}%")
+                            ->orWhere('last_name', 'like', "%{$search}%")
+                            ->orWhere('email', 'like', "%{$search}%");
+                    })
+                    ->orWhere('guest_name', 'like', "%{$search}%")
+                    ->orWhere('guest_email', 'like', "%{$search}%")
+                    ->orWhere('reference_number', 'like', "%{$search}%")
+                    ->orWhereHas('event', function ($sub) use ($search) {
+                        $sub->where('name', 'like', "%{$search}%");
+                    });
+                });
+            }
+
             $purchases = $query->orderBy('purchase_date', 'desc')
                 ->orderBy('purchase_time', 'asc')
                 ->get();

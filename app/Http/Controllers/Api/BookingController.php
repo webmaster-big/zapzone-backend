@@ -1532,7 +1532,8 @@ class BookingController extends Controller
                             ->orWhere('phone', 'like', "%{$validated['query']}%");
                     });
             })
-            ->orderBy('booking_time')
+            ->orderBy('booking_date', 'desc')
+            ->orderBy('booking_time', 'desc')
             ->get();
 
         return response()->json([

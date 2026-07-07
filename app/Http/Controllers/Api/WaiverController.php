@@ -35,6 +35,7 @@ class WaiverController extends Controller
                 'location:id,name',
                 'minors:id,waiver_id,first_name,last_name,date_of_birth',
                 'booking:id,reference_number',
+                'attractionPurchase:id',
                 'event:id,name',
             ]);
             $this->applyAuthScope($query, $request);
