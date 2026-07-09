@@ -44,6 +44,7 @@ use App\Http\Controllers\Api\RsvpController;
 use App\Http\Controllers\Api\SpecialPricingController;
 use App\Http\Controllers\Api\ShareableTokenController;
 use App\Http\Controllers\Api\MobileAvailabilityController;
+use App\Http\Controllers\Api\MobilePackageController;
 use App\Http\Controllers\Api\StreamController;
 use App\Http\Controllers\Api\StripeController;
 use App\Http\Controllers\Api\UserController;
@@ -304,6 +305,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('customers/{customer}/update-last-visit', [CustomerController::class, 'updateLastVisit']);
 
     Route::apiResource('categories', CategoryController::class);
+
+    // Lightweight and mobile-optimized packages list
+    Route::get('mobile/packages', [MobilePackageController::class, 'index']);
 
     Route::post('packages/room/create', [PackageController::class, 'storePackageRoom']);
     Route::patch('packages/bulk-update-min-notice', [PackageController::class, 'bulkUpdateMinBookingNotice']);
