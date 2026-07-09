@@ -57,15 +57,24 @@ class FeeSupportController extends Controller
                 $query->where('is_active', $request->boolean('is_active'));
             }
 
-            if ($request->has('search')) {
-                $search = $request->search;
-                $query->where('fee_name', 'like', "%{$search}%");
+            if ($request->filled('search')) {
+                $terms = preg_split('/\s+/', trim((string) $request->search), -1, PREG_SPLIT_NO_EMPTY);
+                foreach ($terms as $term) {
+                    $like = '%' . $term . '%';
+                    $query->where(function ($q) use ($like) {
+                        $q->where('fee_name', 'like', $like)
+                          ->orWhere('entity_type', 'like', $like);
+                    });
+                }
             }
 
             $sortBy = $request->get('sort_by', 'fee_name');
-            $sortOrder = $request->get('sort_order', 'asc');
+            $sortOrder = strtolower((string) $request->get('sort_order', 'asc'));
+            if (!in_array($sortOrder, ['asc', 'desc'], true)) {
+                $sortOrder = 'asc';
+            }
 
-            if (in_array($sortBy, ['fee_name', 'fee_amount', 'fee_calculation_type', 'fee_application_type', 'entity_type', 'created_at'])) {
+            if (in_array($sortBy, ['fee_name', 'fee_amount', 'fee_calculation_type', 'fee_application_type', 'entity_type', 'is_active', 'created_at', 'updated_at'])) {
                 $query->orderBy($sortBy, $sortOrder);
             }
 

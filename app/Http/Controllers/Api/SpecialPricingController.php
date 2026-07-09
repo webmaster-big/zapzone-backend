@@ -69,18 +69,24 @@ class SpecialPricingController extends Controller
                 $query->active()->withinDateRange();
             }
 
-            if ($request->has('search')) {
-                $search = $request->search;
-                $query->where(function ($q) use ($search) {
-                    $q->where('name', 'like', "%{$search}%")
-                      ->orWhere('description', 'like', "%{$search}%");
-                });
+            if ($request->filled('search')) {
+                $terms = preg_split('/\s+/', trim((string) $request->search), -1, PREG_SPLIT_NO_EMPTY);
+                foreach ($terms as $term) {
+                    $like = '%' . $term . '%';
+                    $query->where(function ($q) use ($like) {
+                        $q->where('name', 'like', $like)
+                          ->orWhere('description', 'like', $like);
+                    });
+                }
             }
 
             $sortBy = $request->get('sort_by', 'priority');
-            $sortOrder = $request->get('sort_order', 'desc');
+            $sortOrder = strtolower((string) $request->get('sort_order', 'desc'));
+            if (!in_array($sortOrder, ['asc', 'desc'], true)) {
+                $sortOrder = 'desc';
+            }
 
-            if (in_array($sortBy, ['name', 'discount_amount', 'recurrence_type', 'priority', 'start_date', 'end_date', 'created_at'])) {
+            if (in_array($sortBy, ['name', 'discount_amount', 'recurrence_type', 'priority', 'start_date', 'end_date', 'is_active', 'created_at', 'updated_at'])) {
                 $query->orderBy($sortBy, $sortOrder);
             }
 

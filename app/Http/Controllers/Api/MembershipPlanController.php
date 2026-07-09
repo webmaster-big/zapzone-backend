@@ -20,21 +20,76 @@ class MembershipPlanController extends Controller
         $query = MembershipPlan::with(['approvedLocations:id,name', 'location:id,name', 'billingAccount:id,label,location_id,environment,is_active'])
             ->withCount('memberships');
 
+        $this->applyPlanScope($request, $query);
+        $this->applyPlanFilters($request, $query);
+        $this->applyPlanSort($request, $query);
+
+        return response()->json([
+            'success' => true,
+            'data' => $query->paginate((int) $request->get('per_page', 25)),
+        ]);
+    }
+
+    public function export(Request $request): JsonResponse
+    {
+        $query = MembershipPlan::with(['location:id,name', 'billingAccount:id,label,location_id,environment,is_active'])
+            ->withCount('memberships');
+
+        $this->applyPlanScope($request, $query);
+        $this->applyPlanFilters($request, $query);
+        $this->applyPlanSort($request, $query);
+
+        $limit = min(max((int) $request->get('limit', 10000), 1), 50000);
+        $records = $query->limit($limit + 1)->get();
+        $limited = $records->count() > $limit;
+
+        $rows = $records->take($limit)->map(fn (MembershipPlan $p) => [
+            'id' => $p->id,
+            'name' => $p->name,
+            'slug' => $p->slug,
+            'tier' => $p->tier,
+            'price' => $p->price,
+            'billing_cycle' => $p->billing_cycle,
+            'usage_type' => $p->usage_type,
+            'visits_per_term' => $p->visits_per_term,
+            'unlimited_visits_per_term' => $p->unlimited_visits_per_term,
+            'location_access_mode' => $p->location_access_mode,
+            'location' => $p->location?->name,
+            'billing_account' => $p->billingAccount?->label,
+            'members_count' => $p->memberships_count,
+            'is_active' => $p->is_active,
+            'created_at' => $p->created_at?->toIso8601String(),
+            'updated_at' => $p->updated_at?->toIso8601String(),
+        ])->values();
+
+        return response()->json([
+            'success' => true,
+            'data' => ['membership_plans' => $rows, 'count' => $rows->count(), 'limited' => $limited, 'limit' => $limit],
+        ]);
+    }
+
+    private function applyPlanScope(Request $request, $query): void
+    {
         $authUser = $this->resolveAuthUser($request);
-        if ($authUser) {
-            $query->where('company_id', $authUser->company_id);
-            // Location managers and attendants see plans valid at their own location,
-            // including multi-location and all-location plans.
-            if (in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
-                $locId = (int) $authUser->location_id;
-                $query->where(function ($q) use ($locId) {
-                    $q->where('location_id', $locId)
-                      ->orWhere('location_access_mode', 'all')
-                      ->orWhereHas('approvedLocations', fn ($x) => $x->where('locations.id', $locId));
-                });
-            }
+        if (! $authUser) {
+            return;
         }
 
+        $query->where('company_id', $authUser->company_id);
+        // Location managers and attendants see plans valid at their own location,
+        // including multi-location and all-location plans.
+        if (in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
+            $locId = (int) $authUser->location_id;
+            $query->where(function ($q) use ($locId) {
+                $q->where('location_id', $locId)
+                  ->orWhere('location_access_mode', 'all')
+                  ->orWhereHas('approvedLocations', fn ($x) => $x->where('locations.id', $locId));
+            });
+        }
+    }
+
+    private function applyPlanFilters(Request $request, $query): void
+    {
         if ($request->boolean('active_only', false)) {
             $query->where('is_active', true);
         }
@@ -47,14 +102,33 @@ class MembershipPlanController extends Controller
             });
         }
         if ($request->filled('search')) {
-            $s = $request->search;
-            $query->where('name', 'like', "%{$s}%");
+            $terms = preg_split('/\s+/', trim((string) $request->search), -1, PREG_SPLIT_NO_EMPTY);
+            foreach ($terms as $term) {
+                $like = '%' . $term . '%';
+                $query->where(function ($q) use ($like, $term) {
+                    $q->where('name', 'like', $like)
+                      ->orWhere('description', 'like', $like)
+                      ->orWhere('slug', 'like', $like)
+                      ->orWhere('tier', 'like', $like);
+                    if (ctype_digit($term)) {
+                        $q->orWhere('id', (int) $term);
+                    }
+                });
+            }
         }
+    }
 
-        return response()->json([
-            'success' => true,
-            'data' => $query->orderBy('price')->paginate((int) $request->get('per_page', 25)),
-        ]);
+    private function applyPlanSort(Request $request, $query): void
+    {
+        $sortable = ['name', 'price', 'tier', 'created_at', 'is_active'];
+        $sortBy = (string) $request->get('sort_by', '');
+        $sortOrder = strtolower((string) $request->get('sort_order', ''));
+        $sortOrder = in_array($sortOrder, ['asc', 'desc'], true) ? $sortOrder : 'asc';
+        if (in_array($sortBy, $sortable, true)) {
+            $query->orderBy($sortBy, $sortOrder)->orderBy('id');
+        } else {
+            $query->orderBy('price');
+        }
     }
 
     public function publicIndex(Request $request): JsonResponse

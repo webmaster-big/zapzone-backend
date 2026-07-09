@@ -50,24 +50,35 @@ class UserController extends Controller
             $query->byRole($request->role);
         }
 
-        if ($request->has('status')) {
+        if ($request->filled('status')) {
             $query->where('status', $request->status);
         } else {
             $query->active();
         }
 
-        if ($request->has('search')) {
-            $search = $request->search;
-            $query->where(function ($q) use ($search) {
-                $q->where('first_name', 'like', "%{$search}%")
-                  ->orWhere('last_name', 'like', "%{$search}%")
-                  ->orWhere('email', 'like', "%{$search}%")
-                  ->orWhere('employee_id', 'like', "%{$search}%");
-            });
+        if ($request->filled('search')) {
+            $terms = preg_split('/\s+/', trim((string) $request->search), -1, PREG_SPLIT_NO_EMPTY);
+            foreach ($terms as $term) {
+                $like = '%' . $term . '%';
+                $query->where(function ($q) use ($like) {
+                    $q->where('first_name', 'like', $like)
+                      ->orWhere('last_name', 'like', $like)
+                      ->orWhere('email', 'like', $like)
+                      ->orWhere('employee_id', 'like', $like)
+                      ->orWhere('phone', 'like', $like)
+                      ->orWhere('department', 'like', $like)
+                      ->orWhere('position', 'like', $like)
+                      ->orWhereRaw("CONCAT(first_name, ' ', last_name) LIKE ?", [$like]);
+                });
+            }
         }
 
         $sortBy = $request->get('sort_by', 'first_name');
-        $sortOrder = $request->get('sort_order', 'asc');
+        $sortOrder = strtolower((string) $request->get('sort_order', 'asc'));
+
+        if (!in_array($sortOrder, ['asc', 'desc'], true)) {
+            $sortOrder = 'asc';
+        }
 
         if (in_array($sortBy, ['first_name', 'last_name', 'email', 'role', 'created_at', 'last_login'])) {
             $query->orderBy($sortBy, $sortOrder);

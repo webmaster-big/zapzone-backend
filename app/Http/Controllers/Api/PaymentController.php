@@ -84,16 +84,64 @@ class PaymentController extends Controller
             $query->where('customer_id', $request->customer_id);
         }
 
-        if ($request->has('status')) {
+        if ($request->filled('status')) {
             $query->byStatus($request->status);
         }
 
-        if ($request->has('method')) {
+        if ($request->filled('method')) {
             $query->byMethod($request->method);
         }
 
+        if ($request->filled('location_id')) {
+            $query->where('location_id', $request->location_id);
+        }
+
+        if ($request->filled('start_date')) {
+            $query->whereDate('created_at', '>=', $request->start_date);
+        }
+
+        if ($request->filled('end_date')) {
+            $query->whereDate('created_at', '<=', $request->end_date);
+        }
+
+        if ($request->filled('search')) {
+            $terms = preg_split('/\s+/', trim((string) $request->search), -1, PREG_SPLIT_NO_EMPTY);
+            foreach ($terms as $term) {
+                $like = '%' . $term . '%';
+                $query->where(function ($q) use ($like, $term) {
+                    $q->where('transaction_id', 'like', $like)
+                      ->orWhere('payment_id', 'like', $like)
+                      ->orWhere('card_last_four', 'like', $like)
+                      ->orWhere('notes', 'like', $like)
+                      ->orWhereHas('customer', function ($c) use ($like) {
+                          $c->where('first_name', 'like', $like)
+                            ->orWhere('last_name', 'like', $like)
+                            ->orWhere('email', 'like', $like)
+                            ->orWhere('phone', 'like', $like)
+                            ->orWhereRaw("CONCAT(first_name, ' ', last_name) LIKE ?", [$like]);
+                      });
+                    if (ctype_digit($term)) {
+                        $q->orWhere('id', (int) $term);
+                    }
+                    if (is_numeric($term)) {
+                        $q->orWhere('amount', $term);
+                    }
+                });
+            }
+        }
+
+        $allowedSorts = ['created_at', 'amount', 'status', 'method', 'paid_at', 'updated_at', 'id'];
+        $sortBy = $request->get('sort_by', 'created_at');
+        if (!in_array($sortBy, $allowedSorts, true)) {
+            $sortBy = 'created_at';
+        }
+        $sortOrder = strtolower((string) $request->get('sort_order', 'desc'));
+        if (!in_array($sortOrder, ['asc', 'desc'], true)) {
+            $sortOrder = 'desc';
+        }
+
         $perPage = $request->get('per_page', 15);
-        $payments = $query->orderBy('created_at', 'desc')->paginate($perPage);
+        $payments = $query->orderBy($sortBy, $sortOrder)->paginate($perPage);
 
         return response()->json([
             'success' => true,
@@ -411,8 +459,64 @@ class PaymentController extends Controller
             $query->where('location_id', $request->location_id);
         }
 
+        if ($request->has('customer_id')) {
+            $query->where('customer_id', $request->customer_id);
+        }
+
+        if ($request->filled('status')) {
+            $query->byStatus($request->status);
+        }
+
+        if ($request->filled('method')) {
+            $query->byMethod($request->method);
+        }
+
+        if ($request->filled('start_date')) {
+            $query->whereDate('created_at', '>=', $request->start_date);
+        }
+
+        if ($request->filled('end_date')) {
+            $query->whereDate('created_at', '<=', $request->end_date);
+        }
+
+        if ($request->filled('search')) {
+            $terms = preg_split('/\s+/', trim((string) $request->search), -1, PREG_SPLIT_NO_EMPTY);
+            foreach ($terms as $term) {
+                $like = '%' . $term . '%';
+                $query->where(function ($q) use ($like, $term) {
+                    $q->where('transaction_id', 'like', $like)
+                      ->orWhere('payment_id', 'like', $like)
+                      ->orWhere('card_last_four', 'like', $like)
+                      ->orWhere('notes', 'like', $like)
+                      ->orWhereHas('customer', function ($c) use ($like) {
+                          $c->where('first_name', 'like', $like)
+                            ->orWhere('last_name', 'like', $like)
+                            ->orWhere('email', 'like', $like)
+                            ->orWhere('phone', 'like', $like)
+                            ->orWhereRaw("CONCAT(first_name, ' ', last_name) LIKE ?", [$like]);
+                      });
+                    if (ctype_digit($term)) {
+                        $q->orWhere('id', (int) $term);
+                    }
+                    if (is_numeric($term)) {
+                        $q->orWhere('amount', $term);
+                    }
+                });
+            }
+        }
+
+        $allowedSorts = ['deleted_at', 'created_at', 'amount', 'status', 'method', 'paid_at', 'updated_at', 'id'];
+        $sortBy = $request->get('sort_by', 'deleted_at');
+        if (!in_array($sortBy, $allowedSorts, true)) {
+            $sortBy = 'deleted_at';
+        }
+        $sortOrder = strtolower((string) $request->get('sort_order', 'desc'));
+        if (!in_array($sortOrder, ['asc', 'desc'], true)) {
+            $sortOrder = 'desc';
+        }
+
         $perPage = $request->get('per_page', 15);
-        $payments = $query->orderBy('deleted_at', 'desc')->paginate($perPage);
+        $payments = $query->orderBy($sortBy, $sortOrder)->paginate($perPage);
 
         return response()->json([
             'success' => true,

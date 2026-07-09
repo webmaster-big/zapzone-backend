@@ -42,24 +42,39 @@ class CustomerController extends Controller
             }
         }
 
-        if ($request->has('status')) {
+        if ($request->filled('status')) {
             $query->where('status', $request->status);
         } else {
             $query->active();
         }
 
-        if ($request->has('search')) {
-            $search = $request->search;
-            $query->where(function ($q) use ($search) {
-                $q->where('first_name', 'like', "%{$search}%")
-                  ->orWhere('last_name', 'like', "%{$search}%")
-                  ->orWhere('email', 'like', "%{$search}%")
-                  ->orWhere('phone', 'like', "%{$search}%");
-            });
+        if ($request->filled('search')) {
+            $terms = preg_split('/\s+/', trim((string) $request->search), -1, PREG_SPLIT_NO_EMPTY);
+            foreach ($terms as $term) {
+                $like = '%' . $term . '%';
+                $query->where(function ($q) use ($like, $term) {
+                    $q->where('first_name', 'like', $like)
+                      ->orWhere('last_name', 'like', $like)
+                      ->orWhere('email', 'like', $like)
+                      ->orWhere('phone', 'like', $like)
+                      ->orWhere('address', 'like', $like)
+                      ->orWhere('city', 'like', $like)
+                      ->orWhere('state', 'like', $like)
+                      ->orWhere('zip', 'like', $like)
+                      ->orWhereRaw("CONCAT(first_name, ' ', last_name) LIKE ?", [$like]);
+                    if (ctype_digit($term)) {
+                        $q->orWhere('id', (int) $term);
+                    }
+                });
+            }
         }
 
         $sortBy = $request->get('sort_by', 'first_name');
-        $sortOrder = $request->get('sort_order', 'asc');
+        $sortOrder = strtolower((string) $request->get('sort_order', 'asc'));
+
+        if (!in_array($sortOrder, ['asc', 'desc'], true)) {
+            $sortOrder = 'asc';
+        }
 
         if (in_array($sortBy, ['first_name', 'last_name', 'email', 'created_at', 'last_visit', 'total_spent', 'total_bookings'])) {
             $query->orderBy($sortBy, $sortOrder);
@@ -174,13 +189,31 @@ class CustomerController extends Controller
             $allCustomers->push($customer);
         }
 
-        if ($request->has('search')) {
-            $search = strtolower($request->search);
-            $allCustomers = $allCustomers->filter(function ($customer) use ($search) {
-                return str_contains(strtolower($customer->first_name ?? ''), $search) ||
-                       str_contains(strtolower($customer->last_name ?? ''), $search) ||
-                       str_contains(strtolower($customer->email ?? ''), $search) ||
-                       str_contains(strtolower($customer->phone ?? ''), $search);
+        if ($request->filled('search')) {
+            $terms = preg_split('/\s+/', strtolower(trim((string) $request->search)), -1, PREG_SPLIT_NO_EMPTY);
+            $allCustomers = $allCustomers->filter(function ($customer) use ($terms) {
+                $fields = [
+                    strtolower($customer->first_name ?? ''),
+                    strtolower($customer->last_name ?? ''),
+                    strtolower(trim(($customer->first_name ?? '') . ' ' . ($customer->last_name ?? ''))),
+                    strtolower($customer->email ?? ''),
+                    strtolower($customer->phone ?? ''),
+                ];
+
+                foreach ($terms as $term) {
+                    $matched = false;
+                    foreach ($fields as $field) {
+                        if ($field !== '' && str_contains($field, $term)) {
+                            $matched = true;
+                            break;
+                        }
+                    }
+                    if (!$matched) {
+                        return false;
+                    }
+                }
+
+                return true;
             });
         }
 
@@ -250,9 +283,13 @@ class CustomerController extends Controller
         });
 
         $sortBy = $request->get('sort_by', 'first_name');
-        $sortOrder = $request->get('sort_order', 'asc');
+        $sortOrder = strtolower((string) $request->get('sort_order', 'asc'));
 
-        if (in_array($sortBy, ['first_name', 'last_name', 'email', 'total_spent', 'total_bookings'])) {
+        if (!in_array($sortOrder, ['asc', 'desc'], true)) {
+            $sortOrder = 'asc';
+        }
+
+        if (in_array($sortBy, ['first_name', 'last_name', 'email', 'total_spent', 'total_bookings', 'created_at', 'last_visit'])) {
             $customersWithTotals = $sortOrder === 'desc'
                 ? $customersWithTotals->sortByDesc($sortBy)
                 : $customersWithTotals->sortBy($sortBy);
@@ -487,14 +524,32 @@ class CustomerController extends Controller
             ], 400);
         }
 
-        $customers = Customer::where(function ($q) use ($query) {
-            $q->where('email', 'like', "%{$query}%");
-            $q->orWhere('first_name', 'like', "%{$query}%");
-            $q->orWhere('last_name', 'like', "%{$query}%");
-        })
-        ->active()
-        ->limit(10)
-        ->get(['id', 'first_name', 'last_name', 'email', 'phone']);
+        $terms = preg_split('/\s+/', trim((string) $query), -1, PREG_SPLIT_NO_EMPTY);
+
+        if (empty($terms)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Search query is required',
+            ], 400);
+        }
+
+        $customersQuery = Customer::query();
+
+        foreach ($terms as $term) {
+            $like = '%' . $term . '%';
+            $customersQuery->where(function ($q) use ($like) {
+                $q->where('email', 'like', $like)
+                  ->orWhere('first_name', 'like', $like)
+                  ->orWhere('last_name', 'like', $like)
+                  ->orWhere('phone', 'like', $like)
+                  ->orWhereRaw("CONCAT(first_name, ' ', last_name) LIKE ?", [$like]);
+            });
+        }
+
+        $customers = $customersQuery
+            ->active()
+            ->limit(10)
+            ->get(['id', 'first_name', 'last_name', 'email', 'phone']);
 
         return response()->json([
             'success' => true,

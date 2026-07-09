@@ -54,10 +54,21 @@ class DayOffController extends Controller
             $query->upcoming();
         }
 
-        $sortBy = $request->get('sort_by', 'date');
-        $sortOrder = $request->get('sort_order', 'asc');
+        if ($request->filled('search')) {
+            $terms = preg_split('/\s+/', trim((string) $request->search), -1, PREG_SPLIT_NO_EMPTY);
+            foreach ($terms as $term) {
+                $like = '%' . $term . '%';
+                $query->where('reason', 'like', $like);
+            }
+        }
 
-        if (in_array($sortBy, ['date', 'created_at'])) {
+        $sortBy = $request->get('sort_by', 'date');
+        $sortOrder = strtolower((string) $request->get('sort_order', 'asc'));
+        if (!in_array($sortOrder, ['asc', 'desc'], true)) {
+            $sortOrder = 'asc';
+        }
+
+        if (in_array($sortBy, ['date', 'created_at', 'updated_at'])) {
             $query->orderBy($sortBy, $sortOrder);
         }
 

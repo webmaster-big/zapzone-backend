@@ -32,8 +32,40 @@ class WaiverBulkInviteController extends Controller
         if ($request->filled('booking_id')) {
             $query->where('booking_id', $request->integer('booking_id'));
         }
+        if ($request->filled('status')) {
+            $query->where('status', $request->string('status')->toString());
+        }
+        if ($request->filled('start_date') && $request->filled('end_date')) {
+            $query->whereBetween('selected_date', [$request->date('start_date'), $request->date('end_date')]);
+        } elseif ($request->filled('date')) {
+            $query->whereDate('selected_date', $request->date('date'));
+        }
+        if ($request->filled('search')) {
+            $terms = preg_split('/\s+/', trim((string) $request->search), -1, PREG_SPLIT_NO_EMPTY);
+            foreach ($terms as $term) {
+                $like = '%' . $term . '%';
+                $query->where(function ($q) use ($like, $term) {
+                    $q->where('chaperone_name', 'like', $like)
+                        ->orWhere('chaperone_email', 'like', $like)
+                        ->orWhere('chaperone_phone', 'like', $like);
+                    if (ctype_digit($term)) {
+                        $q->orWhere('id', (int) $term);
+                    }
+                });
+            }
+        }
 
-        $invites = $query->orderByDesc('created_at')->paginate($request->integer('per_page', 20));
+        $sortBy = $request->string('sort_by')->toString();
+        $sortOrder = strtolower($request->string('sort_order')->toString());
+        $sortOrder = in_array($sortOrder, ['asc', 'desc'], true) ? $sortOrder : 'desc';
+        $sortable = ['created_at', 'selected_date', 'chaperone_name', 'status'];
+        if (in_array($sortBy, $sortable, true)) {
+            $query->orderBy($sortBy, $sortOrder)->orderByDesc('id');
+        } else {
+            $query->orderByDesc('created_at');
+        }
+
+        $invites = $query->paginate($request->integer('per_page', 20));
 
         return response()->json([
             'success' => true,

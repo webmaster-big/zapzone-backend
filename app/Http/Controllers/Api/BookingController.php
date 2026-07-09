@@ -37,6 +37,44 @@ class BookingController extends Controller
     use ScopesByAuthUser;
     use RecordsPageAnalytics;
 
+    private function applyBookingSearch($query, string $search): void
+    {
+        $terms = preg_split('/\s+/', trim($search), -1, PREG_SPLIT_NO_EMPTY);
+
+        foreach ($terms as $term) {
+            $like = '%' . $term . '%';
+            $query->where(function ($q) use ($like, $term) {
+                $q->where('reference_number', 'like', $like)
+                  ->orWhere('guest_name', 'like', $like)
+                  ->orWhere('guest_email', 'like', $like)
+                  ->orWhere('guest_phone', 'like', $like)
+                  ->orWhere('notes', 'like', $like)
+                  ->orWhere('transaction_id', 'like', $like)
+                  ->orWhere('guest_of_honor_name', 'like', $like)
+                  ->orWhereHas('customer', function ($c) use ($like) {
+                      $c->where('first_name', 'like', $like)
+                        ->orWhere('last_name', 'like', $like)
+                        ->orWhere('email', 'like', $like)
+                        ->orWhere('phone', 'like', $like)
+                        ->orWhereRaw("CONCAT(first_name, ' ', last_name) LIKE ?", [$like]);
+                  })
+                  ->orWhereHas('package', function ($p) use ($like) {
+                      $p->where('name', 'like', $like);
+                  })
+                  ->orWhereHas('location', function ($l) use ($like) {
+                      $l->where('name', 'like', $like);
+                  })
+                  ->orWhereHas('room', function ($r) use ($like) {
+                      $r->where('name', 'like', $like);
+                  });
+
+                if (ctype_digit($term)) {
+                    $q->orWhere('id', (int) $term);
+                }
+            });
+        }
+    }
+
     public function index(Request $request): JsonResponse
     {
         try {
@@ -89,25 +127,16 @@ class BookingController extends Controller
             }
 
             if ($request->has('search')) {
-                $search = $request->search;
-                $query->where(function ($q) use ($search) {
-                    $q->where('reference_number', 'like', "%{$search}%")
-                      ->orWhere('guest_name', 'like', "%{$search}%")
-                      ->orWhere('guest_email', 'like', "%{$search}%")
-                      ->orWhere('guest_phone', 'like', "%{$search}%")
-                      ->orWhereHas('customer', function ($customerQuery) use ($search) {
-                          $customerQuery->where('first_name', 'like', "%{$search}%")
-                                      ->orWhere('last_name', 'like', "%{$search}%")
-                                      ->orWhere('email', 'like', "%{$search}%")
-                                      ->orWhere('phone', 'like', "%{$search}%");
-                      });
-                });
+                $this->applyBookingSearch($query, (string) $request->search);
             }
 
             $sortBy = $request->get('sort_by', 'booking_date');
-            $sortOrder = $request->get('sort_order', 'desc');
+            $sortOrder = strtolower((string) $request->get('sort_order', 'desc'));
+            if (!in_array($sortOrder, ['asc', 'desc'])) {
+                $sortOrder = 'desc';
+            }
 
-            if (in_array($sortBy, ['booking_date', 'booking_time', 'total_amount', 'status', 'created_at'])) {
+            if (in_array($sortBy, ['booking_date', 'booking_time', 'total_amount', 'status', 'created_at', 'reference_number', 'participants', 'amount_paid', 'payment_status', 'payment_method', 'updated_at', 'id'])) {
                 $query->orderBy($sortBy, $sortOrder);
             }
 
@@ -169,16 +198,7 @@ class BookingController extends Controller
             ]);
 
         if ($request->has('search')) {
-            $search = $request->search;
-            $query->where(function ($q) use ($search) {
-                $q->where('reference_number', 'like', "%{$search}%")
-                  ->orWhereHas('location', function ($locationQuery) use ($search) {
-                      $locationQuery->where('name', 'like', "%{$search}%");
-                  })
-                  ->orWhereHas('package', function ($packageQuery) use ($search) {
-                      $packageQuery->where('name', 'like', "%{$search}%");
-                  });
-            });
+            $this->applyBookingSearch($query, (string) $request->search);
         }
 
         if ($request->has('guest_email')) {
@@ -192,9 +212,12 @@ class BookingController extends Controller
         }
 
         $sortBy = $request->get('sort_by', 'booking_date');
-        $sortOrder = $request->get('sort_order', 'desc');
+        $sortOrder = strtolower((string) $request->get('sort_order', 'desc'));
+        if (!in_array($sortOrder, ['asc', 'desc'])) {
+            $sortOrder = 'desc';
+        }
 
-        if (in_array($sortBy, ['booking_date', 'booking_time', 'total_amount', 'status', 'created_at'])) {
+        if (in_array($sortBy, ['booking_date', 'booking_time', 'total_amount', 'status', 'created_at', 'reference_number', 'participants', 'amount_paid', 'payment_status', 'payment_method', 'updated_at', 'id'])) {
             $query->orderBy($sortBy, $sortOrder);
         }
 
@@ -649,10 +672,15 @@ class BookingController extends Controller
     {
         $query = Booking::select([
                 'id', 'reference_number', 'customer_id', 'package_id', 'location_id', 'room_id',
-                'created_by', 'guest_name', 'guest_email', 'guest_phone', 'booking_date', 'booking_time',
+                'created_by', 'guest_name', 'guest_email', 'guest_phone',
+                'guest_address', 'guest_city', 'guest_state', 'guest_zip', 'guest_country',
+                'booking_date', 'booking_time',
                 'participants', 'duration', 'duration_unit', 'total_amount', 'amount_paid',
-                'discount_amount', 'payment_method', 'payment_status', 'status', 'notes',
-                'guest_of_honor_name', 'guest_of_honor_age', 'created_at'
+                'discount_amount', 'applied_fees', 'applied_discounts',
+                'payment_method', 'payment_status', 'transaction_id', 'status', 'notes',
+                'internal_notes', 'special_requests',
+                'guest_of_honor_name', 'guest_of_honor_age', 'guest_of_honor_gender',
+                'checked_in_at', 'checked_in_by', 'created_at', 'updated_at'
             ])
             ->with([
                 'customer:id,first_name,last_name,email,phone',
@@ -660,6 +688,7 @@ class BookingController extends Controller
                 'location:id,name',
                 'room:id,name',
                 'creator:id,first_name,last_name,email',
+                'checkedInByUser:id,first_name,last_name',
                 'attractions:id,name',  // BelongsToMany - pivot data loaded automatically
                 'addOns:id,name',       // BelongsToMany - pivot data loaded automatically
             ]);
@@ -694,19 +723,28 @@ class BookingController extends Controller
         }
 
         $sortBy = $request->get('sort_by', 'booking_date');
-        $sortOrder = $request->get('sort_order', 'desc');
+        $sortOrder = strtolower((string) $request->get('sort_order', 'desc'));
+        if (!in_array($sortOrder, ['asc', 'desc'])) {
+            $sortOrder = 'desc';
+        }
 
-        if (in_array($sortBy, ['booking_date', 'booking_time', 'total_amount', 'status', 'created_at'])) {
+        if (in_array($sortBy, ['booking_date', 'booking_time', 'total_amount', 'status', 'created_at', 'reference_number', 'participants', 'amount_paid', 'payment_status', 'payment_method', 'updated_at', 'id'])) {
             $query->orderBy($sortBy, $sortOrder);
         }
 
-        $bookings = $query->limit(1000)->get();
+        $limit = filter_var($request->get('limit', 10000), FILTER_VALIDATE_INT);
+        if ($limit === false || $limit < 1) {
+            $limit = 10000;
+        }
+        $limit = min($limit, 50000);
+
+        $bookings = $query->limit($limit)->get();
 
         return response()->json([
             'success' => true,
             'data' => [
                 'bookings' => $bookings,
-                'limited' => $bookings->count() >= 1000,
+                'limited' => $bookings->count() >= $limit,
             ],
         ]);
     }
@@ -1519,19 +1557,11 @@ class BookingController extends Controller
             'query' => 'required|string|max:255',
         ]);
 
-        $bookings = Booking::with(['customer', 'package', 'room'])
-            ->where(function ($query) use ($validated) {
-                $query->where('reference_number', 'like', "%{$validated['query']}%")
-                    ->orWhere('guest_name', 'like', "%{$validated['query']}%")
-                    ->orWhere('guest_email', 'like', "%{$validated['query']}%")
-                    ->orWhere('guest_phone', 'like', "%{$validated['query']}%")
-                    ->orWhereHas('customer', function ($customerQuery) use ($validated) {
-                        $customerQuery->where('first_name', 'like', "%{$validated['query']}%")
-                            ->orWhere('last_name', 'like', "%{$validated['query']}%")
-                            ->orWhere('email', 'like', "%{$validated['query']}%")
-                            ->orWhere('phone', 'like', "%{$validated['query']}%");
-                    });
-            })
+        $query = Booking::with(['customer', 'package', 'room']);
+
+        $this->applyBookingSearch($query, $validated['query']);
+
+        $bookings = $query
             ->orderBy('booking_date', 'desc')
             ->orderBy('booking_time', 'desc')
             ->get();
@@ -2160,21 +2190,17 @@ class BookingController extends Controller
             }
 
             if ($request->has('search')) {
-                $search = $request->search;
-                $query->where(function ($q) use ($search) {
-                    $q->where('reference_number', 'like', "%{$search}%")
-                      ->orWhere('guest_name', 'like', "%{$search}%")
-                      ->orWhere('guest_email', 'like', "%{$search}%")
-                      ->orWhereHas('customer', function ($subQ) use ($search) {
-                          $subQ->where('first_name', 'like', "%{$search}%")
-                               ->orWhere('last_name', 'like', "%{$search}%")
-                               ->orWhere('email', 'like', "%{$search}%");
-                      });
-                });
+                $this->applyBookingSearch($query, (string) $request->search);
             }
 
             $sortBy = $request->get('sort_by', 'deleted_at');
-            $sortOrder = $request->get('sort_order', 'desc');
+            $sortOrder = strtolower((string) $request->get('sort_order', 'desc'));
+            if (!in_array($sortOrder, ['asc', 'desc'])) {
+                $sortOrder = 'desc';
+            }
+            if (!in_array($sortBy, ['deleted_at', 'booking_date', 'booking_time', 'total_amount', 'status', 'created_at', 'reference_number', 'participants', 'amount_paid', 'payment_status', 'payment_method', 'updated_at', 'id'])) {
+                $sortBy = 'deleted_at';
+            }
             $query->orderBy($sortBy, $sortOrder);
 
             $perPage = min($request->get('per_page', 15), 100);

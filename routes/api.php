@@ -412,13 +412,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('bookings/trashed', [BookingController::class, 'trashed']);
     Route::post('bookings/bulk-restore', [BookingController::class, 'bulkRestore']);
     Route::post('bookings/bulk-import-csv', [BookingController::class, 'bulkImportCsv']);
+    Route::get('bookings/location-date', [BookingController::class, 'getByLocationAndDate']);
+    Route::get('bookings/search', [BookingController::class, 'search']);
 
     Route::apiResource('bookings', BookingController::class)->except(['store', 'destroy']);
     Route::patch('bookings/{booking}/cancel', [BookingController::class, 'cancel']);
     Route::post('bookings/check-in', [BookingController::class, 'checkIn']);
     Route::patch('bookings/{booking}/complete', [BookingController::class, 'complete']);
-    Route::get('bookings/location-date', [BookingController::class, 'getByLocationAndDate']);
-    Route::get('bookings/search', [BookingController::class, 'search']);
     Route::patch('bookings/{booking}/status', [BookingController::class, 'updateStatus']);
     Route::patch('bookings/{booking}/payment-status', [BookingController::class, 'updatePaymentStatus']);
     Route::patch('bookings/{id}/internal-notes', [BookingController::class, 'updateInternalNotes']);
@@ -579,6 +579,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::post('memberships/benefits/quote', [MembershipController::class, 'quote']);
 
+    Route::get('membership-plans/export', [MembershipPlanController::class, 'export']);
     Route::apiResource('membership-plans', MembershipPlanController::class);
     Route::patch('membership-plans/{membershipPlan}/toggle-status', [MembershipPlanController::class, 'toggleStatus']);
 
@@ -591,6 +592,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::post('memberships/scan', [MembershipCheckInController::class, 'scan']);
 
+    Route::get('memberships/export',           [MembershipController::class, 'export']);
     Route::get('memberships',                  [MembershipController::class, 'index']);
     Route::post('memberships',                 [MembershipController::class, 'store']);
     Route::get('memberships/{membership}',     [MembershipController::class, 'show']);

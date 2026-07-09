@@ -141,44 +141,147 @@ class MembershipController extends Controller
     {
         $query = Membership::with(['customer:id,first_name,last_name,email,phone', 'plan:id,name,tier,price,billing_cycle', 'homeLocation:id,name']);
 
+        $this->applyMembershipScope($request, $query);
+        $this->applyMembershipFilters($request, $query);
+        $this->applyMembershipSort($request, $query);
+
+        return response()->json([
+            'success' => true,
+            'data' => $query->paginate((int) $request->get('per_page', 20)),
+        ]);
+    }
+
+    public function export(Request $request): JsonResponse
+    {
+        $query = Membership::with([
+            'customer:id,first_name,last_name,email,phone',
+            'plan:id,name,tier,price,billing_cycle',
+            'homeLocation:id,name',
+            'soldAtLocation:id,name',
+        ]);
+
+        $this->applyMembershipScope($request, $query);
+        $this->applyMembershipFilters($request, $query);
+        $this->applyMembershipSort($request, $query);
+
+        $limit = min(max((int) $request->get('limit', 10000), 1), 50000);
+        $records = $query->limit($limit + 1)->get();
+        $limited = $records->count() > $limit;
+
+        $rows = $records->take($limit)->map(fn (Membership $m) => [
+            'id' => $m->id,
+            'member_name' => $m->holder_name ?: trim(($m->customer?->first_name ?? '') . ' ' . ($m->customer?->last_name ?? '')),
+            'customer_id' => $m->customer_id,
+            'email' => $m->customer?->email,
+            'phone' => $m->customer?->phone,
+            'plan' => $m->plan?->name,
+            'plan_id' => $m->membership_plan_id,
+            'tier' => $m->plan?->tier,
+            'billing_cycle' => $m->plan?->billing_cycle,
+            'status' => $m->status,
+            'is_comped' => $m->is_comped,
+            'billing_amount' => $m->billing_amount,
+            'discount_amount' => $m->discount_amount,
+            'qr_token' => $m->qr_token,
+            'home_location' => $m->homeLocation?->name,
+            'sold_at_location' => $m->soldAtLocation?->name,
+            'started_at' => $m->started_at?->toIso8601String(),
+            'current_term_start' => $m->current_term_start?->toIso8601String(),
+            'current_term_end' => $m->current_term_end?->toIso8601String(),
+            'next_billing_at' => $m->next_billing_at?->toIso8601String(),
+            'canceled_at' => $m->canceled_at?->toIso8601String(),
+            'created_at' => $m->created_at?->toIso8601String(),
+            'updated_at' => $m->updated_at?->toIso8601String(),
+        ])->values();
+
+        return response()->json([
+            'success' => true,
+            'data' => ['memberships' => $rows, 'count' => $rows->count(), 'limited' => $limited, 'limit' => $limit],
+        ]);
+    }
+
+    private function applyMembershipScope(Request $request, $query): void
+    {
         $authUser = $this->resolveAuthUser($request);
-        if ($authUser) {
-            if (in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
-                $query->where(function ($q) use ($authUser) {
-                    $q->where('home_location_id', $authUser->location_id)
-                      ->orWhere('sold_at_location_id', $authUser->location_id);
-                });
-            } elseif ($authUser->company_id) {
-                $companyId = $authUser->company_id;
-                $query->where(function ($q) use ($companyId) {
-                    $q->whereHas('plan', fn($p) => $p->where('company_id', $companyId))
-                      ->orWhereHas('homeLocation', fn($l) => $l->where('company_id', $companyId))
-                      ->orWhereHas('soldAtLocation', fn($l) => $l->where('company_id', $companyId));
-                });
-            }
+        if (! $authUser) {
+            return;
         }
 
+        if (in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
+            $query->where(function ($q) use ($authUser) {
+                $q->where('home_location_id', $authUser->location_id)
+                  ->orWhere('sold_at_location_id', $authUser->location_id);
+            });
+        } elseif ($authUser->company_id) {
+            $companyId = $authUser->company_id;
+            $query->where(function ($q) use ($companyId) {
+                $q->whereHas('plan', fn($p) => $p->where('company_id', $companyId))
+                  ->orWhereHas('homeLocation', fn($l) => $l->where('company_id', $companyId))
+                  ->orWhereHas('soldAtLocation', fn($l) => $l->where('company_id', $companyId));
+            });
+        }
+    }
+
+    private function applyMembershipFilters(Request $request, $query): void
+    {
         if ($request->filled('status'))         $query->where('status', $request->status);
         if ($request->filled('plan_id'))        $query->where('membership_plan_id', $request->plan_id);
         if ($request->filled('customer_id'))    $query->where('customer_id', $request->customer_id);
         if ($request->filled('location_id'))    $query->where('home_location_id', $request->location_id);
-        if ($request->filled('search')) {
-            $s = $request->search;
-            $query->where(function ($q) use ($s) {
-                $q->where('qr_token', $s)
-                  ->orWhereHas('customer', function ($c) use ($s) {
-                      $c->where('first_name', 'like', "%$s%")
-                        ->orWhere('last_name', 'like', "%$s%")
-                        ->orWhere('email', 'like', "%$s%")
-                        ->orWhere('phone', 'like', "%$s%");
-                  });
-            });
+        if ($request->filled('is_comped'))      $query->where('is_comped', $request->boolean('is_comped'));
+        if ($request->filled('billing_cycle'))  $query->whereHas('plan', fn($p) => $p->where('billing_cycle', $request->billing_cycle));
+        if ($request->filled('tier'))           $query->whereHas('plan', fn($p) => $p->where('tier', $request->tier));
+
+        $dateRanges = [
+            'started_at'       => 'started_at',
+            'current_term_end' => 'current_term_end',
+            'next_billing_at'  => 'next_billing_at',
+            'canceled_at'      => 'canceled_at',
+        ];
+        foreach ($dateRanges as $param => $column) {
+            if ($request->filled($param . '_from')) $query->whereDate($column, '>=', $request->date($param . '_from'));
+            if ($request->filled($param . '_to'))   $query->whereDate($column, '<=', $request->date($param . '_to'));
         }
 
-        return response()->json([
-            'success' => true,
-            'data' => $query->orderByDesc('id')->paginate((int) $request->get('per_page', 20)),
-        ]);
+        if ($request->filled('search')) {
+            $terms = preg_split('/\s+/', trim((string) $request->search), -1, PREG_SPLIT_NO_EMPTY);
+            foreach ($terms as $term) {
+                $like = '%' . $term . '%';
+                $query->where(function ($q) use ($like, $term) {
+                    $q->where('qr_token', $term)
+                      ->orWhere('holder_name', 'like', $like)
+                      ->orWhereHas('customer', function ($c) use ($like) {
+                          $c->where('first_name', 'like', $like)
+                            ->orWhere('last_name', 'like', $like)
+                            ->orWhere('email', 'like', $like)
+                            ->orWhere('phone', 'like', $like)
+                            ->orWhereRaw("CONCAT(first_name, ' ', last_name) LIKE ?", [$like]);
+                      });
+                    if (ctype_digit($term)) {
+                        $q->orWhere('id', (int) $term);
+                    }
+                });
+            }
+        }
+    }
+
+    private function applyMembershipSort(Request $request, $query): void
+    {
+        $sortable = [
+            'created_at' => 'created_at',
+            'status' => 'status',
+            'holder_name' => 'holder_name',
+            'id' => 'id',
+            'plan_id' => 'membership_plan_id',
+        ];
+        $sortBy = (string) $request->get('sort_by', '');
+        $sortOrder = strtolower((string) $request->get('sort_order', ''));
+        $sortOrder = in_array($sortOrder, ['asc', 'desc'], true) ? $sortOrder : 'desc';
+        if (isset($sortable[$sortBy])) {
+            $query->orderBy($sortable[$sortBy], $sortOrder)->orderByDesc('id');
+        } else {
+            $query->orderByDesc('id');
+        }
     }
 
     public function show(Membership $membership): JsonResponse

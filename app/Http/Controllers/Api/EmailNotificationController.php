@@ -64,15 +64,35 @@ class EmailNotificationController extends Controller
             $query->where('is_default', $request->boolean('is_default'));
         }
 
-        if ($request->has('search')) {
-            $query->where('name', 'like', '%' . $request->search . '%');
+        if ($request->filled('search')) {
+            $terms = preg_split('/\s+/', trim((string) $request->search), -1, PREG_SPLIT_NO_EMPTY);
+            foreach ($terms as $term) {
+                $like = '%' . $term . '%';
+                $query->where(function ($q) use ($like) {
+                    $q->where('name', 'like', $like)
+                      ->orWhere('subject', 'like', $like)
+                      ->orWhere('description', 'like', $like)
+                      ->orWhere('trigger_type', 'like', $like);
+                });
+            }
         }
 
-        $notifications = $query
-            ->withCount('logs')
-            ->orderBy('is_default', 'desc')
-            ->orderBy('created_at', 'desc')
-            ->paginate($request->per_page ?? 15);
+        $query->withCount('logs');
+
+        $sortBy = $request->get('sort_by');
+        $sortOrder = strtolower((string) $request->get('sort_order', 'desc'));
+        if (!in_array($sortOrder, ['asc', 'desc'], true)) {
+            $sortOrder = 'desc';
+        }
+
+        if (in_array($sortBy, ['name', 'subject', 'is_active', 'created_at', 'updated_at'], true)) {
+            $query->orderBy($sortBy, $sortOrder);
+        } else {
+            $query->orderBy('is_default', 'desc')
+                ->orderBy('created_at', 'desc');
+        }
+
+        $notifications = $query->paginate($request->per_page ?? 15);
 
         $notifications->getCollection()->transform(function ($notification) {
             $notification->effective_subject = $notification->getEffectiveSubject();

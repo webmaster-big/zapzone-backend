@@ -46,54 +46,67 @@ class AttractionPurchaseController extends Controller
                 });
             }
 
-        if ($request->has('location_id')) {
+        if ($request->filled('location_id')) {
             $query->byLocation($request->location_id);
         }
 
-        if ($request->has('attraction_id')) {
+        if ($request->filled('attraction_id')) {
             $query->where('attraction_id', $request->attraction_id);
         }
 
-        if ($request->has('customer_id')) {
+        if ($request->filled('customer_id')) {
             $query->where('customer_id', $request->customer_id);
         }
 
-        if ($request->has('status')) {
+        if ($request->filled('status')) {
             $query->where('status', $request->status);
         }
 
-        if ($request->has('payment_method')) {
+        if ($request->filled('payment_method')) {
             $query->where('payment_method', $request->payment_method);
         }
 
-        if ($request->has('start_date')) {
+        if ($request->filled('start_date')) {
             $query->where('purchase_date', '>=', $request->start_date);
         }
-        if ($request->has('end_date')) {
+        if ($request->filled('end_date')) {
             $query->where('purchase_date', '<=', $request->end_date);
         }
 
-        if ($request->has('search')) {
-            $search = $request->search;
-            $query->where(function ($q) use ($search) {
-                $q->whereHas('customer', function ($subQ) use ($search) {
-                    $subQ->where('first_name', 'like', "%{$search}%")
-                         ->orWhere('last_name', 'like', "%{$search}%")
-                         ->orWhere('email', 'like', "%{$search}%");
-                })
-                ->orWhere('guest_name', 'like', "%{$search}%")
-                ->orWhere('guest_email', 'like', "%{$search}%")
-                ->orWhere('guest_phone', 'like', "%{$search}%")
-                ->orWhereHas('attraction', function ($subQ) use ($search) {
-                    $subQ->where('name', 'like', "%{$search}%");
+        if ($request->filled('search')) {
+            $terms = preg_split('/\s+/', trim((string) $request->search), -1, PREG_SPLIT_NO_EMPTY);
+            foreach ($terms as $term) {
+                $like = '%' . $term . '%';
+                $query->where(function ($q) use ($like, $term) {
+                    $q->where('guest_name', 'like', $like)
+                      ->orWhere('guest_email', 'like', $like)
+                      ->orWhere('guest_phone', 'like', $like)
+                      ->orWhere('transaction_id', 'like', $like)
+                      ->orWhere('notes', 'like', $like)
+                      ->orWhereHas('customer', function ($c) use ($like) {
+                          $c->where('first_name', 'like', $like)
+                            ->orWhere('last_name', 'like', $like)
+                            ->orWhere('email', 'like', $like)
+                            ->orWhere('phone', 'like', $like)
+                            ->orWhereRaw("CONCAT(first_name, ' ', last_name) LIKE ?", [$like]);
+                      })
+                      ->orWhereHas('attraction', function ($a) use ($like) {
+                          $a->where('name', 'like', $like);
+                      });
+                    if (ctype_digit($term)) {
+                        $q->orWhere('id', (int) $term);
+                    }
                 });
-            });
+            }
         }
 
         $sortBy = $request->get('sort_by', 'purchase_date');
-        $sortOrder = $request->get('sort_order', 'desc');
+        $sortOrder = strtolower((string) $request->get('sort_order', 'desc'));
+        if (!in_array($sortOrder, ['asc', 'desc'], true)) {
+            $sortOrder = 'desc';
+        }
 
-        if (in_array($sortBy, ['purchase_date', 'total_amount', 'quantity', 'status', 'created_at'])) {
+        if (in_array($sortBy, ['purchase_date', 'total_amount', 'quantity', 'status', 'created_at', 'amount_paid', 'scheduled_date', 'updated_at', 'id'])) {
             $query->orderBy($sortBy, $sortOrder);
         }
 
@@ -172,7 +185,7 @@ class AttractionPurchaseController extends Controller
             $query->where('customer_id', $request->customer_id);
         }
 
-        if ($request->has('search')) {
+        if ($request->filled('search')) {
             $search = $request->search;
             $query->where(function ($q) use ($search) {
                 $q->whereHas('attraction', function ($attractionQuery) use ($search) {
@@ -185,7 +198,10 @@ class AttractionPurchaseController extends Controller
         }
 
         $sortBy = $request->get('sort_by', 'purchase_date');
-        $sortOrder = $request->get('sort_order', 'desc');
+        $sortOrder = strtolower((string) $request->get('sort_order', 'desc'));
+        if (!in_array($sortOrder, ['asc', 'desc'], true)) {
+            $sortOrder = 'desc';
+        }
 
         if (in_array($sortBy, ['purchase_date', 'total_amount', 'status', 'created_at'])) {
             $query->orderBy($sortBy, $sortOrder);
@@ -977,10 +993,10 @@ class AttractionPurchaseController extends Controller
     {
         $query = AttractionPurchase::query();
 
-        if ($request->has('start_date')) {
+        if ($request->filled('start_date')) {
             $query->where('purchase_date', '>=', $request->start_date);
         }
-        if ($request->has('end_date')) {
+        if ($request->filled('end_date')) {
             $query->where('purchase_date', '<=', $request->end_date);
         }
 
@@ -1294,28 +1310,45 @@ public function checkIn(Request $request, int $id): JsonResponse
                 });
             }
 
-            if ($request->has('location_id')) {
+            if ($request->filled('location_id')) {
                 $query->byLocation($request->location_id);
             }
 
-            if ($request->has('search')) {
-                $search = $request->search;
-                $query->where(function ($q) use ($search) {
-                    $q->whereHas('customer', function ($subQ) use ($search) {
-                        $subQ->where('first_name', 'like', "%{$search}%")
-                             ->orWhere('last_name', 'like', "%{$search}%")
-                             ->orWhere('email', 'like', "%{$search}%");
-                    })
-                    ->orWhere('guest_name', 'like', "%{$search}%")
-                    ->orWhere('guest_email', 'like', "%{$search}%")
-                    ->orWhereHas('attraction', function ($subQ) use ($search) {
-                        $subQ->where('name', 'like', "%{$search}%");
+            if ($request->filled('search')) {
+                $terms = preg_split('/\s+/', trim((string) $request->search), -1, PREG_SPLIT_NO_EMPTY);
+                foreach ($terms as $term) {
+                    $like = '%' . $term . '%';
+                    $query->where(function ($q) use ($like, $term) {
+                        $q->where('guest_name', 'like', $like)
+                          ->orWhere('guest_email', 'like', $like)
+                          ->orWhere('guest_phone', 'like', $like)
+                          ->orWhere('transaction_id', 'like', $like)
+                          ->orWhere('notes', 'like', $like)
+                          ->orWhereHas('customer', function ($c) use ($like) {
+                              $c->where('first_name', 'like', $like)
+                                ->orWhere('last_name', 'like', $like)
+                                ->orWhere('email', 'like', $like)
+                                ->orWhere('phone', 'like', $like)
+                                ->orWhereRaw("CONCAT(first_name, ' ', last_name) LIKE ?", [$like]);
+                          })
+                          ->orWhereHas('attraction', function ($a) use ($like) {
+                              $a->where('name', 'like', $like);
+                          });
+                        if (ctype_digit($term)) {
+                            $q->orWhere('id', (int) $term);
+                        }
                     });
-                });
+                }
             }
 
             $sortBy = $request->get('sort_by', 'deleted_at');
-            $sortOrder = $request->get('sort_order', 'desc');
+            $sortOrder = strtolower((string) $request->get('sort_order', 'desc'));
+            if (!in_array($sortOrder, ['asc', 'desc'], true)) {
+                $sortOrder = 'desc';
+            }
+            if (!in_array($sortBy, ['deleted_at', 'purchase_date', 'total_amount', 'quantity', 'status', 'created_at', 'amount_paid', 'scheduled_date', 'updated_at', 'id'])) {
+                $sortBy = 'deleted_at';
+            }
             $query->orderBy($sortBy, $sortOrder);
 
             $perPage = min($request->get('per_page', 15), 100);

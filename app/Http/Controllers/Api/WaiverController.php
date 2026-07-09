@@ -56,7 +56,15 @@ class WaiverController extends Controller
 
             $this->applySearchFilters($query, $request);
 
-            $query->orderByDesc('submitted_at')->orderByDesc('id');
+            $sortBy = $request->string('sort_by')->toString();
+            $sortOrder = strtolower($request->string('sort_order')->toString());
+            $sortOrder = in_array($sortOrder, ['asc', 'desc'], true) ? $sortOrder : 'desc';
+            $sortable = ['created_at', 'submitted_at', 'selected_date', 'adult_first_name', 'adult_last_name', 'status'];
+            if (in_array($sortBy, $sortable, true)) {
+                $query->orderBy($sortBy, $sortOrder)->orderByDesc('id');
+            } else {
+                $query->orderByDesc('submitted_at')->orderByDesc('id');
+            }
 
             $waivers = $query->paginate($request->integer('per_page', 25));
 
@@ -511,7 +519,13 @@ class WaiverController extends Controller
             return $guard;
         }
 
-        $query = Waiver::with(['template:id,title', 'location:id,name', 'minors:id,waiver_id,first_name,last_name,date_of_birth'])
+        $query = Waiver::with([
+                'template:id,title',
+                'location:id,name',
+                'minors:id,waiver_id,first_name,last_name,date_of_birth,relationship',
+                'booking:id,reference_number',
+                'event:id,name',
+            ])
             ->where('status', $request->string('status')->toString() ?: Waiver::STATUS_COMPLETED);
         $this->applyAuthScope($query, $request);
 
@@ -524,24 +538,47 @@ class WaiverController extends Controller
         }
         $this->applySearchFilters($query, $request);
 
-        $rows = $query->orderByDesc('submitted_at')->limit(5000)->get()->map(fn (Waiver $w) => [
+        $limit = min(max($request->integer('limit', 10000), 1), 50000);
+        $waivers = $query->orderByDesc('submitted_at')->limit($limit + 1)->get();
+        $limited = $waivers->count() > $limit;
+
+        $rows = $waivers->take($limit)->map(fn (Waiver $w) => [
             'id' => $w->id,
             'adult_name' => $w->adult_full_name,
             'email' => $w->adult_email,
             'phone' => $w->adult_phone,
+            'adult_dob' => $w->adult_dob?->toDateString(),
+            'relationship' => $w->relationship,
+            'typed_legal_name' => $w->typed_legal_name,
+            'agreement_accepted' => $w->agreement_accepted,
+            'electronic_consent_accepted' => $w->electronic_consent_accepted,
+            'photo_video_consent' => $w->photo_video_consent,
             'selected_date' => (string) $w->selected_date,
             'status' => $w->status,
             'marketing_consent' => $w->marketing_consent_status,
+            'marketing_consent_at' => $w->marketing_consent_at?->toIso8601String(),
+            'marketing_consent_source' => $w->marketing_consent_source,
             'source' => $w->source,
             'template' => $w->template?->title,
             'location' => $w->location?->name,
+            'booking_id' => $w->booking_id,
+            'booking_reference' => $w->booking?->reference_number,
+            'event_id' => $w->event_id,
+            'event_name' => $w->event?->name,
+            'attraction_purchase_id' => $w->attraction_purchase_id,
+            'customer_id' => $w->customer_id,
+            'manual_activity_name' => $w->manual_activity_name,
             'submitted_at' => $w->submitted_at?->toIso8601String(),
+            'created_at' => $w->created_at?->toIso8601String(),
+            'updated_at' => $w->updated_at?->toIso8601String(),
             'minors' => $w->minors->map(fn ($m) => trim($m->first_name . ' ' . $m->last_name))->implode('; '),
-        ]);
+            'minor_dobs' => $w->minors->map(fn ($m) => $m->date_of_birth?->toDateString() ?? '')->implode('; '),
+            'minor_relationships' => $w->minors->map(fn ($m) => $m->relationship ?? '')->implode('; '),
+        ])->values();
 
         return response()->json([
             'success' => true,
-            'data' => ['waivers' => $rows, 'count' => $rows->count()],
+            'data' => ['waivers' => $rows, 'count' => $rows->count(), 'limited' => $limited, 'limit' => $limit],
         ]);
     }
 
@@ -663,6 +700,28 @@ class WaiverController extends Controller
 
     private function applySearchFilters($query, Request $request): void
     {
+        if ($request->filled('search')) {
+            $terms = preg_split('/\s+/', trim((string) $request->search), -1, PREG_SPLIT_NO_EMPTY);
+            foreach ($terms as $term) {
+                $like = '%' . $term . '%';
+                $query->where(function ($q) use ($like, $term) {
+                    $q->where('adult_first_name', 'like', $like)
+                        ->orWhere('adult_last_name', 'like', $like)
+                        ->orWhere('adult_email', 'like', $like)
+                        ->orWhere('adult_phone', 'like', $like)
+                        ->orWhereRaw("CONCAT(COALESCE(adult_first_name, ''), ' ', COALESCE(adult_last_name, '')) LIKE ?", [$like]);
+                    if (ctype_digit($term)) {
+                        $q->orWhere('id', (int) $term);
+                    }
+                });
+            }
+        }
+        if ($request->filled('location_id')) {
+            $query->where('location_id', $request->integer('location_id'));
+        }
+        if ($request->filled('waiver_template_id')) {
+            $query->where('waiver_template_id', $request->integer('waiver_template_id'));
+        }
         if ($request->filled('adult_name')) {
             $name = $request->string('adult_name');
             $query->where(fn ($q) => $q->where('adult_first_name', 'like', "%{$name}%")

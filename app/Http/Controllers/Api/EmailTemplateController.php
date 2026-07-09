@@ -40,16 +40,31 @@ class EmailTemplateController extends Controller
             $query->where('category', $request->category);
         }
 
-        if ($request->has('search')) {
-            $search = $request->search;
-            $query->where(function ($q) use ($search) {
-                $q->where('name', 'like', "%{$search}%")
-                    ->orWhere('subject', 'like', "%{$search}%");
-            });
+        if ($request->filled('search')) {
+            $terms = preg_split('/\s+/', trim((string) $request->search), -1, PREG_SPLIT_NO_EMPTY);
+            foreach ($terms as $term) {
+                $like = '%' . $term . '%';
+                $query->where(function ($q) use ($like) {
+                    $q->where('name', 'like', $like)
+                        ->orWhere('subject', 'like', $like)
+                        ->orWhere('body', 'like', $like);
+                });
+            }
         }
 
-        $templates = $query->orderBy('created_at', 'desc')
-            ->paginate($request->per_page ?? 15);
+        $sortBy = $request->get('sort_by');
+        $sortOrder = strtolower((string) $request->get('sort_order', 'desc'));
+        if (!in_array($sortOrder, ['asc', 'desc'], true)) {
+            $sortOrder = 'desc';
+        }
+
+        if (in_array($sortBy, ['name', 'subject', 'status', 'created_at', 'updated_at'], true)) {
+            $query->orderBy($sortBy, $sortOrder);
+        } else {
+            $query->orderBy('created_at', 'desc');
+        }
+
+        $templates = $query->paginate($request->per_page ?? 15);
 
         return response()->json([
             'success' => true,
