@@ -117,7 +117,7 @@ class WaiverPublicController extends Controller
      * Kiosk start — a blank form for an active template. No prefill, no saved data;
      * the frontend disables browser autofill per settings.
      */
-    public function kioskShow(int $templateId): JsonResponse
+    public function kioskShow(Request $request, int $templateId): JsonResponse
     {
         $template = WaiverTemplate::active()->find($templateId);
         if (!$template) {
@@ -137,6 +137,16 @@ class WaiverPublicController extends Controller
         $template->loadMissing(['company', 'location']);
         $company  = $template->company;
         $location = $template->location;
+
+        $requestedLocationId = $request->input('location_id');
+        if ($requestedLocationId) {
+            $requestedLocation = \App\Models\Location::where('id', $requestedLocationId)
+                ->where('company_id', $template->company_id)
+                ->first();
+            if ($requestedLocation) {
+                $location = $requestedLocation;
+            }
+        }
 
         $packageIds    = $template->assigned_package_ids ?? [];
         $attractionIds = $template->assigned_attraction_ids ?? [];
