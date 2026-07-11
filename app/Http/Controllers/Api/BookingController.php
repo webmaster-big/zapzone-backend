@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Traits\RecordsPageAnalytics;
 use App\Http\Traits\ScopesByAuthUser;
+use App\Traits\GeneratesAvailableTimeSlots;
 use App\Mail\BookingConfirmation;
 use App\Mail\BookingReminder;
 use App\Mail\StaffBookingNotification;
@@ -26,6 +27,8 @@ use App\Services\MembershipBenefitService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
@@ -36,6 +39,7 @@ class BookingController extends Controller
 {
     use ScopesByAuthUser;
     use RecordsPageAnalytics;
+    use GeneratesAvailableTimeSlots;
 
     private function applyBookingSearch($query, string $search): void
     {
@@ -949,6 +953,16 @@ class BookingController extends Controller
             'additional_addons.*.price_at_booking' => 'nullable|numeric|min:0',
         ]);
 
+        if (array_key_exists('location_id', $validated)
+            && (int) $validated['location_id'] !== (int) $booking->location_id) {
+            if ($guard = $this->guardLocationAccess($request, $booking->location_id)) {
+                return $guard;
+            }
+            if ($guard = $this->guardLocationAccess($request, (int) $validated['location_id'])) {
+                return $guard;
+            }
+        }
+
         $originalValues = $booking->only([
             'status', 'payment_status', 'total_amount', 'amount_paid', 'discount_amount',
             'applied_fees', 'booking_date', 'booking_time', 'participants', 'duration', 'duration_unit',
@@ -1309,6 +1323,155 @@ class BookingController extends Controller
             'success' => true,
             'message' => 'Booking completed successfully',
             'data' => $booking,
+        ]);
+    }
+
+    public function updateLocation(Request $request, Booking $booking): JsonResponse
+    {
+        $validated = $request->validate([
+            'location_id' => ['required', 'integer', 'exists:locations,id'],
+            'room_id' => ['sometimes', 'nullable', 'integer', 'exists:rooms,id'],
+            'force' => ['sometimes', 'boolean'],
+        ]);
+
+        if (!$this->authorizeRecordScope($booking)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Forbidden: this booking is outside your scope',
+            ], 403);
+        }
+
+        $newLocationId = (int) $validated['location_id'];
+
+        if ($guard = $this->guardLocationAccess($request, $booking->location_id)) {
+            return $guard;
+        }
+        if ($guard = $this->guardLocationAccess($request, $newLocationId)) {
+            return $guard;
+        }
+
+        if (array_key_exists('room_id', $validated)) {
+            $roomId = $validated['room_id'];
+            if ($roomId) {
+                $room = \App\Models\Room::find($roomId);
+                if (!$room || (int) $room->location_id !== $newLocationId) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'The selected room does not belong to the destination location.',
+                    ], 422);
+                }
+            }
+        } else {
+            $roomId = $booking->room_id;
+            if ($roomId) {
+                $currentRoom = \App\Models\Room::find($roomId);
+                if (!$currentRoom || (int) $currentRoom->location_id !== $newLocationId) {
+                    $roomId = null;
+                }
+            }
+        }
+
+        if ($booking->room_id && !$roomId) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This booking is assigned a room. Select a room at the destination location so it is not left unassigned.',
+            ], 422);
+        }
+
+        $conflicts = [];
+        if ($roomId) {
+            $bookingDate = $booking->booking_date instanceof Carbon
+                ? $booking->booking_date->format('Y-m-d')
+                : Carbon::parse($booking->booking_date)->format('Y-m-d');
+            $startTime = $booking->booking_time instanceof Carbon
+                ? $booking->booking_time->format('H:i')
+                : substr((string) $booking->booking_time, 0, 5);
+            $duration = $booking->duration ?? 2;
+            $durationUnit = $booking->duration_unit ?? 'hours';
+            $excludeSlotId = PackageTimeSlot::where('booking_id', $booking->id)->value('id');
+
+            if ($this->checkTimeSlotConflict($roomId, $bookingDate, $startTime, $duration, $durationUnit, $excludeSlotId)) {
+                $conflicts[] = ['type' => 'time_slot', 'message' => 'Another booking already occupies this room at the selected date and time.'];
+            }
+            if ($this->checkAreaGroupStaggerConflict($roomId, $bookingDate, $startTime, $excludeSlotId)) {
+                $conflicts[] = ['type' => 'area_stagger', 'message' => 'This time is too close to another booking in the same area group.'];
+            }
+            if ($this->checkBreakTimeConflict($roomId, $bookingDate, $startTime, $duration, $durationUnit)) {
+                $conflicts[] = ['type' => 'break_time', 'message' => 'This time overlaps a scheduled break for the selected room.'];
+            }
+        }
+
+        if (!empty($conflicts) && !$request->boolean('force')) {
+            return response()->json([
+                'success' => false,
+                'conflict' => true,
+                'conflicts' => $conflicts,
+                'message' => 'The destination location has a scheduling conflict for this booking\'s date and time.',
+            ], 409);
+        }
+
+        $fromLocationId = $booking->location_id;
+        try {
+            DB::transaction(function () use ($booking, $newLocationId, $roomId) {
+                $booking->location_id = $newLocationId;
+                $booking->room_id = $roomId;
+                $booking->save();
+
+                $timeSlot = PackageTimeSlot::where('booking_id', $booking->id)->first();
+                if ($roomId) {
+                    if ($timeSlot) {
+                        $timeSlot->update(['room_id' => $roomId]);
+                    } else {
+                        PackageTimeSlot::create([
+                            'package_id' => $booking->package_id,
+                            'booking_id' => $booking->id,
+                            'room_id' => $roomId,
+                            'customer_id' => $booking->customer_id,
+                            'user_id' => $booking->created_by,
+                            'booked_date' => $booking->booking_date,
+                            'time_slot_start' => $booking->booking_time,
+                            'duration' => $booking->duration,
+                            'duration_unit' => $booking->duration_unit,
+                            'status' => 'booked',
+                        ]);
+                    }
+                } elseif ($timeSlot) {
+                    $timeSlot->delete();
+                }
+            });
+        } catch (QueryException $e) {
+            Log::warning('Booking location change failed', ['booking_id' => $booking->id, 'error' => $e->getMessage()]);
+            return response()->json([
+                'success' => false,
+                'conflict' => true,
+                'message' => 'The destination room is no longer available for this booking\'s date and time.',
+            ], 409);
+        }
+
+        ActivityLog::log(
+            'booking.location_changed',
+            'booking',
+            "Changed booking #{$booking->id} location from {$fromLocationId} to {$newLocationId}",
+            $this->resolveAuthUser($request)?->id,
+            $newLocationId,
+            'booking',
+            $booking->id,
+            [
+                'from_location_id' => $fromLocationId,
+                'to_location_id' => $newLocationId,
+                'room_id' => $roomId,
+                'forced' => $request->boolean('force') && !empty($conflicts),
+                'conflicts' => $conflicts,
+            ]
+        );
+
+        $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Booking location updated successfully.',
+            'data' => $booking,
+            'had_conflict' => !empty($conflicts),
         ]);
     }
 

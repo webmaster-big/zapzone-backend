@@ -205,9 +205,20 @@ class WaiverPublicController extends Controller
 
         $data = $this->validateSubmission($request, $template);
 
+        $resolvedLocationId = $template->location_id;
+        $requestedLocationId = $request->input('location_id');
+        if ($requestedLocationId) {
+            $requestedLocation = \App\Models\Location::where('id', $requestedLocationId)
+                ->where('company_id', $template->company_id)
+                ->first();
+            if ($requestedLocation) {
+                $resolvedLocationId = $requestedLocation->id;
+            }
+        }
+
         $waiver = Waiver::create([
             'company_id' => $template->company_id,
-            'location_id' => $template->location_id,
+            'location_id' => $resolvedLocationId,
             'waiver_template_id' => $template->id,
             'waiver_template_version_id' => $version->id,
             'status' => Waiver::STATUS_PENDING,
