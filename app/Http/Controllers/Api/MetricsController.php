@@ -267,21 +267,37 @@ class MetricsController extends Controller
             Log::warning('Participant breakdown unavailable', ['error' => $e->getMessage()]);
         }
 
-        // --- Attraction breakdown by category ---
+        // --- Attraction breakdown by category and attraction name ---
         $attractionBreakdownData = [];
         try {
             $attrRows = (clone $purchaseQuery)
                 ->join('attractions', 'attraction_purchases.attraction_id', '=', 'attractions.id')
                 ->whereNotIn('attraction_purchases.status', ['cancelled', 'refunded'])
-                ->select('attractions.category', DB::raw('SUM(attraction_purchases.quantity) as cnt'))
-                ->groupBy('attractions.category')
+                ->select('attractions.category', 'attractions.name', DB::raw('SUM(attraction_purchases.quantity) as cnt'))
+                ->groupBy('attractions.category', 'attractions.name')
+                ->orderByDesc('cnt')
                 ->get();
             $attrTotal = $attrRows->sum('cnt');
+            $attrByCategory = [];
             foreach ($attrRows as $row) {
-                $attractionBreakdownData[] = [
-                    'label'      => $row->category ?? 'Other',
+                $category = $row->category ?? 'Other';
+                if (!isset($attrByCategory[$category])) {
+                    $attrByCategory[$category] = ['count' => 0, 'items' => []];
+                }
+                $attrByCategory[$category]['count'] += (int) $row->cnt;
+                $attrByCategory[$category]['items'][] = [
+                    'label'      => $row->name ?? 'Other',
                     'count'      => (int) $row->cnt,
                     'percentage' => $attrTotal > 0 ? round(($row->cnt / $attrTotal) * 100) : 0,
+                ];
+            }
+            uasort($attrByCategory, fn ($a, $b) => $b['count'] <=> $a['count']);
+            foreach ($attrByCategory as $category => $group) {
+                $attractionBreakdownData[] = [
+                    'label'      => $category,
+                    'count'      => $group['count'],
+                    'percentage' => $attrTotal > 0 ? round(($group['count'] / $attrTotal) * 100) : 0,
+                    'items'      => $group['items'],
                 ];
             }
         } catch (\Exception $e) {
