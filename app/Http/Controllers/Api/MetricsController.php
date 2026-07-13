@@ -56,8 +56,8 @@ class MetricsController extends Controller
         } else {
             switch ($timeframe) {
                 case 'today':
-                    $dateFrom = \Carbon\Carbon::today($timezone);
-                    $dateTo = \Carbon\Carbon::tomorrow($timezone)->subSecond();
+                    $dateFrom = \Carbon\Carbon::today($timezone)->setTimezone(config('app.timezone'));
+                    $dateTo = \Carbon\Carbon::tomorrow($timezone)->subSecond()->setTimezone(config('app.timezone'));
                     $useDateTime = true;
                     break;
                 case 'last_24h':
@@ -100,45 +100,45 @@ class MetricsController extends Controller
         $eventPurchaseQuery = EventPurchase::query();
 
         if ($locationId) {
-            $bookingQuery->where('location_id', $locationId);
+            $bookingQuery->where('bookings.location_id', $locationId);
             $purchaseQuery->whereHas('attraction', function ($q) use ($locationId) {
                 $q->where('location_id', $locationId);
             });
-            $eventPurchaseQuery->where('location_id', $locationId);
+            $eventPurchaseQuery->where('event_purchases.location_id', $locationId);
         }
 
         if ($dateFrom) {
             if ($useDateTime) {
-                $bookingQuery->where('created_at', '>=', $dateFrom);
-                $purchaseQuery->where('created_at', '>=', $dateFrom);
-                $eventPurchaseQuery->where('created_at', '>=', $dateFrom);
+                $bookingQuery->where('bookings.created_at', '>=', $dateFrom);
+                $purchaseQuery->where('attraction_purchases.created_at', '>=', $dateFrom);
+                $eventPurchaseQuery->where('event_purchases.created_at', '>=', $dateFrom);
             } else {
-                $bookingQuery->whereDate('created_at', '>=', $dateFrom);
-                $purchaseQuery->whereDate('created_at', '>=', $dateFrom);
-                $eventPurchaseQuery->whereDate('created_at', '>=', $dateFrom);
+                $bookingQuery->whereDate('bookings.created_at', '>=', $dateFrom);
+                $purchaseQuery->whereDate('attraction_purchases.created_at', '>=', $dateFrom);
+                $eventPurchaseQuery->whereDate('event_purchases.created_at', '>=', $dateFrom);
             }
         }
 
         if ($dateTo) {
             if ($useDateTime) {
-                $bookingQuery->where('created_at', '<=', $dateTo);
-                $purchaseQuery->where('created_at', '<=', $dateTo);
-                $eventPurchaseQuery->where('created_at', '<=', $dateTo);
+                $bookingQuery->where('bookings.created_at', '<=', $dateTo);
+                $purchaseQuery->where('attraction_purchases.created_at', '<=', $dateTo);
+                $eventPurchaseQuery->where('event_purchases.created_at', '<=', $dateTo);
             } else {
-                $bookingQuery->whereDate('created_at', '<=', $dateTo);
-                $purchaseQuery->whereDate('created_at', '<=', $dateTo);
-                $eventPurchaseQuery->whereDate('created_at', '<=', $dateTo);
+                $bookingQuery->whereDate('bookings.created_at', '<=', $dateTo);
+                $purchaseQuery->whereDate('attraction_purchases.created_at', '<=', $dateTo);
+                $eventPurchaseQuery->whereDate('event_purchases.created_at', '<=', $dateTo);
             }
         }
 
-        $totalBookings = $bookingQuery->count();
-        $confirmedBookings = (clone $bookingQuery)->where('status', 'confirmed')->count();
-        $pendingBookings = (clone $bookingQuery)->where('status', 'pending')->count();
-        $completedBookings = (clone $bookingQuery)->where('status', 'completed')->count();
-        $cancelledBookings = (clone $bookingQuery)->where('status', 'cancelled')->count();
-        $checkedInBookings = (clone $bookingQuery)->where('status', 'checked-in')->count();
-        $totalParticipants = (clone $bookingQuery)->sum('participants') ?? 0;
-        $bookingRevenue = (clone $bookingQuery)->whereNotIn('status', ['cancelled'])->sum('amount_paid') ?? 0;
+        $totalBookings = (clone $bookingQuery)->whereNotIn('bookings.status', ['cancelled'])->count();
+        $confirmedBookings = (clone $bookingQuery)->where('bookings.status', 'confirmed')->count();
+        $pendingBookings = (clone $bookingQuery)->where('bookings.status', 'pending')->count();
+        $completedBookings = (clone $bookingQuery)->where('bookings.status', 'completed')->count();
+        $cancelledBookings = (clone $bookingQuery)->where('bookings.status', 'cancelled')->count();
+        $checkedInBookings = (clone $bookingQuery)->where('bookings.status', 'checked-in')->count();
+        $totalParticipants = (clone $bookingQuery)->whereNotIn('bookings.status', ['cancelled'])->sum('participants') ?? 0;
+        $bookingRevenue = (clone $bookingQuery)->whereNotIn('bookings.status', ['cancelled'])->sum('amount_paid') ?? 0;
 
         Log::info('Booking metrics calculated', [
             'total' => $totalBookings,
@@ -150,32 +150,27 @@ class MetricsController extends Controller
             'revenue' => $bookingRevenue,
         ]);
 
-        $totalPurchases = $purchaseQuery->count();
-
-        $allPurchaseStatuses = (clone $purchaseQuery)->select('status', DB::raw('COUNT(*) as count'), DB::raw('SUM(total_amount) as revenue'))
-            ->groupBy('status')
-            ->get();
-
-        $purchaseRevenue = (clone $purchaseQuery)->where('status', 'completed')->sum('amount_paid') ?? 0;
-
-        $allPurchaseRevenue = (clone $purchaseQuery)->whereNotIn('status', ['cancelled'])->sum('total_amount') ?? 0;
+        $soldPurchaseQuery = (clone $purchaseQuery)->whereNotIn('attraction_purchases.status', ['cancelled', 'refunded']);
+        $totalPurchases = (clone $soldPurchaseQuery)->count();
+        $totalAttractionTickets = (int) ((clone $soldPurchaseQuery)->sum('quantity') ?? 0);
+        $purchaseRevenue = (clone $soldPurchaseQuery)->sum('amount_paid') ?? 0;
 
         Log::info('Purchase metrics calculated', [
             'total_purchases' => $totalPurchases,
-            'completed_revenue' => $purchaseRevenue,
-            'all_non_cancelled_revenue' => $allPurchaseRevenue,
-            'status_breakdown' => $allPurchaseStatuses->toArray(),
+            'total_tickets' => $totalAttractionTickets,
+            'collected_revenue' => $purchaseRevenue,
         ]);
 
-        $totalEventPurchases = (clone $eventPurchaseQuery)->count();
-        $eventPurchaseRevenue = (clone $eventPurchaseQuery)->whereNotIn('status', ['cancelled', 'refunded'])->sum('total_amount') ?? 0;
-        $totalEventTickets = (clone $eventPurchaseQuery)->whereNotIn('status', ['cancelled', 'refunded'])->sum('quantity') ?? 0;
+        $soldEventQuery = (clone $eventPurchaseQuery)->whereNotIn('event_purchases.status', ['cancelled', 'refunded']);
+        $totalEventPurchases = (clone $soldEventQuery)->count();
+        $eventPurchaseRevenue = (clone $soldEventQuery)->sum('amount_paid') ?? 0;
+        $totalEventTickets = (int) ((clone $soldEventQuery)->sum('quantity') ?? 0);
 
-        $totalRevenue = $bookingRevenue + $allPurchaseRevenue + $eventPurchaseRevenue;
+        $totalRevenue = $bookingRevenue + $purchaseRevenue + $eventPurchaseRevenue;
 
         Log::info('Total revenue calculated', [
             'booking_revenue' => $bookingRevenue,
-            'purchase_revenue' => $allPurchaseRevenue,
+            'purchase_revenue' => $purchaseRevenue,
             'event_purchase_revenue' => $eventPurchaseRevenue,
             'total_revenue' => $totalRevenue,
         ]);
@@ -230,7 +225,7 @@ class MetricsController extends Controller
         try {
             $pkgRows = (clone $bookingQuery)
                 ->leftJoin('packages', 'bookings.package_id', '=', 'packages.id')
-                ->whereNotNull('bookings.package_id')
+                ->whereNotIn('bookings.status', ['cancelled'])
                 ->select('packages.name', DB::raw('COUNT(*) as cnt'))
                 ->groupBy('packages.name')
                 ->orderByDesc('cnt')
@@ -252,6 +247,7 @@ class MetricsController extends Controller
         try {
             $partRows = (clone $bookingQuery)
                 ->leftJoin('packages', 'bookings.package_id', '=', 'packages.id')
+                ->whereNotIn('bookings.status', ['cancelled'])
                 ->select('packages.name', DB::raw('SUM(bookings.participants) as cnt'))
                 ->groupBy('packages.name')
                 ->orderByDesc('cnt')
@@ -276,6 +272,7 @@ class MetricsController extends Controller
         try {
             $attrRows = (clone $purchaseQuery)
                 ->join('attractions', 'attraction_purchases.attraction_id', '=', 'attractions.id')
+                ->whereNotIn('attraction_purchases.status', ['cancelled', 'refunded'])
                 ->select('attractions.category', DB::raw('SUM(attraction_purchases.quantity) as cnt'))
                 ->groupBy('attractions.category')
                 ->get();
@@ -296,6 +293,7 @@ class MetricsController extends Controller
         try {
             $evtRows = (clone $eventPurchaseQuery)
                 ->join('events', 'event_purchases.event_id', '=', 'events.id')
+                ->whereNotIn('event_purchases.status', ['cancelled', 'refunded'])
                 ->select('events.name', DB::raw('SUM(event_purchases.quantity) as cnt'))
                 ->groupBy('events.name')
                 ->get();
@@ -312,11 +310,14 @@ class MetricsController extends Controller
         }
 
         // --- Confirmed bookings breakdown: packages vs events vs attractions ---
-        $confirmedTotal = $confirmedBookings + $totalEventPurchases + $totalPurchases;
+        $confirmedPackages = (clone $bookingQuery)->whereIn('bookings.status', ['confirmed', 'checked-in', 'completed'])->count();
+        $confirmedAttractions = (clone $purchaseQuery)->whereIn('attraction_purchases.status', ['confirmed', 'checked-in'])->count();
+        $confirmedEvents = (clone $eventPurchaseQuery)->whereIn('event_purchases.status', ['confirmed', 'checked-in', 'completed'])->count();
+        $confirmedTotal = $confirmedPackages + $confirmedEvents + $confirmedAttractions;
         $confirmedBreakdownData = [
-            ['label' => 'Packages',    'count' => $confirmedBookings,   'percentage' => $confirmedTotal > 0 ? round(($confirmedBookings   / $confirmedTotal) * 100) : 0],
-            ['label' => 'Events',      'count' => $totalEventPurchases, 'percentage' => $confirmedTotal > 0 ? round(($totalEventPurchases / $confirmedTotal) * 100) : 0],
-            ['label' => 'Attractions', 'count' => $totalPurchases,      'percentage' => $confirmedTotal > 0 ? round(($totalPurchases      / $confirmedTotal) * 100) : 0],
+            ['label' => 'Packages',    'count' => $confirmedPackages,    'percentage' => $confirmedTotal > 0 ? round(($confirmedPackages    / $confirmedTotal) * 100) : 0],
+            ['label' => 'Events',      'count' => $confirmedEvents,      'percentage' => $confirmedTotal > 0 ? round(($confirmedEvents      / $confirmedTotal) * 100) : 0],
+            ['label' => 'Attractions', 'count' => $confirmedAttractions, 'percentage' => $confirmedTotal > 0 ? round(($confirmedAttractions / $confirmedTotal) * 100) : 0],
         ];
 
         $customerQuery = Customer::query();
@@ -399,7 +400,11 @@ class MetricsController extends Controller
                 }
             }
             if ($locationId) {
-                $newCustomerQuery->whereHas('bookings', fn($q) => $q->where('location_id', $locationId));
+                $newCustomerQuery->where(function ($q) use ($locationId) {
+                    $q->whereHas('bookings', fn($b) => $b->where('location_id', $locationId))
+                      ->orWhereHas('attractionPurchases', fn($p) => $p->whereHas('attraction', fn($a) => $a->where('location_id', $locationId)))
+                      ->orWhereHas('eventPurchases', fn($e) => $e->where('location_id', $locationId));
+                });
             }
             $newCustomers = $newCustomerQuery->count();
             $returningCustomers = max(0, $totalCustomers - $newCustomers);
@@ -521,12 +526,14 @@ class MetricsController extends Controller
                 'checkedInBookings' => $checkedInBookings,
                 'totalParticipants' => (int) $totalParticipants,
                 'bookingRevenue' => round($bookingRevenue, 2),
-                'purchaseRevenue' => round($allPurchaseRevenue, 2),
+                'purchaseRevenue' => round($purchaseRevenue, 2),
                 'purchaseRevenueCompleted' => round($purchaseRevenue, 2),
                 'totalPurchases' => $totalPurchases,
+                'totalAttractionTickets' => $totalAttractionTickets,
                 'eventPurchaseRevenue' => round($eventPurchaseRevenue, 2),
                 'totalEventPurchases' => $totalEventPurchases,
                 'totalEventTickets' => (int) $totalEventTickets,
+                'confirmedTotal' => $confirmedTotal,
                 'totalMemberships' => $totalMemberships,
                 'activeMemberships' => $activeMemberships,
                 'newMemberships' => $newMemberships,
@@ -633,8 +640,8 @@ class MetricsController extends Controller
             } else {
                 switch ($timeframe) {
                     case 'today':
-                        $dateFrom = \Carbon\Carbon::today($timezone);
-                        $dateTo = \Carbon\Carbon::tomorrow($timezone)->subSecond();
+                        $dateFrom = \Carbon\Carbon::today($timezone)->setTimezone(config('app.timezone'));
+                        $dateTo = \Carbon\Carbon::tomorrow($timezone)->subSecond()->setTimezone(config('app.timezone'));
                         $useDateTime = true;
                         break;
                     case 'last_24h':
@@ -706,38 +713,33 @@ class MetricsController extends Controller
             }
         }
 
-        $totalBookings = $bookingQuery->count();
+        $totalBookings = (clone $bookingQuery)->whereNotIn('status', ['cancelled'])->count();
         $confirmedBookings = (clone $bookingQuery)->where('status', 'confirmed')->count();
         $pendingBookings = (clone $bookingQuery)->where('status', 'pending')->count();
         $completedBookings = (clone $bookingQuery)->where('status', 'completed')->count();
         $cancelledBookings = (clone $bookingQuery)->where('status', 'cancelled')->count();
-        $totalParticipants = (clone $bookingQuery)->sum('participants') ?? 0;
+        $totalParticipants = (clone $bookingQuery)->whereNotIn('status', ['cancelled'])->sum('participants') ?? 0;
         $bookingRevenue = (clone $bookingQuery)->whereNotIn('status', ['cancelled'])->sum('amount_paid') ?? 0;
 
-        $totalPurchases = $purchaseQuery->count();
+        $soldPurchaseQuery = (clone $purchaseQuery)->whereNotIn('status', ['cancelled', 'refunded']);
+        $totalPurchases = (clone $soldPurchaseQuery)->count();
+        $totalAttractionTickets = (int) ((clone $soldPurchaseQuery)->sum('quantity') ?? 0);
+        $purchaseRevenue = (clone $soldPurchaseQuery)->sum('amount_paid') ?? 0;
 
-        $allPurchaseStatuses = (clone $purchaseQuery)->select('status', DB::raw('COUNT(*) as count'), DB::raw('SUM(total_amount) as revenue'))
-            ->groupBy('status')
-            ->get();
+        $soldEventQuery = (clone $eventPurchaseQuery)->whereNotIn('status', ['cancelled', 'refunded']);
+        $totalEventPurchases = (clone $soldEventQuery)->count();
+        $eventPurchaseRevenue = (clone $soldEventQuery)->sum('amount_paid') ?? 0;
+        $totalEventTickets = (int) ((clone $soldEventQuery)->sum('quantity') ?? 0);
 
-        $purchaseRevenue = (clone $purchaseQuery)->where('status', 'completed')->sum('amount_paid') ?? 0;
-
-        $allPurchaseRevenue = (clone $purchaseQuery)->whereNotIn('status', ['cancelled'])->sum('total_amount') ?? 0;
-
-        $totalEventPurchases = (clone $eventPurchaseQuery)->count();
-        $eventPurchaseRevenue = (clone $eventPurchaseQuery)->whereNotIn('status', ['cancelled', 'refunded'])->sum('total_amount') ?? 0;
-        $totalEventTickets = (clone $eventPurchaseQuery)->whereNotIn('status', ['cancelled', 'refunded'])->sum('quantity') ?? 0;
-
-        $totalRevenue = $bookingRevenue + $allPurchaseRevenue + $eventPurchaseRevenue;
+        $totalRevenue = $bookingRevenue + $purchaseRevenue + $eventPurchaseRevenue;
 
         Log::info('Attendant purchase metrics calculated', [
             'total_purchases' => $totalPurchases,
-            'completed_revenue' => $purchaseRevenue,
-            'all_non_cancelled_revenue' => $allPurchaseRevenue,
+            'total_tickets' => $totalAttractionTickets,
+            'collected_revenue' => $purchaseRevenue,
             'event_purchase_revenue' => $eventPurchaseRevenue,
             'total_event_purchases' => $totalEventPurchases,
             'total_revenue' => $totalRevenue,
-            'status_breakdown' => $allPurchaseStatuses->toArray(),
         ]);
 
         $customerQuery = Customer::query();
@@ -974,9 +976,10 @@ class MetricsController extends Controller
                 'cancelledBookings' => $cancelledBookings,
                 'totalParticipants' => (int) $totalParticipants,
                 'bookingRevenue' => round($bookingRevenue, 2),
-                'purchaseRevenue' => round($allPurchaseRevenue, 2),
+                'purchaseRevenue' => round($purchaseRevenue, 2),
                 'purchaseRevenueCompleted' => round($purchaseRevenue, 2),
                 'totalPurchases' => $totalPurchases,
+                'totalAttractionTickets' => $totalAttractionTickets,
                 'eventPurchaseRevenue' => round($eventPurchaseRevenue, 2),
                 'totalEventPurchases' => $totalEventPurchases,
                 'totalEventTickets' => (int) $totalEventTickets,
@@ -1030,113 +1033,100 @@ class MetricsController extends Controller
 
     private function getLocationStats($dateFrom = null, $dateTo = null, $useDateTime = false)
     {
-        $locationStats = [];
+        $applyRange = function ($query, $column) use ($dateFrom, $dateTo, $useDateTime) {
+            if ($dateFrom) {
+                $useDateTime
+                    ? $query->where($column, '>=', $dateFrom)
+                    : $query->whereDate($column, '>=', is_string($dateFrom) ? $dateFrom : $dateFrom->toDateString());
+            }
+            if ($dateTo) {
+                $useDateTime
+                    ? $query->where($column, '<=', $dateTo)
+                    : $query->whereDate($column, '<=', is_string($dateTo) ? $dateTo : $dateTo->toDateString());
+            }
+            return $query;
+        };
 
+        $bookingRows = $applyRange(Booking::query(), 'created_at')
+            ->whereNotIn('status', ['cancelled'])
+            ->select(
+                'location_id',
+                DB::raw('COUNT(*) as bookings_count'),
+                DB::raw('COALESCE(SUM(participants), 0) as participants_sum'),
+                DB::raw('COALESCE(SUM(amount_paid), 0) as revenue_sum')
+            )
+            ->groupBy('location_id')
+            ->get()
+            ->keyBy('location_id');
+
+        $purchaseRows = $applyRange(AttractionPurchase::query(), 'attraction_purchases.created_at')
+            ->join('attractions', 'attraction_purchases.attraction_id', '=', 'attractions.id')
+            ->whereNotIn('attraction_purchases.status', ['cancelled', 'refunded'])
+            ->select(
+                'attractions.location_id',
+                DB::raw('COUNT(*) as purchases_count'),
+                DB::raw('COALESCE(SUM(attraction_purchases.quantity), 0) as tickets_sum'),
+                DB::raw('COALESCE(SUM(attraction_purchases.amount_paid), 0) as revenue_sum')
+            )
+            ->groupBy('attractions.location_id')
+            ->get()
+            ->keyBy('location_id');
+
+        $eventRows = $applyRange(EventPurchase::query(), 'created_at')
+            ->whereNotIn('status', ['cancelled', 'refunded'])
+            ->select(
+                'location_id',
+                DB::raw('COUNT(*) as purchases_count'),
+                DB::raw('COALESCE(SUM(quantity), 0) as tickets_sum'),
+                DB::raw('COALESCE(SUM(amount_paid), 0) as revenue_sum')
+            )
+            ->groupBy('location_id')
+            ->get()
+            ->keyBy('location_id');
+
+        if ($dateFrom && $dateTo) {
+            $daysInRange = max(1, (int) \Carbon\Carbon::parse($dateFrom)->diffInDays(\Carbon\Carbon::parse($dateTo)) + 1);
+        } elseif ($dateFrom) {
+            $daysInRange = max(1, (int) \Carbon\Carbon::parse($dateFrom)->diffInDays(now()) + 1);
+        } else {
+            $daysInRange = 30;
+        }
+
+        $locationStats = [];
         $locations = Location::where('is_active', true)->get();
 
         Log::info('Processing location stats', ['locations_count' => $locations->count()]);
 
         foreach ($locations as $location) {
-            $locationBookingQuery = Booking::where('location_id', $location->id);
-            if ($dateFrom) {
-                $useDateTime
-                    ? $locationBookingQuery->where('created_at', '>=', $dateFrom)
-                    : $locationBookingQuery->whereDate('created_at', '>=', is_string($dateFrom) ? $dateFrom : $dateFrom->toDateString());
-            }
-            if ($dateTo) {
-                $useDateTime
-                    ? $locationBookingQuery->where('created_at', '<=', $dateTo)
-                    : $locationBookingQuery->whereDate('created_at', '<=', is_string($dateTo) ? $dateTo : $dateTo->toDateString());
-            }
+            $booking = $bookingRows->get($location->id);
+            $purchase = $purchaseRows->get($location->id);
+            $event = $eventRows->get($location->id);
 
-            $locationBookings = $locationBookingQuery->count();
-            $locationParticipants = (clone $locationBookingQuery)->sum('participants') ?? 0;
-            $locationBookingRevenue = (clone $locationBookingQuery)
-                ->whereNotIn('status', ['cancelled'])
-                ->sum('amount_paid') ?? 0;
+            $bookingRevenue = (float) ($booking->revenue_sum ?? 0);
+            $purchaseRevenue = (float) ($purchase->revenue_sum ?? 0);
+            $eventRevenue = (float) ($event->revenue_sum ?? 0);
 
-            $locationPurchaseQuery = AttractionPurchase::whereHas('attraction', function ($q) use ($location) {
-                $q->where('location_id', $location->id);
-            });
-            if ($dateFrom) {
-                $useDateTime
-                    ? $locationPurchaseQuery->where('created_at', '>=', $dateFrom)
-                    : $locationPurchaseQuery->whereDate('created_at', '>=', is_string($dateFrom) ? $dateFrom : $dateFrom->toDateString());
-            }
-            if ($dateTo) {
-                $useDateTime
-                    ? $locationPurchaseQuery->where('created_at', '<=', $dateTo)
-                    : $locationPurchaseQuery->whereDate('created_at', '<=', is_string($dateTo) ? $dateTo : $dateTo->toDateString());
-            }
+            $totalParticipants = (int) ($booking->participants_sum ?? 0)
+                + (int) ($purchase->tickets_sum ?? 0)
+                + (int) ($event->tickets_sum ?? 0);
 
-            $locationPurchases = $locationPurchaseQuery->count();
-
-            $locationPurchaseStatuses = (clone $locationPurchaseQuery)
-                ->select('status', DB::raw('COUNT(*) as count'), DB::raw('SUM(total_amount) as revenue'))
-                ->groupBy('status')
-                ->get();
-
-            $locationPurchaseRevenue = (clone $locationPurchaseQuery)
-                ->whereNotIn('status', ['cancelled'])
-                ->sum('total_amount') ?? 0;
-
-            $locationTicketParticipants = (int) ((clone $locationPurchaseQuery)
-                ->whereNotIn('status', ['cancelled'])
-                ->sum('quantity') ?? 0);
-
-            $locationEventPurchaseQuery = EventPurchase::where('location_id', $location->id);
-            if ($dateFrom) {
-                $useDateTime
-                    ? $locationEventPurchaseQuery->where('created_at', '>=', $dateFrom)
-                    : $locationEventPurchaseQuery->whereDate('created_at', '>=', is_string($dateFrom) ? $dateFrom : $dateFrom->toDateString());
-            }
-            if ($dateTo) {
-                $useDateTime
-                    ? $locationEventPurchaseQuery->where('created_at', '<=', $dateTo)
-                    : $locationEventPurchaseQuery->whereDate('created_at', '<=', is_string($dateTo) ? $dateTo : $dateTo->toDateString());
-            }
-
-            $locationEventPurchases = (clone $locationEventPurchaseQuery)->count();
-            $locationEventPurchaseRevenue = (clone $locationEventPurchaseQuery)
-                ->whereNotIn('status', ['cancelled', 'refunded'])
-                ->sum('total_amount') ?? 0;
-            $locationEventTickets = (int) ((clone $locationEventPurchaseQuery)
-                ->whereNotIn('status', ['cancelled', 'refunded'])
-                ->sum('quantity') ?? 0);
-
-            // Total participants = booking guests + attraction ticket quantities + event ticket quantities
-            $totalParticipants = (int) $locationParticipants + $locationTicketParticipants + $locationEventTickets;
-
-            $daysInRange = 1;
-            if ($dateFrom && $dateTo) {
-                $daysInRange = max(1, \Carbon\Carbon::parse($dateFrom)->diffInDays(\Carbon\Carbon::parse($dateTo)) + 1);
-            } elseif ($dateFrom) {
-                $daysInRange = max(1, \Carbon\Carbon::parse($dateFrom)->diffInDays(now()) + 1);
-            } else {
-                $daysInRange = 30; // default to 30 days
-            }
-
-            $estimatedCapacity = $daysInRange * 100; // 100 participants per day capacity
+            $estimatedCapacity = $daysInRange * 100;
             $utilization = min(100, $estimatedCapacity > 0 ? round(($totalParticipants / $estimatedCapacity) * 100) : 0);
 
             $locationStats[$location->id] = [
                 'name' => $location->name,
-                'bookings' => $locationBookings,
-                'purchases' => $locationPurchases,
-                'eventPurchases' => $locationEventPurchases,
-                'eventTickets' => $locationEventTickets,
-                'revenue' => round($locationBookingRevenue + $locationPurchaseRevenue + $locationEventPurchaseRevenue, 2),
+                'bookings' => (int) ($booking->bookings_count ?? 0),
+                'purchases' => (int) ($purchase->purchases_count ?? 0),
+                'attractionTickets' => (int) ($purchase->tickets_sum ?? 0),
+                'eventPurchases' => (int) ($event->purchases_count ?? 0),
+                'eventTickets' => (int) ($event->tickets_sum ?? 0),
+                'revenue' => round($bookingRevenue + $purchaseRevenue + $eventRevenue, 2),
                 'participants' => $totalParticipants,
                 'utilization' => $utilization,
-                'bookingRevenue' => round($locationBookingRevenue, 2),
-                'purchaseRevenue' => round($locationPurchaseRevenue, 2),
-                'eventPurchaseRevenue' => round($locationEventPurchaseRevenue, 2),
+                'bookingRevenue' => round($bookingRevenue, 2),
+                'purchaseRevenue' => round($purchaseRevenue, 2),
+                'eventPurchaseRevenue' => round($eventRevenue, 2),
             ];
-
-            Log::info("Location stats for {$location->name}", [
-                'stats' => $locationStats[$location->id],
-                'purchase_breakdown' => $locationPurchaseStatuses->toArray(),
-            ]);
         }
 
         return $locationStats;
