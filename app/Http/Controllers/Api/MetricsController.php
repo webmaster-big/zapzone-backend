@@ -132,7 +132,7 @@ class MetricsController extends Controller
         }
 
         $totalBookings = (clone $bookingQuery)->whereNotIn('bookings.status', ['cancelled'])->count();
-        $confirmedBookings = (clone $bookingQuery)->where('bookings.status', 'confirmed')->count();
+        $confirmedBookings = (clone $bookingQuery)->whereIn('bookings.status', ['confirmed', 'checked-in', 'completed'])->count();
         $pendingBookings = (clone $bookingQuery)->where('bookings.status', 'pending')->count();
         $completedBookings = (clone $bookingQuery)->where('bookings.status', 'completed')->count();
         $cancelledBookings = (clone $bookingQuery)->where('bookings.status', 'cancelled')->count();
@@ -326,7 +326,7 @@ class MetricsController extends Controller
         }
 
         // --- Confirmed bookings breakdown: packages vs events vs attractions ---
-        $confirmedPackages = (clone $bookingQuery)->whereIn('bookings.status', ['confirmed', 'checked-in', 'completed'])->count();
+        $confirmedPackages = $confirmedBookings;
         $confirmedAttractions = (clone $purchaseQuery)->whereIn('attraction_purchases.status', ['confirmed', 'checked-in'])->count();
         $confirmedEvents = (clone $eventPurchaseQuery)->whereIn('event_purchases.status', ['confirmed', 'checked-in', 'completed'])->count();
         $confirmedTotal = $confirmedPackages + $confirmedEvents + $confirmedAttractions;
@@ -336,65 +336,48 @@ class MetricsController extends Controller
             ['label' => 'Attractions', 'count' => $confirmedAttractions, 'percentage' => $confirmedTotal > 0 ? round(($confirmedAttractions / $confirmedTotal) * 100) : 0],
         ];
 
+        $applyDateRange = function ($q) use ($dateFrom, $dateTo, $useDateTime) {
+            if ($dateFrom) {
+                if ($useDateTime) {
+                    $q->where('created_at', '>=', $dateFrom);
+                } else {
+                    $q->whereDate('created_at', '>=', $dateFrom);
+                }
+            }
+            if ($dateTo) {
+                if ($useDateTime) {
+                    $q->where('created_at', '<=', $dateTo);
+                } else {
+                    $q->whereDate('created_at', '<=', $dateTo);
+                }
+            }
+        };
+        $applyActivityScope = function ($query) use ($locationId, $applyDateRange) {
+            $query->where(function ($outer) use ($locationId, $applyDateRange) {
+                $outer->whereHas('bookings', function ($q) use ($locationId, $applyDateRange) {
+                    if ($locationId) {
+                        $q->where('location_id', $locationId);
+                    }
+                    $applyDateRange($q);
+                })->orWhereHas('attractionPurchases', function ($q) use ($locationId, $applyDateRange) {
+                    if ($locationId) {
+                        $q->whereHas('attraction', function ($aq) use ($locationId) {
+                            $aq->where('location_id', $locationId);
+                        });
+                    }
+                    $applyDateRange($q);
+                })->orWhereHas('eventPurchases', function ($q) use ($locationId, $applyDateRange) {
+                    if ($locationId) {
+                        $q->where('location_id', $locationId);
+                    }
+                    $applyDateRange($q);
+                });
+            });
+        };
+
         $customerQuery = Customer::query();
         if ($locationId || $dateFrom || $dateTo) {
-            $customerQuery->whereHas('bookings', function ($q) use ($locationId, $dateFrom, $dateTo, $useDateTime) {
-                if ($locationId) {
-                    $q->where('location_id', $locationId);
-                }
-                if ($dateFrom) {
-                    if ($useDateTime) {
-                        $q->where('created_at', '>=', $dateFrom);
-                    } else {
-                        $q->whereDate('created_at', '>=', $dateFrom);
-                    }
-                }
-                if ($dateTo) {
-                    if ($useDateTime) {
-                        $q->where('created_at', '<=', $dateTo);
-                    } else {
-                        $q->whereDate('created_at', '<=', $dateTo);
-                    }
-                }
-            })->orWhereHas('attractionPurchases', function ($q) use ($locationId, $dateFrom, $dateTo, $useDateTime) {
-                if ($locationId) {
-                    $q->whereHas('attraction', function ($aq) use ($locationId) {
-                        $aq->where('location_id', $locationId);
-                    });
-                }
-                if ($dateFrom) {
-                    if ($useDateTime) {
-                        $q->where('created_at', '>=', $dateFrom);
-                    } else {
-                        $q->whereDate('created_at', '>=', $dateFrom);
-                    }
-                }
-                if ($dateTo) {
-                    if ($useDateTime) {
-                        $q->where('created_at', '<=', $dateTo);
-                    } else {
-                        $q->whereDate('created_at', '<=', $dateTo);
-                    }
-                }
-            })->orWhereHas('eventPurchases', function ($q) use ($locationId, $dateFrom, $dateTo, $useDateTime) {
-                if ($locationId) {
-                    $q->where('location_id', $locationId);
-                }
-                if ($dateFrom) {
-                    if ($useDateTime) {
-                        $q->where('created_at', '>=', $dateFrom);
-                    } else {
-                        $q->whereDate('created_at', '>=', $dateFrom);
-                    }
-                }
-                if ($dateTo) {
-                    if ($useDateTime) {
-                        $q->where('created_at', '<=', $dateTo);
-                    } else {
-                        $q->whereDate('created_at', '<=', $dateTo);
-                    }
-                }
-            });
+            $applyActivityScope($customerQuery);
         }
         $totalCustomers = $customerQuery->count();
 
@@ -403,25 +386,8 @@ class MetricsController extends Controller
         $returningCustomers = 0;
         if ($dateFrom) {
             $newCustomerQuery = Customer::query();
-            if ($useDateTime) {
-                $newCustomerQuery->where('created_at', '>=', $dateFrom);
-            } else {
-                $newCustomerQuery->whereDate('created_at', '>=', $dateFrom);
-            }
-            if ($dateTo) {
-                if ($useDateTime) {
-                    $newCustomerQuery->where('created_at', '<=', $dateTo);
-                } else {
-                    $newCustomerQuery->whereDate('created_at', '<=', $dateTo);
-                }
-            }
-            if ($locationId) {
-                $newCustomerQuery->where(function ($q) use ($locationId) {
-                    $q->whereHas('bookings', fn($b) => $b->where('location_id', $locationId))
-                      ->orWhereHas('attractionPurchases', fn($p) => $p->whereHas('attraction', fn($a) => $a->where('location_id', $locationId)))
-                      ->orWhereHas('eventPurchases', fn($e) => $e->where('location_id', $locationId));
-                });
-            }
+            $applyDateRange($newCustomerQuery);
+            $applyActivityScope($newCustomerQuery);
             $newCustomers = $newCustomerQuery->count();
             $returningCustomers = max(0, $totalCustomers - $newCustomers);
         } else {

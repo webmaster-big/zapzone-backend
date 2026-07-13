@@ -45,6 +45,8 @@ class Waiver extends Model
         'ip_address',
         'device',
         'submitted_at',
+        'checked_in_at',
+        'checked_in_by',
         'expires_at',
         'reminder_sent',
         'reminder_sent_at',
@@ -64,6 +66,7 @@ class Waiver extends Model
         'photo_video_consent' => 'boolean',
         'marketing_consent_at' => 'datetime',
         'submitted_at' => 'datetime',
+        'checked_in_at' => 'datetime',
         'expires_at' => 'date',
         'reminder_sent' => 'boolean',
         'reminder_sent_at' => 'datetime',
@@ -170,6 +173,11 @@ class Waiver extends Model
     public function assigner(): BelongsTo
     {
         return $this->belongsTo(User::class, 'assigned_by');
+    }
+
+    public function checkedInBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'checked_in_by');
     }
 
     public function scopeCompleted(Builder $query): Builder

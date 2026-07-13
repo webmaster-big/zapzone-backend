@@ -652,6 +652,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('waivers/reports/{type}',    [WaiverReportController::class, 'report']);
     Route::post('waivers/assign',           [WaiverController::class, 'assign']);
     Route::post('waivers/kiosk-session',    [WaiverController::class, 'kioskSession']);
+    Route::post('waivers/check-in-all',     [WaiverController::class, 'checkInAll']);
+    Route::post('waivers/{waiver}/check-in',      [WaiverController::class, 'checkIn']);
+    Route::post('waivers/{waiver}/undo-check-in', [WaiverController::class, 'undoCheckIn']);
     Route::get('waivers/{waiver}/print',    [WaiverController::class, 'print']);
     Route::get('waivers',                   [WaiverController::class, 'index']);
     Route::get('waivers/{waiver}',          [WaiverController::class, 'show']);

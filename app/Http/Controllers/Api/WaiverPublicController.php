@@ -466,8 +466,8 @@ class WaiverPublicController extends Controller
         $rules = [
             'adult_first_name' => 'required|string|max:255',
             'adult_last_name' => 'required|string|max:255',
-            'adult_email' => 'nullable|email|max:255',
-            'adult_phone' => 'nullable|string|max:30',
+            'adult_email' => 'required|email|max:255',
+            'adult_phone' => 'required|string|max:30',
             'adult_dob' => 'nullable|date',
             'relationship' => 'nullable|string|max:100',
             'typed_legal_name' => 'required|string|max:255',

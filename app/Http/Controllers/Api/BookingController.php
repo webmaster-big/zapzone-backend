@@ -1223,6 +1223,7 @@ class BookingController extends Controller
             'reference_number' => 'required|string|exists:bookings,reference_number',
         ]);
 
+        $authUser = $this->resolveAuthUser($request);
         $booking = Booking::where('reference_number', $validated['reference_number'])->first();
 
         if (!$this->authorizeRecordScope($booking)) {

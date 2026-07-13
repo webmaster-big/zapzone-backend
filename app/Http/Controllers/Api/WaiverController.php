@@ -569,6 +569,7 @@ class WaiverController extends Controller
             'customer_id' => $w->customer_id,
             'manual_activity_name' => $w->manual_activity_name,
             'submitted_at' => $w->submitted_at?->toIso8601String(),
+            'checked_in_at' => $w->checked_in_at?->toIso8601String(),
             'created_at' => $w->created_at?->toIso8601String(),
             'updated_at' => $w->updated_at?->toIso8601String(),
             'minors' => $w->minors->map(fn ($m) => trim($m->first_name . ' ' . $m->last_name))->implode('; '),
@@ -627,28 +628,8 @@ class WaiverController extends Controller
             ]);
             $this->applyAuthScope($query, $request);
 
-            switch ($type) {
-                case 'booking':
-                    $query->where('booking_id', $id);
-                    break;
-                case 'attraction_purchase':
-                    $query->where('attraction_purchase_id', $id);
-                    break;
-                case 'event_purchase':
-                    // waivers link to events by event_id + customer + date, not by purchase id
-                    $purchase = \App\Models\EventPurchase::find($id);
-                    if (!$purchase) {
-                        return response()->json(['success' => true, 'data' => ['waivers' => []]]);
-                    }
-                    $query->where('event_id', $purchase->event_id)
-                        ->whereDate('selected_date', $purchase->purchase_date)
-                        ->when($purchase->customer_id, fn ($q) => $q->where('customer_id', $purchase->customer_id));
-                    break;
-                case 'customer':
-                    $query->where('customer_id', $id);
-                    break;
-                default:
-                    return response()->json(['success' => false, 'message' => 'Invalid type'], 422);
+            if (!$this->scopeToEntity($query, $type, $id)) {
+                return response()->json(['success' => false, 'message' => 'Invalid type'], 422);
             }
 
             $waivers = $query->orderByDesc('submitted_at')->orderByDesc('id')->limit(200)->get()
@@ -664,6 +645,7 @@ class WaiverController extends Controller
                     'source' => $w->source,
                     'marketing_consent_status' => $w->marketing_consent_status,
                     'submitted_at' => $w->submitted_at?->toIso8601String(),
+                    'checked_in_at' => $w->checked_in_at?->toIso8601String(),
                     'minors' => $w->minors->map(fn ($m) => trim($m->first_name . ' ' . $m->last_name))->values(),
                     // pending links can be re-sent/opened by staff; completed have none
                     'signing_url' => $w->status === Waiver::STATUS_PENDING ? $w->signing_url : null,
@@ -677,11 +659,157 @@ class WaiverController extends Controller
                         'total' => $waivers->count(),
                         'completed' => $waivers->where('status', Waiver::STATUS_COMPLETED)->count(),
                         'pending' => $waivers->where('status', Waiver::STATUS_PENDING)->count(),
+                        'checked_in' => $waivers->whereNotNull('checked_in_at')->count(),
                     ],
                 ],
             ]);
         } catch (\Throwable $e) {
             return $this->error('Failed to fetch connected waivers', $e);
+        }
+    }
+
+    /** Staff: mark a completed waiver as checked in at the door. */
+    public function checkIn(Request $request, Waiver $waiver): JsonResponse
+    {
+        $authUser = $this->resolveAuthUser($request);
+        if (!$authUser || !$this->authorizeRecordScope($waiver)) {
+            return $this->forbidden();
+        }
+
+        if ($waiver->status !== Waiver::STATUS_COMPLETED) {
+            return response()->json(['success' => false, 'message' => 'Only signed waivers can be checked in.'], 400);
+        }
+        if ($waiver->checked_in_at) {
+            return response()->json(['success' => false, 'message' => 'This waiver has already been checked in.'], 400);
+        }
+
+        try {
+            $waiver->update(['checked_in_at' => now(), 'checked_in_by' => $authUser->id]);
+
+            ActivityLog::log(
+                action: 'Waiver Checked In',
+                category: 'check-in',
+                description: "Waiver #{$waiver->id} ({$waiver->adult_full_name}) checked in",
+                userId: $authUser->id,
+                locationId: $waiver->location_id,
+                entityType: 'waiver',
+                entityId: $waiver->id,
+            );
+
+            return response()->json(['success' => true, 'message' => 'Waiver checked in', 'data' => $waiver]);
+        } catch (\Throwable $e) {
+            return $this->error('Failed to check in waiver', $e);
+        }
+    }
+
+    /** Staff: revert an accidental waiver check-in. */
+    public function undoCheckIn(Request $request, Waiver $waiver): JsonResponse
+    {
+        $authUser = $this->resolveAuthUser($request);
+        if (!$authUser || !$this->authorizeRecordScope($waiver)) {
+            return $this->forbidden();
+        }
+
+        if (!$waiver->checked_in_at) {
+            return response()->json(['success' => false, 'message' => 'This waiver is not checked in.'], 400);
+        }
+
+        try {
+            $waiver->update(['checked_in_at' => null, 'checked_in_by' => null]);
+
+            ActivityLog::log(
+                action: 'Waiver Check-In Undone',
+                category: 'check-in',
+                description: "Waiver #{$waiver->id} ({$waiver->adult_full_name}) check-in reverted",
+                userId: $authUser->id,
+                locationId: $waiver->location_id,
+                entityType: 'waiver',
+                entityId: $waiver->id,
+            );
+
+            return response()->json(['success' => true, 'message' => 'Waiver check-in undone', 'data' => $waiver]);
+        } catch (\Throwable $e) {
+            return $this->error('Failed to undo waiver check-in', $e);
+        }
+    }
+
+    /** Staff: check in every signed, not-yet-checked-in waiver connected to an entity. */
+    public function checkInAll(Request $request): JsonResponse
+    {
+        $authUser = $this->resolveAuthUser($request);
+        if (!$authUser) {
+            return $this->forbidden();
+        }
+
+        $type = $request->string('type')->toString();
+        $id = $request->integer('id');
+        if (!$id) {
+            return response()->json(['success' => false, 'message' => 'Missing id'], 422);
+        }
+
+        try {
+            $query = Waiver::query();
+            $this->applyAuthScope($query, $request);
+
+            if (!$this->scopeToEntity($query, $type, $id)) {
+                return response()->json(['success' => false, 'message' => 'Invalid type'], 422);
+            }
+
+            $waivers = $query->where('status', Waiver::STATUS_COMPLETED)
+                ->whereNull('checked_in_at')
+                ->limit(200)
+                ->get();
+
+            foreach ($waivers as $waiver) {
+                $waiver->update(['checked_in_at' => now(), 'checked_in_by' => $authUser->id]);
+
+                ActivityLog::log(
+                    action: 'Waiver Checked In',
+                    category: 'check-in',
+                    description: "Waiver #{$waiver->id} ({$waiver->adult_full_name}) checked in",
+                    userId: $authUser->id,
+                    locationId: $waiver->location_id,
+                    entityType: 'waiver',
+                    entityId: $waiver->id,
+                );
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => $waivers->count() . ' waiver(s) checked in',
+                'data' => ['checked_in' => $waivers->count()],
+            ]);
+        } catch (\Throwable $e) {
+            return $this->error('Failed to check in waivers', $e);
+        }
+    }
+
+    /** Constrain a waiver query to the waivers connected to an entity. False = unknown type. */
+    private function scopeToEntity($query, string $type, int $id): bool
+    {
+        switch ($type) {
+            case 'booking':
+                $query->where('booking_id', $id);
+                return true;
+            case 'attraction_purchase':
+                $query->where('attraction_purchase_id', $id);
+                return true;
+            case 'event_purchase':
+                // waivers link to events by event_id + customer + date, not by purchase id
+                $purchase = \App\Models\EventPurchase::find($id);
+                if (!$purchase) {
+                    $query->whereRaw('1 = 0');
+                    return true;
+                }
+                $query->where('event_id', $purchase->event_id)
+                    ->whereDate('selected_date', $purchase->purchase_date)
+                    ->when($purchase->customer_id, fn ($q) => $q->where('customer_id', $purchase->customer_id));
+                return true;
+            case 'customer':
+                $query->where('customer_id', $id);
+                return true;
+            default:
+                return false;
         }
     }
 
