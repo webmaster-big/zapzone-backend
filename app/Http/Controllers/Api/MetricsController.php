@@ -325,15 +325,15 @@ class MetricsController extends Controller
             Log::warning('Event breakdown unavailable', ['error' => $e->getMessage()]);
         }
 
-        // --- Confirmed bookings breakdown: packages vs events vs attractions ---
+        // --- Confirmed sales breakdown: package bookings vs event tickets vs attraction tickets ---
         $confirmedPackages = $confirmedBookings;
-        $confirmedAttractions = (clone $purchaseQuery)->whereIn('attraction_purchases.status', ['confirmed', 'checked-in'])->count();
-        $confirmedEvents = (clone $eventPurchaseQuery)->whereIn('event_purchases.status', ['confirmed', 'checked-in', 'completed'])->count();
+        $confirmedAttractions = (int) ((clone $purchaseQuery)->whereIn('attraction_purchases.status', ['confirmed', 'checked-in'])->sum('quantity') ?? 0);
+        $confirmedEvents = (int) ((clone $eventPurchaseQuery)->whereIn('event_purchases.status', ['confirmed', 'checked-in', 'completed'])->sum('quantity') ?? 0);
         $confirmedTotal = $confirmedPackages + $confirmedEvents + $confirmedAttractions;
         $confirmedBreakdownData = [
-            ['label' => 'Packages',    'count' => $confirmedPackages,    'percentage' => $confirmedTotal > 0 ? round(($confirmedPackages    / $confirmedTotal) * 100) : 0],
-            ['label' => 'Events',      'count' => $confirmedEvents,      'percentage' => $confirmedTotal > 0 ? round(($confirmedEvents      / $confirmedTotal) * 100) : 0],
-            ['label' => 'Attractions', 'count' => $confirmedAttractions, 'percentage' => $confirmedTotal > 0 ? round(($confirmedAttractions / $confirmedTotal) * 100) : 0],
+            ['label' => 'Package Bookings',   'count' => $confirmedPackages,    'percentage' => $confirmedTotal > 0 ? round(($confirmedPackages    / $confirmedTotal) * 100) : 0],
+            ['label' => 'Event Tickets',      'count' => $confirmedEvents,      'percentage' => $confirmedTotal > 0 ? round(($confirmedEvents      / $confirmedTotal) * 100) : 0],
+            ['label' => 'Attraction Tickets', 'count' => $confirmedAttractions, 'percentage' => $confirmedTotal > 0 ? round(($confirmedAttractions / $confirmedTotal) * 100) : 0],
         ];
 
         $applyDateRange = function ($q) use ($dateFrom, $dateTo, $useDateTime) {
