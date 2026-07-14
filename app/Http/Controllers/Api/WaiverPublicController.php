@@ -468,7 +468,7 @@ class WaiverPublicController extends Controller
             'adult_last_name' => 'required|string|max:255',
             'adult_email' => 'required|email|max:255',
             'adult_phone' => 'required|string|max:30',
-            'adult_dob' => 'nullable|date',
+            'adult_dob' => 'required|date',
             'relationship' => 'nullable|string|max:100',
             'typed_legal_name' => 'required|string|max:255',
             'agreement_accepted' => 'accepted',

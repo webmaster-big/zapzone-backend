@@ -95,7 +95,7 @@
     </table>
 
     <div class="section-title">Waiver Agreement</div>
-    <div class="body-copy">{!! $renderedBody !!}</div>
+    <div class="body-copy">{!! nl2br(e($renderedBody)) !!}</div>
 
     @if ($waiver->minors->isNotEmpty())
         <div class="section-title">Minor Participants</div>
