@@ -134,8 +134,6 @@ class WaiverPublicController extends Controller
         // Resolve static tokens that are known at display time (company, location, dates).
         // Signer-specific tokens (full_name, booking_date, activity_name) are left blank
         // because the kiosk has no booking context — they are filled in after submission.
-        $template->loadMissing(['company', 'location']);
-        $company  = $template->company;
         $location = $template->location;
 
         $requestedLocationId = $request->input('location_id');
@@ -148,42 +146,7 @@ class WaiverPublicController extends Controller
             }
         }
 
-        $packageIds    = $template->assigned_package_ids ?? [];
-        $attractionIds = $template->assigned_attraction_ids ?? [];
-        $eventIds      = $template->assigned_event_ids ?? [];
-        $totalAssigned = count($packageIds) + count($attractionIds) + count($eventIds);
-        $activityName  = '';
-        if ($totalAssigned === 1) {
-            if (count($packageIds) === 1) {
-                $activityName = \App\Models\Package::find($packageIds[0])?->name ?? '';
-            } elseif (count($attractionIds) === 1) {
-                $activityName = \App\Models\Attraction::find($attractionIds[0])?->name ?? '';
-            } else {
-                $activityName = \App\Models\Event::find($eventIds[0])?->name ?? '';
-            }
-        }
-
-        $staticVars = [
-            'business_legal_name' => $company?->company_name ?? '',
-            'company_name'        => $company?->company_name ?? '',
-            'company_email'       => $company?->email ?? '',
-            'company_phone'       => $company?->phone ?? '',
-            'location_name'       => $location?->name ?? '',
-            'location_address'    => trim(implode(', ', array_filter([
-                $location?->address, $location?->city, $location?->state, $location?->zip_code,
-            ]))),
-            'current_date' => \Carbon\Carbon::now()->format('F j, Y'),
-            'current_year' => \Carbon\Carbon::now()->format('Y'),
-            'full_name'       => '',
-            'adult_first_name'=> '',
-            'adult_last_name' => '',
-            'adult_email'     => '',
-            'adult_phone'     => '',
-            'relationship'    => '',
-            'activity_name'   => $activityName,
-            'booking_date'    => '',
-            'visit_date'      => '',
-        ];
+        $staticVars = $this->waivers->staticContentVariables($template, $location);
 
         $body = $this->waivers->render($version->body_text, $staticVars);
 
@@ -191,7 +154,7 @@ class WaiverPublicController extends Controller
             'success' => true,
             'data' => [
                 'kiosk' => true,
-                'template' => $this->templatePayload($template, $version),
+                'template' => $this->templatePayload($template, $version, $staticVars),
                 'body' => $body,
                 'settings' => [
                     'inactivity_timeout_seconds' => $settings->kiosk_inactivity_timeout_seconds,
@@ -426,21 +389,22 @@ class WaiverPublicController extends Controller
     {
         $template = $waiver->template;
         $version = $waiver->version;
+        $variables = $this->waivers->buildContentVariables($waiver);
 
         return [
             'status' => $waiver->status,
-            'template' => $this->templatePayload($template, $version),
+            'template' => $this->templatePayload($template, $version, $variables),
             // legal body with whatever is known so far applied (autofill preview)
             'body' => $this->waivers->render(
                 $version?->body_text ?? $template->body_text ?? '',
-                $this->waivers->buildContentVariables($waiver)
+                $variables
             ),
             'prefill' => $prefill ? $this->waivers->prefillFor($waiver) : [],
             'selected_date' => $waiver->selected_date,
         ];
     }
 
-    private function templatePayload(WaiverTemplate $template, $version): array
+    private function templatePayload(WaiverTemplate $template, $version, array $variables = []): array
     {
         $clauses = $version?->clause_config ?? [];
 
@@ -453,10 +417,19 @@ class WaiverPublicController extends Controller
             'dob_required' => $template->dob_required,
             'relationship_required' => $template->relationship_required,
             'photo_video_release_enabled' => $template->photo_video_release_enabled,
+            'photo_video_release_text' => $this->waivers->render(
+                ($clauses['photo_video_release_text'] ?? null)
+                    ?: ($template->photo_video_release_text ?: WaiverService::defaultPhotoVideoReleaseText()),
+                $variables
+            ),
             'electronic_consent_enabled' => $template->electronic_consent_enabled,
             'marketing_consent_enabled' => $template->marketing_consent_enabled,
-            'marketing_consent_text' => $template->marketing_consent_text,
-            'marketing_helper_text' => $template->marketing_helper_text,
+            'marketing_consent_text' => $template->marketing_consent_text
+                ? $this->waivers->render($template->marketing_consent_text, $variables)
+                : $template->marketing_consent_text,
+            'marketing_helper_text' => $template->marketing_helper_text
+                ? $this->waivers->render($template->marketing_helper_text, $variables)
+                : $template->marketing_helper_text,
             'clause_config' => $clauses,
         ];
     }

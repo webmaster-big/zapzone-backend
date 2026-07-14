@@ -259,6 +259,10 @@ class WaiverTemplateController extends Controller
                     'dob_required' => $waiverTemplate->dob_required,
                     'relationship_required' => $waiverTemplate->relationship_required,
                     'photo_video_release_enabled' => $waiverTemplate->photo_video_release_enabled,
+                    'photo_video_release_text' => $this->waivers->render(
+                        $waiverTemplate->photo_video_release_text ?: WaiverService::defaultPhotoVideoReleaseText(),
+                        $this->waivers->staticContentVariables($waiverTemplate)
+                    ),
                     'electronic_consent_enabled' => $waiverTemplate->electronic_consent_enabled,
                     'marketing_consent_enabled' => $waiverTemplate->marketing_consent_enabled,
                     'marketing_consent_text' => $waiverTemplate->marketing_consent_text,
@@ -408,6 +412,7 @@ class WaiverTemplateController extends Controller
             'dob_required' => 'sometimes|boolean',
             'relationship_required' => 'sometimes|boolean',
             'photo_video_release_enabled' => 'sometimes|boolean',
+            'photo_video_release_text' => 'nullable|string',
             'medical_ack_enabled' => 'sometimes|boolean',
             'property_damage_enabled' => 'sometimes|boolean',
             'group_leader_clause_enabled' => 'sometimes|boolean',

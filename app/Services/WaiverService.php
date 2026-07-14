@@ -40,6 +40,11 @@ class WaiverService
         ];
     }
 
+    public static function defaultPhotoVideoReleaseText(): string
+    {
+        return 'I grant {{company_name}} permission to photograph and record me and any minors listed on this waiver during our visit, and to use those images and recordings for promotional purposes.';
+    }
+
     /**
      * Build the autofill value map for a waiver from its linked booking / event /
      * customer / location. Used to render the legal body with real data.
@@ -85,6 +90,35 @@ class WaiverService
             'adult_email' => $waiver->adult_email ?? '',
             'adult_phone' => $waiver->adult_phone ?? '',
             'relationship' => $waiver->relationship ?? '',
+            'current_date' => Carbon::now()->format('F j, Y'),
+            'current_year' => Carbon::now()->format('Y'),
+        ];
+    }
+
+    public function staticContentVariables(WaiverTemplate $template, ?\App\Models\Location $location = null): array
+    {
+        $template->loadMissing(['company', 'location']);
+        $company = $template->company;
+        $location = $location ?: $template->location;
+
+        return [
+            'business_legal_name' => $company?->company_name ?? '',
+            'company_name' => $company?->company_name ?? '',
+            'company_email' => $company?->email ?? '',
+            'company_phone' => $company?->phone ?? '',
+            'location_name' => $location?->name ?? '',
+            'location_address' => trim(implode(', ', array_filter([
+                $location?->address, $location?->city, $location?->state, $location?->zip_code,
+            ]))),
+            'activity_name' => $this->soleAssignedActivityName($template) ?? '',
+            'booking_date' => '',
+            'visit_date' => '',
+            'full_name' => '',
+            'adult_first_name' => '',
+            'adult_last_name' => '',
+            'adult_email' => '',
+            'adult_phone' => '',
+            'relationship' => '',
             'current_date' => Carbon::now()->format('F j, Y'),
             'current_year' => Carbon::now()->format('Y'),
         ];
