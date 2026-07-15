@@ -17,6 +17,7 @@ class Contact extends Model
         'first_name',
         'last_name',
         'phone',
+        'date_of_birth',
         'company_name',
         'job_title',
         'address',
@@ -35,6 +36,7 @@ class Contact extends Model
     protected $casts = [
         'tags' => 'array',
         'sms_consent' => 'boolean',
+        'date_of_birth' => 'date',
     ];
 
     public function company(): BelongsTo
@@ -202,6 +204,9 @@ class Contact extends Model
             if (!empty($data['phone']) && empty($contact->phone)) {
                 $updateData['phone'] = $data['phone'];
             }
+            if (!empty($data['date_of_birth']) && empty($contact->date_of_birth)) {
+                $updateData['date_of_birth'] = $data['date_of_birth'];
+            }
             if (!empty($data['address']) && empty($contact->address)) {
                 $updateData['address'] = $data['address'];
             }
@@ -253,6 +258,7 @@ class Contact extends Model
             'first_name' => $firstName,
             'last_name' => $lastName,
             'phone' => $data['phone'] ?? null,
+            'date_of_birth' => $data['date_of_birth'] ?? null,
             'address' => $data['address'] ?? null,
             'city' => $data['city'] ?? null,
             'state' => $data['state'] ?? null,

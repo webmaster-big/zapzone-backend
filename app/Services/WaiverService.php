@@ -3,13 +3,16 @@
 namespace App\Services;
 
 use App\Models\Booking;
+use App\Models\Contact;
 use App\Models\Customer;
 use App\Models\Waiver;
 use App\Models\WaiverMinor;
+use App\Models\WaiverSetting;
 use App\Models\WaiverTemplate;
 use App\Models\WaiverTemplateVersion;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class WaiverService
 {
@@ -242,7 +245,7 @@ class WaiverService
      */
     public function completeSubmission(Waiver $waiver, array $data, array $context = []): Waiver
     {
-        return DB::transaction(function () use ($waiver, $data, $context) {
+        $completed = DB::transaction(function () use ($waiver, $data, $context) {
             $template = $waiver->template;
 
             $marketingOptIn = (bool) ($data['marketing_consent'] ?? false);
@@ -300,6 +303,57 @@ class WaiverService
 
             return $waiver->fresh(['minors']);
         });
+
+        $this->recordCustomerDetails($completed);
+
+        return $completed;
+    }
+
+    public function recordCustomerDetails(Waiver $waiver): void
+    {
+        try {
+            if ($waiver->adult_dob && $waiver->customer_id) {
+                $customer = $waiver->customer;
+                $sameParty = $customer
+                    && $customer->email
+                    && $waiver->adult_email
+                    && strcasecmp(trim($customer->email), trim($waiver->adult_email)) === 0;
+                if ($sameParty && !$customer->date_of_birth) {
+                    $customer->update(['date_of_birth' => $waiver->adult_dob]);
+                }
+            }
+
+            if (!$waiver->adult_email) {
+                return;
+            }
+
+            $settings = WaiverSetting::forCompany($waiver->company_id);
+            $onlyWhenConsented = $settings->crm_sync_only_when_consented ?? true;
+            $optedIn = $waiver->marketing_consent_status === Waiver::MARKETING_OPTED_IN;
+
+            if ($onlyWhenConsented && !$optedIn) {
+                return;
+            }
+
+            Contact::createOrUpdateFromSource(
+                companyId: $waiver->company_id,
+                data: [
+                    'email' => $waiver->adult_email,
+                    'first_name' => $waiver->adult_first_name,
+                    'last_name' => $waiver->adult_last_name,
+                    'phone' => $waiver->adult_phone,
+                    'date_of_birth' => $waiver->adult_dob?->toDateString(),
+                ],
+                source: 'waiver',
+                tags: ['waiver', 'customer'],
+                locationId: $waiver->location_id
+            );
+        } catch (\Exception $e) {
+            Log::warning('Failed to record customer details from waiver', [
+                'waiver_id' => $waiver->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     /** Compute an expiry date from the template's validity window (null = never). */
