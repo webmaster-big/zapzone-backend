@@ -73,6 +73,13 @@ class AttractionPurchaseController extends Controller
             $query->where('purchase_date', '<=', $request->end_date);
         }
 
+        if ($request->filled('scheduled_from')) {
+            $query->whereRaw('COALESCE(scheduled_date, purchase_date) >= ?', [$request->scheduled_from]);
+        }
+        if ($request->filled('scheduled_to')) {
+            $query->whereRaw('COALESCE(scheduled_date, purchase_date) <= ?', [$request->scheduled_to]);
+        }
+
         if ($request->filled('search')) {
             $terms = preg_split('/\s+/', trim((string) $request->search), -1, PREG_SPLIT_NO_EMPTY);
             foreach ($terms as $term) {
