@@ -176,6 +176,15 @@ class EventPurchaseController extends Controller
                 return response()->json(['message' => 'This event is not currently active'], 422);
             }
 
+            if ((int) ($validated['location_id'] ?? 0) !== (int) $event->location_id) {
+                Log::warning('Event purchase location_id did not match event location; corrected to event location', [
+                    'event_id' => $event->id,
+                    'submitted_location_id' => $validated['location_id'] ?? null,
+                    'event_location_id' => $event->location_id,
+                ]);
+                $validated['location_id'] = $event->location_id;
+            }
+
             if (!$event->isDateValid($validated['purchase_date'])) {
                 return response()->json(['message' => 'Selected date is not available for this event'], 422);
             }

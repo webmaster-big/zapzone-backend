@@ -335,6 +335,18 @@ class BookingController extends Controller
             'sms_consent' => 'nullable|boolean',
         ]);
 
+        if (!empty($validated['package_id'])) {
+            $bookedPackage = \App\Models\Package::find($validated['package_id']);
+            if ($bookedPackage && (int) ($validated['location_id'] ?? 0) !== (int) $bookedPackage->location_id) {
+                Log::warning('Booking location_id did not match package location; corrected to package location', [
+                    'package_id' => $bookedPackage->id,
+                    'submitted_location_id' => $validated['location_id'] ?? null,
+                    'package_location_id' => $bookedPackage->location_id,
+                ]);
+                $validated['location_id'] = $bookedPackage->location_id;
+            }
+        }
+
         $duplicateQuery = Booking::where('package_id', $validated['package_id'] ?? null)
             ->where('booking_date', $validated['booking_date'])
             ->where('booking_time', $validated['booking_time'])
