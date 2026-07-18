@@ -72,7 +72,8 @@ class Event extends Model
     public function getAvailableDates(): array
     {
         if ($this->date_type === 'one_time') {
-            return [$this->start_date->format('Y-m-d')];
+            $date = $this->start_date->format('Y-m-d');
+            return DayOff::isDateBlocked($this->location_id, $date) ? [] : [$date];
         }
 
         $dates = [];
@@ -80,7 +81,10 @@ class Event extends Model
         $end = $this->end_date;
 
         while ($current->lte($end)) {
-            $dates[] = $current->format('Y-m-d');
+            $date = $current->format('Y-m-d');
+            if (!DayOff::isDateBlocked($this->location_id, $date)) {
+                $dates[] = $date;
+            }
             $current->addDay();
         }
 
@@ -107,7 +111,10 @@ class Event extends Model
 
     public function getAvailableTimeSlotsForDate(string $date): array
     {
-        $allSlots = $this->getTimeSlots();
+        $allSlots = array_values(array_filter($this->getTimeSlots(), function ($slot) use ($date) {
+            $slotEnd = Carbon::parse($slot)->addMinutes($this->interval_minutes)->format('H:i');
+            return !DayOff::isTimeSlotBlocked($this->location_id, $date, $slot, $slotEnd);
+        }));
 
         if ($this->max_bookings_per_slot === null) {
             return $allSlots;
