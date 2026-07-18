@@ -574,6 +574,14 @@ class EmailNotificationController extends Controller
             ], 404);
         }
 
+        if ($emailNotification->trigger_type === EmailNotification::TRIGGER_END_OF_DAY_SALES_REPORT
+            && !in_array($user->role, ['company_admin', 'owner'], true)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'You are not authorized to send a test of this report.',
+            ], 403);
+        }
+
         $validated = $request->validate([
             'test_email' => 'required|email',
             'booking_id' => 'nullable|integer|exists:bookings,id',
@@ -581,6 +589,7 @@ class EmailNotificationController extends Controller
             'customer_id' => 'nullable|integer|exists:customers,id',
             'package_id' => 'nullable|integer|exists:packages,id',
             'attraction_id' => 'nullable|integer|exists:attractions,id',
+            'date' => 'nullable|date',
         ]);
 
         try {
@@ -709,7 +718,20 @@ class EmailNotificationController extends Controller
         }
 
         if ($notification->trigger_type === EmailNotification::TRIGGER_END_OF_DAY_SALES_REPORT) {
-            return array_merge($common, $this->buildSampleReportVariables());
+            $tz = config('app.timezone', 'America/Detroit');
+            $dateParam = $params['date'] ?? $params['report_date'] ?? null;
+            $reportDate = \Carbon\Carbon::today($tz);
+            if (is_string($dateParam) && $dateParam !== '') {
+                try {
+                    $reportDate = \Carbon\Carbon::parse($dateParam, $tz)->startOfDay();
+                } catch (\Throwable) {
+                    $reportDate = \Carbon\Carbon::today($tz);
+                }
+            }
+            $reportCompanyName = $company?->company_name ?? config('mail.from.name', 'Zap Zone');
+
+            return array_merge($common, app(\App\Services\AccountingReportService::class)
+                ->buildDailyReportVariables($reportDate, $reportCompanyName, $notification->company_id));
         }
 
         $isBookingTrigger = str_starts_with($notification->trigger_type, 'booking_') ||
@@ -720,43 +742,6 @@ class EmailNotificationController extends Controller
         } else {
             return array_merge($common, $this->buildPurchaseVariables($purchase, $attraction));
         }
-    }
-
-    protected function buildSampleReportVariables(): array
-    {
-        $cell = fn($value, $align = 'left') => '<td style="padding: 10px 16px; border-bottom: 1px solid #e5e7eb; font-size: 14px; color: #111827; text-align: ' . $align . ';">' . $value . '</td>';
-
-        $locationRows = '';
-        foreach ([['Taylor', 3900.00, 4120.00, 72], ['Canton', 3650.00, 3880.00, 66], ['Brighton', 4210.00, 4480.00, 76]] as $row) {
-            [$name, $net, $collected, $items] = $row;
-            $locationRows .= '<tr>' . $cell($name) . $cell('$' . number_format($net, 2), 'right') . $cell('$' . number_format($collected, 2), 'right') . $cell((string) $items, 'right') . '</tr>';
-        }
-
-        $categoryRows = '';
-        foreach ([['Parties', 6100.00, 5900.00, 6300.00], ['Attractions', 3200.00, 3050.00, 3400.00], ['Events', 2460.00, 2360.00, 2780.00]] as $row) {
-            [$name, $gross, $net, $collected] = $row;
-            $categoryRows .= '<tr>' . $cell($name) . $cell('$' . number_format($gross, 2), 'right') . $cell('$' . number_format($net, 2), 'right') . $cell('$' . number_format($collected, 2), 'right') . '</tr>';
-        }
-
-        return [
-            'report_date' => now()->format('l, F j, Y'),
-            'report_scope' => 'All Locations (3)',
-            'generated_at' => now()->format('F j, Y g:i A'),
-            'total_locations' => '3',
-            'items_sold' => '214',
-            'gross_sales' => '$11,760.00',
-            'discount_total' => '$420.00',
-            'net_sales' => '$11,340.00',
-            'tax_total' => '$680.00',
-            'fee_total' => '$150.00',
-            'total_billed' => '$11,340.00',
-            'total_collected' => '$12,480.00',
-            'balance_due' => '$1,240.00',
-            'collected_card' => '$9,980.00',
-            'collected_cash' => '$2,500.00',
-            'location_breakdown_rows' => $locationRows,
-            'category_breakdown_rows' => $categoryRows,
-        ];
     }
 
     protected function buildBookingVariables(?Booking $booking, ?Package $package): array
@@ -1022,6 +1007,14 @@ HTML;
                 'success' => false,
                 'message' => 'Notification not found',
             ], 404);
+        }
+
+        if ($emailNotification->trigger_type === EmailNotification::TRIGGER_END_OF_DAY_SALES_REPORT
+            && !in_array($user->role, ['company_admin', 'owner'], true)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'You are not authorized to preview this report.',
+            ], 403);
         }
 
         $subject = $request->input('subject', $emailNotification->getEffectiveSubject());

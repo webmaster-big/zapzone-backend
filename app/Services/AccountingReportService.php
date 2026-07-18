@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Location;
 use App\Models\Payment;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -40,6 +41,117 @@ class AccountingReportService
             'categories' => $categories,
             'note' => 'Add-ons are shown for visibility but their revenue is already included in Parties/Attractions/Events totals.',
         ];
+    }
+
+    public function buildDailyReportVariables(Carbon $date, string $companyName, ?int $companyId = null): array
+    {
+        $summaryKeys = [
+            'quantity_sold', 'gross_sales', 'net_sales', 'fee_amount', 'discount_amount',
+            'tax_amount', 'total_billed', 'grand_total', 'balance_due',
+            'collected_via_gateway', 'collected_via_gateway_net',
+        ];
+
+        $grand = array_fill_keys($summaryKeys, 0);
+        $categoryTotals = [
+            self::CATEGORY_PARTIES => ['gross_sales' => 0, 'net_sales' => 0, 'grand_total' => 0],
+            self::CATEGORY_ATTRACTIONS => ['gross_sales' => 0, 'net_sales' => 0, 'grand_total' => 0],
+            self::CATEGORY_EVENTS => ['gross_sales' => 0, 'net_sales' => 0, 'grand_total' => 0],
+        ];
+        $locationRows = '';
+        $includedLocations = 0;
+
+        $locations = Location::query()
+            ->when($companyId, fn ($q) => $q->where('company_id', $companyId))
+            ->orderBy('name')
+            ->get();
+
+        foreach ($locations as $location) {
+            $report = $this->buildReportData($location->id, $date, $date, 'booked_on');
+            $summary = $report['summary'];
+
+            foreach ($summaryKeys as $key) {
+                $grand[$key] += $summary[$key] ?? 0;
+            }
+
+            foreach ($report['categories'] as $category) {
+                $name = $category['name'] ?? '';
+                if (!isset($categoryTotals[$name])) {
+                    continue;
+                }
+                $categoryTotals[$name]['gross_sales'] += $category['summary']['gross_sales'] ?? 0;
+                $categoryTotals[$name]['net_sales'] += $category['summary']['net_sales'] ?? 0;
+                $categoryTotals[$name]['grand_total'] += $category['summary']['grand_total'] ?? 0;
+            }
+
+            $hasActivity = ($summary['quantity_sold'] ?? 0) > 0
+                || ($summary['gross_sales'] ?? 0) != 0
+                || ($summary['grand_total'] ?? 0) != 0;
+
+            if ($hasActivity) {
+                $includedLocations++;
+                $locationRows .= $this->reportRow([
+                    [e($location->name), 'left'],
+                    [$this->reportMoney($summary['net_sales']), 'right'],
+                    [$this->reportMoney($summary['grand_total']), 'right'],
+                    [number_format($summary['quantity_sold']), 'right'],
+                ]);
+            }
+        }
+
+        $categoryRows = '';
+        foreach ($categoryTotals as $name => $totals) {
+            $categoryRows .= $this->reportRow([
+                [$name, 'left'],
+                [$this->reportMoney($totals['gross_sales']), 'right'],
+                [$this->reportMoney($totals['net_sales']), 'right'],
+                [$this->reportMoney($totals['grand_total']), 'right'],
+            ]);
+        }
+
+        $collectedCash = max(0, $grand['grand_total'] - $grand['collected_via_gateway']);
+        $tz = config('app.timezone', 'America/Detroit');
+
+        return [
+            'report_date' => $date->format('l, F j, Y'),
+            'report_scope' => $includedLocations === 1 ? '1 location' : 'All Locations (' . $includedLocations . ')',
+            'generated_at' => Carbon::now($tz)->format('F j, Y g:i A'),
+            'total_locations' => (string) $includedLocations,
+            'items_sold' => number_format($grand['quantity_sold']),
+            'gross_sales' => $this->reportMoney($grand['gross_sales']),
+            'discount_total' => $this->reportMoney($grand['discount_amount']),
+            'net_sales' => $this->reportMoney($grand['net_sales']),
+            'tax_total' => $this->reportMoney($grand['tax_amount']),
+            'fee_total' => $this->reportMoney($grand['fee_amount']),
+            'total_billed' => $this->reportMoney($grand['total_billed']),
+            'total_collected' => $this->reportMoney($grand['grand_total']),
+            'balance_due' => $this->reportMoney($grand['balance_due']),
+            'collected_card' => $this->reportMoney($grand['collected_via_gateway']),
+            'collected_cash' => $this->reportMoney($collectedCash),
+            'location_breakdown_rows' => $locationRows !== '' ? $locationRows : $this->reportEmptyRow(),
+            'category_breakdown_rows' => $categoryRows,
+            'company_name' => $companyName,
+            'current_year' => (string) Carbon::now($tz)->year,
+            'current_date' => Carbon::now($tz)->format('F j, Y'),
+        ];
+    }
+
+    private function reportMoney($value): string
+    {
+        return '$' . number_format((float) $value, 2);
+    }
+
+    private function reportRow(array $cells): string
+    {
+        $html = '<tr>';
+        foreach ($cells as [$value, $align]) {
+            $html .= '<td style="padding: 10px 16px; border-bottom: 1px solid #e5e7eb; font-size: 14px; color: #111827; text-align: ' . $align . ';">' . $value . '</td>';
+        }
+        return $html . '</tr>';
+    }
+
+    private function reportEmptyRow(): string
+    {
+        return '<tr><td colspan="4" style="padding: 14px 16px; text-align: center; color: #9ca3af; font-size: 13px;">No sales recorded for this day.</td></tr>';
     }
 
     private function getPartiesData(int $locationId, Carbon $startDate, Carbon $endDate, string $viewMode, array $filters = []): array
