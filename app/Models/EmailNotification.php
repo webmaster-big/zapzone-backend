@@ -53,6 +53,8 @@ class EmailNotification extends Model
     const TRIGGER_WAIVER_BULK_CHAPERONE = 'waiver_bulk_chaperone';
     const TRIGGER_WAIVER_PARENT_INVITE = 'waiver_parent_invite';
 
+    const TRIGGER_END_OF_DAY_SALES_REPORT = 'end_of_day_sales_report';
+
     const DEFAULT_BOOKING_CONFIRMATION_CUSTOMER = 'booking_confirmation_customer';
     const DEFAULT_BOOKING_CONFIRMATION_STAFF = 'booking_confirmation_staff';
     const DEFAULT_BOOKING_CANCELLATION_CUSTOMER = 'booking_cancellation_customer';
@@ -76,6 +78,8 @@ class EmailNotification extends Model
     const DEFAULT_WAIVER_STAFF_SENT_CUSTOMER = 'waiver_staff_sent_customer';
     const DEFAULT_WAIVER_BULK_CHAPERONE = 'waiver_bulk_chaperone';
     const DEFAULT_WAIVER_PARENT_INVITE = 'waiver_parent_invite';
+
+    const DEFAULT_END_OF_DAY_SALES_REPORT = 'end_of_day_sales_report';
 
     const ENTITY_PACKAGE = 'package';
     const ENTITY_ATTRACTION = 'attraction';
@@ -264,6 +268,7 @@ class EmailNotification extends Model
             self::DEFAULT_WAIVER_STAFF_SENT_CUSTOMER => 'Waiver Link Sent (Customer)',
             self::DEFAULT_WAIVER_BULK_CHAPERONE => 'Bulk Waiver Invite (Chaperone)',
             self::DEFAULT_WAIVER_PARENT_INVITE => 'Waiver Invite (Parent/Guardian)',
+            self::DEFAULT_END_OF_DAY_SALES_REPORT => 'End of Day Sales Report',
         ];
     }
 
@@ -451,6 +456,9 @@ class EmailNotification extends Model
                 self::TRIGGER_WAIVER_STAFF_SENT => 'Waiver Link Sent (Staff)',
                 self::TRIGGER_WAIVER_BULK_CHAPERONE => 'Bulk Waiver Invite (Chaperone)',
                 self::TRIGGER_WAIVER_PARENT_INVITE => 'Waiver Invite (Parent/Guardian)',
+            ],
+            'report' => [
+                self::TRIGGER_END_OF_DAY_SALES_REPORT => 'End of Day Sales Report',
             ],
         ];
     }

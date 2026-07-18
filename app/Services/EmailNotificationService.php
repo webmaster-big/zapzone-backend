@@ -292,6 +292,84 @@ class EmailNotificationService
         }
     }
 
+    public function sendDailySalesReport(EmailNotification $notification, array $variables): void
+    {
+        $recipients = $this->getReportRecipients($notification);
+
+        if (empty($recipients)) {
+            Log::warning('Daily sales report has no recipients', [
+                'notification_id' => $notification->id,
+            ]);
+            return;
+        }
+
+        $subject = $this->replaceVariables($notification->getEffectiveSubject(), $variables);
+        $body = $this->replaceVariables($notification->getEffectiveBody(), $variables);
+        $htmlBody = $this->generateHtmlEmail($body);
+
+        foreach ($recipients as $recipient) {
+            $log = EmailNotificationLog::create([
+                'email_notification_id' => $notification->id,
+                'recipient_email' => $recipient['email'],
+                'recipient_type' => $recipient['type'],
+                'notifiable_type' => Company::class,
+                'notifiable_id' => $notification->company_id,
+                'status' => EmailNotificationLog::STATUS_PENDING,
+            ]);
+
+            try {
+                $this->sendEmail($recipient['email'], $subject, $htmlBody, $variables);
+                $log->markAsSent();
+
+                Log::info('Daily sales report sent', [
+                    'notification_id' => $notification->id,
+                    'recipient' => $recipient['email'],
+                ]);
+            } catch (\Exception $e) {
+                $log->markAsFailed($e->getMessage());
+
+                Log::error('Failed to send daily sales report', [
+                    'notification_id' => $notification->id,
+                    'recipient' => $recipient['email'],
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+    }
+
+    protected function getReportRecipients(EmailNotification $notification): array
+    {
+        $recipients = [];
+        $recipientTypes = $notification->recipient_types ?? [];
+
+        foreach ($recipientTypes as $recipientType) {
+            if ($recipientType === EmailNotification::RECIPIENT_CUSTOM) {
+                foreach (($notification->custom_emails ?? []) as $email) {
+                    $recipients[] = ['email' => $email, 'type' => 'custom'];
+                }
+            } elseif ($recipientType === EmailNotification::RECIPIENT_COMPANY_ADMIN) {
+                $adminEmails = User::where('company_id', $notification->company_id)
+                    ->whereIn('role', ['company_admin', 'owner'])
+                    ->where('status', 'active')
+                    ->whereNotNull('email')
+                    ->pluck('email')
+                    ->toArray();
+                foreach ($adminEmails as $email) {
+                    $recipients[] = ['email' => $email, 'type' => 'company_admin'];
+                }
+            }
+        }
+
+        $seen = [];
+        return array_values(array_filter($recipients, function ($recipient) use (&$seen) {
+            if (in_array($recipient['email'], $seen)) {
+                return false;
+            }
+            $seen[] = $recipient['email'];
+            return true;
+        }));
+    }
+
     protected function getRecipients(EmailNotification $notification, $entity, string $type): array
     {
         $recipients = [];
@@ -1190,6 +1268,31 @@ HTML;
                     'customer_name' => 'Customer name',
                     'payable_type' => 'Payment type (Booking/Purchase)',
                     'payable_id' => 'Related booking/purchase ID',
+                ],
+            ],
+            'report' => [
+                'Report' => [
+                    'report_date' => 'Business day the report covers (formatted)',
+                    'report_scope' => 'Scope label (e.g. All Locations)',
+                    'generated_at' => 'Date/time the report was generated',
+                    'total_locations' => 'Number of locations included',
+                    'items_sold' => 'Total quantity sold across all segments',
+                ],
+                'Financials' => [
+                    'gross_sales' => 'Gross sales (before discounts)',
+                    'discount_total' => 'Total discounts applied',
+                    'net_sales' => 'Net sales (after discounts)',
+                    'tax_total' => 'Total tax collected',
+                    'fee_total' => 'Total non-tax fees',
+                    'total_billed' => 'Total amount billed',
+                    'total_collected' => 'Total amount collected today',
+                    'balance_due' => 'Outstanding balance due',
+                    'collected_card' => 'Collected via card (gateway)',
+                    'collected_cash' => 'Collected via cash / in-store',
+                ],
+                'Breakdown' => [
+                    'location_breakdown_rows' => 'HTML table rows: per-location breakdown',
+                    'category_breakdown_rows' => 'HTML table rows: per-category breakdown',
                 ],
             ],
             'common' => [

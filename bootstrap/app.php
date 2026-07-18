@@ -27,6 +27,9 @@ return Application::configure(basePath: dirname(__DIR__))
 
         // Reset membership usage counters on term roll-over and enforce grace-period expiry.
         $schedule->command('memberships:reset-usage')->dailyAt('00:30');
+
+        // Email the End of Day Sales Report at the close of each business day (Michigan time).
+        $schedule->command('reports:send-daily-sales')->dailyAt('23:55');
     })
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->use([
