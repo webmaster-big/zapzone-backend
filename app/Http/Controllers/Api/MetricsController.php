@@ -133,6 +133,7 @@ class MetricsController extends Controller
 
         $totalBookings = (clone $bookingQuery)->whereNotIn('bookings.status', ['cancelled'])->count();
         $confirmedBookings = (clone $bookingQuery)->whereIn('bookings.status', ['confirmed', 'checked-in', 'completed'])->count();
+        $confirmedOnlyBookings = (clone $bookingQuery)->where('bookings.status', 'confirmed')->count();
         $pendingBookings = (clone $bookingQuery)->where('bookings.status', 'pending')->count();
         $completedBookings = (clone $bookingQuery)->where('bookings.status', 'completed')->count();
         $cancelledBookings = (clone $bookingQuery)->where('bookings.status', 'cancelled')->count();
@@ -240,6 +241,24 @@ class MetricsController extends Controller
             }
         } catch (\Exception $e) {
             Log::warning('Package breakdown unavailable', ['error' => $e->getMessage()]);
+        }
+
+        // --- Package (booking) breakdown by status ---
+        $packageStatusRows = [
+            ['label' => 'Pending',    'status' => 'pending',    'count' => $pendingBookings],
+            ['label' => 'Confirmed',  'status' => 'confirmed',  'count' => $confirmedOnlyBookings],
+            ['label' => 'Checked-in', 'status' => 'checked-in', 'count' => $checkedInBookings],
+            ['label' => 'Completed',  'status' => 'completed',  'count' => $completedBookings],
+        ];
+        $packageStatusTotal = array_sum(array_column($packageStatusRows, 'count'));
+        $packageStatusBreakdownData = [];
+        foreach ($packageStatusRows as $row) {
+            $packageStatusBreakdownData[] = [
+                'label'      => $row['label'],
+                'status'     => $row['status'],
+                'count'      => (int) $row['count'],
+                'percentage' => $packageStatusTotal > 0 ? round(($row['count'] / $packageStatusTotal) * 100) : 0,
+            ];
         }
 
         // --- Party participants breakdown by package ---
@@ -522,6 +541,7 @@ class MetricsController extends Controller
             ],
             'breakdowns' => [
                 'packageBreakdown'   => $packageBreakdownData,
+                'packageStatusBreakdown' => $packageStatusBreakdownData,
                 'participantBreakdown' => $participantBreakdownData,
                 'attractionBreakdown' => $attractionBreakdownData,
                 'eventBreakdown'     => $eventBreakdownData,

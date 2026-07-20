@@ -20,6 +20,8 @@ class DayOff extends Model
         'is_recurring',
         'package_ids',
         'room_ids',
+        'attraction_ids',
+        'event_ids',
     ];
 
     protected $casts = [
@@ -27,6 +29,8 @@ class DayOff extends Model
         'is_recurring' => 'boolean',
         'package_ids' => 'array',
         'room_ids' => 'array',
+        'attraction_ids' => 'array',
+        'event_ids' => 'array',
     ];
 
     public function location(): BelongsTo
@@ -48,6 +52,22 @@ class DayOff extends Model
             return collect();
         }
         return Room::whereIn('id', $this->room_ids)->get();
+    }
+
+    public function attractions()
+    {
+        if (empty($this->attraction_ids)) {
+            return collect();
+        }
+        return Attraction::whereIn('id', $this->attraction_ids)->get();
+    }
+
+    public function events()
+    {
+        if (empty($this->event_ids)) {
+            return collect();
+        }
+        return Event::whereIn('id', $this->event_ids)->get();
     }
 
     public function scopeByLocation($query, $locationId)
@@ -93,9 +113,30 @@ class DayOff extends Model
         });
     }
 
+    public function scopeForAttraction($query, $attractionId)
+    {
+        return $query->where(function ($q) use ($attractionId) {
+            $q->whereNull('attraction_ids')
+              ->orWhereJsonContains('attraction_ids', (int) $attractionId)
+              ->orWhereJsonContains('attraction_ids', (string) $attractionId);
+        });
+    }
+
+    public function scopeForEvent($query, $eventId)
+    {
+        return $query->where(function ($q) use ($eventId) {
+            $q->whereNull('event_ids')
+              ->orWhereJsonContains('event_ids', (int) $eventId)
+              ->orWhereJsonContains('event_ids', (string) $eventId);
+        });
+    }
+
     public function scopeLocationWide($query)
     {
-        return $query->whereNull('package_ids')->whereNull('room_ids');
+        return $query->whereNull('package_ids')
+            ->whereNull('room_ids')
+            ->whereNull('attraction_ids')
+            ->whereNull('event_ids');
     }
 
     public function isFullDay(): bool
@@ -167,7 +208,10 @@ class DayOff extends Model
 
     public function isLocationWide(): bool
     {
-        return empty($this->package_ids) && empty($this->room_ids);
+        return empty($this->package_ids)
+            && empty($this->room_ids)
+            && empty($this->attraction_ids)
+            && empty($this->event_ids);
     }
 
     public function appliesToPackage(int $packageId): bool
@@ -196,6 +240,32 @@ class DayOff extends Model
         return false;
     }
 
+    public function appliesToAttraction(int $attractionId): bool
+    {
+        if ($this->isLocationWide()) {
+            return true;
+        }
+
+        if (!empty($this->attraction_ids)) {
+            return in_array($attractionId, $this->attraction_ids) || in_array((string) $attractionId, $this->attraction_ids);
+        }
+
+        return false;
+    }
+
+    public function appliesToEvent(int $eventId): bool
+    {
+        if ($this->isLocationWide()) {
+            return true;
+        }
+
+        if (!empty($this->event_ids)) {
+            return in_array($eventId, $this->event_ids) || in_array((string) $eventId, $this->event_ids);
+        }
+
+        return false;
+    }
+
     public static function isDateBlocked($locationId, $date)
     {
         return self::where('location_id', $locationId)
@@ -204,6 +274,8 @@ class DayOff extends Model
             ->whereNull('time_end')
             ->whereNull('package_ids')
             ->whereNull('room_ids')
+            ->whereNull('attraction_ids')
+            ->whereNull('event_ids')
             ->exists();
     }
 
@@ -248,6 +320,74 @@ class DayOff extends Model
 
         foreach ($dayOffs as $dayOff) {
             if ($dayOff->isTimeBlocked($slotStart, $slotEnd) && $dayOff->appliesToRoom($roomId)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public static function isTimeSlotBlockedForAttraction($locationId, int $attractionId, $date, string $slotStart, ?string $slotEnd = null): bool
+    {
+        $dayOffs = self::where('location_id', $locationId)
+            ->where('date', $date)
+            ->forAttraction($attractionId)
+            ->get();
+
+        foreach ($dayOffs as $dayOff) {
+            if ($dayOff->isTimeBlocked($slotStart, $slotEnd) && $dayOff->appliesToAttraction($attractionId)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public static function isTimeSlotBlockedForEvent($locationId, int $eventId, $date, string $slotStart, ?string $slotEnd = null): bool
+    {
+        $dayOffs = self::where('location_id', $locationId)
+            ->where('date', $date)
+            ->forEvent($eventId)
+            ->get();
+
+        foreach ($dayOffs as $dayOff) {
+            if ($dayOff->isTimeBlocked($slotStart, $slotEnd) && $dayOff->appliesToEvent($eventId)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public static function isDateBlockedForAttraction($locationId, int $attractionId, $date): bool
+    {
+        $dayOffs = self::where('location_id', $locationId)
+            ->where('date', $date)
+            ->whereNull('time_start')
+            ->whereNull('time_end')
+            ->forAttraction($attractionId)
+            ->get();
+
+        foreach ($dayOffs as $dayOff) {
+            if ($dayOff->appliesToAttraction($attractionId)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public static function isDateBlockedForEvent($locationId, int $eventId, $date): bool
+    {
+        $dayOffs = self::where('location_id', $locationId)
+            ->where('date', $date)
+            ->whereNull('time_start')
+            ->whereNull('time_end')
+            ->forEvent($eventId)
+            ->get();
+
+        foreach ($dayOffs as $dayOff) {
+            if ($dayOff->appliesToEvent($eventId)) {
                 return true;
             }
         }

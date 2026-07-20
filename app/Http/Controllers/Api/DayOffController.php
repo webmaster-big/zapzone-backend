@@ -4,7 +4,9 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\ActivityLog;
+use App\Models\Attraction;
 use App\Models\DayOff;
+use App\Models\Event;
 use App\Models\Package;
 use App\Models\Room;
 use App\Models\User;
@@ -44,6 +46,14 @@ class DayOffController extends Controller
 
         if ($request->has('room_id')) {
             $query->forRoom($request->room_id);
+        }
+
+        if ($request->has('attraction_id')) {
+            $query->forAttraction($request->attraction_id);
+        }
+
+        if ($request->has('event_id')) {
+            $query->forEvent($request->event_id);
         }
 
         if ($request->boolean('location_wide_only')) {
@@ -104,18 +114,29 @@ class DayOffController extends Controller
             'package_ids.*' => 'integer|exists:packages,id',
             'room_ids' => 'nullable|array',
             'room_ids.*' => 'integer|exists:rooms,id',
+            'attraction_ids' => 'nullable|array',
+            'attraction_ids.*' => 'integer|exists:attractions,id',
+            'event_ids' => 'nullable|array',
+            'event_ids.*' => 'integer|exists:events,id',
         ]);
 
         $validated['package_ids'] = !empty($validated['package_ids']) ? array_map('intval', $validated['package_ids']) : null;
         $validated['room_ids'] = !empty($validated['room_ids']) ? array_map('intval', $validated['room_ids']) : null;
+        $validated['attraction_ids'] = !empty($validated['attraction_ids']) ? array_map('intval', $validated['attraction_ids']) : null;
+        $validated['event_ids'] = !empty($validated['event_ids']) ? array_map('intval', $validated['event_ids']) : null;
 
         $existingDayOffs = DayOff::where('location_id', $validated['location_id'])
             ->where('date', $validated['date'])
             ->get();
 
+        $newIsLocationWide = empty($validated['package_ids']) && empty($validated['room_ids']) &&
+            empty($validated['attraction_ids']) && empty($validated['event_ids']);
+
         foreach ($existingDayOffs as $existing) {
-            if (empty($validated['package_ids']) && empty($validated['room_ids']) &&
-                empty($existing->package_ids) && empty($existing->room_ids)) {
+            $existingIsLocationWide = empty($existing->package_ids) && empty($existing->room_ids) &&
+                empty($existing->attraction_ids) && empty($existing->event_ids);
+
+            if ($newIsLocationWide && $existingIsLocationWide) {
                 if ($this->hasTimeOverlap($existing, $validated)) {
                     return response()->json([
                         'success' => false,
@@ -143,6 +164,26 @@ class DayOffController extends Controller
                     ], 422);
                 }
             }
+
+            if (!empty($validated['attraction_ids']) && !empty($existing->attraction_ids)) {
+                $overlappingAttractions = array_intersect($validated['attraction_ids'], $existing->attraction_ids);
+                if (!empty($overlappingAttractions) && $this->hasTimeOverlap($existing, $validated)) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'A day off for some of these attractions already exists for this date and time range',
+                    ], 422);
+                }
+            }
+
+            if (!empty($validated['event_ids']) && !empty($existing->event_ids)) {
+                $overlappingEvents = array_intersect($validated['event_ids'], $existing->event_ids);
+                if (!empty($overlappingEvents) && $this->hasTimeOverlap($existing, $validated)) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'A day off for some of these events already exists for this date and time range',
+                    ], 422);
+                }
+            }
         }
 
         $dayOff = DayOff::create($validated);
@@ -156,6 +197,14 @@ class DayOffController extends Controller
         if (!empty($dayOff->room_ids)) {
             $roomNames = Room::whereIn('id', $dayOff->room_ids)->pluck('name')->implode(', ');
             $scope .= (!empty($scope) ? ', ' : '') . "rooms: {$roomNames}";
+        }
+        if (!empty($dayOff->attraction_ids)) {
+            $attractionNames = Attraction::whereIn('id', $dayOff->attraction_ids)->pluck('name')->implode(', ');
+            $scope .= (!empty($scope) ? ', ' : '') . "attractions: {$attractionNames}";
+        }
+        if (!empty($dayOff->event_ids)) {
+            $eventNames = Event::whereIn('id', $dayOff->event_ids)->pluck('name')->implode(', ');
+            $scope .= (!empty($scope) ? ', ' : '') . "events: {$eventNames}";
         }
 
         $currentUser = auth()->user();
@@ -187,6 +236,8 @@ class DayOffController extends Controller
                 'affected_resources' => [
                     'package_ids' => $dayOff->package_ids,
                     'room_ids' => $dayOff->room_ids,
+                    'attraction_ids' => $dayOff->attraction_ids,
+                    'event_ids' => $dayOff->event_ids,
                 ],
             ]
         );
@@ -221,6 +272,10 @@ class DayOffController extends Controller
             'package_ids.*' => 'integer|exists:packages,id',
             'room_ids' => 'nullable|array',
             'room_ids.*' => 'integer|exists:rooms,id',
+            'attraction_ids' => 'nullable|array',
+            'attraction_ids.*' => 'integer|exists:attractions,id',
+            'event_ids' => 'nullable|array',
+            'event_ids.*' => 'integer|exists:events,id',
         ]);
 
         if (array_key_exists('package_ids', $validated)) {
@@ -228,6 +283,12 @@ class DayOffController extends Controller
         }
         if (array_key_exists('room_ids', $validated)) {
             $validated['room_ids'] = !empty($validated['room_ids']) ? array_map('intval', $validated['room_ids']) : null;
+        }
+        if (array_key_exists('attraction_ids', $validated)) {
+            $validated['attraction_ids'] = !empty($validated['attraction_ids']) ? array_map('intval', $validated['attraction_ids']) : null;
+        }
+        if (array_key_exists('event_ids', $validated)) {
+            $validated['event_ids'] = !empty($validated['event_ids']) ? array_map('intval', $validated['event_ids']) : null;
         }
 
         $dayOff->update($validated);
