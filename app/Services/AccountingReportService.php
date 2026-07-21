@@ -61,6 +61,7 @@ class AccountingReportService
         $includedLocations = 0;
 
         $locations = Location::query()
+            ->where('is_active', true)
             ->when($companyId, fn ($q) => $q->where('company_id', $companyId))
             ->orderBy('name')
             ->get();
@@ -83,19 +84,13 @@ class AccountingReportService
                 $categoryTotals[$name]['grand_total'] += $category['summary']['grand_total'] ?? 0;
             }
 
-            $hasActivity = ($summary['quantity_sold'] ?? 0) > 0
-                || ($summary['gross_sales'] ?? 0) != 0
-                || ($summary['grand_total'] ?? 0) != 0;
-
-            if ($hasActivity) {
-                $includedLocations++;
-                $locationRows .= $this->reportRow([
-                    [e($location->name), 'left'],
-                    [$this->reportMoney($summary['net_sales']), 'right'],
-                    [$this->reportMoney($summary['grand_total']), 'right'],
-                    [number_format($summary['quantity_sold']), 'right'],
-                ]);
-            }
+            $includedLocations++;
+            $locationRows .= $this->reportRow([
+                [e($location->name), 'left'],
+                [$this->reportMoney($summary['net_sales']), 'right'],
+                [$this->reportMoney($summary['grand_total']), 'right'],
+                [number_format($summary['quantity_sold']), 'right'],
+            ]);
         }
 
         $categoryRows = '';
