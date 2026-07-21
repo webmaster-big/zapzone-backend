@@ -16,20 +16,20 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withSchedule(function (Schedule $schedule): void {
         // Send booking reminders daily at 9:00 AM
-        $schedule->command('bookings:send-reminders')->dailyAt('09:00');
+        $schedule->command('bookings:send-reminders')->dailyAt('09:00')->withoutOverlapping(10);
 
         // Prune raw page-view rows older than 365 days nightly (keeps conversions).
-        $schedule->command('analytics:prune')->dailyAt('03:30');
+        $schedule->command('analytics:prune')->dailyAt('03:30')->withoutOverlapping(10);
 
         // Send reminders for incomplete waivers whose visit date is within the
         // reminder window (default 24h). Hourly so per-company windows are honored.
-        $schedule->command('waivers:send-reminders')->hourly();
+        $schedule->command('waivers:send-reminders')->hourly()->withoutOverlapping(10);
 
         // Reset membership usage counters on term roll-over and enforce grace-period expiry.
-        $schedule->command('memberships:reset-usage')->dailyAt('00:30');
+        $schedule->command('memberships:reset-usage')->dailyAt('00:30')->withoutOverlapping(10);
 
         // Email the End of Day Sales Report at the close of each business day (Michigan time).
-        $schedule->command('reports:send-daily-sales')->dailyAt('23:55');
+        $schedule->command('reports:send-daily-sales')->dailyAt('23:55')->timezone('America/Detroit')->withoutOverlapping(10);
     })
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->use([
