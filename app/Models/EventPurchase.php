@@ -29,6 +29,8 @@ class EventPurchase extends Model
         'total_amount',
         'applied_fees',
         'applied_discounts',
+        'promo_id',
+        'gift_card_id',
         'amount_paid',
         'discount_amount',
         'payment_method',

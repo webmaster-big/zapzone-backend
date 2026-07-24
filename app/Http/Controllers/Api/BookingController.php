@@ -9,6 +9,7 @@ use App\Traits\GeneratesAvailableTimeSlots;
 use App\Mail\BookingConfirmation;
 use App\Mail\BookingReminder;
 use App\Mail\StaffBookingNotification;
+use App\Services\DiscountService;
 use App\Services\EmailNotificationService;
 use App\Services\GmailApiService;
 use App\Services\GoogleCalendarService;
@@ -245,7 +246,7 @@ class BookingController extends Controller
     }
 
 
-    public function store(Request $request): JsonResponse
+    public function store(Request $request, DiscountService $discounts): JsonResponse
     {
         $data = $request->all();
         foreach ($data as $key => $value) {
@@ -309,6 +310,7 @@ class BookingController extends Controller
             'applied_discounts.*.discount_type' => ['required_with:applied_discounts', Rule::in(['fixed', 'percentage'])],
             'applied_discounts.*.original_price' => 'required_with:applied_discounts|numeric|min:0',
             'applied_discounts.*.special_pricing_id' => 'nullable|integer',
+            'applied_discounts.*.source' => 'nullable|string',
             'payment_method' => ['nullable', Rule::in(['card', 'in-store', 'paylater', 'authorize.net'])],
             'notes' => 'nullable|string',
             'internal_notes' => 'nullable|string',
@@ -382,25 +384,61 @@ class BookingController extends Controller
             $validated['payment_method'] = 'paylater';
         }
 
-        if (in_array($validated['payment_method'], ['in-store', 'card'])) {
-            $validated['status'] = 'confirmed';
-            $validated['payment_status'] = $validated['amount_paid'] >= $validated['total_amount'] ? 'paid' : 'partial';
-        } else {
-            $validated['status'] = 'pending';
-            $validated['payment_status'] = 'pending';
+        $discountItems = [];
+        if (!empty($validated['package_id'])) {
+            $discountItems[] = ['type' => 'package', 'id' => (int) $validated['package_id']];
         }
-
-        // Derive membership_discount from applied_discounts entries
-        if (! empty($validated['applied_discounts'])) {
-            $membershipDiscount = collect($validated['applied_discounts'])
-                ->filter(fn($d) => str_starts_with($d['discount_name'] ?? '', 'Member Savings'))
-                ->sum('discount_amount');
-            if ($membershipDiscount > 0) {
-                $validated['membership_discount'] = $membershipDiscount;
+        foreach (($validated['additional_attractions'] ?? []) as $attraction) {
+            if (!empty($attraction['attraction_id'])) {
+                $discountItems[] = ['type' => 'attraction', 'id' => (int) $attraction['attraction_id']];
             }
         }
 
-        $booking = Booking::create($validated);
+        $booking = DB::transaction(function () use (&$validated, $discountItems, $request, $discounts) {
+            $hasCode = !empty($validated['promo_id']) || !empty($validated['gift_card_id'])
+                || !empty($validated['promo_code']) || !empty($validated['gift_card_code']);
+
+            if ($hasCode) {
+                $discountResult = $discounts->applyToCheckout([
+                    'promo_id' => $validated['promo_id'] ?? null,
+                    'gift_card_id' => $validated['gift_card_id'] ?? null,
+                    'promo_code' => $validated['promo_code'] ?? null,
+                    'gift_card_code' => $validated['gift_card_code'] ?? null,
+                    'location_id' => $validated['location_id'] ?? null,
+                    'customer_id' => $validated['customer_id'] ?? null,
+                    'subtotal' => (float) ($validated['total_amount'] ?? 0),
+                    'items' => $discountItems,
+                    'tracking_prefix' => 'srv:booking:' . ($validated['reference_number'] ?? ''),
+                ], $request);
+
+                if ($discountResult['discount_amount'] > 0) {
+                    $validated['total_amount'] = max(0, round(((float) ($validated['total_amount'] ?? 0)) - $discountResult['discount_amount'], 2));
+                    $validated['discount_amount'] = round(((float) ($validated['discount_amount'] ?? 0)) + $discountResult['discount_amount'], 2);
+                    $validated['applied_discounts'] = array_merge($validated['applied_discounts'] ?? [], $discountResult['applied_discounts']);
+                    $validated['promo_id'] = $discountResult['promo_id'] ?? ($validated['promo_id'] ?? null);
+                    $validated['gift_card_id'] = $discountResult['gift_card_id'] ?? ($validated['gift_card_id'] ?? null);
+                }
+            }
+
+            if (in_array($validated['payment_method'], ['in-store', 'card'])) {
+                $validated['status'] = 'confirmed';
+                $validated['payment_status'] = ($validated['amount_paid'] ?? 0) >= $validated['total_amount'] ? 'paid' : 'partial';
+            } else {
+                $validated['status'] = 'pending';
+                $validated['payment_status'] = 'pending';
+            }
+
+            if (!empty($validated['applied_discounts'])) {
+                $membershipDiscount = collect($validated['applied_discounts'])
+                    ->filter(fn($d) => str_starts_with($d['discount_name'] ?? '', 'Member Savings'))
+                    ->sum('discount_amount');
+                if ($membershipDiscount > 0) {
+                    $validated['membership_discount'] = $membershipDiscount;
+                }
+            }
+
+            return Booking::create($validated);
+        });
 
         if (isset($validated['additional_attractions']) && is_array($validated['additional_attractions'])) {
             foreach ($validated['additional_attractions'] as $attraction) {

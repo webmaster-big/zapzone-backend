@@ -2,14 +2,14 @@
 
 namespace App\Models;
 
+use App\Traits\HasTargeting;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 
 class Promo extends Model
 {
-    use HasFactory;
+    use HasFactory, HasTargeting;
 
     protected $fillable = [
         'code',
@@ -39,11 +39,6 @@ class Promo extends Model
     public function creator(): BelongsTo
     {
         return $this->belongsTo(User::class, 'created_by');
-    }
-
-    public function packages(): BelongsToMany
-    {
-        return $this->belongsToMany(Package::class, 'package_promos');
     }
 
     public function scopeActive($query)

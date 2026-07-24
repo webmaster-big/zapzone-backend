@@ -225,6 +225,9 @@ Route::post('special-pricings/check-date', [SpecialPricingController::class, 'ch
 Route::get('special-pricings/upcoming-dates', [SpecialPricingController::class, 'getUpcomingDates']); // include
 Route::get('fee-supports/for-entity', [FeeSupportController::class, 'getForEntity']); // include
 
+Route::post('promos/validate-code', [PromoController::class, 'validateByCode']); // include
+Route::post('gift-cards/validate-code', [GiftCardController::class, 'validateByCode']); // include
+
 Route::get('google-calendar/callback', [GoogleCalendarController::class, 'handleCallback']);
 
 //ignore
@@ -267,6 +270,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('page-analytics/landing-pages',     [PageAnalyticsController::class, 'landingPages']);
     Route::get('page-analytics/searches',          [PageAnalyticsController::class, 'searches']);
     Route::get('page-analytics/promo-performance', [PageAnalyticsController::class, 'promoPerformance']);
+    Route::get('page-analytics/gift-card-performance', [PageAnalyticsController::class, 'giftCardPerformance']);
     Route::get('page-analytics/attribution',       [PageAnalyticsController::class, 'attribution']);
     Route::get('page-analytics/entities-leaderboard', [PageAnalyticsController::class, 'entitiesLeaderboard']);
     Route::get('page-analytics/entities/{type}/{id}', [PageAnalyticsController::class, 'entityDetail'])
@@ -389,12 +393,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('global-notes/{globalNote}/toggle-status', [GlobalNoteController::class, 'toggleStatus']);
 
     Route::apiResource('gift-cards', GiftCardController::class);
-    Route::post('gift-cards/validate-code', [GiftCardController::class, 'validateByCode']);
     Route::post('gift-cards/{giftCard}/redeem', [GiftCardController::class, 'redeem']);
     Route::patch('gift-cards/{giftCard}/deactivate', [GiftCardController::class, 'deactivate']);
     Route::patch('gift-cards/{giftCard}/reactivate', [GiftCardController::class, 'reactivate']);
 
-    Route::post('promos/validate-code', [PromoController::class, 'validateByCode']);
     Route::get('promos/valid', [PromoController::class, 'getValid']);
     Route::post('promos/generate-bulk', [PromoController::class, 'generateBulk']);
     Route::get('promos/batches', [PromoController::class, 'listBatches']);

@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Traits\HasTargeting;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -9,7 +10,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 
 class GiftCard extends Model
 {
-    use HasFactory;
+    use HasFactory, HasTargeting;
 
     protected $fillable = [
         'code',
@@ -40,11 +41,6 @@ class GiftCard extends Model
     public function location(): BelongsTo
     {
         return $this->belongsTo(Location::class);
-    }
-
-    public function packages(): BelongsToMany
-    {
-        return $this->belongsToMany(Package::class, 'package_gift_cards');
     }
 
     public function customers(): BelongsToMany

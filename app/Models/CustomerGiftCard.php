@@ -9,8 +9,15 @@ class CustomerGiftCard extends Model
     protected $fillable = [
         'customer_id',
         'gift_card_id',
+        'redeemed',
         'redeemed_at',
         'amount',
+    ];
+
+    protected $casts = [
+        'redeemed' => 'boolean',
+        'redeemed_at' => 'datetime',
+        'amount' => 'decimal:2',
     ];
 
     public function customer()

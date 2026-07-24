@@ -6,7 +6,9 @@ use App\Http\Controllers\Controller;
 use App\Http\Traits\RecordsPageAnalytics;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Models\ActivityLog;
+use App\Models\Location;
 use App\Models\Promo;
+use App\Services\DiscountService;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Str;
@@ -20,22 +22,34 @@ class PromoController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        $query = Promo::with(['creator', 'packages']);
+        $query = Promo::with(['creator']);
 
         $authUser = $this->resolveAuthUser($request);
         if ($authUser) {
             if (in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
-                $query->where(function ($q) use ($authUser) {
-                    $q->whereHas('packages', fn($p) => $p->where('location_id', $authUser->location_id))
-                      ->orWhereHas('creator', fn($u) => $u->where('location_id', $authUser->location_id));
+                $locationId = $authUser->location_id;
+                $query->where(function ($q) use ($locationId) {
+                    $q->whereNull('location_ids')
+                      ->orWhereJsonContains('location_ids', (int) $locationId)
+                      ->orWhereJsonContains('location_ids', (string) $locationId)
+                      ->orWhereHas('creator', fn($u) => $u->where('location_id', $locationId));
                 });
             } elseif ($authUser->company_id) {
                 $companyId = $authUser->company_id;
-                $query->where(function ($q) use ($companyId) {
-                    $q->whereHas('packages.location', fn($l) => $l->where('company_id', $companyId))
+                $companyLocationIds = Location::where('company_id', $companyId)->pluck('id')->all();
+                $query->where(function ($q) use ($companyId, $companyLocationIds) {
+                    $q->whereNull('location_ids')
                       ->orWhereHas('creator', fn($u) => $u->where('company_id', $companyId));
+                    foreach ($companyLocationIds as $locationId) {
+                        $q->orWhereJsonContains('location_ids', (int) $locationId)
+                          ->orWhereJsonContains('location_ids', (string) $locationId);
+                    }
                 });
             }
+        }
+
+        if ($request->filled('location_id')) {
+            $query->forLocation($request->location_id);
         }
 
         if ($request->has('status')) {
@@ -102,7 +116,21 @@ class PromoController extends Controller
             'usage_limit_per_user' => 'integer|min:1',
             'description' => 'nullable|string',
             'created_by' => 'required|exists:users,id',
+            'location_ids' => 'nullable|array',
+            'location_ids.*' => 'integer|exists:locations,id',
+            'package_ids' => 'nullable|array',
+            'package_ids.*' => 'integer|exists:packages,id',
+            'attraction_ids' => 'nullable|array',
+            'attraction_ids.*' => 'integer|exists:attractions,id',
+            'event_ids' => 'nullable|array',
+            'event_ids.*' => 'integer|exists:events,id',
         ]);
+
+        foreach (['location_ids', 'package_ids', 'attraction_ids', 'event_ids'] as $field) {
+            if (array_key_exists($field, $validated)) {
+                $validated[$field] = Promo::normalizeIds($validated[$field]);
+            }
+        }
 
         if (!isset($validated['code'])) {
             do {
@@ -111,7 +139,7 @@ class PromoController extends Controller
         }
 
         $promo = Promo::create($validated);
-        $promo->load(['creator', 'packages']);
+        $promo->load(['creator']);
 
         return response()->json([
             'success' => true,
@@ -122,7 +150,7 @@ class PromoController extends Controller
 
     public function show(Promo $promo): JsonResponse
     {
-        $promo->load(['creator', 'packages']);
+        $promo->load(['creator']);
 
         return response()->json([
             'success' => true,
@@ -143,10 +171,24 @@ class PromoController extends Controller
             'usage_limit_per_user' => 'sometimes|integer|min:1',
             'status' => ['sometimes', Rule::in(['active', 'inactive', 'expired', 'exhausted'])],
             'description' => 'sometimes|nullable|string',
+            'location_ids' => 'sometimes|nullable|array',
+            'location_ids.*' => 'integer|exists:locations,id',
+            'package_ids' => 'sometimes|nullable|array',
+            'package_ids.*' => 'integer|exists:packages,id',
+            'attraction_ids' => 'sometimes|nullable|array',
+            'attraction_ids.*' => 'integer|exists:attractions,id',
+            'event_ids' => 'sometimes|nullable|array',
+            'event_ids.*' => 'integer|exists:events,id',
         ]);
 
+        foreach (['location_ids', 'package_ids', 'attraction_ids', 'event_ids'] as $field) {
+            if (array_key_exists($field, $validated)) {
+                $validated[$field] = Promo::normalizeIds($validated[$field]);
+            }
+        }
+
         $promo->update($validated);
-        $promo->load(['creator', 'packages']);
+        $promo->load(['creator']);
 
         return response()->json([
             'success' => true,
@@ -191,78 +233,89 @@ class PromoController extends Controller
         ]);
     }
 
-    public function validateByCode(Request $request): JsonResponse
+    public function validateByCode(Request $request, DiscountService $discounts): JsonResponse
     {
         $request->validate([
             'code' => 'required|string',
+            'location_id' => 'nullable|integer',
+            'subtotal' => 'nullable|numeric|min:0',
+            'items' => 'nullable|array',
+            'items.*.type' => 'required_with:items|string',
+            'items.*.id' => 'required_with:items|integer',
+            'customer_id' => 'nullable|integer',
         ]);
 
-        $promo = Promo::byCode($request->code)->first();
+        $result = $discounts->validatePromo($request->code, $this->buildContext($request));
 
-        if (!$promo) {
+        if (!$result['valid']) {
             return response()->json([
                 'success' => false,
-                'message' => 'Promo code not found',
-            ], 404);
+                'message' => $result['reason'],
+                'data' => [
+                    'is_valid' => false,
+                    'promo' => $result['promo'] ?? null,
+                ],
+            ]);
         }
 
-        $isValid = $promo->isValid();
+        $promo = $result['promo'];
 
         return response()->json([
             'success' => true,
             'data' => [
+                'is_valid' => true,
                 'promo' => $promo,
-                'is_valid' => $isValid,
+                'discount_amount' => $result['discount_amount'],
+                'discount_type' => $result['discount_type'],
+                'eligible_subtotal' => $result['eligible_subtotal'],
+                'applied_discount' => $result['entry'],
                 'expired' => $promo->isExpired(),
                 'started' => $promo->hasStarted(),
-                'usage_remaining' => $promo->usage_limit_total ?
-                    max(0, $promo->usage_limit_total - $promo->current_usage) :
-                    null,
+                'usage_remaining' => $promo->usage_limit_total
+                    ? max(0, $promo->usage_limit_total - $promo->current_usage)
+                    : null,
             ],
         ]);
     }
 
-    public function apply(Request $request, Promo $promo): JsonResponse
+    public function apply(Request $request, Promo $promo, DiscountService $discounts): JsonResponse
     {
-        if (!$promo->isValid()) {
+        $result = $discounts->validatePromo($promo->code, $this->buildContext($request));
+
+        if (!$result['valid']) {
             return response()->json([
                 'success' => false,
-                'message' => 'Promo code is not valid',
+                'message' => $result['reason'],
             ], 400);
         }
 
-        $promo->increment('current_usage');
-
-        if ($promo->usage_limit_total && $promo->current_usage >= $promo->usage_limit_total) {
-            $promo->update(['status' => 'exhausted']);
-        }
-
-        $this->pageAnalyticsRecorder()->recordConversion(
-            'promo_applied',
-            $promo->fresh(),
-            (float) ($promo->value ?? 0),
-            request(),
-            [
-                'event_type' => 'engagement',
-                'metadata'   => ['discount_type' => $promo->type, 'value' => $promo->value],
-            ]
-        );
+        $discounts->applyPromo($promo, $result['discount_amount'], $request);
 
         return response()->json([
             'success' => true,
             'message' => 'Promo code applied successfully',
             'data' => [
                 'promo' => $promo->fresh(),
-                'discount_amount' => $promo->value,
-                'discount_type' => $promo->type,
+                'discount_amount' => $result['discount_amount'],
+                'discount_type' => $result['discount_type'],
+                'applied_discount' => $result['entry'],
             ],
         ]);
     }
 
+    private function buildContext(Request $request): array
+    {
+        return [
+            'location_id' => $request->input('location_id'),
+            'subtotal' => (float) $request->input('subtotal', 0),
+            'items' => $request->input('items', []),
+            'customer_id' => $request->input('customer_id'),
+        ];
+    }
+
     public function getValid(Request $request): JsonResponse
     {
-        $promos = Promo::with(['packages'])
-            ->valid()
+        $promos = Promo::valid()
             ->orderBy('end_date', 'asc')
             ->get();
 

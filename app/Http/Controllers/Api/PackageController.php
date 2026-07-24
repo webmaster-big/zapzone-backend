@@ -13,8 +13,6 @@ use App\Models\Package;
 use Illuminate\Support\Facades\Log;
 use App\Models\PackageAddOn;
 use App\Models\PackageAttraction;
-use App\Models\PackageGiftCard;
-use App\Models\PackagePromo;
 use App\Models\PackageRoom;
 use App\Models\SpecialPricing;
 use App\Models\User;
@@ -28,7 +26,7 @@ class PackageController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        $query = Package::with(['location', 'rooms', 'giftCards', 'promos', 'availabilitySchedules']);
+        $query = Package::with(['location', 'rooms', 'availabilitySchedules']);
 
         $this->applyAuthScope($query, $request);
 
@@ -64,7 +62,7 @@ class PackageController extends Controller
         $perPage = min($request->get('per_page', 15), 50); // Max 50 items per page for better performance
         $packages = $query->paginate($perPage);
 
-        $packages->load(['location', 'attractions', 'addOns', 'rooms', 'giftCards', 'promos', 'availabilitySchedules']);
+        $packages->load(['location', 'attractions', 'addOns', 'rooms', 'availabilitySchedules']);
 
         return response()->json([
             'success' => true,
@@ -244,24 +242,6 @@ class PackageController extends Controller
             }
         }
 
-        if (isset($validated['gift_card_ids']) && is_array($validated['gift_card_ids'])) {
-            foreach ($validated['gift_card_ids'] as $giftCardId) {
-                PackageGiftCard::create([
-                    'package_id' => $package->id,
-                    'gift_card_id' => $giftCardId,
-                ]);
-            }
-        }
-
-        if (isset($validated['promo_ids']) && is_array($validated['promo_ids'])) {
-            foreach ($validated['promo_ids'] as $promoId) {
-                PackagePromo::create([
-                    'package_id' => $package->id,
-                    'promo_id' => $promoId,
-                ]);
-            }
-        }
-
         if (isset($validated['room_ids']) && is_array($validated['room_ids'])) {
             foreach ($validated['room_ids'] as $roomId) {
                 PackageRoom::create([
@@ -270,7 +250,7 @@ class PackageController extends Controller
                 ]);
             }
         }
-        $package->load(['location', 'attractions', 'addOns', 'rooms', 'giftCards', 'promos']);
+        $package->load(['location', 'attractions', 'addOns', 'rooms']);
 
         return response()->json([
             'success' => true,
@@ -281,7 +261,7 @@ class PackageController extends Controller
 
     public function show($package): JsonResponse
     {
-        $package = Package::with(['location', 'attractions', 'addOns', 'rooms', 'giftCards', 'promos', 'availabilitySchedules'])->findOrFail($package);
+        $package = Package::with(['location', 'attractions', 'addOns', 'rooms', 'availabilitySchedules'])->findOrFail($package);
 
         return response()->json([
             'success' => true,
@@ -291,7 +271,7 @@ class PackageController extends Controller
 
     public function update(UpdatePackageRequest $request, $package): JsonResponse
     {
-        $package = Package::with(['location', 'attractions', 'addOns', 'rooms', 'giftCards', 'promos', 'availabilitySchedules'])->findOrFail($package);
+        $package = Package::with(['location', 'attractions', 'addOns', 'rooms', 'availabilitySchedules'])->findOrFail($package);
 
         $validated = $request->validated();
 
@@ -365,28 +345,6 @@ class PackageController extends Controller
                 PackageAddOn::create([
                     'package_id' => $package->id,
                     'add_on_id' => $addonId,
-                ]);
-            }
-        }
-
-        if (isset($validated['gift_card_ids'])) {
-            PackageGiftCard::where('package_id', $package->id)->delete();
-
-            foreach ($validated['gift_card_ids'] as $giftCardId) {
-                PackageGiftCard::create([
-                    'package_id' => $package->id,
-                    'gift_card_id' => $giftCardId,
-                ]);
-            }
-        }
-
-        if (isset($validated['promo_ids'])) {
-            PackagePromo::where('package_id', $package->id)->delete();
-
-            foreach ($validated['promo_ids'] as $promoId) {
-                PackagePromo::create([
-                    'package_id' => $package->id,
-                    'promo_id' => $promoId,
                 ]);
             }
         }
@@ -733,10 +691,6 @@ class PackageController extends Controller
             'packages.*.addon_ids.*' => 'exists:add_ons,id',
             'packages.*.room_ids' => 'nullable|array',
             'packages.*.room_ids.*' => 'exists:rooms,id',
-            'packages.*.gift_card_ids' => 'nullable|array',
-            'packages.*.gift_card_ids.*' => 'exists:gift_cards,id',
-            'packages.*.promo_ids' => 'nullable|array',
-            'packages.*.promo_ids.*' => 'exists:promos,id',
             'packages.*.attractions' => 'nullable|array',
             'packages.*.attractions.*.id' => 'nullable|exists:attractions,id',
             'packages.*.add_ons' => 'nullable|array',
@@ -790,29 +744,15 @@ class PackageController extends Controller
                     $roomIds = array_filter(array_column($packageData['rooms'], 'id'));
                 }
 
-                $giftCardIds = $packageData['gift_card_ids'] ?? [];
-                if (empty($giftCardIds) && isset($packageData['gift_cards']) && is_array($packageData['gift_cards'])) {
-                    $giftCardIds = array_filter(array_column($packageData['gift_cards'], 'id'));
-                }
-
-                $promoIds = $packageData['promo_ids'] ?? [];
-                if (empty($promoIds) && isset($packageData['promos']) && is_array($packageData['promos'])) {
-                    $promoIds = array_filter(array_column($packageData['promos'], 'id'));
-                }
-
                 $availabilitySchedules = $packageData['availability_schedules'] ?? [];
 
                 unset(
                     $packageData['attraction_ids'],
                     $packageData['addon_ids'],
                     $packageData['room_ids'],
-                    $packageData['gift_card_ids'],
-                    $packageData['promo_ids'],
                     $packageData['attractions'],
                     $packageData['add_ons'],
                     $packageData['rooms'],
-                    $packageData['gift_cards'],
-                    $packageData['promos'],
                     $packageData['availability_schedules'],
                     $packageData['location'] // Remove nested location object
                 );
@@ -851,24 +791,6 @@ class PackageController extends Controller
                     }
                 }
 
-                if (!empty($giftCardIds)) {
-                    foreach ($giftCardIds as $giftCardId) {
-                        PackageGiftCard::create([
-                            'package_id' => $package->id,
-                            'gift_card_id' => $giftCardId,
-                        ]);
-                    }
-                }
-
-                if (!empty($promoIds)) {
-                    foreach ($promoIds as $promoId) {
-                        PackagePromo::create([
-                            'package_id' => $package->id,
-                            'promo_id' => $promoId,
-                        ]);
-                    }
-                }
-
                 if (!empty($availabilitySchedules)) {
                     foreach ($availabilitySchedules as $scheduleData) {
                         if (empty($scheduleData['availability_type']) ||
@@ -891,7 +813,7 @@ class PackageController extends Controller
                     }
                 }
 
-                $package->load(['location', 'attractions', 'addOns', 'rooms', 'giftCards', 'promos', 'availabilitySchedules']);
+                $package->load(['location', 'attractions', 'addOns', 'rooms', 'availabilitySchedules']);
                 $importedPackages[] = new PackageResource($package);
 
             } catch (\Exception $e) {

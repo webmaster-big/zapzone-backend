@@ -14,11 +14,13 @@ use App\Models\Event;
 use App\Models\EmailNotification;
 use App\Models\Notification;
 use App\Models\Membership;
+use App\Services\DiscountService;
 use App\Services\MembershipBenefitService;
 use App\Services\EmailNotificationService;
 use App\Services\GmailApiService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
@@ -127,7 +129,7 @@ class EventPurchaseController extends Controller
         }
     }
 
-    public function store(Request $request): JsonResponse
+    public function store(Request $request, DiscountService $discounts): JsonResponse
     {
         try {
             $validated = $request->validate([
@@ -157,6 +159,11 @@ class EventPurchaseController extends Controller
                 'applied_discounts.*.discount_type' => ['required_with:applied_discounts', Rule::in(['fixed', 'percentage'])],
                 'applied_discounts.*.original_price' => 'required_with:applied_discounts|numeric|min:0',
                 'applied_discounts.*.special_pricing_id' => 'nullable|integer',
+                'applied_discounts.*.source' => 'nullable|string',
+                'promo_id' => 'nullable|exists:promos,id',
+                'gift_card_id' => 'nullable|exists:gift_cards,id',
+                'promo_code' => 'nullable|string',
+                'gift_card_code' => 'nullable|string',
                 'amount_paid' => 'nullable|numeric|min:0',
                 'discount_amount' => 'nullable|numeric|min:0',
                 'payment_method' => 'nullable|in:card,in-store,paylater,authorize.net',
@@ -224,30 +231,56 @@ class EventPurchaseController extends Controller
                 $validated['payment_method'] = 'paylater';
             }
 
-            if (in_array($validated['payment_method'], ['in-store', 'card'])) {
-                $validated['status'] = 'confirmed';
-                $validated['payment_status'] = ($validated['amount_paid'] ?? 0) >= ($validated['total_amount'] ?? 0) ? 'paid' : 'partial';
-            } else {
-                $validated['status'] = 'pending';
-                $validated['payment_status'] = 'pending';
-            }
-
             $addOns = $validated['add_ons'] ?? [];
             $sendEmail = $validated['send_email'] ?? true;
             $smsConsent = $validated['sms_consent'] ?? false;
             unset($validated['add_ons'], $validated['send_email'], $validated['sms_consent']);
 
-            // Derive membership_discount from applied_discounts entries
-            if (! empty($validated['applied_discounts'])) {
-                $membershipDiscount = collect($validated['applied_discounts'])
-                    ->filter(fn($d) => str_starts_with($d['discount_name'] ?? '', 'Member Savings'))
-                    ->sum('discount_amount');
-                if ($membershipDiscount > 0) {
-                    $validated['membership_discount'] = $membershipDiscount;
-                }
-            }
+            $purchase = DB::transaction(function () use (&$validated, $discounts, $request) {
+                $hasCode = !empty($validated['promo_id']) || !empty($validated['gift_card_id'])
+                    || !empty($validated['promo_code']) || !empty($validated['gift_card_code']);
 
-            $purchase = EventPurchase::create($validated);
+                if ($hasCode) {
+                    $discountResult = $discounts->applyToCheckout([
+                        'promo_id' => $validated['promo_id'] ?? null,
+                        'gift_card_id' => $validated['gift_card_id'] ?? null,
+                        'promo_code' => $validated['promo_code'] ?? null,
+                        'gift_card_code' => $validated['gift_card_code'] ?? null,
+                        'location_id' => $validated['location_id'] ?? null,
+                        'customer_id' => $validated['customer_id'] ?? null,
+                        'subtotal' => (float) ($validated['total_amount'] ?? 0),
+                        'items' => [['type' => 'event', 'id' => (int) $validated['event_id']]],
+                        'tracking_prefix' => 'srv:event_purchase:' . ($validated['reference_number'] ?? ''),
+                    ], $request);
+
+                    if ($discountResult['discount_amount'] > 0) {
+                        $validated['total_amount'] = max(0, round(((float) ($validated['total_amount'] ?? 0)) - $discountResult['discount_amount'], 2));
+                        $validated['discount_amount'] = round(((float) ($validated['discount_amount'] ?? 0)) + $discountResult['discount_amount'], 2);
+                        $validated['applied_discounts'] = array_merge($validated['applied_discounts'] ?? [], $discountResult['applied_discounts']);
+                        $validated['promo_id'] = $discountResult['promo_id'] ?? ($validated['promo_id'] ?? null);
+                        $validated['gift_card_id'] = $discountResult['gift_card_id'] ?? ($validated['gift_card_id'] ?? null);
+                    }
+                }
+
+                if (in_array($validated['payment_method'], ['in-store', 'card'])) {
+                    $validated['status'] = 'confirmed';
+                    $validated['payment_status'] = ($validated['amount_paid'] ?? 0) >= ($validated['total_amount'] ?? 0) ? 'paid' : 'partial';
+                } else {
+                    $validated['status'] = 'pending';
+                    $validated['payment_status'] = 'pending';
+                }
+
+                if (!empty($validated['applied_discounts'])) {
+                    $membershipDiscount = collect($validated['applied_discounts'])
+                        ->filter(fn($d) => str_starts_with($d['discount_name'] ?? '', 'Member Savings'))
+                        ->sum('discount_amount');
+                    if ($membershipDiscount > 0) {
+                        $validated['membership_discount'] = $membershipDiscount;
+                    }
+                }
+
+                return EventPurchase::create($validated);
+            });
 
             if (!empty($addOns)) {
                 foreach ($addOns as $addOn) {

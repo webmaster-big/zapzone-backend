@@ -42,8 +42,6 @@ class PackageResource extends JsonResource
             'attractions' => $this->whenLoaded('attractions'),
             'add_ons' => $this->whenLoaded('addOns'),
             'rooms' => $this->whenLoaded('rooms'),
-            'gift_cards' => $this->whenLoaded('giftCards'),
-            'promos' => $this->whenLoaded('promos'),
             'availability_schedules' => $this->whenLoaded('availabilitySchedules'),
             'bookings_count' => $this->when($this->relationLoaded('bookings'), function () {
                 return $this->bookings->count();

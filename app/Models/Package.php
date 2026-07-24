@@ -79,16 +79,6 @@ class Package extends Model
         return $this->belongsToMany(Room::class, 'package_rooms');
     }
 
-    public function giftCards(): BelongsToMany
-    {
-        return $this->belongsToMany(GiftCard::class, 'package_gift_cards');
-    }
-
-    public function promos(): BelongsToMany
-    {
-        return $this->belongsToMany(Promo::class, 'package_promos');
-    }
-
     public function bookings(): HasMany
     {
         return $this->hasMany(Booking::class);

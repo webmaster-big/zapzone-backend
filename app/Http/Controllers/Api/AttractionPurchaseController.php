@@ -17,11 +17,13 @@ use App\Models\CustomerNotification;
 use App\Models\Notification;
 use App\Models\User;
 use App\Models\Membership;
+use App\Services\DiscountService;
 use App\Services\MembershipBenefitService;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Validation\Rule;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class AttractionPurchaseController extends Controller
@@ -233,7 +235,7 @@ class AttractionPurchaseController extends Controller
         ]);
     }
 
-    public function store(Request $request): JsonResponse
+    public function store(Request $request, DiscountService $discounts): JsonResponse
     {
         $validated = $request->validate([
             'attraction_id' => 'required|exists:attractions,id',
@@ -268,6 +270,11 @@ class AttractionPurchaseController extends Controller
             'applied_discounts.*.discount_type' => ['required_with:applied_discounts', Rule::in(['fixed', 'percentage'])],
             'applied_discounts.*.original_price' => 'required_with:applied_discounts|numeric|min:0',
             'applied_discounts.*.special_pricing_id' => 'nullable|integer',
+            'applied_discounts.*.source' => 'nullable|string',
+            'promo_id' => 'nullable|exists:promos,id',
+            'gift_card_id' => 'nullable|exists:gift_cards,id',
+            'promo_code' => 'nullable|string',
+            'gift_card_code' => 'nullable|string',
             'payment_method' => ['nullable', Rule::in(['card', 'in-store', 'paylater', 'authorize.net'])],
             'purchase_date' => 'required|date',
             'scheduled_date' => 'nullable|date',
@@ -320,17 +327,45 @@ class AttractionPurchaseController extends Controller
 
         $validated['created_by'] = auth()->id() ?? null;
 
-        // Derive membership_discount from applied_discounts entries
-        if (! empty($validated['applied_discounts'])) {
-            $membershipDiscount = collect($validated['applied_discounts'])
-                ->filter(fn($d) => str_starts_with($d['discount_name'] ?? '', 'Member Savings'))
-                ->sum('discount_amount');
-            if ($membershipDiscount > 0) {
-                $validated['membership_discount'] = $membershipDiscount;
-            }
-        }
+        $attractionLocationId = Attraction::find($validated['attraction_id'])?->location_id;
 
-        $purchase = AttractionPurchase::create($validated);
+        $purchase = DB::transaction(function () use (&$validated, $discounts, $request, $attractionLocationId) {
+            $hasCode = !empty($validated['promo_id']) || !empty($validated['gift_card_id'])
+                || !empty($validated['promo_code']) || !empty($validated['gift_card_code']);
+
+            if ($hasCode) {
+                $discountResult = $discounts->applyToCheckout([
+                    'promo_id' => $validated['promo_id'] ?? null,
+                    'gift_card_id' => $validated['gift_card_id'] ?? null,
+                    'promo_code' => $validated['promo_code'] ?? null,
+                    'gift_card_code' => $validated['gift_card_code'] ?? null,
+                    'location_id' => $attractionLocationId,
+                    'customer_id' => $validated['customer_id'] ?? null,
+                    'subtotal' => (float) ($validated['total_amount'] ?? 0),
+                    'items' => [['type' => 'attraction', 'id' => (int) $validated['attraction_id']]],
+                    'tracking_prefix' => 'srv:attraction_purchase:' . uniqid(),
+                ], $request);
+
+                if ($discountResult['discount_amount'] > 0) {
+                    $validated['total_amount'] = max(0, round(((float) ($validated['total_amount'] ?? 0)) - $discountResult['discount_amount'], 2));
+                    $validated['discount_amount'] = round(((float) ($validated['discount_amount'] ?? 0)) + $discountResult['discount_amount'], 2);
+                    $validated['applied_discounts'] = array_merge($validated['applied_discounts'] ?? [], $discountResult['applied_discounts']);
+                    $validated['promo_id'] = $discountResult['promo_id'] ?? ($validated['promo_id'] ?? null);
+                    $validated['gift_card_id'] = $discountResult['gift_card_id'] ?? ($validated['gift_card_id'] ?? null);
+                }
+            }
+
+            if (!empty($validated['applied_discounts'])) {
+                $membershipDiscount = collect($validated['applied_discounts'])
+                    ->filter(fn($d) => str_starts_with($d['discount_name'] ?? '', 'Member Savings'))
+                    ->sum('discount_amount');
+                if ($membershipDiscount > 0) {
+                    $validated['membership_discount'] = $membershipDiscount;
+                }
+            }
+
+            return AttractionPurchase::create($validated);
+        });
 
         if (isset($validated['additional_addons']) && is_array($validated['additional_addons'])) {
             foreach ($validated['additional_addons'] as $addon) {

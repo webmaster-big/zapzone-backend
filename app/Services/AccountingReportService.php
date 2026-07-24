@@ -35,12 +35,98 @@ class AccountingReportService
 
         $summaryCategories = array_filter($categories, fn($cat) => $cat['name'] !== self::CATEGORY_ADDONS);
         $summary = $this->calculateOverallSummary($summaryCategories);
+        $summary['discount_by_source'] = $this->getDiscountBySource($locationId, $startDate, $endDate, $viewMode, $filters);
 
         return [
             'summary' => $summary,
             'categories' => $categories,
             'note' => 'Add-ons are shown for visibility but their revenue is already included in Parties/Attractions/Events totals.',
         ];
+    }
+
+    private function getDiscountBySource(int $locationId, Carbon $startDate, Carbon $endDate, string $viewMode, array $filters = []): array
+    {
+        $totals = ['special_pricing' => 0.0, 'membership' => 0.0, 'promo' => 0.0, 'gift_card' => 0.0, 'other' => 0.0];
+
+        $bookings = DB::table('bookings')
+            ->where('location_id', $locationId)
+            ->whereNotIn('status', ['cancelled'])
+            ->whereNull('deleted_at')
+            ->when(
+                $viewMode === 'booked_on',
+                fn($q) => $q->whereDate('created_at', '>=', $startDate->toDateString())->whereDate('created_at', '<=', $endDate->toDateString()),
+                fn($q) => $q->whereDate('booking_date', '>=', $startDate->toDateString())->whereDate('booking_date', '<=', $endDate->toDateString())
+            )
+            ->select('discount_amount', 'applied_discounts')
+            ->get();
+        $this->accumulateDiscountSources($bookings, $totals);
+
+        $attractionPurchases = DB::table('attraction_purchases')
+            ->join('attractions', 'attraction_purchases.attraction_id', '=', 'attractions.id')
+            ->where('attractions.location_id', $locationId)
+            ->whereNotIn('attraction_purchases.status', ['cancelled', 'refunded'])
+            ->whereNull('attraction_purchases.deleted_at')
+            ->when(
+                $viewMode === 'booked_on',
+                fn($q) => $q->whereDate('attraction_purchases.created_at', '>=', $startDate->toDateString())->whereDate('attraction_purchases.created_at', '<=', $endDate->toDateString()),
+                fn($q) => $q->whereRaw('DATE(COALESCE(attraction_purchases.scheduled_date, attraction_purchases.purchase_date)) BETWEEN ? AND ?', [$startDate->toDateString(), $endDate->toDateString()])
+            )
+            ->select('attraction_purchases.discount_amount', 'attraction_purchases.applied_discounts')
+            ->get();
+        $this->accumulateDiscountSources($attractionPurchases, $totals);
+
+        $eventPurchases = DB::table('event_purchases')
+            ->where('location_id', $locationId)
+            ->whereNotIn('status', ['cancelled', 'refunded'])
+            ->whereNull('deleted_at')
+            ->when(
+                $viewMode === 'booked_on',
+                fn($q) => $q->whereDate('created_at', '>=', $startDate->toDateString())->whereDate('created_at', '<=', $endDate->toDateString()),
+                fn($q) => $q->whereDate('purchase_date', '>=', $startDate->toDateString())->whereDate('purchase_date', '<=', $endDate->toDateString())
+            )
+            ->select('discount_amount', 'applied_discounts')
+            ->get();
+        $this->accumulateDiscountSources($eventPurchases, $totals);
+
+        return array_map(fn($v) => round($v, 2), $totals);
+    }
+
+    private function accumulateDiscountSources($records, array &$totals): void
+    {
+        foreach ($records as $record) {
+            $entries = $this->ensureArray($record->applied_discounts ?? null);
+            $recordDiscount = (float) ($record->discount_amount ?? 0);
+
+            if (empty($entries)) {
+                if ($recordDiscount > 0) {
+                    $totals['other'] += $recordDiscount;
+                }
+                continue;
+            }
+
+            foreach ($entries as $entry) {
+                $amount = (float) ($entry['discount_amount'] ?? 0);
+                if ($amount <= 0) {
+                    continue;
+                }
+                $totals[$this->resolveDiscountSource($entry)] += $amount;
+            }
+        }
+    }
+
+    private function resolveDiscountSource(array $entry): string
+    {
+        $source = $entry['source'] ?? null;
+        if (in_array($source, ['special_pricing', 'membership', 'promo', 'gift_card'], true)) {
+            return $source;
+        }
+        if (!empty($entry['special_pricing_id'])) {
+            return 'special_pricing';
+        }
+        if (str_starts_with($entry['discount_name'] ?? '', 'Member Savings')) {
+            return 'membership';
+        }
+        return 'other';
     }
 
     public function buildDailyReportVariables(Carbon $date, string $companyName, ?int $companyId = null): array
@@ -52,6 +138,7 @@ class AccountingReportService
         ];
 
         $grand = array_fill_keys($summaryKeys, 0);
+        $discountBySource = ['special_pricing' => 0, 'membership' => 0, 'promo' => 0, 'gift_card' => 0, 'other' => 0];
         $categoryTotals = [
             self::CATEGORY_PARTIES => ['gross_sales' => 0, 'net_sales' => 0, 'grand_total' => 0],
             self::CATEGORY_ATTRACTIONS => ['gross_sales' => 0, 'net_sales' => 0, 'grand_total' => 0],
@@ -72,6 +159,12 @@ class AccountingReportService
 
             foreach ($summaryKeys as $key) {
                 $grand[$key] += $summary[$key] ?? 0;
+            }
+
+            foreach (($summary['discount_by_source'] ?? []) as $sourceKey => $sourceValue) {
+                if (isset($discountBySource[$sourceKey])) {
+                    $discountBySource[$sourceKey] += $sourceValue;
+                }
             }
 
             foreach ($report['categories'] as $category) {
@@ -114,6 +207,8 @@ class AccountingReportService
             'items_sold' => number_format($grand['quantity_sold']),
             'gross_sales' => $this->reportMoney($grand['gross_sales']),
             'discount_total' => $this->reportMoney($grand['discount_amount']),
+            'promo_discount_total' => $this->reportMoney($discountBySource['promo']),
+            'gift_card_discount_total' => $this->reportMoney($discountBySource['gift_card']),
             'net_sales' => $this->reportMoney($grand['net_sales']),
             'tax_total' => $this->reportMoney($grand['tax_amount']),
             'fee_total' => $this->reportMoney($grand['fee_amount']),

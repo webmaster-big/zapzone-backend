@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\PageView;
+use App\Models\GiftCard;
 use App\Models\Promo;
 use App\Services\PageAnalyticsRecorder;
 use Carbon\Carbon;
@@ -515,6 +516,32 @@ class PageAnalyticsController extends Controller
             $p = $promos[$r->entity_id] ?? null;
             $r->code = $p?->code;
             $r->name = $p?->name;
+        }
+
+        return response()->json(['success' => true, 'data' => $rows]);
+    }
+
+    public function giftCardPerformance(Request $request): JsonResponse
+    {
+        $limit = (int) $request->get('limit', 20);
+
+        $rows = $this->scopedQuery($request)
+            ->where('entity_type', 'gift_card')
+            ->whereNotNull('entity_id')
+            ->select('entity_id')
+            ->selectRaw("SUM(event_name = 'gift_card_redeemed') as redemptions")
+            ->selectRaw("COALESCE(SUM(CASE WHEN event_name='gift_card_redeemed' THEN conversion_value ELSE 0 END),0) as amount_redeemed")
+            ->groupBy('entity_id')
+            ->orderByDesc('amount_redeemed')
+            ->limit($limit)
+            ->get();
+
+        $giftCards = GiftCard::whereIn('id', $rows->pluck('entity_id'))->get()->keyBy('id');
+        foreach ($rows as $r) {
+            $g = $giftCards[$r->entity_id] ?? null;
+            $r->code = $g?->code;
+            $r->balance = $g?->balance;
+            $r->initial_value = $g?->initial_value;
         }
 
         return response()->json(['success' => true, 'data' => $rows]);

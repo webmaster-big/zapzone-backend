@@ -44,6 +44,8 @@ class AttractionPurchase extends Model
         'applied_fees',
         'discount_amount',
         'applied_discounts',
+        'promo_id',
+        'gift_card_id',
         'amount_paid',
         'payment_method',
         'status',

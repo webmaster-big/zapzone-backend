@@ -7,7 +7,8 @@ use App\Http\Traits\RecordsPageAnalytics;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Models\GiftCard;
 use App\Models\ActivityLog;
-use App\Models\CustomerNotification;
+use App\Models\Location;
+use App\Services\DiscountService;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Str;
@@ -20,19 +21,35 @@ class GiftCardController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        $query = GiftCard::with(['creator', 'packages', 'customers', 'location']);
+        $query = GiftCard::with(['creator', 'customers', 'location']);
 
         $authUser = $this->resolveAuthUser($request);
         if ($authUser) {
             if (in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
-                $query->where('location_id', $authUser->location_id);
+                $locationId = $authUser->location_id;
+                $query->where(function ($q) use ($locationId) {
+                    $q->whereNull('location_ids')
+                      ->orWhereJsonContains('location_ids', (int) $locationId)
+                      ->orWhereJsonContains('location_ids', (string) $locationId)
+                      ->orWhere('location_id', $locationId);
+                });
             } elseif ($authUser->company_id) {
-                $query->whereHas('location', fn($q) => $q->where('company_id', $authUser->company_id));
+                $companyId = $authUser->company_id;
+                $companyLocationIds = Location::where('company_id', $companyId)->pluck('id')->all();
+                $query->where(function ($q) use ($companyId, $companyLocationIds) {
+                    $q->whereNull('location_ids')
+                      ->orWhereHas('creator', fn($u) => $u->where('company_id', $companyId))
+                      ->orWhereHas('location', fn($l) => $l->where('company_id', $companyId));
+                    foreach ($companyLocationIds as $locationId) {
+                        $q->orWhereJsonContains('location_ids', (int) $locationId)
+                          ->orWhereJsonContains('location_ids', (string) $locationId);
+                    }
+                });
             }
         }
 
         if ($request->has('location_id')) {
-            $query->byLocation($request->location_id);
+            $query->forLocation($request->location_id);
         }
 
         if ($request->has('status')) {
@@ -103,7 +120,27 @@ class GiftCardController extends Controller
             'expiry_date' => 'nullable|date|after:today',
             'created_by' => 'required|exists:users,id',
             'location_id' => 'nullable|exists:locations,id',
+            'location_ids' => 'nullable|array',
+            'location_ids.*' => 'integer|exists:locations,id',
+            'package_ids' => 'nullable|array',
+            'package_ids.*' => 'integer|exists:packages,id',
+            'attraction_ids' => 'nullable|array',
+            'attraction_ids.*' => 'integer|exists:attractions,id',
+            'event_ids' => 'nullable|array',
+            'event_ids.*' => 'integer|exists:events,id',
         ]);
+
+        foreach (['location_ids', 'package_ids', 'attraction_ids', 'event_ids'] as $field) {
+            if (array_key_exists($field, $validated)) {
+                $validated[$field] = GiftCard::normalizeIds($validated[$field]);
+            }
+        }
+
+        if (!empty($validated['location_ids'])) {
+            $validated['location_id'] = $validated['location_ids'][0];
+        } elseif (!empty($validated['location_id'])) {
+            $validated['location_ids'] = [(int) $validated['location_id']];
+        }
 
         if (!isset($validated['code'])) {
             do {
@@ -114,7 +151,7 @@ class GiftCardController extends Controller
         $validated['balance'] = $validated['initial_value'];
 
         $giftCard = GiftCard::create($validated);
-        $giftCard->load(['creator', 'packages', 'location']);
+        $giftCard->load(['creator', 'location']);
 
         return response()->json([
             'success' => true,
@@ -125,7 +162,7 @@ class GiftCardController extends Controller
 
     public function show(GiftCard $giftCard): JsonResponse
     {
-        $giftCard->load(['creator', 'packages', 'customers', 'location']);
+        $giftCard->load(['creator', 'customers', 'location']);
 
         return response()->json([
             'success' => true,
@@ -145,10 +182,30 @@ class GiftCardController extends Controller
             'status' => ['sometimes', Rule::in(['active', 'inactive', 'expired', 'redeemed', 'cancelled'])],
             'expiry_date' => 'sometimes|nullable|date',
             'location_id' => 'nullable|exists:locations,id',
+            'location_ids' => 'sometimes|nullable|array',
+            'location_ids.*' => 'integer|exists:locations,id',
+            'package_ids' => 'sometimes|nullable|array',
+            'package_ids.*' => 'integer|exists:packages,id',
+            'attraction_ids' => 'sometimes|nullable|array',
+            'attraction_ids.*' => 'integer|exists:attractions,id',
+            'event_ids' => 'sometimes|nullable|array',
+            'event_ids.*' => 'integer|exists:events,id',
         ]);
 
+        foreach (['location_ids', 'package_ids', 'attraction_ids', 'event_ids'] as $field) {
+            if (array_key_exists($field, $validated)) {
+                $validated[$field] = GiftCard::normalizeIds($validated[$field]);
+            }
+        }
+
+        if (array_key_exists('location_ids', $validated)) {
+            $validated['location_id'] = !empty($validated['location_ids']) ? $validated['location_ids'][0] : null;
+        } elseif (!empty($validated['location_id'])) {
+            $validated['location_ids'] = [(int) $validated['location_id']];
+        }
+
         $giftCard->update($validated);
-        $giftCard->load(['creator', 'packages', 'location']);
+        $giftCard->load(['creator', 'location']);
 
         $currentUser = auth()->user();
         ActivityLog::log(
@@ -221,35 +278,47 @@ class GiftCardController extends Controller
         ]);
     }
 
-    public function validateByCode(Request $request): JsonResponse
+    public function validateByCode(Request $request, DiscountService $discounts): JsonResponse
     {
         $request->validate([
             'code' => 'required|string',
+            'location_id' => 'nullable|integer',
+            'subtotal' => 'nullable|numeric|min:0',
+            'items' => 'nullable|array',
+            'items.*.type' => 'required_with:items|string',
+            'items.*.id' => 'required_with:items|integer',
         ]);
 
-        $giftCard = GiftCard::byCode($request->code)->first();
+        $result = $discounts->validateGiftCard($request->code, $this->buildContext($request));
 
-        if (!$giftCard) {
+        if (!$result['valid']) {
             return response()->json([
                 'success' => false,
-                'message' => 'Gift card not found',
-            ], 404);
+                'message' => $result['reason'],
+                'data' => [
+                    'is_valid' => false,
+                    'gift_card' => $result['gift_card'] ?? null,
+                ],
+            ]);
         }
 
-        $isValid = $giftCard->isValid();
+        $giftCard = $result['gift_card'];
 
         return response()->json([
             'success' => true,
             'data' => [
+                'is_valid' => true,
                 'gift_card' => $giftCard,
-                'is_valid' => $isValid,
-                'balance' => $giftCard->balance,
+                'balance' => $result['balance'],
+                'discount_amount' => $result['discount_amount'],
+                'eligible_subtotal' => $result['eligible_subtotal'],
+                'applied_discount' => $result['entry'],
                 'expired' => $giftCard->isExpired(),
             ],
         ]);
     }
 
-    public function redeem(Request $request, GiftCard $giftCard): JsonResponse
+    public function redeem(Request $request, GiftCard $giftCard, DiscountService $discounts): JsonResponse
     {
         $validated = $request->validate([
             'amount' => 'required|numeric|min:0.01',
@@ -270,81 +339,32 @@ class GiftCardController extends Controller
             ], 400);
         }
 
-        $newBalance = $giftCard->balance - $validated['amount'];
-        $giftCard->update([
-            'balance' => $newBalance,
-            'status' => $newBalance <= 0 ? 'redeemed' : 'active',
-        ]);
-
-        if (isset($validated['customer_id'])) {
-            CustomerNotification::create([
-                'customer_id' => $validated['customer_id'],
-                'location_id' => $giftCard->location_id,
-                'type' => 'gift_card',
-                'priority' => 'medium',
-                'title' => 'Gift Card Redeemed',
-                'message' => "You have redeemed $" . number_format($validated['amount'], 2) . " from your gift card. Remaining balance: $" . number_format($newBalance, 2),
-                'status' => 'unread',
-                'action_url' => "/gift-cards/{$giftCard->id}",
-                'action_text' => 'View Gift Card',
-                'metadata' => [
-                    'gift_card_id' => $giftCard->id,
-                    'gift_card_code' => $giftCard->code,
-                    'redeemed_amount' => $validated['amount'],
-                    'remaining_balance' => $newBalance,
-                ],
-            ]);
-        }
-
-        $currentUser = auth()->user();
-        ActivityLog::log(
-            action: 'Gift Card Redeemed',
-            category: 'update',
-            description: "Gift card {$giftCard->code} redeemed for $" . number_format($validated['amount'], 2),
-            userId: auth()->id(),
-            locationId: $giftCard->location_id,
-            entityType: 'gift_card',
-            entityId: $giftCard->id,
-            metadata: [
-                'redeemed_by' => [
-                    'user_id' => auth()->id(),
-                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
-                    'email' => $currentUser?->email,
-                ],
-                'redeemed_at' => now()->toIso8601String(),
-                'gift_card_details' => [
-                    'gift_card_id' => $giftCard->id,
-                    'code' => $giftCard->code,
-                ],
-                'redemption_details' => [
-                    'customer_id' => $validated['customer_id'] ?? null,
-                    'amount_redeemed' => $validated['amount'],
-                    'previous_balance' => $giftCard->balance + $validated['amount'],
-                    'remaining_balance' => $newBalance,
-                ],
-            ]
-        );
-
-        $this->pageAnalyticsRecorder()->recordConversion(
-            'gift_card_redeemed',
+        $redeemed = $discounts->redeemGiftCard(
             $giftCard,
             (float) $validated['amount'],
-            request(),
-            [
-                'event_type' => 'engagement',
-                'metadata'   => ['remaining_balance' => $newBalance],
-            ]
+            $validated['customer_id'] ?? null,
+            $request
         );
 
         return response()->json([
             'success' => true,
             'message' => 'Gift card redeemed successfully',
             'data' => [
-                'redeemed_amount' => $validated['amount'],
-                'remaining_balance' => $newBalance,
-                'gift_card' => $giftCard,
+                'redeemed_amount' => $redeemed,
+                'remaining_balance' => $giftCard->fresh()->balance,
+                'gift_card' => $giftCard->fresh(),
             ],
         ]);
+    }
+
+    private function buildContext(Request $request): array
+    {
+        return [
+            'location_id' => $request->input('location_id'),
+            'subtotal' => (float) $request->input('subtotal', 0),
+            'items' => $request->input('items', []),
+            'customer_id' => $request->input('customer_id'),
+        ];
     }
 
     public function deactivate(GiftCard $giftCard): JsonResponse
