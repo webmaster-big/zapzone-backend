@@ -46,6 +46,7 @@ use App\Http\Controllers\Api\SpecialPricingController;
 use App\Http\Controllers\Api\ShareableTokenController;
 use App\Http\Controllers\Api\MobileAvailabilityController;
 use App\Http\Controllers\Api\MobilePackageController;
+use App\Http\Controllers\Api\MobileVersionController;
 use App\Http\Controllers\Api\StreamController;
 use App\Http\Controllers\Api\StripeController;
 use App\Http\Controllers\Api\UserController;
@@ -232,6 +233,7 @@ Route::get('google-calendar/callback', [GoogleCalendarController::class, 'handle
 
 //ignore
 Route::prefix('mobile')->group(function () {
+    Route::get('version', [MobileVersionController::class, 'index']);
     Route::get('locations', [MobileAvailabilityController::class, 'getLocations']);
     Route::get('locations/{locationId}/packages', [MobileAvailabilityController::class, 'getPackagesByLocationAndDate']);
     Route::get('packages/{packageId}/availability', [MobileAvailabilityController::class, 'getPackageAvailability']);
