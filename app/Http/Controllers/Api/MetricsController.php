@@ -53,6 +53,13 @@ class MetricsController extends Controller
 
         if ($dateFrom || $dateTo) {
             $timeframe = 'custom';
+            if ($dateFrom) {
+                $dateFrom = \Carbon\Carbon::parse($dateFrom, $timezone)->startOfDay()->setTimezone(config('app.timezone'));
+            }
+            if ($dateTo) {
+                $dateTo = \Carbon\Carbon::parse($dateTo, $timezone)->endOfDay()->setTimezone(config('app.timezone'));
+            }
+            $useDateTime = true;
         } else {
             switch ($timeframe) {
                 case 'today':
@@ -639,6 +646,13 @@ class MetricsController extends Controller
 
             if ($dateFrom || $dateTo) {
                 $timeframe = 'custom';
+                if ($dateFrom) {
+                    $dateFrom = \Carbon\Carbon::parse($dateFrom, $timezone)->startOfDay()->setTimezone(config('app.timezone'));
+                }
+                if ($dateTo) {
+                    $dateTo = \Carbon\Carbon::parse($dateTo, $timezone)->endOfDay()->setTimezone(config('app.timezone'));
+                }
+                $useDateTime = true;
             } else {
                 switch ($timeframe) {
                     case 'today':

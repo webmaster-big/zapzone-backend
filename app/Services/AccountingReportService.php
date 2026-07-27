@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\Location;
 use App\Models\Payment;
+use App\Support\DateRange;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 
@@ -54,7 +55,7 @@ class AccountingReportService
             ->whereNull('deleted_at')
             ->when(
                 $viewMode === 'booked_on',
-                fn($q) => $q->whereDate('created_at', '>=', $startDate->toDateString())->whereDate('created_at', '<=', $endDate->toDateString()),
+                fn($q) => $q->where('created_at', '>=', DateRange::startOfDay($startDate->toDateString()))->where('created_at', '<=', DateRange::endOfDay($endDate->toDateString())),
                 fn($q) => $q->whereDate('booking_date', '>=', $startDate->toDateString())->whereDate('booking_date', '<=', $endDate->toDateString())
             )
             ->select('discount_amount', 'applied_discounts')
@@ -68,7 +69,7 @@ class AccountingReportService
             ->whereNull('attraction_purchases.deleted_at')
             ->when(
                 $viewMode === 'booked_on',
-                fn($q) => $q->whereDate('attraction_purchases.created_at', '>=', $startDate->toDateString())->whereDate('attraction_purchases.created_at', '<=', $endDate->toDateString()),
+                fn($q) => $q->where('attraction_purchases.created_at', '>=', DateRange::startOfDay($startDate->toDateString()))->where('attraction_purchases.created_at', '<=', DateRange::endOfDay($endDate->toDateString())),
                 fn($q) => $q->whereRaw('DATE(COALESCE(attraction_purchases.scheduled_date, attraction_purchases.purchase_date)) BETWEEN ? AND ?', [$startDate->toDateString(), $endDate->toDateString()])
             )
             ->select('attraction_purchases.discount_amount', 'attraction_purchases.applied_discounts')
@@ -81,7 +82,7 @@ class AccountingReportService
             ->whereNull('deleted_at')
             ->when(
                 $viewMode === 'booked_on',
-                fn($q) => $q->whereDate('created_at', '>=', $startDate->toDateString())->whereDate('created_at', '<=', $endDate->toDateString()),
+                fn($q) => $q->where('created_at', '>=', DateRange::startOfDay($startDate->toDateString()))->where('created_at', '<=', DateRange::endOfDay($endDate->toDateString())),
                 fn($q) => $q->whereDate('purchase_date', '>=', $startDate->toDateString())->whereDate('purchase_date', '<=', $endDate->toDateString())
             )
             ->select('discount_amount', 'applied_discounts')
@@ -253,8 +254,8 @@ class AccountingReportService
             ->whereNull('bookings.deleted_at');
 
         if ($viewMode === 'booked_on') {
-            $query->whereDate('bookings.created_at', '>=', $startDate->toDateString())
-                  ->whereDate('bookings.created_at', '<=', $endDate->toDateString());
+            $query->where('bookings.created_at', '>=', DateRange::startOfDay($startDate->toDateString()))
+                  ->where('bookings.created_at', '<=', DateRange::endOfDay($endDate->toDateString()));
         } else {
             $query->whereDate('bookings.booking_date', '>=', $startDate->toDateString())
                   ->whereDate('bookings.booking_date', '<=', $endDate->toDateString());
@@ -312,8 +313,8 @@ class AccountingReportService
             ->whereNull('attraction_purchases.deleted_at');
 
         if ($viewMode === 'booked_on') {
-            $query->whereDate('attraction_purchases.created_at', '>=', $startDate->toDateString())
-                  ->whereDate('attraction_purchases.created_at', '<=', $endDate->toDateString());
+            $query->where('attraction_purchases.created_at', '>=', DateRange::startOfDay($startDate->toDateString()))
+                  ->where('attraction_purchases.created_at', '<=', DateRange::endOfDay($endDate->toDateString()));
         } else {
             $query->whereRaw(
                 'DATE(COALESCE(attraction_purchases.scheduled_date, attraction_purchases.purchase_date)) BETWEEN ? AND ?',
@@ -370,8 +371,8 @@ class AccountingReportService
             ->whereNull('event_purchases.deleted_at');
 
         if ($viewMode === 'booked_on') {
-            $query->whereDate('event_purchases.created_at', '>=', $startDate->toDateString())
-                  ->whereDate('event_purchases.created_at', '<=', $endDate->toDateString());
+            $query->where('event_purchases.created_at', '>=', DateRange::startOfDay($startDate->toDateString()))
+                  ->where('event_purchases.created_at', '<=', DateRange::endOfDay($endDate->toDateString()));
         } else {
             $query->whereDate('event_purchases.purchase_date', '>=', $startDate->toDateString())
                   ->whereDate('event_purchases.purchase_date', '<=', $endDate->toDateString());
@@ -427,8 +428,8 @@ class AccountingReportService
             ->whereNotIn('bookings.status', ['cancelled'])
             ->whereNull('bookings.deleted_at')
             ->when($viewMode === 'booked_on', function ($q) use ($startDate, $endDate) {
-                $q->whereDate('bookings.created_at', '>=', $startDate->toDateString())
-                  ->whereDate('bookings.created_at', '<=', $endDate->toDateString());
+                $q->where('bookings.created_at', '>=', DateRange::startOfDay($startDate->toDateString()))
+                  ->where('bookings.created_at', '<=', DateRange::endOfDay($endDate->toDateString()));
             }, function ($q) use ($startDate, $endDate) {
                 $q->whereDate('bookings.booking_date', '>=', $startDate->toDateString())
                   ->whereDate('bookings.booking_date', '<=', $endDate->toDateString());
@@ -466,8 +467,8 @@ class AccountingReportService
             ->whereNull('attraction_purchases.deleted_at');
 
         if ($viewMode === 'booked_on') {
-            $attractionAddOnsQuery->whereDate('attraction_purchases.created_at', '>=', $startDate->toDateString())
-                ->whereDate('attraction_purchases.created_at', '<=', $endDate->toDateString());
+            $attractionAddOnsQuery->where('attraction_purchases.created_at', '>=', DateRange::startOfDay($startDate->toDateString()))
+                ->where('attraction_purchases.created_at', '<=', DateRange::endOfDay($endDate->toDateString()));
         } else {
             $attractionAddOnsQuery->whereRaw(
                 'DATE(COALESCE(attraction_purchases.scheduled_date, attraction_purchases.purchase_date)) BETWEEN ? AND ?',
@@ -507,8 +508,8 @@ class AccountingReportService
             ->whereNotIn('event_purchases.status', ['cancelled', 'refunded'])
             ->whereNull('event_purchases.deleted_at')
             ->when($viewMode === 'booked_on', function ($q) use ($startDate, $endDate) {
-                $q->whereDate('event_purchases.created_at', '>=', $startDate->toDateString())
-                  ->whereDate('event_purchases.created_at', '<=', $endDate->toDateString());
+                $q->where('event_purchases.created_at', '>=', DateRange::startOfDay($startDate->toDateString()))
+                  ->where('event_purchases.created_at', '<=', DateRange::endOfDay($endDate->toDateString()));
             }, function ($q) use ($startDate, $endDate) {
                 $q->whereDate('event_purchases.purchase_date', '>=', $startDate->toDateString())
                   ->whereDate('event_purchases.purchase_date', '<=', $endDate->toDateString());

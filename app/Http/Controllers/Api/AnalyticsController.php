@@ -12,6 +12,7 @@ use App\Models\Attraction;
 use App\Models\Event;
 use App\Models\Location;
 use App\Models\Company;
+use App\Support\DateRange;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
@@ -50,8 +51,8 @@ class AnalyticsController extends Controller
         }
 
         if ($dateRange === 'custom' && $request->filled('start_date') && $request->filled('end_date')) {
-            $startDate = Carbon::parse($request->start_date)->startOfDay();
-            $endDate = Carbon::parse($request->end_date)->endOfDay();
+            $startDate = DateRange::startOfDay($request->start_date);
+            $endDate = DateRange::endOfDay($request->end_date);
         } else {
             $startDate = $this->getStartDate($dateRange);
             $endDate = now();
@@ -139,8 +140,8 @@ class AnalyticsController extends Controller
         }
 
         if ($dateRange === 'custom' && $request->filled('start_date') && $request->filled('end_date')) {
-            $startDate = Carbon::parse($request->start_date)->startOfDay();
-            $endDate = Carbon::parse($request->end_date)->endOfDay();
+            $startDate = DateRange::startOfDay($request->start_date);
+            $endDate = DateRange::endOfDay($request->end_date);
         } else {
             $startDate = $this->getStartDate($dateRange);
             $endDate = now();
@@ -187,6 +188,16 @@ class AnalyticsController extends Controller
             '1y' => now()->subYear(),
             default => now()->subDays(30),
         };
+    }
+
+    private function businessDayWindow($day)
+    {
+        $local = $day->copy()->setTimezone(DateRange::businessTimezone());
+
+        return [
+            $local->copy()->startOfDay()->setTimezone(DateRange::storageTimezone()),
+            $local->copy()->endOfDay()->setTimezone(DateRange::storageTimezone()),
+        ];
     }
 
     private function getKeyMetrics($locationId, $startDate, $endDate)
@@ -886,25 +897,26 @@ class AnalyticsController extends Controller
             $currentDate = $startDate->copy();
 
             while ($currentDate->lte($endDate)) {
+                $dayWindow = $this->businessDayWindow($currentDate);
                 $bookingsRevenue = Booking::whereIn('location_id', $locationIds)
-                    ->whereDate('created_at', $currentDate)
+                    ->whereBetween('created_at', $dayWindow)
                     ->whereNotIn('status', ['cancelled'])
                     ->sum('amount_paid') ?? 0;
 
                 $bookingsCount = Booking::whereIn('location_id', $locationIds)
-                    ->whereDate('created_at', $currentDate)
+                    ->whereBetween('created_at', $dayWindow)
                     ->whereNotIn('status', ['cancelled'])
                     ->count() ?? 0;
 
                 $attractionRevenue = AttractionPurchase::whereHas('attraction', function ($query) use ($locationIds) {
                         $query->whereIn('location_id', $locationIds);
                     })
-                    ->whereDate('created_at', $currentDate)
+                    ->whereBetween('created_at', $dayWindow)
                     ->whereNotIn('status', ['cancelled'])
                     ->sum('amount_paid') ?? 0;
 
                 $eventRevenue = EventPurchase::whereIn('location_id', $locationIds)
-                    ->whereDate('created_at', $currentDate)
+                    ->whereBetween('created_at', $dayWindow)
                     ->whereNotIn('status', ['cancelled', 'refunded'])
                     ->sum('amount_paid') ?? 0;
 
@@ -1049,39 +1061,40 @@ class AnalyticsController extends Controller
 
         $currentDate = $startDate->copy();
         while ($currentDate->lte($endDate)) {
+            $dayWindow = $this->businessDayWindow($currentDate);
             $dayOfWeek = $days[$currentDate->dayOfWeekIso - 1];
 
             $bookingsRevenue = Booking::whereIn('location_id', $locationIds)
-                ->whereDate('created_at', $currentDate)
+                ->whereBetween('created_at', $dayWindow)
                 ->whereNotIn('status', ['cancelled'])
                 ->sum('amount_paid');
 
             $bookingsParticipants = Booking::whereIn('location_id', $locationIds)
-                ->whereDate('created_at', $currentDate)
+                ->whereBetween('created_at', $dayWindow)
                 ->whereNotIn('status', ['cancelled'])
                 ->sum('participants');
 
             $attractionRevenue = AttractionPurchase::whereHas('attraction', function ($query) use ($locationIds) {
                     $query->whereIn('location_id', $locationIds);
                 })
-                ->whereDate('created_at', $currentDate)
+                ->whereBetween('created_at', $dayWindow)
                 ->whereNotIn('status', ['cancelled'])
                 ->sum('amount_paid');
 
             $attractionTickets = AttractionPurchase::whereHas('attraction', function ($query) use ($locationIds) {
                     $query->whereIn('location_id', $locationIds);
                 })
-                ->whereDate('created_at', $currentDate)
+                ->whereBetween('created_at', $dayWindow)
                 ->whereNotIn('status', ['cancelled'])
                 ->sum('quantity');
 
             $eventRevenue = EventPurchase::whereIn('location_id', $locationIds)
-                ->whereDate('created_at', $currentDate)
+                ->whereBetween('created_at', $dayWindow)
                 ->whereNotIn('status', ['cancelled', 'refunded'])
                 ->sum('amount_paid');
 
             $eventTickets = EventPurchase::whereIn('location_id', $locationIds)
-                ->whereDate('created_at', $currentDate)
+                ->whereBetween('created_at', $dayWindow)
                 ->whereNotIn('status', ['cancelled', 'refunded'])
                 ->sum('quantity');
 

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Support\DateRange;
 use App\Mail\DynamicCampaignMail;
 use App\Models\AttractionPurchase;
 use App\Models\Booking;
@@ -352,12 +353,7 @@ class EmailCampaignController extends Controller
             $query->where('location_id', $request->location_id);
         }
 
-        if ($request->has('start_date')) {
-            $query->whereDate('created_at', '>=', $request->start_date);
-        }
-        if ($request->has('end_date')) {
-            $query->whereDate('created_at', '<=', $request->end_date);
-        }
+        DateRange::apply($query, 'created_at', $request->start_date, $request->end_date);
 
         $totalCampaigns = $query->count();
         $totalEmailsSent = $query->sum('sent_count');

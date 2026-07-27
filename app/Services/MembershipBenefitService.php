@@ -6,6 +6,7 @@ use App\Models\Customer;
 use App\Models\Membership;
 use App\Models\MembershipBenefitRedemption;
 use App\Models\MembershipPlanBenefit;
+use App\Support\DateRange;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
@@ -344,7 +345,8 @@ class MembershipBenefitService
 
         switch ($b->period) {
             case 'per_day':
-                $q->whereDate('created_at', Carbon::today());
+                $businessToday = Carbon::now(DateRange::businessTimezone())->toDateString();
+                $q->whereBetween('created_at', [DateRange::startOfDay($businessToday), DateRange::endOfDay($businessToday)]);
                 break;
             case 'per_term':
                 if ($membership->current_term_start) {
@@ -354,7 +356,8 @@ class MembershipBenefitService
             case 'per_visit':
                 // Resets each visit: count only redemptions from the current visit session
                 // (same calendar day + same membership, capped per day like per_day but tracked separately)
-                $q->whereDate('created_at', Carbon::today());
+                $businessToday = Carbon::now(DateRange::businessTimezone())->toDateString();
+                $q->whereBetween('created_at', [DateRange::startOfDay($businessToday), DateRange::endOfDay($businessToday)]);
                 break;
             case 'once':
                 // Lifetime cap — never resets. No extra filter needed; count all-time.

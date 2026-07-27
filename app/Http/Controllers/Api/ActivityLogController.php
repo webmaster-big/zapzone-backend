@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Support\DateRange;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Models\ActivityLog;
 use Illuminate\Http\Request;
@@ -45,23 +46,8 @@ class ActivityLogController extends Controller
             $query->byAction($request->action);
         }
 
-        if ($request->has('date_from')) {
-            $dateFrom = $request->date_from;
-            $query->whereDate('created_at', '>=', $dateFrom);
-        }
-        if ($request->has('date_to')) {
-            $dateTo = $request->date_to;
-            $query->whereDate('created_at', '<=', $dateTo);
-        }
-
-        if ($request->has('start_date')) {
-            $startDate = $request->start_date;
-            $query->whereDate('created_at', '>=', $startDate);
-        }
-        if ($request->has('end_date')) {
-            $endDate = $request->end_date;
-            $query->whereDate('created_at', '<=', $endDate);
-        }
+        DateRange::apply($query, 'created_at', $request->date_from, $request->date_to);
+        DateRange::apply($query, 'created_at', $request->start_date, $request->end_date);
 
         if ($request->has('recent_days')) {
             $query->recent($request->recent_days);

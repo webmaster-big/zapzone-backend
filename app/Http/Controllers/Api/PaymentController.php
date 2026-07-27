@@ -24,6 +24,7 @@ use Illuminate\Validation\Rule;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Barryvdh\DomPDF\Facade\Pdf;
+use App\Support\DateRange;
 use Carbon\Carbon;
 use App\Mail\BookingCancellation;
 use App\Mail\AttractionPurchaseCancellation;
@@ -96,13 +97,7 @@ class PaymentController extends Controller
             $query->where('location_id', $request->location_id);
         }
 
-        if ($request->filled('start_date')) {
-            $query->whereDate('created_at', '>=', $request->start_date);
-        }
-
-        if ($request->filled('end_date')) {
-            $query->whereDate('created_at', '<=', $request->end_date);
-        }
+        DateRange::apply($query, 'created_at', $request->start_date, $request->end_date);
 
         if ($request->filled('search')) {
             $terms = preg_split('/\s+/', trim((string) $request->search), -1, PREG_SPLIT_NO_EMPTY);
@@ -471,13 +466,7 @@ class PaymentController extends Controller
             $query->byMethod($request->method);
         }
 
-        if ($request->filled('start_date')) {
-            $query->whereDate('created_at', '>=', $request->start_date);
-        }
-
-        if ($request->filled('end_date')) {
-            $query->whereDate('created_at', '<=', $request->end_date);
-        }
+        DateRange::apply($query, 'created_at', $request->start_date, $request->end_date);
 
         if ($request->filled('search')) {
             $terms = preg_split('/\s+/', trim((string) $request->search), -1, PREG_SPLIT_NO_EMPTY);
@@ -2884,17 +2873,7 @@ class PaymentController extends Controller
             $query->where('customer_id', $request->customer_id);
         }
 
-        if ($request->has('start_date') && $request->has('end_date')) {
-            $startDate = Carbon::parse($request->start_date)->startOfDay();
-            $endDate = Carbon::parse($request->end_date)->endOfDay();
-            $query->whereBetween('created_at', [$startDate, $endDate]);
-        } elseif ($request->has('start_date')) {
-            $startDate = Carbon::parse($request->start_date)->startOfDay();
-            $query->where('created_at', '>=', $startDate);
-        } elseif ($request->has('end_date')) {
-            $endDate = Carbon::parse($request->end_date)->endOfDay();
-            $query->where('created_at', '<=', $endDate);
-        }
+        DateRange::apply($query, 'created_at', $request->start_date, $request->end_date);
 
         if ($request->has('payment_ids') && is_array($request->payment_ids)) {
             $query->whereIn('id', $request->payment_ids);
@@ -3130,7 +3109,7 @@ class PaymentController extends Controller
 
         if ($request->has('date')) {
             $date = $request->date;
-            $query->whereDate('created_at', $date);
+            DateRange::apply($query, 'created_at', $date, $date);
             $dateRange = ['start' => $date, 'end' => $date];
         }
 
@@ -3418,7 +3397,7 @@ class PaymentController extends Controller
 
         if ($request->has('date')) {
             $date = $request->date;
-            $query->whereDate('created_at', $date);
+            DateRange::apply($query, 'created_at', $date, $date);
             $dateRange = ['start' => $date, 'end' => $date];
         }
 
