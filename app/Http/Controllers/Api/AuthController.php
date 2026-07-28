@@ -10,6 +10,7 @@ use Illuminate\Http\Request;
 use Illuminate\Routing\Controller as RoutingController;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
+use Laravel\Sanctum\PersonalAccessToken;
 
 class AuthController extends RoutingController
 {
@@ -194,7 +195,12 @@ class AuthController extends RoutingController
             );
         }
 
-        $request->user()->tokens()->delete();
+        $token = $user?->currentAccessToken();
+
+        if ($token instanceof PersonalAccessToken) {
+            $token->delete();
+        }
+
         return response()->json([
             'message' => 'Logout successful.',
         ]);
