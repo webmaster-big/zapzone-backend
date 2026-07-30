@@ -353,11 +353,14 @@ class BookingController extends Controller
         $bookingDate = Carbon::parse($validated['booking_date'])->toDateString();
         $bookingTime = $validated['booking_time'];
         $bookingLocationId = (int) $validated['location_id'];
+        $bookingEndTime = Carbon::parse($bookingTime)
+            ->addMinutes($this->getDurationInMinutes($validated['duration'], $validated['duration_unit']))
+            ->format('H:i');
         $closureBlocked = !empty($validated['package_id'])
-            ? DayOff::isTimeSlotBlockedForPackage($bookingLocationId, (int) $validated['package_id'], $bookingDate, $bookingTime)
-            : DayOff::isTimeSlotBlocked($bookingLocationId, $bookingDate, $bookingTime);
+            ? DayOff::isTimeSlotBlockedForPackage($bookingLocationId, (int) $validated['package_id'], $bookingDate, $bookingTime, $bookingEndTime)
+            : DayOff::isTimeSlotBlocked($bookingLocationId, $bookingDate, $bookingTime, $bookingEndTime);
         if (!$closureBlocked && !empty($validated['room_id'])) {
-            $closureBlocked = DayOff::isTimeSlotBlockedForRoom($bookingLocationId, (int) $validated['room_id'], $bookingDate, $bookingTime);
+            $closureBlocked = DayOff::isTimeSlotBlockedForRoom($bookingLocationId, (int) $validated['room_id'], $bookingDate, $bookingTime, $bookingEndTime);
         }
         if ($closureBlocked) {
             return response()->json([
