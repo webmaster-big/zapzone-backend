@@ -17,6 +17,7 @@ use App\Models\ActivityLog;
 use App\Models\EmailNotification;
 use App\Models\Booking;
 use App\Models\BookingAttraction;
+use App\Models\DayOff;
 use App\Models\BookingAddOn;
 use App\Models\Contact;
 use App\Models\CustomerNotification;
@@ -347,6 +348,22 @@ class BookingController extends Controller
                 ]);
                 $validated['location_id'] = $bookedPackage->location_id;
             }
+        }
+
+        $bookingDate = Carbon::parse($validated['booking_date'])->toDateString();
+        $bookingTime = $validated['booking_time'];
+        $bookingLocationId = (int) $validated['location_id'];
+        $closureBlocked = !empty($validated['package_id'])
+            ? DayOff::isTimeSlotBlockedForPackage($bookingLocationId, (int) $validated['package_id'], $bookingDate, $bookingTime)
+            : DayOff::isTimeSlotBlocked($bookingLocationId, $bookingDate, $bookingTime);
+        if (!$closureBlocked && !empty($validated['room_id'])) {
+            $closureBlocked = DayOff::isTimeSlotBlockedForRoom($bookingLocationId, (int) $validated['room_id'], $bookingDate, $bookingTime);
+        }
+        if ($closureBlocked) {
+            return response()->json([
+                'success' => false,
+                'message' => 'The selected date or time is closed. Please choose another slot.',
+            ], 422);
         }
 
         $duplicateQuery = Booking::where('package_id', $validated['package_id'] ?? null)

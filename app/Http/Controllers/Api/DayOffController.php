@@ -370,7 +370,10 @@ class DayOffController extends Controller
     public function getByLocation(int $locationId): JsonResponse
     {
         $dayOffs = DayOff::byLocation($locationId)
-            ->upcoming()
+            ->where(function ($q) {
+                $q->where('date', '>=', now()->toDateString())
+                  ->orWhere('is_recurring', true);
+            })
             ->orderBy('date')
             ->get();
 

@@ -581,9 +581,11 @@ class EventPurchaseController extends Controller
                 $eventPurchase->addOns()->sync($syncData);
             }
 
-            return response()->json(
-                $eventPurchase->fresh()->load(['event:id,name', 'customer:id,first_name,last_name,email', 'location:id,name', 'addOns'])
-            );
+            return response()->json([
+                'success' => true,
+                'message' => 'Event purchase updated successfully',
+                'data' => $eventPurchase->fresh()->load(['event:id,name', 'customer:id,first_name,last_name,email', 'location:id,name', 'addOns']),
+            ]);
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json(['message' => 'Validation failed', 'errors' => $e->errors()], 422);
         } catch (\Exception $e) {

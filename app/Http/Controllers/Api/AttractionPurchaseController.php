@@ -8,6 +8,7 @@ use App\Http\Traits\ScopesByAuthUser;
 use App\Models\AttractionPurchase;
 use App\Models\AttractionPurchaseAddOn;
 use App\Models\Attraction;
+use App\Models\DayOff;
 use App\Mail\AttractionPurchaseReceipt;
 use App\Services\GmailApiService;
 use App\Services\EmailNotificationService;
@@ -25,6 +26,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Validation\Rule;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Carbon\Carbon;
 
 class AttractionPurchaseController extends Controller
 {
@@ -328,6 +330,20 @@ class AttractionPurchaseController extends Controller
         $validated['created_by'] = auth()->id() ?? null;
 
         $attractionLocationId = Attraction::find($validated['attraction_id'])?->location_id;
+
+        if (!empty($validated['scheduled_date']) && $attractionLocationId) {
+            $scheduledDate = Carbon::parse($validated['scheduled_date'])->toDateString();
+            $attractionId = (int) $validated['attraction_id'];
+            $closureBlocked = !empty($validated['scheduled_time'])
+                ? DayOff::isTimeSlotBlockedForAttraction($attractionLocationId, $attractionId, $scheduledDate, $validated['scheduled_time'])
+                : DayOff::isDateBlockedForAttraction($attractionLocationId, $attractionId, $scheduledDate);
+            if ($closureBlocked) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'The selected date or time is closed for this attraction. Please choose another.',
+                ], 422);
+            }
+        }
 
         $purchase = DB::transaction(function () use (&$validated, $discounts, $request, $attractionLocationId) {
             $hasCode = !empty($validated['promo_id']) || !empty($validated['gift_card_id'])
@@ -764,6 +780,7 @@ class AttractionPurchaseController extends Controller
             'guest_phone' => 'sometimes|nullable|string|max:20',
             'quantity' => 'sometimes|integer|min:1',
             'amount_paid' => 'sometimes|nullable|numeric|min:0',
+            'total_amount' => 'sometimes|numeric|min:0',
             'applied_fees' => 'nullable|array',
             'applied_fees.*.fee_name' => 'required_with:applied_fees|string|max:255',
             'applied_fees.*.fee_amount' => 'required_with:applied_fees|numeric|min:0',
@@ -788,7 +805,9 @@ class AttractionPurchaseController extends Controller
             'additional_addons.*.price_at_purchase' => 'nullable|numeric|min:0',
         ]);
 
-        if (isset($validated['attraction_id']) || isset($validated['quantity'])) {
+        if ($request->has('total_amount')) {
+            $validated['total_amount'] = (float) $request->input('total_amount');
+        } elseif (isset($validated['attraction_id']) || isset($validated['quantity'])) {
             $attractionId = $validated['attraction_id'] ?? $attractionPurchase->attraction_id;
             $quantity = $validated['quantity'] ?? $attractionPurchase->quantity;
 

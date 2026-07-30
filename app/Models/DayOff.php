@@ -80,6 +80,19 @@ class DayOff extends Model
         return $query->where('date', $date);
     }
 
+    public function scopeForDate($query, $date)
+    {
+        $carbon = $date instanceof Carbon ? $date->copy() : Carbon::parse($date);
+        return $query->where(function ($q) use ($carbon) {
+            $q->whereDate('date', $carbon->toDateString())
+              ->orWhere(function ($recurring) use ($carbon) {
+                  $recurring->where('is_recurring', true)
+                      ->whereMonth('date', $carbon->month)
+                      ->whereDay('date', $carbon->day);
+              });
+        });
+    }
+
     public function scopeByDateRange($query, $startDate, $endDate)
     {
         return $query->whereBetween('date', [$startDate, $endDate]);
@@ -269,7 +282,7 @@ class DayOff extends Model
     public static function isDateBlocked($locationId, $date)
     {
         return self::where('location_id', $locationId)
-            ->where('date', $date)
+            ->forDate($date)
             ->whereNull('time_start')
             ->whereNull('time_end')
             ->whereNull('package_ids')
@@ -282,7 +295,7 @@ class DayOff extends Model
     public static function isTimeSlotBlocked($locationId, $date, string $slotStart, ?string $slotEnd = null): bool
     {
         $dayOffs = self::where('location_id', $locationId)
-            ->where('date', $date)
+            ->forDate($date)
             ->locationWide()
             ->get();
 
@@ -298,7 +311,7 @@ class DayOff extends Model
     public static function isTimeSlotBlockedForPackage($locationId, int $packageId, $date, string $slotStart, ?string $slotEnd = null): bool
     {
         $dayOffs = self::where('location_id', $locationId)
-            ->where('date', $date)
+            ->forDate($date)
             ->forPackage($packageId)
             ->get();
 
@@ -314,7 +327,7 @@ class DayOff extends Model
     public static function isTimeSlotBlockedForRoom($locationId, int $roomId, $date, string $slotStart, ?string $slotEnd = null): bool
     {
         $dayOffs = self::where('location_id', $locationId)
-            ->where('date', $date)
+            ->forDate($date)
             ->forRoom($roomId)
             ->get();
 
@@ -330,7 +343,7 @@ class DayOff extends Model
     public static function isTimeSlotBlockedForAttraction($locationId, int $attractionId, $date, string $slotStart, ?string $slotEnd = null): bool
     {
         $dayOffs = self::where('location_id', $locationId)
-            ->where('date', $date)
+            ->forDate($date)
             ->forAttraction($attractionId)
             ->get();
 
@@ -346,7 +359,7 @@ class DayOff extends Model
     public static function isTimeSlotBlockedForEvent($locationId, int $eventId, $date, string $slotStart, ?string $slotEnd = null): bool
     {
         $dayOffs = self::where('location_id', $locationId)
-            ->where('date', $date)
+            ->forDate($date)
             ->forEvent($eventId)
             ->get();
 
@@ -362,7 +375,7 @@ class DayOff extends Model
     public static function isDateBlockedForAttraction($locationId, int $attractionId, $date): bool
     {
         $dayOffs = self::where('location_id', $locationId)
-            ->where('date', $date)
+            ->forDate($date)
             ->whereNull('time_start')
             ->whereNull('time_end')
             ->forAttraction($attractionId)
@@ -380,7 +393,7 @@ class DayOff extends Model
     public static function isDateBlockedForEvent($locationId, int $eventId, $date): bool
     {
         $dayOffs = self::where('location_id', $locationId)
-            ->where('date', $date)
+            ->forDate($date)
             ->whereNull('time_start')
             ->whereNull('time_end')
             ->forEvent($eventId)
@@ -398,7 +411,7 @@ class DayOff extends Model
     public static function getDayOffForTimeSlot($locationId, $date, string $slotStart, ?string $slotEnd = null): ?self
     {
         $dayOffs = self::where('location_id', $locationId)
-            ->where('date', $date)
+            ->forDate($date)
             ->get();
 
         foreach ($dayOffs as $dayOff) {
