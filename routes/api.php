@@ -316,6 +316,10 @@ Route::middleware('auth:sanctum')->group(function () {
     // Lightweight and mobile-optimized packages list
     Route::get('mobile/packages', [MobilePackageController::class, 'index']);
 
+    // Mobile app version management (Web Admin)
+    Route::get('mobile/versions', [MobileVersionController::class, 'adminIndex']);
+    Route::put('mobile/version/{mobileAppVersion}', [MobileVersionController::class, 'update']);
+
     Route::post('packages/room/create', [PackageController::class, 'storePackageRoom']);
     Route::patch('packages/bulk-update-min-notice', [PackageController::class, 'bulkUpdateMinBookingNotice']);
     Route::apiResource('packages', PackageController::class);
