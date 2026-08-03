@@ -14,6 +14,7 @@ use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 
 class WaiverController extends Controller
 {
@@ -92,6 +93,7 @@ class WaiverController extends Controller
             'location:id,name',
             'customer:id,first_name,last_name,email,phone',
             'minors',
+            'auditEvents',
             'booking:id,reference_number,booking_date',
             'event:id,name',
             'creator:id,first_name,last_name',
@@ -501,7 +503,16 @@ class WaiverController extends Controller
             return $this->forbidden();
         }
 
-        $waiver->load(['template:id,title', 'location:id,name', 'minors', 'company']);
+        // Prefer the immutable copy stored at signing time; fall back to on-demand
+        // generation for waivers signed before PDF storage existed.
+        if ($waiver->pdf_path) {
+            $disk = config('filesystems.default');
+            if (Storage::disk($disk)->exists($waiver->pdf_path)) {
+                return Storage::disk($disk)->download($waiver->pdf_path, "waiver-{$waiver->id}.pdf");
+            }
+        }
+
+        $waiver->load(['template:id,title', 'version:id,version', 'location:id,name', 'minors', 'company', 'auditEvents']);
 
         $pdf = Pdf::loadView('waivers.print', [
             'waiver' => $waiver,

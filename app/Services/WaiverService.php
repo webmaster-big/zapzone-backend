@@ -10,9 +10,11 @@ use App\Models\WaiverMinor;
 use App\Models\WaiverSetting;
 use App\Models\WaiverTemplate;
 use App\Models\WaiverTemplateVersion;
+use Barryvdh\DomPDF\Facade\Pdf;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 
 class WaiverService
 {
@@ -258,6 +260,7 @@ class WaiverService
                 'adult_dob' => $data['adult_dob'] ?? null,
                 'relationship' => $data['relationship'] ?? null,
                 'typed_legal_name' => $data['typed_legal_name'] ?? null,
+                'signature_image' => $data['signature_image'] ?? $waiver->signature_image,
                 'agreement_accepted' => (bool) ($data['agreement_accepted'] ?? false),
                 'electronic_consent_accepted' => (bool) ($data['electronic_consent_accepted'] ?? false),
                 'photo_video_consent' => array_key_exists('photo_video_consent', $data)
@@ -273,6 +276,14 @@ class WaiverService
                 'expires_at' => $this->computeExpiry($template),
                 'ip_address' => $context['ip'] ?? $waiver->ip_address,
                 'device' => $context['device'] ?? $waiver->device,
+                'device_id' => $data['device_id'] ?? $waiver->device_id,
+                'browser' => $context['browser'] ?? $waiver->browser,
+                'operating_system' => $context['operating_system'] ?? $waiver->operating_system,
+                'user_agent' => $context['user_agent'] ?? $waiver->user_agent,
+                'read_seconds' => $data['read_seconds'] ?? $waiver->read_seconds,
+                'gps_latitude' => $data['gps_latitude'] ?? $waiver->gps_latitude,
+                'gps_longitude' => $data['gps_longitude'] ?? $waiver->gps_longitude,
+                'gps_accuracy' => $data['gps_accuracy'] ?? $waiver->gps_accuracy,
             ]);
 
             if (!empty($context['source'])) {
@@ -301,12 +312,84 @@ class WaiverService
                 ]);
             }
 
+            $this->recordAuditEvents($waiver, $data['audit_trail'] ?? [], $context);
+
             return $waiver->fresh(['minors']);
         });
 
         $this->recordCustomerDetails($completed);
+        $this->generateAndStoreSignedPdf($completed);
 
         return $completed;
+    }
+
+    /**
+     * Persist the client-reported acceptance-step audit trail, then append a
+     * server-authoritative "submitted" event so the sequence is anchored to real time.
+     */
+    private function recordAuditEvents(Waiver $waiver, array $trail, array $context): void
+    {
+        foreach ($trail as $entry) {
+            if (!is_array($entry) || empty($entry['event'])) {
+                continue;
+            }
+
+            $occurredAt = null;
+            if (!empty($entry['at'])) {
+                try {
+                    $occurredAt = Carbon::parse($entry['at']);
+                } catch (\Throwable $e) {
+                    $occurredAt = null;
+                }
+            }
+
+            $waiver->auditEvents()->create([
+                'event' => substr((string) $entry['event'], 0, 255),
+                'occurred_at' => $occurredAt ?? Carbon::now(),
+                'meta' => isset($entry['meta']) && is_array($entry['meta']) ? $entry['meta'] : null,
+            ]);
+        }
+
+        $waiver->auditEvents()->create([
+            'event' => 'submitted',
+            'occurred_at' => Carbon::now(),
+            'meta' => array_filter([
+                'ip' => $context['ip'] ?? null,
+                'source' => $context['source'] ?? $waiver->source,
+            ]),
+        ]);
+    }
+
+    /**
+     * Render the signed waiver to an immutable PDF, store it on the default disk, and
+     * record its SHA-256 hash for tamper-evidence. Never throws — a PDF failure must not
+     * break a completed submission (mirrors recordCustomerDetails).
+     */
+    public function generateAndStoreSignedPdf(Waiver $waiver): void
+    {
+        try {
+            $waiver->loadMissing(['template:id,title', 'version:id,version', 'location:id,name', 'minors', 'company', 'auditEvents']);
+
+            $bytes = Pdf::loadView('waivers.print', [
+                'waiver' => $waiver,
+                'renderedBody' => $this->renderForWaiver($waiver),
+            ])->output();
+
+            $disk = config('filesystems.default');
+            $path = "waivers/{$waiver->company_id}/waiver-{$waiver->id}.pdf";
+            Storage::disk($disk)->put($path, $bytes);
+
+            $waiver->forceFill([
+                'pdf_path' => $path,
+                'pdf_hash' => hash('sha256', $bytes),
+                'pdf_generated_at' => Carbon::now(),
+            ])->save();
+        } catch (\Throwable $e) {
+            Log::warning('Failed to generate signed waiver PDF', [
+                'waiver_id' => $waiver->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     public function recordCustomerDetails(Waiver $waiver): void

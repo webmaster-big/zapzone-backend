@@ -254,6 +254,10 @@ class WaiverTemplateController extends Controller
                     'id' => $waiverTemplate->id,
                     'title' => $waiverTemplate->title,
                     'version' => $version->version,
+                    'highlight_points' => $this->waivers->render(
+                        ($clauses['highlight_points'] ?? null) ?: ($waiverTemplate->highlight_points ?? ''),
+                        $this->waivers->staticContentVariables($waiverTemplate)
+                    ),
                     'max_minors' => $waiverTemplate->max_minors,
                     'minor_section_enabled' => $waiverTemplate->minor_section_enabled,
                     'dob_required' => $waiverTemplate->dob_required,
@@ -396,6 +400,7 @@ class WaiverTemplateController extends Controller
             'status' => 'sometimes|in:draft,active,inactive,archived',
             'is_default' => 'sometimes|boolean',
             'body_text' => "{$req}|string",
+            'highlight_points' => 'nullable|string',
             'validity_duration_days' => 'nullable|integer|min:1',
             'max_minors' => 'sometimes|integer|min:0|max:50',
             'duplicate_rule' => 'sometimes|in:none,allow,manager_only',

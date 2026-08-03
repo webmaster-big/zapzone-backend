@@ -35,6 +35,7 @@ class Waiver extends Model
         'adult_dob',
         'relationship',
         'typed_legal_name',
+        'signature_image',
         'agreement_accepted',
         'electronic_consent_accepted',
         'photo_video_consent',
@@ -44,6 +45,17 @@ class Waiver extends Model
         'source',
         'ip_address',
         'device',
+        'device_id',
+        'browser',
+        'operating_system',
+        'user_agent',
+        'read_seconds',
+        'gps_latitude',
+        'gps_longitude',
+        'gps_accuracy',
+        'pdf_path',
+        'pdf_hash',
+        'pdf_generated_at',
         'submitted_at',
         'checked_in_at',
         'checked_in_by',
@@ -65,6 +77,11 @@ class Waiver extends Model
         'electronic_consent_accepted' => 'boolean',
         'photo_video_consent' => 'boolean',
         'marketing_consent_at' => 'datetime',
+        'read_seconds' => 'integer',
+        'gps_latitude' => 'float',
+        'gps_longitude' => 'float',
+        'gps_accuracy' => 'float',
+        'pdf_generated_at' => 'datetime',
         'submitted_at' => 'datetime',
         'checked_in_at' => 'datetime',
         'expires_at' => 'date',
@@ -163,6 +180,11 @@ class Waiver extends Model
     public function minors(): HasMany
     {
         return $this->hasMany(WaiverMinor::class);
+    }
+
+    public function auditEvents(): HasMany
+    {
+        return $this->hasMany(WaiverAuditEvent::class)->orderBy('occurred_at');
     }
 
     public function creator(): BelongsTo

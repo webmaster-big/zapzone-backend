@@ -48,6 +48,11 @@
         .signature .sig-label { font-size: 9px; text-transform: uppercase; letter-spacing: .04em; color: #9ca3af; }
         .signature .sig-name { font-family: Georgia, 'Times New Roman', serif; font-size: 17px; color: #111827; margin: 2px 0; }
         .signature .sig-meta { color: #6b7280; font-size: 10px; }
+        .signature .sig-img { max-height: 90px; max-width: 320px; border: 1px solid #e5e7eb; border-radius: 4px; background: #fff; padding: 4px; margin: 4px 0; }
+
+        table.audit { width: 100%; border-collapse: collapse; margin-top: 4px; }
+        table.audit th, table.audit td { border: 1px solid #e5e7eb; padding: 5px 8px; text-align: left; font-size: 10px; }
+        table.audit th { background: #f3f4f6; font-size: 9px; text-transform: uppercase; color: #6b7280; letter-spacing: .03em; }
 
         .footer { margin-top: 26px; padding-top: 8px; border-top: 1px solid #e5e7eb; color: #9ca3af; font-size: 9px; }
     </style>
@@ -138,9 +143,49 @@
         <div class="signature">
             <div class="sig-label">Signed electronically by</div>
             <div class="sig-name">{{ $waiver->typed_legal_name ?: '—' }}</div>
+            @if ($waiver->signature_image)
+                <img class="sig-img" src="{{ $waiver->signature_image }}" alt="Signature">
+            @endif
             <div class="sig-meta">{{ $waiver->submitted_at ? $waiver->submitted_at->timezone('America/Detroit')->format('F j, Y, g:i A') . ' ET' : 'Not yet submitted' }}</div>
         </div>
     </div>
+
+    <div class="section-title">Capture &amp; Verification</div>
+    <table class="info">
+        <tr>
+            <td class="label">IP address</td><td class="value">{{ $waiver->ip_address ?: '—' }}</td>
+            <td class="label">Read time</td><td class="value">{{ !is_null($waiver->read_seconds) ? floor($waiver->read_seconds / 60) . 'm ' . ($waiver->read_seconds % 60) . 's' : '—' }}</td>
+        </tr>
+        <tr>
+            <td class="label">Browser</td><td class="value">{{ $waiver->browser ?: '—' }}</td>
+            <td class="label">Operating system</td><td class="value">{{ $waiver->operating_system ?: '—' }}</td>
+        </tr>
+        <tr>
+            <td class="label">Device ID</td><td class="value">{{ $waiver->device_id ?: '—' }}</td>
+            <td class="label">Channel</td><td class="value">{{ $waiver->device ?: '—' }}</td>
+        </tr>
+        @if (!is_null($waiver->gps_latitude) && !is_null($waiver->gps_longitude))
+        <tr>
+            <td class="label">GPS location</td><td class="value">{{ $waiver->gps_latitude }}, {{ $waiver->gps_longitude }}</td>
+            <td class="label">GPS accuracy</td><td class="value">{{ !is_null($waiver->gps_accuracy) ? round($waiver->gps_accuracy) . ' m' : '—' }}</td>
+        </tr>
+        @endif
+    </table>
+
+    @if ($waiver->relationLoaded('auditEvents') && $waiver->auditEvents->isNotEmpty())
+        <div class="section-title">Audit Trail</div>
+        <table class="audit">
+            <thead><tr><th>Step</th><th>Timestamp</th></tr></thead>
+            <tbody>
+            @foreach ($waiver->auditEvents as $event)
+                <tr>
+                    <td>{{ str_replace('_', ' ', ucfirst($event->event)) }}</td>
+                    <td>{{ optional($event->occurred_at)->timezone('America/Detroit')->format('F j, Y, g:i:s A') }} ET</td>
+                </tr>
+            @endforeach
+            </tbody>
+        </table>
+    @endif
 
     <div class="footer">
         Electronic record &middot; Waiver #{{ $waiver->id }} &middot; Generated {{ now()->timezone('America/Detroit')->format('F j, Y, g:i A') }} ET.

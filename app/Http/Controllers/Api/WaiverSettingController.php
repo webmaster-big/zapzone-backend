@@ -46,6 +46,7 @@ class WaiverSettingController extends Controller
             'search_auto_refresh_seconds' => 'sometimes|integer|min:0|max:600',
             'kiosk_inactivity_timeout_seconds' => 'sometimes|integer|min:10|max:600',
             'kiosk_disable_autofill' => 'sometimes|boolean',
+            'gps_capture_enabled' => 'sometimes|boolean',
             'admin_delete_enabled' => 'sometimes|boolean',
             'manager_print_export_enabled' => 'sometimes|boolean',
             'manager_can_build_templates' => 'sometimes|boolean',

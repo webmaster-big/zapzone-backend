@@ -22,6 +22,7 @@ class WaiverTemplate extends Model
         'is_default',
         'current_version',
         'body_text',
+        'highlight_points',
         'validity_duration_days',
         'max_minors',
         'duplicate_rule',
@@ -93,6 +94,7 @@ class WaiverTemplate extends Model
 
     /** Clause flags + marketing text frozen into each version snapshot. */
     public const CLAUSE_FIELDS = [
+        'highlight_points',
         'minor_section_enabled',
         'dob_required',
         'relationship_required',

@@ -9,6 +9,7 @@ use App\Models\WaiverInviteRecipient;
 use App\Models\WaiverSetting;
 use App\Models\WaiverTemplate;
 use App\Services\WaiverService;
+use App\Support\UserAgentParser;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -98,9 +99,15 @@ class WaiverPublicController extends Controller
             return response()->json(['success' => false, 'message' => $reason], 409);
         }
 
+        $data = $this->applyGpsGate($data, $template->company_id);
+        $ua = (string) $request->userAgent();
+
         $completed = $this->waivers->completeSubmission($waiver, $data, [
             'ip' => $request->ip(),
-            'device' => substr((string) $request->userAgent(), 0, 255),
+            'device' => substr($ua, 0, 255),
+            'browser' => UserAgentParser::browser($ua),
+            'operating_system' => UserAgentParser::os($ua),
+            'user_agent' => $ua,
             'source' => $waiver->source ?: Waiver::SOURCE_CONFIRMATION_EMAIL,
         ]);
 
@@ -159,6 +166,7 @@ class WaiverPublicController extends Controller
                 'settings' => [
                     'inactivity_timeout_seconds' => $settings->kiosk_inactivity_timeout_seconds,
                     'disable_autofill' => $settings->kiosk_disable_autofill,
+                    'gps_capture_enabled' => (bool) $settings->gps_capture_enabled,
                 ],
             ],
         ]);
@@ -199,9 +207,15 @@ class WaiverPublicController extends Controller
             'source' => Waiver::SOURCE_KIOSK,
         ]);
 
+        $data = $this->applyGpsGate($data, $template->company_id);
+        $ua = (string) $request->userAgent();
+
         $completed = $this->waivers->completeSubmission($waiver, $data, [
             'ip' => $request->ip(),
             'device' => 'kiosk',
+            'browser' => UserAgentParser::browser($ua),
+            'operating_system' => UserAgentParser::os($ua),
+            'user_agent' => $ua,
             'source' => Waiver::SOURCE_KIOSK,
         ]);
 
@@ -401,6 +415,9 @@ class WaiverPublicController extends Controller
             ),
             'prefill' => $prefill ? $this->waivers->prefillFor($waiver) : [],
             'selected_date' => $waiver->selected_date,
+            'settings' => [
+                'gps_capture_enabled' => (bool) WaiverSetting::forCompany($waiver->company_id)->gps_capture_enabled,
+            ],
         ];
     }
 
@@ -412,6 +429,10 @@ class WaiverPublicController extends Controller
             'id' => $template->id,
             'title' => $template->title,
             'version' => $version?->version,
+            'highlight_points' => $this->waivers->render(
+                ($clauses['highlight_points'] ?? null) ?: ($template->highlight_points ?? ''),
+                $variables
+            ),
             'max_minors' => $template->max_minors,
             'minor_section_enabled' => $template->minor_section_enabled,
             'dob_required' => $template->dob_required,
@@ -434,6 +455,16 @@ class WaiverPublicController extends Controller
         ];
     }
 
+    /** Drop GPS coordinates unless the company has opted into capturing them. */
+    private function applyGpsGate(array $data, int $companyId): array
+    {
+        $settings = WaiverSetting::forCompany($companyId);
+        if (!$settings->gps_capture_enabled) {
+            unset($data['gps_latitude'], $data['gps_longitude'], $data['gps_accuracy']);
+        }
+        return $data;
+    }
+
     private function validateSubmission(Request $request, WaiverTemplate $template): array
     {
         $rules = [
@@ -444,6 +475,16 @@ class WaiverPublicController extends Controller
             'adult_dob' => 'required|date',
             'relationship' => 'nullable|string|max:100',
             'typed_legal_name' => 'required|string|max:255',
+            'signature_image' => 'required|string|starts_with:data:image/',
+            'device_id' => 'nullable|string|max:64',
+            'read_seconds' => 'nullable|integer|min:0',
+            'gps_latitude' => 'nullable|numeric|between:-90,90',
+            'gps_longitude' => 'nullable|numeric|between:-180,180',
+            'gps_accuracy' => 'nullable|numeric|min:0',
+            'audit_trail' => 'nullable|array|max:200',
+            'audit_trail.*.event' => 'required_with:audit_trail|string|max:100',
+            'audit_trail.*.at' => 'nullable|string|max:40',
+            'audit_trail.*.meta' => 'nullable|array',
             'agreement_accepted' => 'accepted',
             'photo_video_consent' => 'nullable|boolean',
             'marketing_consent' => 'nullable|boolean',
