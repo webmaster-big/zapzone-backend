@@ -475,7 +475,7 @@ class WaiverPublicController extends Controller
             'adult_dob' => 'required|date',
             'relationship' => 'nullable|string|max:100',
             'typed_legal_name' => 'required|string|max:255',
-            'signature_image' => 'required|string|starts_with:data:image/',
+            'signature_image' => 'nullable|string|starts_with:data:image/',
             'device_id' => 'nullable|string|max:64',
             'read_seconds' => 'nullable|integer|min:0',
             'gps_latitude' => 'nullable|numeric|between:-90,90',
