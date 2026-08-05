@@ -54,6 +54,7 @@ class AppServiceProvider extends ServiceProvider
             \App\Models\Booking::class => [$dashboards],
             \App\Models\AttractionPurchase::class => [$dashboards],
             \App\Models\EventPurchase::class => [$dashboards],
+            \App\Models\Waiver::class => [$dashboards],
             \App\Models\Payment::class => [$dashboards],
             \App\Models\Membership::class => [$dashboards],
             \App\Models\MembershipPayment::class => [$dashboards],

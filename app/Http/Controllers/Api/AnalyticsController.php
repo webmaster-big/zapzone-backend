@@ -12,6 +12,8 @@ use App\Models\Attraction;
 use App\Models\Event;
 use App\Models\Location;
 use App\Models\Company;
+use App\Models\Waiver;
+use App\Services\WaiverMetricsService;
 use App\Support\DateRange;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -107,6 +109,7 @@ class AnalyticsController extends Controller
             'booking_status' => $this->getBookingStatus($locationIdList, $startDate, $endDate),
             'top_attractions' => $this->getTopAttractions($locationIdList, $startDate, $endDate),
             'top_events' => $this->getTopEvents($locationIdList, $startDate, $endDate),
+            'waivers' => $this->getCompanyWaiverStats($companyId, $locationIds, $startDate, $endDate),
         ];
 
         \App\Support\CacheGroups::put([\App\Support\CacheGroups::DASHBOARDS], $cacheKey, $analytics, \App\Support\CacheGroups::TTL_DASHBOARD);
@@ -1142,6 +1145,76 @@ class AnalyticsController extends Controller
                 'color' => $statusColors[$booking->status] ?? '#6b7280',
             ];
         })->values();
+    }
+
+    private function getCompanyWaiverStats($companyId, array $selectedLocationIds, $startDate, $endDate)
+    {
+        try {
+            return $this->buildCompanyWaiverStats($companyId, $selectedLocationIds, $startDate, $endDate);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('Waiver analytics computation failed', ['error' => $e->getMessage()]);
+            return null;
+        }
+    }
+
+    private function buildCompanyWaiverStats($companyId, array $selectedLocationIds, $startDate, $endDate)
+    {
+        $service = app(WaiverMetricsService::class);
+
+        $baseFactory = function () use ($companyId, $selectedLocationIds) {
+            $query = Waiver::query()->where('company_id', $companyId);
+            if (!empty($selectedLocationIds)) {
+                $query->whereIn('location_id', $selectedLocationIds);
+            }
+            return $query;
+        };
+
+        $ranged = $baseFactory()->whereBetween('created_at', [$startDate, $endDate]);
+
+        $summary = $service->summary($ranged);
+        $ageBrackets = $service->ageBrackets($ranged);
+        $sources = $service->sourceBreakdown($ranged);
+
+        $perDay = [];
+        $daysDiff = $startDate->diffInDays($endDate);
+        if ($daysDiff > 60) {
+            $cursor = $startDate->copy()->startOfMonth();
+            while ($cursor->lte($endDate)) {
+                $windowStart = $cursor->copy()->startOfMonth();
+                $windowEnd = $cursor->copy()->endOfMonth();
+                $count = $baseFactory()->whereBetween('created_at', [
+                    $windowStart->lt($startDate) ? $startDate : $windowStart,
+                    $windowEnd->gt($endDate) ? $endDate : $windowEnd,
+                ])->count();
+                $perDay[] = ['date' => $cursor->toDateString(), 'label' => $cursor->format('M Y'), 'count' => $count];
+                $cursor->addMonth();
+            }
+        } else {
+            $cursor = $startDate->copy();
+            while ($cursor->lte($endDate)) {
+                $window = $this->businessDayWindow($cursor);
+                $count = $baseFactory()->whereBetween('created_at', $window)->count();
+                $perDay[] = ['date' => $cursor->toDateString(), 'label' => $cursor->format('M j'), 'count' => $count];
+                $cursor->addDay();
+            }
+        }
+
+        $palette = ['#3b82f6', '#8b5cf6', '#10b981', '#f59e0b', '#ef4444', '#06b6d4', '#ec4899', '#14b8a6'];
+        $sourceChart = [];
+        foreach ($sources as $index => $row) {
+            $sourceChart[] = [
+                'source' => $row['source'],
+                'count' => $row['count'],
+                'color' => $palette[$index % count($palette)],
+            ];
+        }
+
+        return [
+            'summary' => $summary,
+            'per_day' => $perDay,
+            'age_brackets' => $ageBrackets,
+            'by_source' => $sourceChart,
+        ];
     }
 
     private function getTopAttractions($locationIds, $startDate, $endDate)

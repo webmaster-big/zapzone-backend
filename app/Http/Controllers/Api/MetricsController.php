@@ -11,6 +11,8 @@ use App\Models\Customer;
 use App\Models\Location;
 use App\Models\Membership;
 use App\Models\User;
+use App\Models\Waiver;
+use App\Services\WaiverMetricsService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -507,6 +509,70 @@ class MetricsController extends Controller
                 ];
             });
 
+        $waiverMetricsData = [
+            'totalWaivers' => 0, 'completedWaivers' => 0, 'pendingWaivers' => 0,
+            'checkedInWaivers' => 0, 'adultWaivers' => 0, 'minorWaivers' => 0,
+        ];
+        $waiverBreakdownData = [];
+        $waiverStatusBreakdownData = [];
+        $waiverAgeBreakdownData = [];
+        try {
+            $waiverBase = Waiver::query();
+            if ($user->company_id) {
+                $waiverBase->where('company_id', $user->company_id);
+            }
+            if ($locationId) {
+                $waiverBase->where('location_id', $locationId);
+            }
+            if ($dateFrom) {
+                $useDateTime
+                    ? $waiverBase->where('created_at', '>=', $dateFrom)
+                    : $waiverBase->whereDate('created_at', '>=', $dateFrom);
+            }
+            if ($dateTo) {
+                $useDateTime
+                    ? $waiverBase->where('created_at', '<=', $dateTo)
+                    : $waiverBase->whereDate('created_at', '<=', $dateTo);
+            }
+
+            $waiverService = app(WaiverMetricsService::class);
+            $waiverSummary = $waiverService->summary($waiverBase);
+            $waiverMetricsData = [
+                'totalWaivers' => $waiverSummary['total'],
+                'completedWaivers' => $waiverSummary['completed'],
+                'pendingWaivers' => $waiverSummary['pending'],
+                'checkedInWaivers' => $waiverSummary['checked_in'],
+                'adultWaivers' => $waiverSummary['adult_signers'],
+                'minorWaivers' => $waiverSummary['minors_covered'],
+            ];
+
+            $waiverTotal = max(1, $waiverSummary['total']);
+            $waiverCompletedTotal = max(1, $waiverSummary['completed']);
+            foreach ($waiverService->sourceBreakdown($waiverBase) as $row) {
+                $waiverBreakdownData[] = [
+                    'label' => $row['source'],
+                    'count' => $row['count'],
+                    'percentage' => round($row['count'] / $waiverTotal * 100, 1),
+                ];
+            }
+            foreach ($waiverService->statusBreakdown($waiverBase) as $row) {
+                $waiverStatusBreakdownData[] = [
+                    'label' => $row['status'],
+                    'count' => $row['count'],
+                    'percentage' => round($row['count'] / $waiverTotal * 100, 1),
+                ];
+            }
+            foreach ($waiverService->ageBrackets($waiverBase) as $row) {
+                $waiverAgeBreakdownData[] = [
+                    'label' => $row['bracket'],
+                    'count' => $row['count'],
+                    'percentage' => round($row['count'] / $waiverCompletedTotal * 100, 1),
+                ];
+            }
+        } catch (\Exception $e) {
+            Log::warning('Waiver metrics computation failed', ['error' => $e->getMessage()]);
+        }
+
         $response = [
             'timeframe' => [
                 'type' => $timeframe,
@@ -545,6 +611,12 @@ class MetricsController extends Controller
                 'totalMemberships' => $totalMemberships,
                 'activeMemberships' => $activeMemberships,
                 'newMemberships' => $newMemberships,
+                'totalWaivers' => $waiverMetricsData['totalWaivers'],
+                'completedWaivers' => $waiverMetricsData['completedWaivers'],
+                'pendingWaivers' => $waiverMetricsData['pendingWaivers'],
+                'checkedInWaivers' => $waiverMetricsData['checkedInWaivers'],
+                'adultWaivers' => $waiverMetricsData['adultWaivers'],
+                'minorWaivers' => $waiverMetricsData['minorWaivers'],
             ],
             'breakdowns' => [
                 'packageBreakdown'   => $packageBreakdownData,
@@ -555,6 +627,9 @@ class MetricsController extends Controller
                 'membershipBreakdown' => $membershipBreakdownData,
                 'customerBreakdown'  => $customerBreakdownData,
                 'confirmedBreakdown' => $confirmedBreakdownData,
+                'waiverBreakdown'    => $waiverBreakdownData,
+                'waiverStatusBreakdown' => $waiverStatusBreakdownData,
+                'waiverAgeBreakdown' => $waiverAgeBreakdownData,
             ],
             'recentPurchases' => $recentPurchases,
             'recentEventPurchases' => $recentEventPurchases,
