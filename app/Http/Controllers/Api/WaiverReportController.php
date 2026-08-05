@@ -108,18 +108,18 @@ class WaiverReportController extends Controller
             $q->whereNotNull('event_id');
         }
 
-        $rows = $q->selectRaw("{$column} as key, COUNT(*) as count")
+        $rows = $q->selectRaw("{$column} as group_key, COUNT(*) as total")
             ->groupBy($column)
-            ->orderByDesc('count')
+            ->orderByDesc('total')
             ->get();
 
         // resolve labels for event/template
-        $labels = $this->labelsFor($column, $rows->pluck('key')->filter()->all());
+        $labels = $this->labelsFor($column, $rows->pluck('group_key')->filter()->all());
 
         return $rows->map(fn ($r) => [
-            'key' => $r->key,
-            'label' => $labels[$r->key] ?? (string) $r->key,
-            'count' => (int) $r->count,
+            'key' => $r->group_key,
+            'label' => $labels[$r->group_key] ?? (string) $r->group_key,
+            'count' => (int) $r->total,
         ])->all();
     }
 
