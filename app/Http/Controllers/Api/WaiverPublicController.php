@@ -15,6 +15,8 @@ use Illuminate\Http\Request;
 
 class WaiverPublicController extends Controller
 {
+    private const ADULT_AGE = 18;
+
     public function __construct(private WaiverService $waivers)
     {
     }
@@ -472,7 +474,7 @@ class WaiverPublicController extends Controller
             'adult_last_name' => 'required|string|max:255',
             'adult_email' => 'required|email|max:255',
             'adult_phone' => 'required|string|max:30',
-            'adult_dob' => 'required|date',
+            'adult_dob' => 'required|date|before_or_equal:' . now()->subYears(self::ADULT_AGE)->toDateString(),
             'relationship' => 'nullable|string|max:100',
             'typed_legal_name' => 'required|string|max:255',
             'signature_image' => 'nullable|string|starts_with:data:image/',
@@ -491,13 +493,22 @@ class WaiverPublicController extends Controller
             'minors' => 'nullable|array|max:' . max(1, (int) $template->max_minors),
             'minors.*.first_name' => 'required_with:minors|string|max:255',
             'minors.*.last_name' => 'required_with:minors|string|max:255',
-            'minors.*.date_of_birth' => ($template->dob_required ? 'required_with:minors' : 'nullable') . '|date',
-            'minors.*.relationship' => ($template->relationship_required ? 'required_with:minors' : 'nullable') . '|string|max:100',
+            'minors.*.date_of_birth' => 'required_with:minors|date|before_or_equal:' . now()->toDateString(),
+            'minors.*.relationship' => 'required_with:minors|string|max:100',
         ];
 
         // electronic consent is required only when the clause is enabled
         $rules['electronic_consent_accepted'] = $template->electronic_consent_enabled ? 'accepted' : 'nullable|boolean';
 
-        return $request->validate($rules);
+        $messages = [
+            'adult_dob.before_or_equal' => 'Thanks for getting started! Because the signer is under ' . self::ADULT_AGE
+                . ', we are not able to accept this signature. Please ask a parent or legal guardian to complete the'
+                . ' waiver and add the minor in the Minors section.',
+            'minors.*.date_of_birth.required_with' => 'Please add a date of birth for each child.',
+            'minors.*.date_of_birth.before_or_equal' => 'A date of birth cannot be in the future.',
+            'minors.*.relationship.required_with' => 'Please choose how each child is related to you.',
+        ];
+
+        return $request->validate($rules, $messages);
     }
 }
