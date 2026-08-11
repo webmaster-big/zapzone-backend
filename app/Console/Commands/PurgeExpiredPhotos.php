@@ -33,16 +33,7 @@ class PurgeExpiredPhotos extends Command
 
             foreach ($photos as $photo) {
                 if (!$dryRun) {
-                    $photo->deleteMedia();
-                    $photo->update([
-                        'purged_at' => now(),
-                        'original_path' => null,
-                        'delivery_path' => null,
-                        'slideshow_path' => null,
-                        'thumbnail_path' => null,
-                        'slideshow_state' => Photo::SLIDESHOW_REMOVED,
-                        'slideshow_eligible' => false,
-                    ]);
+                    $photo->purge();
                 }
                 $purgedPhotos++;
             }

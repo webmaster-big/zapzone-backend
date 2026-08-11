@@ -730,6 +730,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('photo-library/{photo}',                  [PhotoLibraryController::class, 'show'])->whereNumber('photo');
         Route::get('photo-library/{photo}/download',         [PhotoLibraryController::class, 'download'])->whereNumber('photo');
         Route::post('photo-library/{photo}/send',            [PhotoLibraryController::class, 'send'])->whereNumber('photo');
+        // Deleting is irreversible, so it stays with managers and admins.
+        Route::post('photo-library/delete',                  [PhotoLibraryController::class, 'destroyMany'])->middleware('photo.staff:company_admin|admin|location_manager');
+        Route::delete('photo-library/{photo}',               [PhotoLibraryController::class, 'destroy'])->whereNumber('photo')->middleware('photo.staff:company_admin|admin|location_manager');
 
         // Slideshow queue management
         Route::get('slideshow-queues',                          [SlideshowQueueController::class, 'index']);

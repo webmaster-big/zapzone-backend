@@ -116,6 +116,29 @@ class Photo extends Model
         };
     }
 
+    /**
+     * Delete the image files and mark the row purged, keeping the row itself so the
+     * delivery record and activity trail survive. Used both by a manual delete from the
+     * daily library and by the retention job, so the two can never drift apart.
+     *
+     * Once purged, the customer page lists no photos and every signed media URL 404s.
+     */
+    public function purge(): void
+    {
+        $this->deleteMedia();
+
+        $this->update([
+            'purged_at' => now(),
+            'original_path' => null,
+            'delivery_path' => null,
+            'slideshow_path' => null,
+            'thumbnail_path' => null,
+            'slideshow_eligible' => false,
+            'slideshow_state' => self::SLIDESHOW_REMOVED,
+            'slideshow_queue_id' => null,
+        ]);
+    }
+
     public function deleteMedia(): void
     {
         $disk = Storage::disk(\App\Services\PhotoProcessingService::DISK);

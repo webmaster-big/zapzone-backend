@@ -455,6 +455,16 @@ class PhotoPublicController extends Controller
             ], 410);
         }
 
+        // Staff can delete a photo from the daily library. Say so plainly rather than
+        // showing the customer an empty gallery under a link that still works.
+        if ($session->photos()->ready()->count() === 0 && $session->captured_at !== null) {
+            return response()->json([
+                'success' => false,
+                'state' => 'photos_removed',
+                'message' => 'These photos are no longer available. If you think this is a mistake, please contact the venue and they can help.',
+            ], 410);
+        }
+
         if ($session->requiresContactBeforeAccess()) {
             return response()->json([
                 'success' => true,

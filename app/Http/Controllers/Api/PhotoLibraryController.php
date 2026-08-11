@@ -206,6 +206,82 @@ class PhotoLibraryController extends Controller
         return response()->download($tempPath, $zipName)->deleteFileAfterSend(true);
     }
 
+    public function destroy(Request $request, Photo $photo): JsonResponse
+    {
+        if (!$this->authorizeRecordScope($photo)) {
+            return $this->forbidden();
+        }
+
+        if ($photo->purged_at !== null) {
+            return response()->json([
+                'success' => true,
+                'message' => 'That photo had already been deleted.',
+            ]);
+        }
+
+        $photo->purge();
+
+        ActivityLog::log(
+            'photo_deleted',
+            'photos',
+            sprintf('Deleted photo #%d from the daily library', $photo->id),
+            $this->resolveAuthUser($request)?->id,
+            $photo->location_id,
+            'photo',
+            $photo->id,
+            ['photo_session_id' => $photo->photo_session_id, 'operating_day' => $photo->operating_day?->toDateString()]
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Photo deleted. The image file is gone and any customer link for it no longer shows it.',
+        ]);
+    }
+
+    public function destroyMany(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'photo_ids' => ['required', 'array', 'min:1', 'max:200'],
+            'photo_ids.*' => ['integer'],
+        ]);
+
+        $query = Photo::whereIn('id', $validated['photo_ids'])->whereNull('purged_at');
+        $this->applyAuthScope($query, $request);
+        $photos = $query->get();
+
+        if ($photos->isEmpty()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'None of those photos is available to delete.',
+            ], 404);
+        }
+
+        foreach ($photos as $photo) {
+            $photo->purge();
+        }
+
+        ActivityLog::log(
+            'photos_deleted_bulk',
+            'photos',
+            sprintf('Deleted %d photos from the daily library', $photos->count()),
+            $this->resolveAuthUser($request)?->id,
+            $photos->first()->location_id,
+            'photo',
+            null,
+            ['photo_ids' => $photos->pluck('id')->all()]
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => sprintf(
+                'Deleted %d photo%s. The image files are gone and any customer links no longer show them.',
+                $photos->count(),
+                $photos->count() === 1 ? '' : 's'
+            ),
+            'data' => ['deleted' => $photos->count()],
+        ]);
+    }
+
     public function send(Request $request, Photo $photo): JsonResponse
     {
         if (!$this->authorizeRecordScope($photo)) {

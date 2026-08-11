@@ -294,7 +294,7 @@ class PhotoReportController extends Controller
             'access_expired' => (clone $sessions)->where('access_expires_at', '<', now())->count(),
             'purged' => (clone $photos)->whereNotNull('purged_at')->count(),
             'by_day' => $byDay,
-            'retention_note' => 'Photos leave backend access when the configured retention period ends.',
+            'retention_note' => 'Photos are removed from the photo library when the configured retention period ends.',
         ];
     }
 

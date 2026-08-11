@@ -273,26 +273,44 @@ class PhotoSessionController extends Controller
         }
 
         $term = trim($validated['q']);
-        $digits = preg_replace('/[^0-9]/', '', $term);
+        $digits = (string) preg_replace('/[^0-9]/', '', $term);
+        $locationId = $request->filled('location_id') ? $request->integer('location_id') : null;
+
+        // Phone numbers are stored however they were typed — "(734) 555-0142", "734-555-0142",
+        // "+1 734 555 0142". Comparing digits against the raw column never matches, so strip the
+        // formatting on both sides. Nested REPLACE works on MySQL and SQLite alike.
+        $phoneDigits = "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(adult_phone, ''), ' ', ''), '(', ''), ')', ''), '-', ''), '.', ''), '+', '')";
 
         $query = Waiver::query()
             ->with('location')
             ->where('status', Waiver::STATUS_COMPLETED)
-            ->where(function ($q) use ($term, $digits) {
+            ->where(function ($q) use ($term, $digits, $phoneDigits) {
                 $q->where('adult_first_name', 'like', "%{$term}%")
                     ->orWhere('adult_last_name', 'like', "%{$term}%")
                     ->orWhere('adult_email', 'like', "%{$term}%")
-                    ->orWhereRaw("CONCAT(COALESCE(adult_first_name, ''), ' ', COALESCE(adult_last_name, '')) LIKE ?", ["%{$term}%"]);
+                    ->orWhereRaw(
+                        "CONCAT(COALESCE(adult_first_name, ''), ' ', COALESCE(adult_last_name, '')) LIKE ?",
+                        ["%{$term}%"]
+                    )
+                    // "Okonkwo Alex" should find "Alex Okonkwo" too.
+                    ->orWhereRaw(
+                        "CONCAT(COALESCE(adult_last_name, ''), ' ', COALESCE(adult_first_name, '')) LIKE ?",
+                        ["%{$term}%"]
+                    );
 
-                if (strlen((string) $digits) >= 4) {
-                    $q->orWhere('adult_phone', 'like', "%{$digits}%");
+                if (strlen($digits) >= 4) {
+                    $q->orWhereRaw("{$phoneDigits} LIKE ?", ["%{$digits}%"]);
                 }
             });
 
+        // Company scoping, and location scoping for managers and attendants.
         $this->applyAuthScope($query, $request);
 
-        if ($request->filled('location_id')) {
-            $query->where('location_id', $request->integer('location_id'));
+        // A location is a PREFERENCE, not a filter. Customers sign waivers at one venue and
+        // visit another, and some records carry no location at all; filtering them out made
+        // the search look broken. Matches for the chosen location are simply listed first.
+        if ($locationId !== null) {
+            $query->orderByRaw('CASE WHEN location_id = ? THEN 0 ELSE 1 END', [$locationId]);
         }
 
         $waivers = $query->orderByDesc('submitted_at')->limit(25)->get();
