@@ -8,6 +8,29 @@ use Symfony\Component\HttpFoundation\Response;
 
 class Cors
 {
+    /**
+     * Request headers the browser is allowed to send.
+     *
+     * Kept in ONE place because the preflight reply and the real reply must agree: a header
+     * missing here makes the browser refuse the request outright, and the front end sees a
+     * network error with no status, which looks like the device being offline.
+     */
+    public const ALLOWED_HEADERS = [
+        'Content-Type',
+        'Authorization',
+        'X-Requested-With',
+        'Accept',
+        'Origin',
+        'X-CSRF-TOKEN',
+        'X-Visitor-Id',
+        'X-Session-Id',
+        'X-Analytics-Source',
+        'X-Tracking-Id',
+        // Photo kiosk and slideshow devices identify themselves with these.
+        'X-Photo-Device',
+        'X-Kiosk-Session',
+    ];
+
     public function handle(Request $request, Closure $next): Response
     {
         $origin = $request->header('Origin');
@@ -27,7 +50,7 @@ class Cors
             return response('', 200)
                 ->header('Access-Control-Allow-Origin', $allowedOrigin)
                 ->header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS')
-                ->header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin, X-CSRF-TOKEN, X-Visitor-Id, X-Session-Id, X-Analytics-Source, X-Tracking-Id')
+                ->header('Access-Control-Allow-Headers', implode(', ', self::ALLOWED_HEADERS))
                 ->header('Access-Control-Allow-Credentials', 'true')
                 ->header('Access-Control-Max-Age', '86400');
         }
@@ -36,7 +59,7 @@ class Cors
 
         $response->headers->set('Access-Control-Allow-Origin', $allowedOrigin);
         $response->headers->set('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
-        $response->headers->set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin, X-CSRF-TOKEN, X-Visitor-Id, X-Session-Id, X-Analytics-Source, X-Tracking-Id');
+        $response->headers->set('Access-Control-Allow-Headers', implode(', ', self::ALLOWED_HEADERS));
         $response->headers->set('Access-Control-Allow-Credentials', 'true');
         $response->headers->set('Access-Control-Max-Age', '86400');
 
