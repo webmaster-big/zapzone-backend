@@ -100,6 +100,36 @@ trait ScopesByAuthUser
         return null;
     }
 
+    /**
+     * Resolve a location the caller is allowed to act on, applying BOTH the location
+     * guard (managers/attendants) and the company guard (everyone, including admins).
+     * Returns the Location, or a JsonResponse to return straight to the caller.
+     *
+     * Use this instead of calling the two guards by hand: guardLocationAccess alone does
+     * not constrain a company_admin, so a lone call to it is a cross-tenant hole.
+     */
+    protected function scopedLocation(?Request $request, $locationId)
+    {
+        if ($denied = $this->guardLocationAccess($request, $locationId)) {
+            return $denied;
+        }
+
+        $location = \App\Models\Location::find($locationId);
+
+        if (!$location) {
+            return response()->json([
+                'success' => false,
+                'message' => 'That location could not be found.',
+            ], 404);
+        }
+
+        if ($denied = $this->guardCompanyAccess($request, $location->company_id)) {
+            return $denied;
+        }
+
+        return $location;
+    }
+
     protected function guardCompanyAccess(?Request $request, $companyId)
     {
         $authUser = $this->resolveAuthUser($request);

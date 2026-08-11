@@ -30,10 +30,23 @@ return Application::configure(basePath: dirname(__DIR__))
 
         // Email the End of Day Sales Report at the close of each business day (Michigan time).
         $schedule->command('reports:send-daily-sales')->dailyAt('23:55')->timezone('America/Detroit')->withoutOverlapping(10);
+
+        // Send photo links that staff scheduled for 9:00 AM the next day in the location's time zone.
+        $schedule->command('photos:send-scheduled')->everyFifteenMinutes()->withoutOverlapping(10);
+
+        // Close each location's slideshow queue at the 6:00 AM operating-day cutoff and open the next one.
+        $schedule->command('photos:roll-queues')->hourly()->withoutOverlapping(10);
+
+        // Remove photo media once each location's retention period ends (90 days by default).
+        $schedule->command('photos:purge')->dailyAt('04:15')->withoutOverlapping(30);
     })
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->use([
             \App\Http\Middleware\Cors::class,
+        ]);
+
+        $middleware->alias([
+            'photo.staff' => \App\Http\Middleware\EnsurePhotoStaff::class,
         ]);
 
         $middleware->validateCsrfTokens(except: [

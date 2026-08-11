@@ -39,6 +39,15 @@ use App\Http\Controllers\Api\PackageController;
 use App\Http\Controllers\Api\PackageTimeSlotController;
 use App\Http\Controllers\Api\PageAnalyticsController;
 use App\Http\Controllers\Api\PaymentController;
+use App\Http\Controllers\Api\PhotoDeliveryController;
+use App\Http\Controllers\Api\PhotoLibraryController;
+use App\Http\Controllers\Api\PhotoMediaController;
+use App\Http\Controllers\Api\PhotoOverlayController;
+use App\Http\Controllers\Api\PhotoPublicController;
+use App\Http\Controllers\Api\PhotoReportController;
+use App\Http\Controllers\Api\PhotoSessionController;
+use App\Http\Controllers\Api\PhotoSettingController;
+use App\Http\Controllers\Api\SlideshowQueueController;
 use App\Http\Controllers\Api\PromoController;
 use App\Http\Controllers\Api\RoomController;
 use App\Http\Controllers\Api\RsvpController;
@@ -74,6 +83,36 @@ Route::get('waivers/bulk/{manageToken}',             [WaiverPublicController::cl
 Route::post('waivers/bulk/{manageToken}/recipients', [WaiverPublicController::class, 'bulkAddRecipients'])->middleware('throttle:30,1');
 Route::post('waivers/bulk/{manageToken}/send',       [WaiverPublicController::class, 'bulkSend'])->middleware('throttle:10,1');
 Route::post('waivers/bulk/{manageToken}/recipients/{recipientId}/resend', [WaiverPublicController::class, 'bulkResendRecipient'])->middleware('throttle:10,1')->whereNumber('recipientId');
+
+// --- Public photo flows (passcode-protected devices and token-addressed customer pages, no auth) ---
+Route::prefix('photos')->group(function () {
+    Route::post('kiosk/{locationId}/unlock',   [PhotoPublicController::class, 'kioskUnlock'])->whereNumber('locationId')->middleware('throttle:12,1');
+    Route::get('kiosk/{locationId}',           [PhotoPublicController::class, 'kioskContext'])->whereNumber('locationId')->middleware('throttle:120,1');
+    Route::post('kiosk/{locationId}/sessions', [PhotoPublicController::class, 'kioskStartSession'])->whereNumber('locationId')->middleware('throttle:120,1');
+
+    Route::middleware('throttle:120,1')->group(function () {
+        Route::post('kiosk/{locationId}/sessions/{photoSession}/capture', [PhotoPublicController::class, 'kioskCapture'])->whereNumber(['locationId', 'photoSession']);
+        Route::post('kiosk/{locationId}/sessions/{photoSession}/retake',  [PhotoPublicController::class, 'kioskRetake'])->whereNumber(['locationId', 'photoSession']);
+        Route::post('kiosk/{locationId}/sessions/{photoSession}/accept',  [PhotoPublicController::class, 'kioskAccept'])->whereNumber(['locationId', 'photoSession']);
+        Route::post('kiosk/{locationId}/sessions/{photoSession}/timeout', [PhotoPublicController::class, 'kioskTimeout'])->whereNumber(['locationId', 'photoSession']);
+    });
+
+    Route::post('slideshow/{locationId}/unlock', [PhotoPublicController::class, 'slideshowUnlock'])->whereNumber('locationId')->middleware('throttle:12,1');
+    Route::get('slideshow/{locationId}/feed',    [PhotoPublicController::class, 'slideshowFeed'])->whereNumber('locationId')->middleware('throttle:240,1');
+
+    // The ONLY read path for photo media. Media lives on a private disk; this route is
+    // reachable solely via a short-lived signed URL minted after an authorization check.
+    Route::get('media/{photo}/{variant}', [PhotoMediaController::class, 'show'])
+        ->whereNumber('photo')
+        ->whereIn('variant', ['delivery', 'slideshow', 'thumb'])
+        ->middleware(['signed', 'throttle:600,1'])
+        ->name('photos.media');
+
+    Route::get('qr/{qrToken}',                    [PhotoPublicController::class, 'resolveQr'])->middleware('throttle:60,1');
+    Route::get('access/{accessToken}',            [PhotoPublicController::class, 'photoPage'])->middleware('throttle:120,1');
+    Route::post('access/{accessToken}/contact',   [PhotoPublicController::class, 'submitKioskContact'])->middleware('throttle:20,1');
+    Route::get('access/{accessToken}/photos/{photoId}/download', [PhotoPublicController::class, 'downloadPhoto'])->whereNumber('photoId')->middleware('throttle:60,1');
+});
 
 Route::middleware('throttle:120,1')->group(function () {
     Route::post('analytics/track',       [PageAnalyticsController::class, 'track']);
@@ -667,5 +706,59 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('waivers',                   [WaiverController::class, 'index']);
     Route::get('waivers/{waiver}',          [WaiverController::class, 'show']);
     Route::delete('waivers/{waiver}',       [WaiverController::class, 'destroy']);
+
+    // Every photo endpoint requires a real staff User with an approved role. The shared
+    // ScopesByAuthUser trait applies no scoping at all for a non-User principal, so this
+    // gate is what keeps a customer token out.
+    Route::middleware('photo.staff')->group(function () {
+        // --- Photo delivery, kiosk, QR and slideshow (staff/admin) ---
+        // Staff capture and delivery
+        Route::get('photo-sessions/context',        [PhotoSessionController::class, 'context']);
+        Route::get('photo-sessions/waiver-search',  [PhotoSessionController::class, 'waiverSearch']);
+        Route::get('photo-sessions',                [PhotoSessionController::class, 'index']);
+        Route::post('photo-sessions',               [PhotoSessionController::class, 'store']);
+        Route::get('photo-sessions/{photoSession}', [PhotoSessionController::class, 'show'])->whereNumber('photoSession');
+        Route::post('photo-sessions/{photoSession}/photos',          [PhotoSessionController::class, 'addPhoto'])->whereNumber('photoSession');
+        Route::post('photo-sessions/{photoSession}/photos/reorder',  [PhotoSessionController::class, 'reorderPhotos'])->whereNumber('photoSession');
+        Route::delete('photo-sessions/{photoSession}/photos/{photo}', [PhotoSessionController::class, 'destroyPhoto'])->whereNumber(['photoSession', 'photo']);
+        Route::post('photo-sessions/{photoSession}/deliver',         [PhotoSessionController::class, 'deliver'])->whereNumber('photoSession');
+        Route::delete('photo-sessions/{photoSession}',               [PhotoSessionController::class, 'destroy'])->whereNumber('photoSession');
+
+        // Daily photo library
+        Route::get('photo-library',                          [PhotoLibraryController::class, 'index']);
+        Route::post('photo-library/download',                [PhotoLibraryController::class, 'downloadMany']);
+        Route::get('photo-library/{photo}',                  [PhotoLibraryController::class, 'show'])->whereNumber('photo');
+        Route::get('photo-library/{photo}/download',         [PhotoLibraryController::class, 'download'])->whereNumber('photo');
+        Route::post('photo-library/{photo}/send',            [PhotoLibraryController::class, 'send'])->whereNumber('photo');
+
+        // Slideshow queue management
+        Route::get('slideshow-queues',                          [SlideshowQueueController::class, 'index']);
+        Route::get('slideshow-queues/{slideshowQueue}',         [SlideshowQueueController::class, 'show'])->whereNumber('slideshowQueue');
+        Route::post('slideshow-queues/{slideshowQueue}/reorder', [SlideshowQueueController::class, 'reorder'])->whereNumber('slideshowQueue');
+        Route::post('slideshow-queues/{slideshowQueue}/paused',  [SlideshowQueueController::class, 'setPaused'])->whereNumber('slideshowQueue');
+        Route::patch('slideshow-photos/{photo}',                [SlideshowQueueController::class, 'updatePhoto'])->whereNumber('photo');
+
+        // Overlays
+        Route::get('photo-overlays',                   [PhotoOverlayController::class, 'index'])->middleware('photo.staff:company_admin|admin|location_manager');
+        Route::post('photo-overlays',                  [PhotoOverlayController::class, 'store'])->middleware('photo.staff:company_admin|admin|location_manager');
+        Route::post('photo-overlays/{photoOverlay}',   [PhotoOverlayController::class, 'update'])->whereNumber('photoOverlay')->middleware('photo.staff:company_admin|admin|location_manager');
+        Route::delete('photo-overlays/{photoOverlay}', [PhotoOverlayController::class, 'destroy'])->whereNumber('photoOverlay')->middleware('photo.staff:company_admin|admin|location_manager');
+
+        // Delivery log
+        Route::get('photo-deliveries',                          [PhotoDeliveryController::class, 'index']);
+        Route::post('photo-deliveries/{photoDelivery}/retry',   [PhotoDeliveryController::class, 'retry'])->whereNumber('photoDelivery');
+        Route::post('photo-deliveries/{photoDelivery}/cancel',  [PhotoDeliveryController::class, 'cancel'])->whereNumber('photoDelivery');
+
+        // Settings, passcodes and message templates
+        Route::get('photo-settings',                 [PhotoSettingController::class, 'show'])->middleware('photo.staff:company_admin|admin|location_manager');
+        Route::put('photo-settings',                 [PhotoSettingController::class, 'update'])->middleware('photo.staff:company_admin|admin|location_manager');
+        Route::post('photo-settings/passcode',       [PhotoSettingController::class, 'rotatePasscode'])->middleware('photo.staff:company_admin|admin|location_manager');
+        Route::get('photo-templates',                [PhotoSettingController::class, 'templates'])->middleware('photo.staff:company_admin|admin|location_manager');
+        Route::put('photo-templates/{photoMessageTemplate}',       [PhotoSettingController::class, 'updateTemplate'])->whereNumber('photoMessageTemplate')->middleware('photo.staff:company_admin|admin|location_manager');
+        Route::post('photo-templates/{photoMessageTemplate}/reset', [PhotoSettingController::class, 'resetTemplate'])->whereNumber('photoMessageTemplate')->middleware('photo.staff:company_admin|admin|location_manager');
+
+        // Reporting
+        Route::get('photo-reports/{type}', [PhotoReportController::class, 'report'])->middleware('photo.staff:company_admin|admin|location_manager');
+    });
 });
 

@@ -30,6 +30,19 @@ return [
 
     'disks' => [
 
+        /*
+         * Customer photo media. PRIVATE on purpose: every read has to pass through a
+         * signed route so the QR window, the 30-day page expiry and the kiosk contact
+         * gate actually revoke access. Never point this at storage/app/public.
+         */
+        'photos' => [
+            'driver' => 'local',
+            'root' => storage_path('app/private'),
+            'serve' => false,
+            'throw' => false,
+        ],
+
+
         'local' => [
             'driver' => 'local',
             'root' => storage_path('app/private'),

@@ -64,6 +64,31 @@ class Location extends Model
         return $this->hasMany(GiftCard::class);
     }
 
+    public function photoSetting(): HasOne
+    {
+        return $this->hasOne(LocationPhotoSetting::class);
+    }
+
+    public function photoOverlays(): HasMany
+    {
+        return $this->hasMany(PhotoOverlay::class);
+    }
+
+    public function photoSessions(): HasMany
+    {
+        return $this->hasMany(PhotoSession::class);
+    }
+
+    public function photos(): HasMany
+    {
+        return $this->hasMany(Photo::class);
+    }
+
+    public function slideshowQueues(): HasMany
+    {
+        return $this->hasMany(SlideshowQueue::class);
+    }
+
     public function scopeActive($query)
     {
         return $query->where('is_active', true);

@@ -16,8 +16,11 @@ $FORGE_COMPOSER install --no-dev --no-interaction --prefer-dist --optimize-autol
 # against an un-migrated schema.
 $FORGE_PHP artisan migrate --force
 
-# Seed default email notifications for all companies (idempotent — skips existing)
+# Seed default message wording for all companies. Every one of these is idempotent:
+# it only creates what is missing, so wording a manager has edited is never overwritten.
 $FORGE_PHP artisan db:seed --class=DefaultEmailNotificationSeeder --force
+$FORGE_PHP artisan db:seed --class=DefaultSmsNotificationSeeder --force
+$FORGE_PHP artisan db:seed --class=DefaultPhotoMessageTemplateSeeder --force
 
 # Clear and rebuild caches
 $FORGE_PHP artisan config:clear
@@ -36,4 +39,4 @@ $FORGE_PHP artisan storage:link || true
 ( flock -w 10 9 || exit 1
     echo 'Restarting FPM...'; sudo -S service $FORGE_PHP_FPM reload ) 9>/tmp/fpmlock
 
-echo "Deploy complete: migrations applied, default email notifications seeded."
+echo "Deploy complete: migrations applied, default email, SMS and photo message templates seeded."
