@@ -125,6 +125,71 @@ class SlideshowQueueController extends Controller
         ]);
     }
 
+    /**
+     * Put any photo on the venue screen, or take it off again.
+     *
+     * Kiosk photos opt themselves in, but a staff photo had no route onto the slideshow at
+     * all. Including a photo places it in TODAY's active queue regardless of the day it was
+     * taken, because the point of the action is "show this now".
+     */
+    public function setInclusion(Request $request, Photo $photo): JsonResponse
+    {
+        if (!$this->authorizeRecordScope($photo)) {
+            return $this->forbidden();
+        }
+
+        $validated = $request->validate(['include' => ['required', 'boolean']]);
+        $include = (bool) $validated['include'];
+
+        if ($include && !$photo->isReady()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This photo is not ready to show yet.',
+            ], 422);
+        }
+
+        $photo->loadMissing('location');
+
+        if ($include) {
+            $queue = SlideshowQueue::activeFor($photo->location);
+
+            $photo->update([
+                'slideshow_eligible' => true,
+                'slideshow_state' => Photo::SLIDESHOW_VISIBLE,
+                'slideshow_queue_id' => $queue->id,
+            ]);
+        } else {
+            $photo->update([
+                'slideshow_eligible' => false,
+                'slideshow_state' => Photo::SLIDESHOW_REMOVED,
+                'slideshow_queue_id' => null,
+            ]);
+        }
+
+        ActivityLog::log(
+            $include ? 'slideshow_photo_added' : 'slideshow_photo_withdrawn',
+            'photos',
+            sprintf(
+                '%s photo #%d %s the venue slideshow',
+                $include ? 'Added' : 'Removed',
+                $photo->id,
+                $include ? 'to' : 'from'
+            ),
+            $this->resolveAuthUser($request)?->id,
+            $photo->location_id,
+            'photo',
+            $photo->id
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => $include
+                ? 'Added to the venue slideshow. It appears on the screen within a few seconds.'
+                : 'Removed from the venue slideshow.',
+            'data' => $this->presentPhoto($photo->fresh()),
+        ]);
+    }
+
     public function reorder(Request $request, SlideshowQueue $slideshowQueue): JsonResponse
     {
         if (!$this->authorizeRecordScope($slideshowQueue)) {

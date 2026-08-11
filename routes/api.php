@@ -86,32 +86,32 @@ Route::post('waivers/bulk/{manageToken}/recipients/{recipientId}/resend', [Waive
 
 // --- Public photo flows (passcode-protected devices and token-addressed customer pages, no auth) ---
 Route::prefix('photos')->group(function () {
-    Route::post('kiosk/{locationId}/unlock',   [PhotoPublicController::class, 'kioskUnlock'])->whereNumber('locationId')->middleware('throttle:12,1');
-    Route::get('kiosk/{locationId}',           [PhotoPublicController::class, 'kioskContext'])->whereNumber('locationId')->middleware('throttle:120,1');
-    Route::post('kiosk/{locationId}/sessions', [PhotoPublicController::class, 'kioskStartSession'])->whereNumber('locationId')->middleware('throttle:120,1');
+    Route::post('kiosk/{locationId}/unlock',   [PhotoPublicController::class, 'kioskUnlock'])->whereNumber('locationId')->middleware('throttle:photo-unlock');
+    Route::get('kiosk/{locationId}',           [PhotoPublicController::class, 'kioskContext'])->whereNumber('locationId')->middleware('throttle:photo-kiosk');
+    Route::post('kiosk/{locationId}/sessions', [PhotoPublicController::class, 'kioskStartSession'])->whereNumber('locationId')->middleware('throttle:photo-kiosk');
 
-    Route::middleware('throttle:120,1')->group(function () {
+    Route::middleware('throttle:photo-kiosk')->group(function () {
         Route::post('kiosk/{locationId}/sessions/{photoSession}/capture', [PhotoPublicController::class, 'kioskCapture'])->whereNumber(['locationId', 'photoSession']);
         Route::post('kiosk/{locationId}/sessions/{photoSession}/retake',  [PhotoPublicController::class, 'kioskRetake'])->whereNumber(['locationId', 'photoSession']);
         Route::post('kiosk/{locationId}/sessions/{photoSession}/accept',  [PhotoPublicController::class, 'kioskAccept'])->whereNumber(['locationId', 'photoSession']);
         Route::post('kiosk/{locationId}/sessions/{photoSession}/timeout', [PhotoPublicController::class, 'kioskTimeout'])->whereNumber(['locationId', 'photoSession']);
     });
 
-    Route::post('slideshow/{locationId}/unlock', [PhotoPublicController::class, 'slideshowUnlock'])->whereNumber('locationId')->middleware('throttle:12,1');
-    Route::get('slideshow/{locationId}/feed',    [PhotoPublicController::class, 'slideshowFeed'])->whereNumber('locationId')->middleware('throttle:240,1');
+    Route::post('slideshow/{locationId}/unlock', [PhotoPublicController::class, 'slideshowUnlock'])->whereNumber('locationId')->middleware('throttle:photo-unlock');
+    Route::get('slideshow/{locationId}/feed',    [PhotoPublicController::class, 'slideshowFeed'])->whereNumber('locationId')->middleware('throttle:photo-slideshow');
 
     // The ONLY read path for photo media. Media lives on a private disk; this route is
     // reachable solely via a short-lived signed URL minted after an authorization check.
     Route::get('media/{photo}/{variant}', [PhotoMediaController::class, 'show'])
         ->whereNumber('photo')
         ->whereIn('variant', ['delivery', 'slideshow', 'thumb'])
-        ->middleware(['signed', 'throttle:600,1'])
+        ->middleware(['signed', 'throttle:photo-media'])
         ->name('photos.media');
 
-    Route::get('qr/{qrToken}',                    [PhotoPublicController::class, 'resolveQr'])->middleware('throttle:60,1');
-    Route::get('access/{accessToken}',            [PhotoPublicController::class, 'photoPage'])->middleware('throttle:120,1');
-    Route::post('access/{accessToken}/contact',   [PhotoPublicController::class, 'submitKioskContact'])->middleware('throttle:20,1');
-    Route::get('access/{accessToken}/photos/{photoId}/download', [PhotoPublicController::class, 'downloadPhoto'])->whereNumber('photoId')->middleware('throttle:60,1');
+    Route::get('qr/{qrToken}',                    [PhotoPublicController::class, 'resolveQr'])->middleware('throttle:photo-customer');
+    Route::get('access/{accessToken}',            [PhotoPublicController::class, 'photoPage'])->middleware('throttle:photo-customer');
+    Route::post('access/{accessToken}/contact',   [PhotoPublicController::class, 'submitKioskContact'])->middleware('throttle:photo-unlock');
+    Route::get('access/{accessToken}/photos/{photoId}/download', [PhotoPublicController::class, 'downloadPhoto'])->whereNumber('photoId')->middleware('throttle:photo-media');
 });
 
 Route::middleware('throttle:120,1')->group(function () {
@@ -740,6 +740,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('slideshow-queues/{slideshowQueue}/reorder', [SlideshowQueueController::class, 'reorder'])->whereNumber('slideshowQueue');
         Route::post('slideshow-queues/{slideshowQueue}/paused',  [SlideshowQueueController::class, 'setPaused'])->whereNumber('slideshowQueue');
         Route::patch('slideshow-photos/{photo}',                [SlideshowQueueController::class, 'updatePhoto'])->whereNumber('photo');
+        // Put any photo on the venue screen, staff captures included, or take it off.
+        Route::post('slideshow-photos/{photo}/inclusion',        [SlideshowQueueController::class, 'setInclusion'])->whereNumber('photo');
 
         // Overlays
         Route::get('photo-overlays',                   [PhotoOverlayController::class, 'index'])->middleware('photo.staff:company_admin|admin|location_manager');

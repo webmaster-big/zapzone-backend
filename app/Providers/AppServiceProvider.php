@@ -2,7 +2,10 @@
 
 namespace App\Providers;
 
+use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Database\Eloquent\Relations\Relation;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
@@ -31,6 +34,43 @@ class AppServiceProvider extends ServiceProvider
         });
 
         $this->registerCacheInvalidation();
+        $this->registerPhotoRateLimiters();
+    }
+
+    /**
+     * Named limiters for the public photo routes.
+     *
+     * The string form of the throttle middleware ("throttle:120,1") keys unauthenticated
+     * requests as sha1(domain|ip) — ONE counter shared by every route on the domain. At a
+     * venue, the slideshow polls its feed and streams images from the same public IP as the
+     * kiosk, so the display quietly spent the kiosk's allowance and the kiosk answered
+     * "Too Many Attempts" when a customer pressed Start.
+     *
+     * Each purpose below gets its own key, and it includes the location, so one device can
+     * never starve another and one venue can never affect a different venue.
+     */
+    private function registerPhotoRateLimiters(): void
+    {
+        $key = function (string $purpose, Request $request): string {
+            $location = $request->route('locationId') ?? 'na';
+
+            return 'photo:' . $purpose . ':' . $location . ':' . $request->ip();
+        };
+
+        // Passcode entry. Tight enough to stop guessing, loose enough for real typing.
+        RateLimiter::for('photo-unlock', fn (Request $request) => Limit::perMinute(12)->by($key('unlock', $request)));
+
+        // Kiosk session traffic: start, capture, retake, accept, timeout, context.
+        RateLimiter::for('photo-kiosk', fn (Request $request) => Limit::perMinute(180)->by($key('kiosk', $request)));
+
+        // The display polls this every 10 seconds.
+        RateLimiter::for('photo-slideshow', fn (Request $request) => Limit::perMinute(120)->by($key('slideshow', $request)));
+
+        // Customer photo pages and QR scans, keyed per IP only.
+        RateLimiter::for('photo-customer', fn (Request $request) => Limit::perMinute(120)->by($key('customer', $request)));
+
+        // Image streaming: a rotating slideshow plus several phones downloading at once.
+        RateLimiter::for('photo-media', fn (Request $request) => Limit::perMinute(1200)->by($key('media', $request)));
     }
 
     private function registerCacheInvalidation(): void

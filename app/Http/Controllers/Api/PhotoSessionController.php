@@ -351,6 +351,7 @@ class PhotoSessionController extends Controller
             'schedule' => ['nullable', Rule::in([PhotoSession::SCHEDULE_IMMEDIATE, PhotoSession::SCHEDULE_NEXT_DAY])],
             'waiver_ids' => ['nullable', 'array'],
             'waiver_ids.*' => ['integer', 'exists:waivers,id'],
+            'slideshow_opt_in' => ['nullable', 'boolean'],
         ]);
 
         if ($photoSession->photos()->ready()->count() === 0) {
@@ -373,6 +374,7 @@ class PhotoSessionController extends Controller
         }
 
         $photoSession->startQrWindow();
+        $this->applySlideshowChoice($photoSession, $request->boolean('slideshow_opt_in'));
 
         if ($validated['method'] === PhotoSession::DELIVERY_STAFF_QR) {
             $photoSession->forceFill([
@@ -549,6 +551,40 @@ class PhotoSessionController extends Controller
                 'retention_days' => $setting->retention_days,
             ],
         ]);
+    }
+
+    /**
+     * Staff can put a session's photos on the venue screen at delivery time. Kiosk visitors
+     * choose this for themselves; before this, a staff capture had no way onto the slideshow.
+     */
+    protected function applySlideshowChoice(PhotoSession $session, bool $optIn): void
+    {
+        $session->slideshow_opt_in = $optIn;
+
+        if (!$optIn) {
+            return;
+        }
+
+        $session->loadMissing('location');
+        $queue = SlideshowQueue::activeFor($session->location);
+
+        foreach ($session->photos()->ready()->get() as $photo) {
+            $photo->update([
+                'slideshow_eligible' => true,
+                'slideshow_state' => Photo::SLIDESHOW_VISIBLE,
+                'slideshow_queue_id' => $queue->id,
+            ]);
+        }
+
+        ActivityLog::log(
+            'slideshow_photo_added',
+            'photos',
+            sprintf('Added the photos from session #%d to the venue slideshow', $session->id),
+            $this->resolveAuthUser()?->id,
+            $session->location_id,
+            'photo_session',
+            $session->id
+        );
     }
 
     protected function decodeDataUrl(?string $value): string|false|null
