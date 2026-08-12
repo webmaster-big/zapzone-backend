@@ -29,6 +29,44 @@ class WaiverMetricsService
     ];
 
     /**
+     * The day a waiver belongs to: the visit date it covers, then the day it was signed,
+     * and only as a last resort the day the record appeared.
+     *
+     * Counting on created_at instead put a waiver invited in one period and signed in
+     * another into the wrong period, which is why dashboard totals disagreed with the
+     * Waiver Records page. Comparing a DATE expression also keeps an evening Michigan
+     * signature on its own day rather than the next UTC one.
+     */
+    public const EFFECTIVE_DATE = 'COALESCE(waivers.selected_date, DATE(waivers.submitted_at), DATE(waivers.created_at))';
+
+    /**
+     * Constrain a waiver query to a period using the effective date above. Bounds may be
+     * Carbon instances or date strings; either way they are read in the given timezone so
+     * the period matches the one the venue is looking at.
+     */
+    public function scopeToPeriod(Builder $query, $from, $to, string $timezone = 'UTC'): Builder
+    {
+        $asBusinessDate = function ($value) use ($timezone) {
+            if ($value === null) {
+                return null;
+            }
+
+            return $value instanceof \DateTimeInterface
+                ? Carbon::instance($value)->copy()->setTimezone($timezone)->toDateString()
+                : Carbon::parse($value, $timezone)->toDateString();
+        };
+
+        if ($start = $asBusinessDate($from)) {
+            $query->whereRaw(self::EFFECTIVE_DATE . ' >= ?', [$start]);
+        }
+        if ($end = $asBusinessDate($to)) {
+            $query->whereRaw(self::EFFECTIVE_DATE . ' <= ?', [$end]);
+        }
+
+        return $query;
+    }
+
+    /**
      * Scalar counts for a scoped + date-filtered waiver query.
      * $base must already be scoped (company/location) and date-filtered; it is
      * never mutated (each read clones it) and excludes soft-deleted rows.

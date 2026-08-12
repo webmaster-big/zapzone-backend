@@ -50,11 +50,117 @@ class PhotoDeliveryService
             'email_transport' => $this->emailTransport(),
             'sms_note' => $this->smsAvailable()
                 ? null
-                : 'SMS is not configured on this site, so photo links go out by email only. Set TWILIO_SID, TWILIO_AUTH_TOKEN and TWILIO_FROM_NUMBER to switch it on.',
+                : 'Text messaging is not switched on yet, so photo links go out by email only. Your administrator can enable it in the site settings.',
             'email_note' => $this->emailAvailable()
                 ? null
-                : 'The mail transport is set to "log", so emails are written to the Laravel log instead of being sent.',
+                : 'Email is not switched on yet, so messages are written to the site log instead of being delivered. Your administrator can enable it in the site settings.',
+            'photo_link_base' => $this->photoLinkBase(),
+            'photo_link_note' => $this->photoLinkNote(),
         ];
+    }
+
+    public function photoLinkBase(): string
+    {
+        return rtrim((string) config('app.frontend_url'), '/');
+    }
+
+    /**
+     * Every photo message carries a link built from FRONTEND_URL. Left at its development
+     * default in a live environment, messages send successfully and still reach nobody,
+     * because the address only resolves on the machine that sent it.
+     */
+    public function photoLinkNote(): ?string
+    {
+        $base = $this->photoLinkBase();
+        $isLocalAddress = (bool) preg_match('/^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)/i', $base);
+
+        if ($base === '') {
+            return 'No public web address is set for this site, so photo links cannot be built. Your administrator needs to set the address visitors use.';
+        }
+
+        if ($isLocalAddress && app()->environment() !== 'local') {
+            return 'Photo links currently point at ' . $base . ', which only opens on the server itself, so visitors would not be able to reach them. Your administrator needs to set the address visitors use.';
+        }
+
+        return null;
+    }
+
+    /**
+     * Send a sample message on one channel so staff can confirm the channel works and see
+     * the provider's own words when it does not.
+     */
+    public function sendTest(Location $location, string $channel, string $destination, string $kind = PhotoMessageTemplate::KIND_IMMEDIATE): array
+    {
+        $location->loadMissing('company');
+        $template = PhotoMessageTemplate::forCompany($location->company_id, $kind);
+        $tz = OperatingDay::timezoneFor($location);
+
+        $variables = [
+            'first_name' => 'there',
+            'location_name' => $location->name ?? 'Zap Zone',
+            'photo_date' => now($tz)->format('M j, Y'),
+            'photo_link' => $this->photoLinkBase() . '/photos/sample-link',
+            'expires_on' => now($tz)->addDays(30)->format('M j, Y'),
+            'business_name' => $location->company?->name ?? 'Zap Zone',
+            'support_contact' => (string) config('photos.support_contact'),
+            'photo_count' => '2',
+        ];
+
+        try {
+            if ($channel === PhotoDelivery::CHANNEL_EMAIL) {
+                if (!$this->validEmail($destination)) {
+                    return ['success' => false, 'message' => 'Please enter a valid email address.'];
+                }
+                if (!$this->emailAvailable()) {
+                    return ['success' => false, 'message' => 'Email is not switched on yet, so nothing would actually be delivered. Ask your administrator to enable it, then try again.'];
+                }
+
+                $this->sendEmail(
+                    $destination,
+                    '[Test] ' . $template->render('email_subject', $variables),
+                    $this->wrapHtml($template->render('email_body', $variables)),
+                    $variables['business_name']
+                );
+
+                return [
+                    'success' => true,
+                    'message' => 'Test email sent to ' . $destination . '. If it does not arrive, check the junk folder before reporting a problem.',
+                ];
+            }
+
+            if (!$this->validPhone($destination)) {
+                return ['success' => false, 'message' => 'Please enter a valid mobile number.'];
+            }
+            if (!$this->smsAvailable()) {
+                return ['success' => false, 'message' => 'Text messaging is not switched on yet. Ask your administrator to enable it, then try again.'];
+            }
+
+            $body = trim($template->render('sms_body', $variables));
+
+            if ($body === '') {
+                return ['success' => false, 'message' => 'The text message wording is empty. Add it under Message wording below.'];
+            }
+
+            $sid = $this->sms->sendSms($this->normalizePhone($destination), '[Test] ' . $body);
+
+            return [
+                'success' => true,
+                'message' => 'Test text sent to ' . $this->normalizePhone($destination) . '. It should arrive within a few seconds.',
+                'provider_reference' => $sid,
+                'characters' => mb_strlen($body),
+            ];
+        } catch (\Throwable $e) {
+            Log::warning('Photo channel test failed', [
+                'location_id' => $location->id,
+                'channel' => $channel,
+                'error' => $e->getMessage(),
+            ]);
+
+            return [
+                'success' => false,
+                'message' => 'The message could not be sent. The provider said: ' . mb_substr($e->getMessage(), 0, 400),
+            ];
+        }
     }
 
     /**
@@ -95,16 +201,22 @@ class PhotoDeliveryService
         }
 
         if ($onRecord === []) {
-            return 'This waiver has no email address or mobile number.';
+            // Something may well be written in these fields; say so rather than claim the
+            // waiver is blank, because staff can then go and correct what is there.
+            $hasSomething = trim((string) $waiver->adult_email) !== '' || trim((string) $waiver->adult_phone) !== '';
+
+            return $hasSomething
+                ? 'This waiver has no email address or mobile number that can be used. Please check the contact details on the record.'
+                : 'This waiver has no email address or mobile number.';
         }
         if ($onRecord === [PhotoDelivery::CHANNEL_SMS]) {
-            return 'This waiver only has a mobile number, and SMS is not configured on this site.';
+            return 'This waiver only has a mobile number, and text messaging is not switched on yet.';
         }
         if ($onRecord === [PhotoDelivery::CHANNEL_EMAIL]) {
-            return 'This waiver only has an email address, and the mail transport is not sending yet.';
+            return 'This waiver only has an email address, and email is not switched on yet.';
         }
 
-        return 'Neither email nor SMS can be sent from this site yet.';
+        return 'Neither email nor text messaging is switched on yet, so nothing can be sent.';
     }
 
     public function queueWaiverDeliveries(PhotoSession $session, Collection $waivers, string $schedule, ?int $userId = null): array
@@ -144,8 +256,8 @@ class PhotoDeliveryService
                     'recipient_name' => $recipientName,
                     'status' => PhotoDelivery::STATUS_SKIPPED,
                     'error' => $unsupported === PhotoDelivery::CHANNEL_SMS
-                        ? 'SMS is not configured on this site.'
-                        : 'The mail transport is not sending yet.',
+                        ? 'Text messaging is not switched on yet.'
+                        : 'Email is not switched on yet.',
                     'created_by' => $userId,
                 ]);
             }
@@ -240,7 +352,7 @@ class PhotoDeliveryService
                 'destination' => $this->normalizePhone($session->kiosk_contact_phone),
                 'recipient_name' => $session->kiosk_contact_name,
                 'status' => $smsReady ? PhotoDelivery::STATUS_QUEUED : PhotoDelivery::STATUS_SKIPPED,
-                'error' => $smsReady ? null : 'SMS is not configured on this site.',
+                'error' => $smsReady ? null : 'Text messaging is not switched on yet.',
             ]);
         }
 
@@ -289,7 +401,15 @@ class PhotoDeliveryService
                     $variables['business_name']
                 );
             } else {
-                $this->sms->sendSms($delivery->destination, $template->render('sms_body', $variables));
+                $body = trim($template->render('sms_body', $variables));
+
+                if ($body === '') {
+                    throw new \RuntimeException(
+                        'The text message wording is empty. Add it under Photos, Settings, Message wording.'
+                    );
+                }
+
+                $this->sms->sendSms($delivery->destination, $body);
             }
 
             $delivery->update([
@@ -486,29 +606,17 @@ HTML;
             && filter_var(trim($value), FILTER_VALIDATE_EMAIL) !== false;
     }
 
+    /**
+     * A number is only offered as an SMS destination when it can be texted, so the
+     * delivery log never shows a queued row for an address Twilio would refuse.
+     */
     public function validPhone(?string $value): bool
     {
-        if ($value === null) {
-            return false;
-        }
-
-        $digits = preg_replace('/[^0-9]/', '', $value);
-
-        return strlen((string) $digits) >= 10;
+        return SmsService::toE164($value) !== null;
     }
 
     public function normalizePhone(?string $value): string
     {
-        $raw = trim((string) $value);
-        $digits = preg_replace('/[^0-9]/', '', $raw);
-
-        if (strlen((string) $digits) === 10) {
-            return '+1' . $digits;
-        }
-        if (strlen((string) $digits) === 11 && str_starts_with((string) $digits, '1')) {
-            return '+' . $digits;
-        }
-
-        return '+' . $digits;
+        return SmsService::toE164($value) ?? trim((string) $value);
     }
 }

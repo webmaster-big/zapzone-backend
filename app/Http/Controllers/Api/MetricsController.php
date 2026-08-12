@@ -21,6 +21,31 @@ class MetricsController extends Controller
 {
     use ScopesByAuthUser;
 
+    /**
+     * The whole visit days a waiver count should cover for a dashboard timeframe.
+     *
+     * Waivers are counted on the day they cover rather than the moment they were created, and
+     * a day is not divisible, so "Last 7 Days" has to mean the seven days ending today rather
+     * than an instant seven days ago. Returns [from, to] as date strings, or [null, null] for
+     * all time.
+     */
+    protected function waiverPeriodFor(string $timeframe, $dateFrom, $dateTo, string $timezone): array
+    {
+        $today = \Carbon\Carbon::today($timezone);
+
+        $daysEndingToday = function (int $days) use ($today) {
+            return [$today->copy()->subDays(max(0, $days - 1))->toDateString(), $today->toDateString()];
+        };
+
+        return match ($timeframe) {
+            'today' => $daysEndingToday(1),
+            'last_24h' => $daysEndingToday(1),
+            'last_7d' => $daysEndingToday(7),
+            'last_30d' => $daysEndingToday(30),
+            default => [$dateFrom, $dateTo],
+        };
+    }
+
     public function dashboard(Request $request, $id)
     {
         try {
@@ -524,18 +549,16 @@ class MetricsController extends Controller
             if ($locationId) {
                 $waiverBase->where('location_id', $locationId);
             }
-            if ($dateFrom) {
-                $useDateTime
-                    ? $waiverBase->where('created_at', '>=', $dateFrom)
-                    : $waiverBase->whereDate('created_at', '>=', $dateFrom);
-            }
-            if ($dateTo) {
-                $useDateTime
-                    ? $waiverBase->where('created_at', '<=', $dateTo)
-                    : $waiverBase->whereDate('created_at', '<=', $dateTo);
-            }
-
             $waiverService = app(WaiverMetricsService::class);
+            // Counted on the day each waiver covers, so this total agrees with the Waiver
+            // Records page for the same period. See WaiverMetricsService::EFFECTIVE_DATE.
+            //
+            // A waiver covers a whole visit day, so a rolling window has to be expressed in
+            // whole days ending today. Handing the raw bounds over instead would round both
+            // ends outwards and quietly widen "Last 24 Hours" to two days of business.
+            [$waiverFrom, $waiverTo] = $this->waiverPeriodFor(is_string($timeframe) ? $timeframe : 'all_time', $dateFrom, $dateTo, $timezone);
+            $waiverService->scopeToPeriod($waiverBase, $waiverFrom, $waiverTo, $timezone);
+
             $waiverSummary = $waiverService->summary($waiverBase);
             $waiverMetricsData = [
                 'totalWaivers' => $waiverSummary['total'],

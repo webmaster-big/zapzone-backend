@@ -7,6 +7,7 @@ use App\Http\Traits\ScopesByAuthUser;
 use App\Models\ActivityLog;
 use App\Models\Location;
 use App\Models\LocationPhotoSetting;
+use App\Models\PhotoDelivery;
 use App\Models\PhotoMessageTemplate;
 use App\Models\PhotoSession;
 use App\Services\PhotoDeliveryService;
@@ -231,6 +232,53 @@ class PhotoSettingController extends Controller
         $photoMessageTemplate->update($defaults);
 
         return response()->json(['success' => true, 'data' => $photoMessageTemplate->fresh()]);
+    }
+
+    public function sendTestMessage(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'location_id' => ['required', 'integer', 'exists:locations,id'],
+            'channel' => ['required', Rule::in([PhotoDelivery::CHANNEL_EMAIL, PhotoDelivery::CHANNEL_SMS])],
+            'destination' => ['required', 'string', 'max:190'],
+            'kind' => ['nullable', Rule::in(PhotoMessageTemplate::KINDS)],
+        ], [
+            'destination.required' => 'Please enter where the test message should go.',
+        ]);
+
+        $location = $this->scopedLocation($request, $validated['location_id']);
+
+        if (!$location instanceof Location) {
+            return $location;
+        }
+
+        $result = app(PhotoDeliveryService::class)->sendTest(
+            $location,
+            $validated['channel'],
+            trim($validated['destination']),
+            $validated['kind'] ?? PhotoMessageTemplate::KIND_IMMEDIATE
+        );
+
+        ActivityLog::log(
+            'photo_channel_tested',
+            'photos',
+            sprintf(
+                'Sent a test photo message by %s for %s (%s)',
+                strtoupper($validated['channel']),
+                $location->name,
+                $result['success'] ? 'accepted' : 'not accepted'
+            ),
+            $this->resolveAuthUser($request)?->id,
+            $location->id,
+            'location',
+            $location->id,
+            ['channel' => $validated['channel'], 'succeeded' => $result['success']]
+        );
+
+        return response()->json([
+            'success' => $result['success'],
+            'message' => $result['message'],
+            'data' => collect($result)->except(['success', 'message'])->all(),
+        ], $result['success'] ? 200 : 422);
     }
 
     protected function dateFormatOptions(Location $location): array

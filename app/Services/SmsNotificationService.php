@@ -235,12 +235,18 @@ class SmsNotificationService
             }
         }
 
+        // Compare on the dialled form. The same person stored as "(810) 555-0134" on a
+        // booking and "810-555-0134" as a staff user used to read as two people and be
+        // texted twice; a number Twilio cannot use is dropped here rather than attempted.
         $seen = [];
         return array_values(array_filter($recipients, function ($r) use (&$seen) {
-            if (in_array($r['phone'], $seen, true)) {
+            $dialled = SmsService::toE164($r['phone']);
+
+            if ($dialled === null || in_array($dialled, $seen, true)) {
                 return false;
             }
-            $seen[] = $r['phone'];
+
+            $seen[] = $dialled;
             return true;
         }));
     }

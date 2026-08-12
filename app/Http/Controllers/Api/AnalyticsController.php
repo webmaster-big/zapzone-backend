@@ -1169,7 +1169,10 @@ class AnalyticsController extends Controller
             return $query;
         };
 
-        $ranged = $baseFactory()->whereBetween('created_at', [$startDate, $endDate]);
+        // Waivers are counted on the day they cover, matching the dashboard and the Waiver
+        // Records page. See WaiverMetricsService::EFFECTIVE_DATE.
+        $timezone = config('app.timezone', 'UTC');
+        $ranged = $service->scopeToPeriod($baseFactory(), $startDate, $endDate, $timezone);
 
         $summary = $service->summary($ranged);
         $ageBrackets = $service->ageBrackets($ranged);
@@ -1182,18 +1185,19 @@ class AnalyticsController extends Controller
             while ($cursor->lte($endDate)) {
                 $windowStart = $cursor->copy()->startOfMonth();
                 $windowEnd = $cursor->copy()->endOfMonth();
-                $count = $baseFactory()->whereBetween('created_at', [
+                $count = $service->scopeToPeriod(
+                    $baseFactory(),
                     $windowStart->lt($startDate) ? $startDate : $windowStart,
                     $windowEnd->gt($endDate) ? $endDate : $windowEnd,
-                ])->count();
+                    $timezone
+                )->count();
                 $perDay[] = ['date' => $cursor->toDateString(), 'label' => $cursor->format('M Y'), 'count' => $count];
                 $cursor->addMonth();
             }
         } else {
             $cursor = $startDate->copy();
             while ($cursor->lte($endDate)) {
-                $window = $this->businessDayWindow($cursor);
-                $count = $baseFactory()->whereBetween('created_at', $window)->count();
+                $count = $service->scopeToPeriod($baseFactory(), $cursor, $cursor, $timezone)->count();
                 $perDay[] = ['date' => $cursor->toDateString(), 'label' => $cursor->format('M j'), 'count' => $count];
                 $cursor->addDay();
             }

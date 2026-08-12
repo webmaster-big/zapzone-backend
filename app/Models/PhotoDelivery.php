@@ -27,6 +27,14 @@ class PhotoDelivery extends Model
 
     public const MAX_ATTEMPTS = 3;
 
+    /**
+     * How long to wait before the next automatic attempt, keyed by attempts already made.
+     */
+    public const RETRY_BACKOFF_MINUTES = [
+        1 => 15,
+        2 => 120,
+    ];
+
     protected $fillable = [
         'photo_session_id',
         'company_id',
@@ -129,5 +137,28 @@ class PhotoDelivery extends Model
     public function scopeReal($query)
     {
         return $query->whereNull('duplicate_of_id');
+    }
+
+    /**
+     * Deliveries that failed on a first or second attempt and are worth another try.
+     *
+     * A momentary provider or network problem used to strand a visitor's photo link for
+     * good, because nothing drove attempts two and three except a staff member noticing
+     * the failure and pressing Retry. The wait grows between attempts so a genuinely bad
+     * address is not hammered.
+     */
+    public function scopeRetryable($query)
+    {
+        return $query->where('status', self::STATUS_FAILED)
+            ->where('attempts', '>=', 1)
+            ->where('attempts', '<', self::MAX_ATTEMPTS)
+            ->where(function ($q) {
+                foreach (self::RETRY_BACKOFF_MINUTES as $attempts => $minutes) {
+                    $q->orWhere(function ($inner) use ($attempts, $minutes) {
+                        $inner->where('attempts', $attempts)
+                            ->where('updated_at', '<=', now()->subMinutes($minutes));
+                    });
+                }
+            });
     }
 }

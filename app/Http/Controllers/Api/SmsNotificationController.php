@@ -187,7 +187,7 @@ class SmsNotificationController extends Controller
         if (!SmsService::isConfigured()) {
             return response()->json([
                 'success' => false,
-                'message' => 'SMS is not configured. Set TWILIO_SID, TWILIO_AUTH_TOKEN and TWILIO_FROM_NUMBER.',
+                'message' => 'Text messaging is not switched on yet. Ask your administrator to enable it, then try again.',
             ], 422);
         }
 

@@ -71,6 +71,17 @@ class AppServiceProvider extends ServiceProvider
 
         // Image streaming: a rotating slideshow plus several phones downloading at once.
         RateLimiter::for('photo-media', fn (Request $request) => Limit::perMinute(1200)->by($key('media', $request)));
+
+        // Staff testing a channel. Each real send costs money, so keep the pace sensible.
+        RateLimiter::for('photo-test-message', fn (Request $request) => Limit::perMinute(6)
+            ->by('photo:test:' . ($this->photoRequestUserId($request) ?? $request->ip())));
+    }
+
+    private function photoRequestUserId(Request $request): ?int
+    {
+        $user = $request->user();
+
+        return $user?->id;
     }
 
     private function registerCacheInvalidation(): void
