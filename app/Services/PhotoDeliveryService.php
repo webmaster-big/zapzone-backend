@@ -101,7 +101,7 @@ class PhotoDeliveryService
             'photo_date' => now($tz)->format('M j, Y'),
             'photo_link' => $this->photoLinkBase() . '/photos/sample-link',
             'expires_on' => now($tz)->addDays(30)->format('M j, Y'),
-            'business_name' => $location->company?->name ?? 'Zap Zone',
+            'business_name' => $location->company?->company_name ?? 'Zap Zone',
             'support_contact' => (string) config('photos.support_contact'),
             'photo_count' => '2',
         ];
@@ -519,7 +519,7 @@ class PhotoDeliveryService
                 $setting->failure_notify_email,
                 '[' . $location->name . '] ' . $title,
                 $this->wrapHtml('<p>' . e($message) . '</p>'),
-                $location->company?->name ?? 'Zap Zone'
+                $location->company?->company_name ?? 'Zap Zone'
             );
         } catch (\Throwable $e) {
             Log::warning('Could not email the photo failure alert', ['error' => $e->getMessage()]);
@@ -539,7 +539,7 @@ class PhotoDeliveryService
             'photo_date' => ($session->captured_at ?: $session->created_at)->copy()->setTimezone($tz)->format('M j, Y'),
             'photo_link' => $this->photoLink($session),
             'expires_on' => $session->access_expires_at?->copy()->setTimezone($tz)->format('M j, Y') ?? '',
-            'business_name' => $location?->company?->name ?? 'Zap Zone',
+            'business_name' => $location?->company?->company_name ?? 'Zap Zone',
             'support_contact' => (string) config('photos.support_contact'),
             'photo_count' => (string) $session->photos()->ready()->count(),
         ];

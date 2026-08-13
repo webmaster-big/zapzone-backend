@@ -44,14 +44,14 @@ class EmailNotificationService
                     $this->sendDefaultBookingNotification($booking, $triggerType);
                 }
             }
-
-            $this->dispatchSms(fn ($sms) => $sms->triggerBookingNotification($booking, $triggerType));
         } catch (\Exception $e) {
             Log::error('Error processing booking notification', [
                 'booking_id' => $booking->id,
                 'trigger_type' => $triggerType,
                 'error' => $e->getMessage(),
             ]);
+        } finally {
+            $this->dispatchSms(fn ($sms) => $sms->triggerBookingNotification($booking, $triggerType));
         }
     }
 
@@ -73,14 +73,14 @@ class EmailNotificationService
                     $this->sendDefaultPurchaseNotification($purchase, $triggerType);
                 }
             }
-
-            $this->dispatchSms(fn ($sms) => $sms->triggerPurchaseNotification($purchase, $triggerType));
         } catch (\Exception $e) {
             Log::error('Error processing purchase notification', [
                 'purchase_id' => $purchase->id,
                 'trigger_type' => $triggerType,
                 'error' => $e->getMessage(),
             ]);
+        } finally {
+            $this->dispatchSms(fn ($sms) => $sms->triggerPurchaseNotification($purchase, $triggerType));
         }
     }
 
@@ -107,14 +107,14 @@ class EmailNotificationService
             foreach ($notifications as $notification) {
                 $this->sendNotification($notification, $payment, 'payment');
             }
-
-            $this->dispatchSms(fn ($sms) => $sms->triggerPaymentNotification($payment, $triggerType));
         } catch (\Exception $e) {
             Log::error('Error processing payment notification', [
                 'payment_id' => $payment->id,
                 'trigger_type' => $triggerType,
                 'error' => $e->getMessage(),
             ]);
+        } finally {
+            $this->dispatchSms(fn ($sms) => $sms->triggerPaymentNotification($payment, $triggerType));
         }
     }
 
@@ -137,14 +137,14 @@ class EmailNotificationService
                     $this->sendDefaultEventNotification($purchase);
                 }
             }
-
-            $this->dispatchSms(fn ($sms) => $sms->triggerEventNotification($purchase, $triggerType));
         } catch (\Exception $e) {
             Log::error('Error processing event notification', [
                 'event_purchase_id' => $purchase->id,
                 'trigger_type' => $triggerType,
                 'error' => $e->getMessage(),
             ]);
+        } finally {
+            $this->dispatchSms(fn ($sms) => $sms->triggerEventNotification($purchase, $triggerType));
         }
     }
 
@@ -160,20 +160,25 @@ class EmailNotificationService
             foreach ($notifications as $notification) {
                 $this->sendNotification($notification, $waiver, 'waiver');
             }
-
-            $this->dispatchSms(fn ($sms) => $sms->triggerWaiverNotification($waiver, $triggerType));
         } catch (\Exception $e) {
             Log::error('Error processing waiver notification', [
                 'waiver_id' => $waiver->id,
                 'trigger_type' => $triggerType,
                 'error' => $e->getMessage(),
             ]);
+        } finally {
+            $this->dispatchSms(fn ($sms) => $sms->triggerWaiverNotification($waiver, $triggerType));
         }
     }
 
     /**
-     * Fire the matching SMS notification for the same trigger. SMS failures are
-     * swallowed so they can never interfere with the email send.
+     * Fire the matching SMS notification for the same trigger.
+     *
+     * The isolation runs both ways, and both directions matter. SMS failures are swallowed
+     * here so they can never interfere with the email send. Every caller invokes this from a
+     * finally block so the reverse cannot happen either: this used to be the last statement
+     * inside the email try block, which meant one throwing email send silently took the
+     * paired text message down with it and logged only the email error.
      */
     protected function dispatchSms(callable $callback): void
     {
