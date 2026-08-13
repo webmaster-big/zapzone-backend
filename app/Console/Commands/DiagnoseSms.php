@@ -23,6 +23,7 @@ class DiagnoseSms extends Command
         $ok = $this->reportCredentials();
         $this->reportTemplates();
         $this->reportRecentAttempts();
+        $this->reportPhotoDeliveries();
         $this->reportNumbers();
 
         if ($phone = $this->option('phone')) {
@@ -31,7 +32,7 @@ class DiagnoseSms extends Command
 
         $this->newLine();
         $this->line($ok
-            ? '<fg=green>Credentials are in place.</> If messages still are not arriving, the "recent attempts" section above names the provider error.'
+            ? '<fg=green>Credentials are in place.</> Sections 3 and 4 are separate delivery paths: booking and waiver texts, then photo links. Check the one you are missing.'
             : '<fg=red>Text messaging cannot send at all until the missing settings above are filled in.</>');
         $this->newLine();
 
@@ -186,9 +187,91 @@ class DiagnoseSms extends Command
         $this->line('            messages containing a link are dropped while plain ones get through');
     }
 
+    /**
+     * Photo links are delivered from their own table, not sms_notification_logs, so a
+     * healthy notifications module tells you nothing about whether photos are arriving.
+     */
+    protected function reportPhotoDeliveries(): void
+    {
+        $this->heading('4. Photo links (a separate delivery path)');
+
+        if (!$this->tableExists('photo_deliveries')) {
+            $this->line('   <fg=yellow>skipped</>  the photo feature is not installed here');
+
+            return;
+        }
+
+        $window = now()->subDays(14);
+
+        $rows = DB::table('photo_deliveries')
+            ->where('created_at', '>=', $window)
+            ->whereNull('duplicate_of_id')
+            ->select('channel', 'status', DB::raw('COUNT(*) as total'))
+            ->groupBy('channel', 'status')
+            ->get();
+
+        if ($rows->isEmpty()) {
+            $this->line('   <fg=yellow>none</>     no photo links have been sent in the last 14 days at all,');
+            $this->line('              by text or by email, so there is nothing here to diagnose yet.');
+
+            return;
+        }
+
+        foreach (['sms' => 'by text', 'email' => 'by email'] as $channel => $label) {
+            $forChannel = $rows->where('channel', $channel);
+
+            if ($forChannel->isEmpty()) {
+                $this->line("   <fg=yellow>none</>     nothing attempted {$label}");
+                continue;
+            }
+
+            $parts = $forChannel->map(fn ($r) => "{$r->status} {$r->total}")->implode(', ');
+            $sent = (int) ($forChannel->firstWhere('status', 'sent')->total ?? 0);
+            $colour = $sent > 0 ? 'green' : 'red';
+            $this->line("   <fg={$colour}>{$label}</>: {$parts}");
+        }
+
+        $failures = DB::table('photo_deliveries')
+            ->where('created_at', '>=', $window)
+            ->whereIn('status', ['failed', 'skipped'])
+            ->whereNotNull('error')
+            ->orderByDesc('id')
+            ->limit(5)
+            ->get(['channel', 'destination', 'status', 'error', 'created_at']);
+
+        if ($failures->isNotEmpty()) {
+            $this->newLine();
+            $this->line('   Why photo links did not go out, most recent first:');
+
+            foreach ($failures as $failure) {
+                $when = \Illuminate\Support\Carbon::parse($failure->created_at)->format('M j H:i');
+                $this->line('   · ' . $when . '  ' . $failure->channel . ' ' . $failure->status . '  ' . $this->maskPhone((string) $failure->destination));
+                $this->line('     ' . trim(mb_substr((string) $failure->error, 0, 200)));
+            }
+        }
+
+        // A scheduled delivery whose time has passed means the scheduler is not running,
+        // which strands next-day photo links and every automatic retry.
+        $overdue = DB::table('photo_deliveries')
+            ->where('status', 'scheduled')
+            ->whereNotNull('scheduled_for')
+            ->where('scheduled_for', '<=', now()->subMinutes(30))
+            ->count();
+
+        $this->newLine();
+        $this->line($overdue === 0
+            ? '   <fg=green>ok</>       nothing is overdue, so the scheduled job is running'
+            : "   <fg=red>problem</>  {$overdue} photo link(s) are past their send time and still waiting.");
+
+        if ($overdue > 0) {
+            $this->line('              The scheduler is not running. Check the Forge cron for');
+            $this->line('              "php artisan schedule:run" on this site.');
+        }
+    }
+
     protected function reportNumbers(): void
     {
-        $this->heading('4. Are the stored numbers usable');
+        $this->heading('5. Are the stored numbers usable');
 
         if (!$this->tableExists('customers')) {
             $this->line('   <fg=yellow>skipped</>  the customers table does not exist yet');
@@ -223,7 +306,7 @@ class DiagnoseSms extends Command
 
     protected function reportOneNumber(string $phone): void
     {
-        $this->heading('5. The number you asked about');
+        $this->heading('6. The number you asked about');
 
         $dialled = SmsService::toE164($phone);
 
