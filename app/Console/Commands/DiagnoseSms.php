@@ -11,7 +11,10 @@ use Illuminate\Support\Facades\DB;
 
 class DiagnoseSms extends Command
 {
-    protected $signature = 'sms:diagnose {--phone= : Check one number without sending anything}';
+    protected $signature = 'sms:diagnose
+        {--phone= : Check one number without sending anything}
+        {--delivery : Ask the provider whether recent messages actually reached the phone}
+        {--limit=25 : How many recent messages to look up with --delivery}';
 
     protected $description = 'Report why text messages are or are not going out, without sending any';
 
@@ -28,6 +31,15 @@ class DiagnoseSms extends Command
 
         if ($phone = $this->option('phone')) {
             $this->reportOneNumber((string) $phone);
+        }
+
+        if ($this->option('delivery')) {
+            $this->reportRealDeliveryStatus((int) $this->option('limit'));
+        } else {
+            $this->newLine();
+            $this->line('   <fg=yellow>Note</> "sent" above means the provider accepted the message, not that the');
+            $this->line('   phone received it. To find out which actually arrived, run:');
+            $this->line('       php artisan sms:diagnose --delivery');
         }
 
         $this->newLine();
@@ -78,6 +90,23 @@ class DiagnoseSms extends Command
         $from = $present['TWILIO_FROM_NUMBER'];
         if ($from !== '' && SmsService::toE164($from) === null) {
             $this->line("   <fg=red>problem</>  the sending number {$from} is not in a form the provider accepts");
+        }
+
+        // A toll-free or ordinary US sender has to be registered before carriers will
+        // carry its traffic. Until it is, messages are accepted by the provider and then
+        // dropped on the way to the phone, which looks exactly like success in our logs.
+        $digits = preg_replace('/\D+/', '', $from) ?? '';
+        $areaCode = strlen($digits) === 11 && str_starts_with($digits, '1') ? substr($digits, 1, 3) : substr($digits, 0, 3);
+
+        if (in_array($areaCode, ['800', '833', '844', '855', '866', '877', '888'], true)) {
+            $this->line("   <fg=yellow>note</>     {$from} is a toll-free number. Carriers only carry toll-free");
+            $this->line('              traffic once Twilio has approved a Toll-Free Verification for it.');
+            $this->line('              Until then messages are accepted and then dropped silently, and');
+            $this->line('              messages containing a link are the first to go.');
+            $this->line('              Check: Twilio Console > Messaging > Regulatory Compliance > Toll-Free Verification');
+        } elseif ($digits !== '') {
+            $this->line('   <fg=yellow>note</>     if this is a standard 10-digit US number it needs A2P 10DLC');
+            $this->line('              registration before carriers will carry business traffic reliably.');
         }
 
         $configured = SmsService::isConfigured();
@@ -314,6 +343,108 @@ class DiagnoseSms extends Command
         $this->line($dialled === null
             ? '   <fg=red>result</>   cannot be texted as written'
             : '   <fg=green>result</>   would be texted as ' . $dialled);
+    }
+
+    /**
+     * Ask the provider what actually happened to messages we recorded as sent.
+     *
+     * Our own "sent" only means the API accepted the message and handed back an id. The
+     * final outcome -- delivered, or dropped somewhere between the provider and the phone --
+     * arrives later and is not recorded anywhere, so a run of silently filtered messages is
+     * indistinguishable from success. Looking each id up settles it. Read-only.
+     */
+    protected function reportRealDeliveryStatus(int $limit): void
+    {
+        $this->heading('7. What actually reached the phone');
+
+        if (!SmsService::isConfigured()) {
+            $this->line('   <fg=yellow>skipped</>  the provider is not configured, so there is nothing to ask');
+
+            return;
+        }
+
+        $limit = max(1, min($limit, 100));
+
+        $recent = SmsNotificationLog::whereNotNull('provider_sid')
+            ->where('status', SmsNotificationLog::STATUS_SENT)
+            ->latest()
+            ->limit($limit)
+            ->get(['recipient_phone', 'provider_sid', 'created_at']);
+
+        if ($recent->isEmpty()) {
+            $this->line('   <fg=yellow>none</>     no accepted messages with a provider id to look up');
+
+            return;
+        }
+
+        try {
+            $client = new \Twilio\Rest\Client(config('twilio.sid'), config('twilio.auth_token'));
+        } catch (\Throwable $e) {
+            $this->line('   <fg=red>problem</>  could not reach the provider: ' . $e->getMessage());
+
+            return;
+        }
+
+        $this->line("   asking the provider about the last {$recent->count()} accepted messages...");
+        $this->newLine();
+
+        $tally = [];
+        $problems = [];
+
+        foreach ($recent as $log) {
+            try {
+                $message = $client->messages($log->provider_sid)->fetch();
+                $status = (string) $message->status;
+                $tally[$status] = ($tally[$status] ?? 0) + 1;
+
+                if (in_array($status, ['undelivered', 'failed'], true)) {
+                    $problems[] = [
+                        'when' => $log->created_at->format('M j H:i'),
+                        'to' => $this->maskPhone((string) $log->recipient_phone),
+                        'code' => (string) ($message->errorCode ?? ''),
+                        'why' => (string) ($message->errorMessage ?? 'no reason given'),
+                    ];
+                }
+            } catch (\Throwable $e) {
+                $tally['could not look up'] = ($tally['could not look up'] ?? 0) + 1;
+            }
+        }
+
+        foreach ($tally as $status => $count) {
+            $colour = $status === 'delivered' ? 'green' : (in_array($status, ['undelivered', 'failed'], true) ? 'red' : 'yellow');
+            $this->line("   <fg={$colour}>{$status}</>: {$count}");
+        }
+
+        if ($problems !== []) {
+            $this->newLine();
+            $this->line('   Accepted by the provider but never reached the phone:');
+
+            foreach (array_slice($problems, 0, 8) as $p) {
+                $this->line('   · ' . $p['when'] . '  ' . $p['to'] . '  code ' . ($p['code'] ?: '-'));
+                $this->line('     ' . trim(mb_substr($p['why'], 0, 180)));
+            }
+
+            $this->newLine();
+            $this->line('   · 30032  the toll-free number is not verified yet');
+            $this->line('   · 30034  a standard number is not registered for business texting');
+            $this->line('   · 30007  the carrier filtered it as unwanted, often for containing a link');
+            $this->line('   · 30003  the handset was unreachable or switched off');
+            $this->line('   · 30005  that number does not exist');
+        }
+
+        $delivered = $tally['delivered'] ?? 0;
+
+        $this->newLine();
+        if ($delivered === 0) {
+            $this->line('   <fg=red>Nothing in this sample reached a phone.</> The provider is accepting messages');
+            $this->line('   and something downstream is dropping every one, which is what sender');
+            $this->line('   registration fixes. The codes above say which.');
+        } elseif ($problems !== []) {
+            $this->line("   <fg=yellow>{$delivered} of {$recent->count()} arrived.</> The rest were dropped after acceptance.");
+        } else {
+            $this->line('   <fg=green>Everything in this sample arrived.</> Texting is genuinely working, so a');
+            $this->line('   missing message is worth chasing per-recipient rather than system-wide.');
+        }
     }
 
     protected function maskPhone(string $phone): string
