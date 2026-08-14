@@ -430,9 +430,13 @@ class DiagnoseSms extends Command
             $marker = $e164 === $current ? ' <-- in use now' : '';
             $kind = $isTollFree ? 'toll-free' : 'local';
 
+            // The capability flag is reported inconsistently across API versions, and a number
+            // that has demonstrably had messages accepted obviously can send. Never turn a
+            // falsy reading into a verdict; note it and judge on registration state instead.
             if (!$canSms) {
-                $this->line("   <fg=red>no sms</>   {$e164}  {$kind}, cannot send text messages at all{$marker}");
-                continue;
+                $this->line("   <fg=yellow>note</>     {$e164}  {$kind}, the provider did not report an SMS capability");
+                $this->line('              for this number. If messages have been accepted from it then it can');
+                $this->line('              send, so treat this as unread rather than as a no.');
             }
 
             if ($isTollFree) {

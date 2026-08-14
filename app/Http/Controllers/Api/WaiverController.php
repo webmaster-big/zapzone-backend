@@ -9,6 +9,7 @@ use App\Models\Waiver;
 use App\Models\WaiverDeletionLog;
 use App\Models\WaiverSetting;
 use App\Models\WaiverTemplate;
+use App\Services\WaiverMetricsService;
 use App\Services\WaiverService;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\JsonResponse;
@@ -41,18 +42,28 @@ class WaiverController extends Controller
             ]);
             $this->applyAuthScope($query, $request);
 
-            // status: default to completed (the daily lookup), allow override
+            // Status: defaults to completed, which is the daily lookup staff do most. "all"
+            // applies no status filter, so the page can be made to show exactly what the
+            // dashboard's headline total counts.
             $status = $request->string('status')->toString();
-            if ($status !== '') {
+            if ($status === 'all') {
+                // No status filter.
+            } elseif ($status !== '') {
                 $query->where('status', $status);
             } else {
                 $query->where('status', Waiver::STATUS_COMPLETED);
             }
 
-            // date scope: default selected date (today) unless searching all
+            // Date scope: the day each waiver covers, defaulting to today, unless searching all.
+            //
+            // This uses the same rule as the dashboard and the analytics page rather than
+            // filtering selected_date directly. Filtering the column alone silently dropped any
+            // waiver with no visit date recorded — those never matched on any day, so they were
+            // invisible here while still being counted on the dashboard, which is why the two
+            // never agreed. See WaiverMetricsService::EFFECTIVE_DATE.
             if (!$request->boolean('all')) {
                 $date = $request->date('date') ?? now();
-                $query->whereDate('selected_date', $date);
+                app(WaiverMetricsService::class)->scopeToPeriod($query, $date, $date, config('app.timezone', 'UTC'));
             }
 
             $this->applySearchFilters($query, $request);
@@ -537,14 +548,22 @@ class WaiverController extends Controller
                 'booking:id,reference_number',
                 'event:id,name',
             ])
-            ->where('status', $request->string('status')->toString() ?: Waiver::STATUS_COMPLETED);
+            ->when(
+                $request->string('status')->toString() !== 'all',
+                fn ($q) => $q->where('status', $request->string('status')->toString() ?: Waiver::STATUS_COMPLETED)
+            );
         $this->applyAuthScope($query, $request);
 
+        // Exports must cover exactly the rows the page showed, so they use the same rule.
         if (!$request->boolean('all')) {
+            $metrics = app(WaiverMetricsService::class);
+            $timezone = config('app.timezone', 'UTC');
+
             if ($request->filled('start_date') && $request->filled('end_date')) {
-                $query->whereBetween('selected_date', [$request->date('start_date'), $request->date('end_date')]);
+                $metrics->scopeToPeriod($query, $request->date('start_date'), $request->date('end_date'), $timezone);
             } else {
-                $query->whereDate('selected_date', $request->date('date') ?? now());
+                $day = $request->date('date') ?? now();
+                $metrics->scopeToPeriod($query, $day, $day, $timezone);
             }
         }
         $this->applySearchFilters($query, $request);
