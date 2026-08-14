@@ -15,6 +15,7 @@ class DiagnoseSms extends Command
         {--phone= : Check one number without sending anything}
         {--sid= : Look up one message by its provider id and say what became of it}
         {--delivery : Ask the provider whether recent messages actually reached the phone}
+        {--senders : List every number on the account and say which can actually deliver}
         {--limit=25 : How many recent messages to look up with --delivery}';
 
     protected $description = 'Report why text messages are or are not going out, without sending any';
@@ -36,6 +37,10 @@ class DiagnoseSms extends Command
 
         if ($sid = $this->option('sid')) {
             $this->reportOneMessage((string) $sid);
+        }
+
+        if ($this->option('senders')) {
+            $this->reportSenders();
         }
 
         if ($this->option('delivery')) {
@@ -353,6 +358,113 @@ class DiagnoseSms extends Command
         $this->line($dialled === null
             ? '   <fg=red>result</>   cannot be texted as written'
             : '   <fg=green>result</>   would be texted as ' . $dialled);
+    }
+
+    /**
+     * List every number the account owns and say which could actually deliver today.
+     *
+     * Worth checking before committing to a multi-week verification: if the account already
+     * holds an approved toll-free number or a registered local one, switching
+     * TWILIO_FROM_NUMBER to it fixes delivery immediately.
+     *
+     * Every provider call here is wrapped, because these are the least stable corners of the
+     * API and a missing endpoint should degrade to a note rather than break the command.
+     */
+    protected function reportSenders(): void
+    {
+        $this->heading('Numbers on this account');
+
+        if (!SmsService::isConfigured()) {
+            $this->line('   <fg=yellow>skipped</>  the provider is not configured, so there is nothing to ask');
+
+            return;
+        }
+
+        try {
+            $client = new \Twilio\Rest\Client(config('twilio.sid'), config('twilio.auth_token'));
+        } catch (\Throwable $e) {
+            $this->line('   <fg=red>problem</>  could not reach the provider: ' . $e->getMessage());
+
+            return;
+        }
+
+        // Toll-free verification state, keyed by the number's sid where the API gives us one.
+        $verification = [];
+        try {
+            foreach ($client->messaging->v1->tollfreeVerifications->read([], 50) as $row) {
+                $key = (string) ($row->tollfreePhoneNumberSid ?? '');
+                if ($key !== '') {
+                    $verification[$key] = (string) ($row->status ?? 'unknown');
+                }
+            }
+        } catch (\Throwable $e) {
+            $this->line('   <fg=yellow>note</>     could not read toll-free verification state (' . $e->getMessage() . ')');
+        }
+
+        try {
+            $numbers = $client->incomingPhoneNumbers->read([], 50);
+        } catch (\Throwable $e) {
+            $this->line('   <fg=red>problem</>  could not list the numbers: ' . $e->getMessage());
+
+            return;
+        }
+
+        if ($numbers === []) {
+            $this->line('   <fg=yellow>none</>     this account owns no numbers');
+
+            return;
+        }
+
+        $current = SmsService::toE164((string) config('twilio.from_number'));
+        $usable = [];
+
+        foreach ($numbers as $number) {
+            $e164 = (string) $number->phoneNumber;
+            $capabilities = (array) ($number->capabilities ?? []);
+            $canSms = (bool) ($capabilities['sms'] ?? $capabilities['SMS'] ?? false);
+            $digits = preg_replace('/\D+/', '', $e164) ?? '';
+            $areaCode = strlen($digits) === 11 && str_starts_with($digits, '1') ? substr($digits, 1, 3) : substr($digits, 0, 3);
+            $isTollFree = in_array($areaCode, ['800', '833', '844', '855', '866', '877', '888'], true);
+            $state = $verification[(string) ($number->sid ?? '')] ?? null;
+
+            $marker = $e164 === $current ? ' <-- in use now' : '';
+            $kind = $isTollFree ? 'toll-free' : 'local';
+
+            if (!$canSms) {
+                $this->line("   <fg=red>no sms</>   {$e164}  {$kind}, cannot send text messages at all{$marker}");
+                continue;
+            }
+
+            if ($isTollFree) {
+                $approved = $state !== null && str_contains(strtoupper($state), 'APPROVED');
+                if ($approved) {
+                    $usable[] = $e164;
+                    $this->line("   <fg=green>ready</>    {$e164}  toll-free, verification approved{$marker}");
+                } else {
+                    $this->line("   <fg=red>blocked</>  {$e164}  toll-free, verification " . ($state ?? 'not submitted') . "{$marker}");
+                }
+                continue;
+            }
+
+            $this->line("   <fg=yellow>maybe</>    {$e164}  local, needs A2P 10DLC registration to be reliable{$marker}");
+        }
+
+        $this->newLine();
+
+        if ($usable !== []) {
+            $this->line('   <fg=green>There is a number that can deliver right now.</> Set it as the sender:');
+            $this->line('       TWILIO_FROM_NUMBER=' . $usable[0]);
+            $this->line('   on the server, then run: php artisan config:clear');
+            $this->line('   Texts start arriving immediately, with no waiting for a review.');
+
+            return;
+        }
+
+        $this->line('   <fg=red>No number on this account can deliver today.</> Every one is either unverified');
+        $this->line('   toll-free or an unregistered local number, so the registration cannot be');
+        $this->line('   avoided. Submit it here, and only the account owner can:');
+        $this->line('       Twilio Console > Messaging > Regulatory Compliance > Toll-Free Verification');
+        $this->line('   Email keeps working throughout, so customers are not cut off meanwhile.');
     }
 
     /**
