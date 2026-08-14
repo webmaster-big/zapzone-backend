@@ -106,8 +106,8 @@ class DiagnoseSms extends Command
         if (in_array($areaCode, ['800', '833', '844', '855', '866', '877', '888'], true)) {
             $this->line("   <fg=yellow>note</>     {$from} is a toll-free number. Carriers only carry toll-free");
             $this->line('              traffic once Twilio has approved a Toll-Free Verification for it.');
-            $this->line('              Until then messages are accepted and then dropped silently, and');
-            $this->line('              messages containing a link are the first to go.');
+            $this->line('              Until that is approved every message is accepted and then dropped,');
+            $this->line('              with or without a link, and the provider reports code 30032.');
             $this->line('              Check: Twilio Console > Messaging > Regulatory Compliance > Toll-Free Verification');
         } elseif ($digits !== '') {
             $this->line('   <fg=yellow>note</>     if this is a standard 10-digit US number it needs A2P 10DLC');
@@ -217,8 +217,13 @@ class DiagnoseSms extends Command
         $this->line('   · 21211  the destination number is not valid');
         $this->line('   · 21608  a trial account can only text numbers you have verified');
         $this->line('   · 21610  that person replied STOP and cannot be texted again');
-        $this->line('   · 30034  the sending number is not registered for business texting, so');
-        $this->line('            messages containing a link are dropped while plain ones get through');
+        $this->line('   · 30032  the toll-free sender is not verified, so nothing at all is delivered');
+        $this->line('   · 30034  a standard number is not registered for business texting');
+        $this->line('   · 30007  the carrier filtered it, often for containing a link');
+        $this->newLine();
+        $this->line('   Note that the failures listed above are the ones the provider REFUSED outright.');
+        $this->line('   A message it accepted can still be dropped on the way to the phone, and that');
+        $this->line('   does not appear here at all. Use --delivery to see those.');
     }
 
     /**
