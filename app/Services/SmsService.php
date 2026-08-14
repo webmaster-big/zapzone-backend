@@ -50,10 +50,15 @@ class SmsService
                 'body' => $message,
             ]);
 
-            Log::info('SMS sent successfully', [
+            // "queued" here is normal and is not a problem: it is the status at the moment
+            // the provider accepted the message, which is all we can know synchronously.
+            // Delivery to the handset happens afterwards and is reported separately, so do
+            // not read this line as proof the message arrived.
+            Log::info('Text message accepted by the provider (delivery not confirmed yet)', [
                 'to' => $to,
                 'sid' => $result->sid,
-                'status' => $result->status,
+                'status_at_acceptance' => $result->status,
+                'check_delivery_with' => 'php artisan sms:diagnose --sid=' . $result->sid,
             ]);
 
             return $result->sid;

@@ -13,6 +13,7 @@ class DiagnoseSms extends Command
 {
     protected $signature = 'sms:diagnose
         {--phone= : Check one number without sending anything}
+        {--sid= : Look up one message by its provider id and say what became of it}
         {--delivery : Ask the provider whether recent messages actually reached the phone}
         {--limit=25 : How many recent messages to look up with --delivery}';
 
@@ -33,9 +34,13 @@ class DiagnoseSms extends Command
             $this->reportOneNumber((string) $phone);
         }
 
+        if ($sid = $this->option('sid')) {
+            $this->reportOneMessage((string) $sid);
+        }
+
         if ($this->option('delivery')) {
             $this->reportRealDeliveryStatus((int) $this->option('limit'));
-        } else {
+        } elseif (!$sid) {
             $this->newLine();
             $this->line('   <fg=yellow>Note</> "sent" above means the provider accepted the message, not that the');
             $this->line('   phone received it. To find out which actually arrived, run:');
@@ -343,6 +348,57 @@ class DiagnoseSms extends Command
         $this->line($dialled === null
             ? '   <fg=red>result</>   cannot be texted as written'
             : '   <fg=green>result</>   would be texted as ' . $dialled);
+    }
+
+    /**
+     * Look up a single message by the id in the Laravel log, and say plainly what became of it.
+     */
+    protected function reportOneMessage(string $sid): void
+    {
+        $this->heading('The message you asked about');
+
+        if (!SmsService::isConfigured()) {
+            $this->line('   <fg=yellow>skipped</>  the provider is not configured, so there is nothing to ask');
+
+            return;
+        }
+
+        try {
+            $client = new \Twilio\Rest\Client(config('twilio.sid'), config('twilio.auth_token'));
+            $message = $client->messages($sid)->fetch();
+        } catch (\Throwable $e) {
+            $this->line('   <fg=red>problem</>  could not look that id up: ' . $e->getMessage());
+
+            return;
+        }
+
+        $status = (string) $message->status;
+        $code = (string) ($message->errorCode ?? '');
+
+        $this->line('   id:      ' . $sid);
+        $this->line('   to:      ' . $this->maskPhone((string) $message->to));
+        $this->line('   from:    ' . $message->from);
+        $this->line('   status:  <options=bold>' . $status . '</>');
+
+        if ($code !== '') {
+            $this->line('   code:    ' . $code . '  ' . trim((string) ($message->errorMessage ?? '')));
+        }
+
+        $this->newLine();
+        $this->line(match ($status) {
+            'delivered' => '   <fg=green>It reached the phone.</> If the person says otherwise, ask them to check for a'
+                . PHP_EOL . '   blocked-sender list or a filtered messages folder.',
+            'queued', 'accepted', 'scheduled' => '   <fg=yellow>Still with the provider.</> This is normal for a few seconds. Run this again'
+                . PHP_EOL . '   in a minute; if it is still queued after that, the provider is holding it.',
+            'sending' => '   <fg=yellow>On its way to the carrier right now.</> Run this again in a moment.',
+            'sent' => '   <fg=yellow>Handed to the carrier, with no delivery confirmation.</> For a US number that'
+                . PHP_EOL . '   usually means the carrier accepted it but never confirmed, which is common'
+                . PHP_EOL . '   for an unregistered sender. Treat it as not confirmed rather than delivered.',
+            'undelivered' => '   <fg=red>It never reached the phone.</> The code above says why; 30032 means the'
+                . PHP_EOL . '   toll-free sender is unverified, 30007 means the carrier filtered it.',
+            'failed' => '   <fg=red>The provider could not send it at all.</> The code above says why.',
+            default => '   Status "' . $status . '" — check this id in the provider console for detail.',
+        });
     }
 
     /**
