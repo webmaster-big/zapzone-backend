@@ -66,6 +66,11 @@ class User extends Authenticatable
         return $this->belongsTo(Location::class);
     }
 
+    public function mobilePushDevices()
+    {
+        return $this->hasMany(MobilePushDevice::class);
+    }
+
     public function scopeActive($query)
     {
         return $query->where('status', 'active');

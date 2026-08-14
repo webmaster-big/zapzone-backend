@@ -55,6 +55,7 @@ use App\Http\Controllers\Api\SpecialPricingController;
 use App\Http\Controllers\Api\ShareableTokenController;
 use App\Http\Controllers\Api\MobileAvailabilityController;
 use App\Http\Controllers\Api\MobilePackageController;
+use App\Http\Controllers\Api\MobilePushDeviceController;
 use App\Http\Controllers\Api\MobileVersionController;
 use App\Http\Controllers\Api\StreamController;
 use App\Http\Controllers\Api\StripeController;
@@ -358,6 +359,10 @@ Route::middleware('auth:sanctum')->group(function () {
     // Mobile app version management (Web Admin)
     Route::get('mobile/versions', [MobileVersionController::class, 'adminIndex']);
     Route::put('mobile/version/{mobileAppVersion}', [MobileVersionController::class, 'update']);
+
+    // Expo push token registration for the staff mobile app
+    Route::post('mobile/push-devices', [MobilePushDeviceController::class, 'store']);
+    Route::delete('mobile/push-devices', [MobilePushDeviceController::class, 'destroy']);
 
     Route::post('packages/room/create', [PackageController::class, 'storePackageRoom']);
     Route::patch('packages/bulk-update-min-notice', [PackageController::class, 'bulkUpdateMinBookingNotice']);
