@@ -33,6 +33,18 @@ class AppServiceProvider extends ServiceProvider
             }
         });
 
+        // Push hangs off the notification row so no producer had to change, and never escapes: a failed push must not fail the booking or payment behind it.
+        \App\Models\Notification::created(function (\App\Models\Notification $notification) {
+            try {
+                app(\App\Services\PushNotificationService::class)->sendForNotification($notification);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::error(
+                    'Failed to send push notifications for a staff notification',
+                    ['notification_id' => $notification->id, 'error' => $e->getMessage()]
+                );
+            }
+        });
+
         $this->registerCacheInvalidation();
         $this->registerPhotoRateLimiters();
     }

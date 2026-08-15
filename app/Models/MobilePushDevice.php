@@ -68,4 +68,19 @@ class MobilePushDevice extends Model
     {
         return $this->forceFill(['is_active' => false])->save();
     }
+
+    /**
+     * A token identifies a real person's phone, so log lines carry only enough
+     * of it to tell two devices apart.
+     */
+    public function maskedToken(): string
+    {
+        $token = (string) $this->expo_push_token;
+
+        if (!preg_match('/^(Expo(?:nent)?PushToken)\[(.+)\]$/', $token, $matches)) {
+            return '***';
+        }
+
+        return $matches[1] . '[' . mb_substr($matches[2], 0, 4) . '…]';
+    }
 }
