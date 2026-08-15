@@ -14,6 +14,9 @@ class MobilePushNotificationLog extends Model
     public const STATUS_SENT = 'sent';
     public const STATUS_FAILED = 'failed';
 
+    public const RECEIPT_OK = 'ok';
+    public const RECEIPT_ERROR = 'error';
+
     protected $fillable = [
         'notification_id',
         'mobile_push_device_id',
@@ -68,6 +71,34 @@ class MobilePushNotificationLog extends Model
             'error_code' => $errorCode,
             'error_message' => $errorMessage,
         ]);
+    }
+
+    /**
+     * Expo accepted it and gave us a ticket, but we have not yet learned what
+     * became of it. Filling receipt_status is what takes a row out of this set,
+     * which is what makes the receipt command safe to run over and over.
+     */
+    public function markReceiptOk(): void
+    {
+        $this->update(['receipt_status' => self::RECEIPT_OK]);
+    }
+
+    /**
+     * The delivery itself failed. `status` stays as it was: Expo really did
+     * accept the message, and losing that fact would make the log harder to read.
+     */
+    public function markReceiptFailed(string $errorCode, ?string $errorMessage): void
+    {
+        $this->update([
+            'receipt_status' => self::RECEIPT_ERROR,
+            'error_code' => $errorCode,
+            'error_message' => $errorMessage,
+        ]);
+    }
+
+    public function scopeAwaitingReceipt($query)
+    {
+        return $query->whereNotNull('ticket_id')->whereNull('receipt_status');
     }
 
     public function scopePending($query)

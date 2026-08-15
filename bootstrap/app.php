@@ -39,6 +39,9 @@ return Application::configure(basePath: dirname(__DIR__))
 
         // Remove photo media once each location's retention period ends (90 days by default).
         $schedule->command('photos:purge')->dailyAt('04:15')->withoutOverlapping(30);
+
+        // Ask Expo what became of recent pushes and retire the tokens it reports as gone.
+        $schedule->command('push:check-receipts')->everyFifteenMinutes()->withoutOverlapping(10);
     })
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->use([

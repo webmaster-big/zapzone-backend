@@ -3,11 +3,18 @@
 namespace App\Services;
 
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 class ExpoPushService
 {
     /** Expo rejects anything larger with PUSH_TOO_MANY_NOTIFICATIONS. */
     public const MAX_MESSAGES_PER_REQUEST = 100;
+
+    /** Expo rejects anything larger with PUSH_TOO_MANY_RECEIPTS. */
+    public const MAX_RECEIPT_IDS_PER_REQUEST = 1000;
+
+    /** The one receipt error that means the token is dead rather than the send unlucky. */
+    public const ERROR_DEVICE_NOT_REGISTERED = 'DeviceNotRegistered';
 
     public static function isConfigured(): bool
     {
@@ -81,6 +88,101 @@ class ExpoPushService
         }
 
         return $results;
+    }
+
+    /**
+     * Look up what became of tickets Expo accepted earlier, chunked to its
+     * per-request limit.
+     *
+     * Keyed by ticket id. A ticket Expo cannot answer for — never issued, or
+     * older than the 24 hours it keeps receipts for — is simply absent, as is
+     * every ticket in a chunk whose request failed. Absent always means "still
+     * unknown", never "delivered" and never "dead device", so the caller can
+     * safely leave those alone and ask again next run.
+     *
+     * @param  array<int, string|null>  $ticketIds
+     * @return array<string, array{status: string, error_code: ?string, error_message: ?string}>
+     */
+    public function receipts(array $ticketIds): array
+    {
+        $ids = array_values(array_unique(array_filter(
+            $ticketIds,
+            fn ($id) => is_string($id) && $id !== ''
+        )));
+
+        $receipts = [];
+
+        foreach (array_chunk($ids, self::MAX_RECEIPT_IDS_PER_REQUEST) as $chunk) {
+            foreach ($this->receiptChunk($chunk) as $ticketId => $receipt) {
+                $receipts[$ticketId] = $receipt;
+            }
+        }
+
+        return $receipts;
+    }
+
+    /**
+     * @param  array<int, string>  $chunk
+     * @return array<string, array{status: string, error_code: ?string, error_message: ?string}>
+     */
+    private function receiptChunk(array $chunk): array
+    {
+        try {
+            $response = Http::withHeaders($this->headers())
+                ->timeout((int) config('expo.timeout', 10))
+                ->post($this->url('getReceipts'), ['ids' => $chunk]);
+        } catch (\Throwable $e) {
+            return $this->receiptChunkUnavailable($chunk, 'TransportError', $e->getMessage());
+        }
+
+        if ($response->failed()) {
+            return $this->receiptChunkUnavailable($chunk, 'HttpError', 'Expo returned HTTP ' . $response->status() . '.');
+        }
+
+        $body = $response->json();
+
+        if (!is_array($body) || !isset($body['data']) || !is_array($body['data'])) {
+            return $this->receiptChunkUnavailable(
+                $chunk,
+                (string) (data_get($body, 'errors.0.code') ?? 'InvalidResponse'),
+                (string) (data_get($body, 'errors.0.message') ?? 'Expo returned an unexpected receipt response.')
+            );
+        }
+
+        $receipts = [];
+
+        foreach ($body['data'] as $ticketId => $receipt) {
+            if (!is_array($receipt)) {
+                continue;
+            }
+
+            $delivered = ($receipt['status'] ?? null) === 'ok';
+
+            $receipts[(string) $ticketId] = [
+                'status' => $delivered ? 'ok' : 'error',
+                'error_code' => $delivered ? null : (string) (data_get($receipt, 'details.error') ?? 'ExpoError'),
+                'error_message' => $delivered
+                    ? null
+                    : mb_substr((string) ($receipt['message'] ?? 'Expo reported a delivery error.'), 0, 1000),
+            ];
+        }
+
+        return $receipts;
+    }
+
+    /**
+     * @param  array<int, string>  $chunk
+     * @return array<string, never>
+     */
+    private function receiptChunkUnavailable(array $chunk, string $code, string $message): array
+    {
+        Log::warning('Could not retrieve Expo push receipts', [
+            'tickets' => count($chunk),
+            'error_code' => $code,
+            'error_message' => mb_substr($message, 0, 1000),
+        ]);
+
+        return [];
     }
 
     private function failChunk(array $chunk, string $code, string $message): array
