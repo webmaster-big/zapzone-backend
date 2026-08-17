@@ -64,7 +64,12 @@ class MetricsController extends Controller
         $dateTo = $request->query('date_to');
         $useDateTime = false; // Flag to determine if we should use datetime or date-only comparison
 
-        $timezone = $request->query('timezone', config('app.timezone', 'UTC'));
+        // The business day belongs to the venue, not to whoever is looking at it. This used to
+        // accept a timezone from the browser, so an admin in Manila asking for "today" got a
+        // day Michigan had not reached: every card read zero while the rest of the app, which
+        // resolves days on the server, showed a full day of business. Deliberately ignores any
+        // client-supplied timezone.
+        $timezone = config('app.timezone', 'UTC');
         try { new \DateTimeZone($timezone); } catch (\Exception $e) { $timezone = 'UTC'; }
 
         if ($dateFrom || $dateTo) {
@@ -746,7 +751,8 @@ class MetricsController extends Controller
             $dateTo = $request->query('date_to');
             $useDateTime = false; // Flag to determine if we should use datetime or date-only comparison
 
-            $timezone = $request->query('timezone', config('app.timezone', 'UTC'));
+            // As above: the venue's day, never the viewer's.
+            $timezone = config('app.timezone', 'UTC');
             try { new \DateTimeZone($timezone); } catch (\Exception $e) { $timezone = 'UTC'; }
 
             if ($dateFrom || $dateTo) {
