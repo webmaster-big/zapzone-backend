@@ -41,27 +41,67 @@ class WaiverMetricsService
 
     public const TIMEFRAMES = ['today', 'last_24h', 'last_7d', 'last_30d', 'all_time', 'custom'];
 
+    /** When a waiver was actually signed, for the rolling windows. */
+    public const SIGNED_AT = 'COALESCE(waivers.submitted_at, waivers.created_at)';
+
     /**
-     * Resolve a dashboard timeframe to whole-day bounds. Rolling presets are snapped to
-     * calendar days ending today, otherwise "last 24 hours" would straddle two days and
-     * count more than the day it claims. Every surface that reports waiver counts must
-     * resolve its period here, or the dashboard and Waiver Records disagree again.
+     * Apply a timeframe to a waiver query. This is the only place a timeframe becomes SQL, so
+     * the dashboard card and the Waiver Records page cannot drift apart.
+     *
+     * Each option means what its label says, which was not true before — "Today" and "Last 24
+     * Hours" both resolved to the same single day:
+     *
+     *   today      the calendar day today, by the day each waiver's visit falls on. This is the
+     *              question staff ask at the door, and it still counts a waiver with no visit
+     *              date recorded by falling back to the day it was signed.
+     *   last_24h   a rolling window, this moment back twenty-four hours, by signing time.
+     *   last_7d    rolling, seven days back from now, by signing time.
+     *   last_30d   rolling, thirty days back from now, by signing time.
+     *   all_time   no bound.
+     *   custom     whole visit days between the two dates chosen.
+     */
+    public function applyTimeframe(
+        Builder $query,
+        ?string $timeframe,
+        $dateFrom = null,
+        $dateTo = null,
+        string $timezone = 'UTC'
+    ): Builder {
+        $now = Carbon::now($timezone);
+
+        $rolling = function (Carbon $from) use ($query, $now) {
+            return $query
+                ->whereRaw(self::SIGNED_AT . ' >= ?', [$from->clone()->utc()])
+                ->whereRaw(self::SIGNED_AT . ' <= ?', [$now->clone()->utc()]);
+        };
+
+        return match ($timeframe) {
+            'today' => $this->scopeToPeriod($query, $now->toDateString(), $now->toDateString(), $timezone),
+            'last_24h' => $rolling($now->clone()->subHours(24)),
+            'last_7d' => $rolling($now->clone()->subDays(7)),
+            'last_30d' => $rolling($now->clone()->subDays(30)),
+            'all_time' => $query,
+            default => $dateFrom === null && $dateTo === null
+                ? $query
+                : $this->scopeToPeriod($query, $dateFrom, $dateTo, $timezone),
+        };
+    }
+
+    /**
+     * The whole visit days a timeframe covers, for callers that need to describe the period
+     * rather than filter by it. Rolling windows are reported as the days they touch.
      *
      * @return array{0: string|null, 1: string|null}
      */
     public function periodFor(?string $timeframe, $dateFrom = null, $dateTo = null, string $timezone = 'UTC'): array
     {
-        $today = Carbon::today($timezone);
-
-        $daysEndingToday = fn (int $days) => [
-            $today->copy()->subDays(max(0, $days - 1))->toDateString(),
-            $today->toDateString(),
-        ];
+        $now = Carbon::now($timezone);
 
         return match ($timeframe) {
-            'today', 'last_24h' => $daysEndingToday(1),
-            'last_7d' => $daysEndingToday(7),
-            'last_30d' => $daysEndingToday(30),
+            'today' => [$now->toDateString(), $now->toDateString()],
+            'last_24h' => [$now->clone()->subHours(24)->toDateString(), $now->toDateString()],
+            'last_7d' => [$now->clone()->subDays(7)->toDateString(), $now->toDateString()],
+            'last_30d' => [$now->clone()->subDays(30)->toDateString(), $now->toDateString()],
             'all_time' => [null, null],
             default => [$dateFrom, $dateTo],
         };

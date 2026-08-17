@@ -52,26 +52,20 @@ class WaiverController extends Controller
             $this->applyLocationScope($query, $request);
 
             $timeframe = $request->string('timeframe')->toString();
-            $from = null;
-            $to = null;
 
-            if ($request->boolean('all')) {
-                // Unbounded on purpose.
-            } elseif (in_array($timeframe, WaiverMetricsService::TIMEFRAMES, true)) {
-                [$from, $to] = $metrics->periodFor(
-                    $timeframe,
-                    $request->date('start_date'),
-                    $request->date('end_date'),
-                    $timezone
-                );
-            } else {
-                $day = $request->date('date') ?? now();
-                $from = $day;
-                $to = $day;
-            }
-
-            if ($from !== null || $to !== null) {
-                $metrics->scopeToPeriod($query, $from, $to, $timezone);
+            if (!$request->boolean('all')) {
+                if (in_array($timeframe, WaiverMetricsService::TIMEFRAMES, true)) {
+                    $metrics->applyTimeframe(
+                        $query,
+                        $timeframe,
+                        $request->date('start_date'),
+                        $request->date('end_date'),
+                        $timezone
+                    );
+                } else {
+                    $day = $request->date('date') ?? now();
+                    $metrics->scopeToPeriod($query, $day, $day, $timezone);
+                }
             }
 
             $summary = $metrics->summary($query);
@@ -140,16 +134,13 @@ class WaiverController extends Controller
                 $timeframe = $request->string('timeframe')->toString();
 
                 if (in_array($timeframe, WaiverMetricsService::TIMEFRAMES, true)) {
-                    [$from, $to] = $metrics->periodFor(
+                    $metrics->applyTimeframe(
+                        $query,
                         $timeframe,
                         $request->date('start_date'),
                         $request->date('end_date'),
                         $timezone
                     );
-
-                    if ($from !== null || $to !== null) {
-                        $metrics->scopeToPeriod($query, $from, $to, $timezone);
-                    }
                 } else {
                     $date = $request->date('date') ?? now();
                     $metrics->scopeToPeriod($query, $date, $date, $timezone);
@@ -658,16 +649,13 @@ class WaiverController extends Controller
             $timeframe = $request->string('timeframe')->toString();
 
             if (in_array($timeframe, WaiverMetricsService::TIMEFRAMES, true)) {
-                [$from, $to] = $metrics->periodFor(
+                $metrics->applyTimeframe(
+                    $query,
                     $timeframe,
                     $request->date('start_date'),
                     $request->date('end_date'),
                     $timezone
                 );
-
-                if ($from !== null || $to !== null) {
-                    $metrics->scopeToPeriod($query, $from, $to, $timezone);
-                }
             } elseif ($request->filled('start_date') && $request->filled('end_date')) {
                 $metrics->scopeToPeriod($query, $request->date('start_date'), $request->date('end_date'), $timezone);
             } else {

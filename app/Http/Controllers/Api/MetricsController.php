@@ -545,8 +545,13 @@ class MetricsController extends Controller
             // A waiver covers a whole visit day, so a rolling window has to be expressed in
             // whole days ending today. Handing the raw bounds over instead would round both
             // ends outwards and quietly widen "Last 24 Hours" to two days of business.
-            [$waiverFrom, $waiverTo] = $this->waiverPeriodFor(is_string($timeframe) ? $timeframe : 'all_time', $dateFrom, $dateTo, $timezone);
-            $waiverService->scopeToPeriod($waiverBase, $waiverFrom, $waiverTo, $timezone);
+            $waiverService->applyTimeframe(
+                $waiverBase,
+                is_string($timeframe) ? $timeframe : 'all_time',
+                $dateFrom,
+                $dateTo,
+                $timezone
+            );
 
             $waiverSummary = $waiverService->summary($waiverBase);
             $waiverMetricsData = [
