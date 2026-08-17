@@ -523,6 +523,10 @@ class MetricsController extends Controller
                 ];
             });
 
+        // Tracked separately from the figures, because a dashboard that prints 0 when it
+        // actually failed to count is worse than one that admits it does not know. Anyone
+        // reconciling against that 0 is chasing a number the server never computed.
+        $waiverMetricsAvailable = true;
         $waiverMetricsData = [
             'totalWaivers' => 0, 'completedWaivers' => 0, 'pendingWaivers' => 0,
             'checkedInWaivers' => 0, 'adultWaivers' => 0, 'minorWaivers' => 0,
@@ -586,8 +590,16 @@ class MetricsController extends Controller
                     'percentage' => round($row['count'] / $waiverCompletedTotal * 100, 1),
                 ];
             }
-        } catch (\Exception $e) {
-            Log::warning('Waiver metrics computation failed', ['error' => $e->getMessage()]);
+        } catch (\Throwable $e) {
+            // Throwable, not Exception: a TypeError here used to escape this handler entirely.
+            $waiverMetricsAvailable = false;
+            Log::error('Waiver metrics computation failed', [
+                'error' => $e->getMessage(),
+                'exception' => get_class($e),
+                'at' => $e->getFile() . ':' . $e->getLine(),
+                'timeframe' => $timeframe,
+                'location_id' => $locationId,
+            ]);
         }
 
         $response = [
@@ -634,6 +646,7 @@ class MetricsController extends Controller
                 'checkedInWaivers' => $waiverMetricsData['checkedInWaivers'],
                 'adultWaivers' => $waiverMetricsData['adultWaivers'],
                 'minorWaivers' => $waiverMetricsData['minorWaivers'],
+                'waiverMetricsAvailable' => $waiverMetricsAvailable,
             ],
             'breakdowns' => [
                 'packageBreakdown'   => $packageBreakdownData,
