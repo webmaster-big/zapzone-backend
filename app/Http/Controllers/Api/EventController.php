@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Models\Event;
+use App\Support\LocationSlug;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -242,7 +243,7 @@ class EventController extends Controller
                     ];
                 }
 
-                $locationSlug = str_replace(' ', '', $event->location->name);
+                $locationSlug = $event->location->slug ?: LocationSlug::make($event->location->name);
 
                 $groupedEvents[$eventName]['locations'][] = [
                     'location_id' => $event->location->id,

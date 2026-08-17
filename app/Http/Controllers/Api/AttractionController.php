@@ -9,6 +9,7 @@ use App\Models\AttractionAddOn;
 use App\Models\SpecialPricing;
 use App\Models\User;
 use App\Http\Traits\ScopesByAuthUser;
+use App\Support\LocationSlug;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Validation\Rule;
@@ -156,7 +157,7 @@ class AttractionController extends Controller
                 ];
             }
 
-            $locationSlug = str_replace(' ', '', $attraction->location->name); // Remove spaces for URL
+            $locationSlug = $attraction->location->slug ?: LocationSlug::make($attraction->location->name);
 
             $groupedAttractions[$attractionName]['locations'][] = [
                 'location_id' => $attraction->location->id,

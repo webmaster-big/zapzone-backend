@@ -31,19 +31,8 @@ class MetricsController extends Controller
      */
     protected function waiverPeriodFor(string $timeframe, $dateFrom, $dateTo, string $timezone): array
     {
-        $today = \Carbon\Carbon::today($timezone);
-
-        $daysEndingToday = function (int $days) use ($today) {
-            return [$today->copy()->subDays(max(0, $days - 1))->toDateString(), $today->toDateString()];
-        };
-
-        return match ($timeframe) {
-            'today' => $daysEndingToday(1),
-            'last_24h' => $daysEndingToday(1),
-            'last_7d' => $daysEndingToday(7),
-            'last_30d' => $daysEndingToday(30),
-            default => [$dateFrom, $dateTo],
-        };
+        return app(\App\Services\WaiverMetricsService::class)
+            ->periodFor($timeframe, $dateFrom, $dateTo, $timezone);
     }
 
     public function dashboard(Request $request, $id)

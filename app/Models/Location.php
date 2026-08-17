@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\LocationSlug;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -15,10 +16,13 @@ class Location extends Model
     protected $fillable = [
         'company_id',
         'name',
+        'slug',
         'address',
         'city',
         'state',
         'zip_code',
+        'latitude',
+        'longitude',
         'phone',
         'email',
         'timezone',
@@ -27,6 +31,9 @@ class Location extends Model
 
     protected $casts = [
         'is_active' => 'boolean',
+        'latitude' => 'float',
+        'longitude' => 'float',
+        'geocoded_at' => 'datetime',
     ];
 
     public function company(): BelongsTo
@@ -89,9 +96,69 @@ class Location extends Model
         return $this->hasMany(SlideshowQueue::class);
     }
 
+    protected static function booted(): void
+    {
+        static::creating(function (Location $location) {
+            if (blank($location->slug)) {
+                $location->slug = LocationSlug::unique(
+                    LocationSlug::preferredSource($location->city, $location->name),
+                    self::takenSlugs()
+                );
+                return;
+            }
+
+            $location->slug = LocationSlug::make($location->slug);
+        });
+
+        static::updating(function (Location $location) {
+            if (blank($location->slug)) {
+                $location->slug = LocationSlug::unique(
+                    LocationSlug::preferredSource($location->city, $location->name),
+                    self::takenSlugs($location->id)
+                );
+                return;
+            }
+
+            if ($location->isDirty('slug')) {
+                $location->slug = LocationSlug::make($location->slug);
+                return;
+            }
+
+            if (!$location->isDirty('name') && !$location->isDirty('city')) {
+                return;
+            }
+
+            $derivedFromOriginal = LocationSlug::make(LocationSlug::preferredSource(
+                $location->getOriginal('city'),
+                $location->getOriginal('name')
+            ));
+
+            if ($location->getOriginal('slug') === $derivedFromOriginal) {
+                $location->slug = LocationSlug::unique(
+                    LocationSlug::preferredSource($location->city, $location->name),
+                    self::takenSlugs($location->id)
+                );
+            }
+        });
+    }
+
+    protected static function takenSlugs(?int $ignoreId = null): array
+    {
+        return static::query()
+            ->whereNotNull('slug')
+            ->when($ignoreId !== null, fn ($query) => $query->where('id', '!=', $ignoreId))
+            ->pluck('slug')
+            ->all();
+    }
+
     public function scopeActive($query)
     {
         return $query->where('is_active', true);
+    }
+
+    public function scopeBySlug($query, string $slug)
+    {
+        return $query->where('slug', LocationSlug::make($slug));
     }
 
     public function scopeByCompany($query, $companyId)

@@ -6,8 +6,12 @@ use App\Http\Controllers\Controller;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Models\ActivityLog;
 use App\Models\Location;
+use App\Support\CacheGroups;
+use App\Support\LocationSlug;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Validation\Rule;
 
 class LocationController extends Controller
 {
@@ -45,6 +49,38 @@ class LocationController extends Controller
         ]);
     }
 
+    public function storefront(): JsonResponse
+    {
+        $locations = CacheGroups::remember(
+            [CacheGroups::LOCATIONS],
+            'locations:storefront',
+            CacheGroups::TTL_CATALOG,
+            function () {
+                $columns = ['id', 'name', 'slug', 'address', 'city', 'state', 'zip_code', 'phone'];
+
+                // Coordinates arrived in a later migration than the endpoint. Asking for a column
+                // that does not exist yet is a fatal query on MySQL, which would take the whole
+                // storefront down in the window between code deploying and migrations running.
+                foreach (['latitude', 'longitude'] as $optional) {
+                    if (Schema::hasColumn('locations', $optional)) {
+                        $columns[] = $optional;
+                    }
+                }
+
+                return Location::active()
+                    ->whereNotNull('slug')
+                    ->orderBy('name')
+                    ->get($columns)
+                    ->values();
+            }
+        );
+
+        return response()->json([
+            'success' => true,
+            'data' => $locations,
+        ]);
+    }
+
     public function store(Request $request): JsonResponse
     {
         $authUser = $request->user();
@@ -59,6 +95,15 @@ class LocationController extends Controller
         $validated = $request->validate([
             'company_id' => 'sometimes|exists:companies,id',
             'name' => 'required|string|max:255',
+            'slug' => [
+                'sometimes',
+                'nullable',
+                'string',
+                'max:' . LocationSlug::MAX_LENGTH,
+                'regex:/^[a-z0-9]+(?:-[a-z0-9]+)*$/',
+                Rule::notIn(LocationSlug::RESERVED),
+                'unique:locations,slug',
+            ],
             'address' => 'required|string',
             'city' => 'required|string|max:255',
             'state' => 'required|string|max:255',
@@ -124,6 +169,15 @@ class LocationController extends Controller
         $validated = $request->validate([
             'company_id' => 'sometimes|exists:companies,id',
             'name' => 'sometimes|string|max:255',
+            'slug' => [
+                'sometimes',
+                'nullable',
+                'string',
+                'max:' . LocationSlug::MAX_LENGTH,
+                'regex:/^[a-z0-9]+(?:-[a-z0-9]+)*$/',
+                Rule::notIn(LocationSlug::RESERVED),
+                'unique:locations,slug,' . $location->id,
+            ],
             'address' => 'sometimes|string',
             'city' => 'sometimes|string|max:255',
             'state' => 'sometimes|string|max:255',
@@ -134,7 +188,7 @@ class LocationController extends Controller
             'is_active' => 'boolean',
         ]);
 
-        $trackFields = ['name', 'address', 'city', 'state', 'zip_code', 'phone', 'email', 'timezone', 'is_active'];
+        $trackFields = ['name', 'slug', 'address', 'city', 'state', 'zip_code', 'phone', 'email', 'timezone', 'is_active'];
         $oldValues = array_intersect_key($location->toArray(), array_flip($trackFields));
 
         $location->update($validated);

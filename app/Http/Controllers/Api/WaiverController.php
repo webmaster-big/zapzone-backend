@@ -61,9 +61,30 @@ class WaiverController extends Controller
             // waiver with no visit date recorded — those never matched on any day, so they were
             // invisible here while still being counted on the dashboard, which is why the two
             // never agreed. See WaiverMetricsService::EFFECTIVE_DATE.
+            //
+            // A "timeframe" resolves through the same helper the dashboard uses, so picking the
+            // same period on both screens compares like with like. Without one, the behaviour is
+            // unchanged: a single day, defaulting to today.
             if (!$request->boolean('all')) {
-                $date = $request->date('date') ?? now();
-                app(WaiverMetricsService::class)->scopeToPeriod($query, $date, $date, config('app.timezone', 'UTC'));
+                $metrics = app(WaiverMetricsService::class);
+                $timezone = config('app.timezone', 'UTC');
+                $timeframe = $request->string('timeframe')->toString();
+
+                if (in_array($timeframe, WaiverMetricsService::TIMEFRAMES, true)) {
+                    [$from, $to] = $metrics->periodFor(
+                        $timeframe,
+                        $request->date('start_date'),
+                        $request->date('end_date'),
+                        $timezone
+                    );
+
+                    if ($from !== null || $to !== null) {
+                        $metrics->scopeToPeriod($query, $from, $to, $timezone);
+                    }
+                } else {
+                    $date = $request->date('date') ?? now();
+                    $metrics->scopeToPeriod($query, $date, $date, $timezone);
+                }
             }
 
             $this->applySearchFilters($query, $request);
@@ -559,7 +580,20 @@ class WaiverController extends Controller
             $metrics = app(WaiverMetricsService::class);
             $timezone = config('app.timezone', 'UTC');
 
-            if ($request->filled('start_date') && $request->filled('end_date')) {
+            $timeframe = $request->string('timeframe')->toString();
+
+            if (in_array($timeframe, WaiverMetricsService::TIMEFRAMES, true)) {
+                [$from, $to] = $metrics->periodFor(
+                    $timeframe,
+                    $request->date('start_date'),
+                    $request->date('end_date'),
+                    $timezone
+                );
+
+                if ($from !== null || $to !== null) {
+                    $metrics->scopeToPeriod($query, $from, $to, $timezone);
+                }
+            } elseif ($request->filled('start_date') && $request->filled('end_date')) {
                 $metrics->scopeToPeriod($query, $request->date('start_date'), $request->date('end_date'), $timezone);
             } else {
                 $day = $request->date('date') ?? now();

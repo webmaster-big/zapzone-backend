@@ -16,6 +16,7 @@ use App\Models\PackageAttraction;
 use App\Models\PackageRoom;
 use App\Models\SpecialPricing;
 use App\Models\User;
+use App\Support\LocationSlug;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
@@ -155,7 +156,7 @@ class PackageController extends Controller
                 ];
             }
 
-            $locationSlug = str_replace(' ', '', $package->location->name);
+            $locationSlug = $package->location->slug ?: LocationSlug::make($package->location->name);
 
             $groupedPackages[$packageName]['locations'][] = [
                 'location_id' => $package->location->id,

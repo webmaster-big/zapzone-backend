@@ -230,6 +230,7 @@ Route::delete('attraction-purchases/{attractionPurchase}', [AttractionPurchaseCo
 Route::delete('attraction-purchases/{id}/force-delete', [AttractionPurchaseController::class, 'publicForceDelete']);
 
 Route::get('locations', [LocationController::class, 'index']);
+Route::get('storefront/locations', [LocationController::class, 'storefront']);
 
 Route::post('users', [UserController::class, 'store']);
 

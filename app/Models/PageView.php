@@ -14,6 +14,7 @@ class PageView extends Model
 
     public const PAGE_TYPES = [
         'home',                  // /  and /home
+        'location_home',         // /:locationSlug
         'package_book',          // /book/package/:location/:slug
         'attraction_buy',        // /purchase/attraction/:location/:slug
         'event_buy',             // /purchase/event/:location/:slug  and  /events/:eventId/purchase

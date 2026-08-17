@@ -39,6 +39,34 @@ class WaiverMetricsService
      */
     public const EFFECTIVE_DATE = 'COALESCE(waivers.selected_date, DATE(waivers.submitted_at), DATE(waivers.created_at))';
 
+    public const TIMEFRAMES = ['today', 'last_24h', 'last_7d', 'last_30d', 'all_time', 'custom'];
+
+    /**
+     * Resolve a dashboard timeframe to whole-day bounds. Rolling presets are snapped to
+     * calendar days ending today, otherwise "last 24 hours" would straddle two days and
+     * count more than the day it claims. Every surface that reports waiver counts must
+     * resolve its period here, or the dashboard and Waiver Records disagree again.
+     *
+     * @return array{0: string|null, 1: string|null}
+     */
+    public function periodFor(?string $timeframe, $dateFrom = null, $dateTo = null, string $timezone = 'UTC'): array
+    {
+        $today = Carbon::today($timezone);
+
+        $daysEndingToday = fn (int $days) => [
+            $today->copy()->subDays(max(0, $days - 1))->toDateString(),
+            $today->toDateString(),
+        ];
+
+        return match ($timeframe) {
+            'today', 'last_24h' => $daysEndingToday(1),
+            'last_7d' => $daysEndingToday(7),
+            'last_30d' => $daysEndingToday(30),
+            'all_time' => [null, null],
+            default => [$dateFrom, $dateTo],
+        };
+    }
+
     /**
      * Constrain a waiver query to a period using the effective date above. Bounds may be
      * Carbon instances or date strings; either way they are read in the given timezone so
