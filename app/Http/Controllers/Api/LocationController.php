@@ -104,6 +104,8 @@ class LocationController extends Controller
                 Rule::notIn(LocationSlug::RESERVED),
                 'unique:locations,slug',
             ],
+            'latitude' => 'sometimes|nullable|numeric|between:-90,90',
+            'longitude' => 'sometimes|nullable|numeric|between:-180,180',
             'address' => 'required|string',
             'city' => 'required|string|max:255',
             'state' => 'required|string|max:255',
@@ -178,6 +180,8 @@ class LocationController extends Controller
                 Rule::notIn(LocationSlug::RESERVED),
                 'unique:locations,slug,' . $location->id,
             ],
+            'latitude' => 'sometimes|nullable|numeric|between:-90,90',
+            'longitude' => 'sometimes|nullable|numeric|between:-180,180',
             'address' => 'sometimes|string',
             'city' => 'sometimes|string|max:255',
             'state' => 'sometimes|string|max:255',
@@ -188,8 +192,26 @@ class LocationController extends Controller
             'is_active' => 'boolean',
         ]);
 
-        $trackFields = ['name', 'slug', 'address', 'city', 'state', 'zip_code', 'phone', 'email', 'timezone', 'is_active'];
+        $trackFields = ['name', 'slug', 'address', 'city', 'state', 'zip_code', 'latitude', 'longitude', 'phone', 'email', 'timezone', 'is_active'];
         $oldValues = array_intersect_key($location->toArray(), array_flip($trackFields));
+
+        // A coordinate typed in by a person is recorded as manual, so the geocoder's own
+        // "how exact is this pin" note is never left claiming something it did not produce,
+        // and a later run does not quietly replace a correction someone made on purpose.
+        if (array_key_exists('latitude', $validated) || array_key_exists('longitude', $validated)) {
+            $movedLatitude = array_key_exists('latitude', $validated)
+                && (string) $validated['latitude'] !== (string) $location->latitude;
+            $movedLongitude = array_key_exists('longitude', $validated)
+                && (string) $validated['longitude'] !== (string) $location->longitude;
+
+            if ($movedLatitude || $movedLongitude) {
+                $bothCleared = ($validated['latitude'] ?? null) === null
+                    && ($validated['longitude'] ?? null) === null;
+
+                $location->geocode_precision = $bothCleared ? null : 'manual';
+                $location->geocoded_at = $bothCleared ? null : now();
+            }
+        }
 
         $location->update($validated);
         $location->load(['company', 'packages']);

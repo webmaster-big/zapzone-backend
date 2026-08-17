@@ -15,6 +15,7 @@ use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
 class WaiverController extends Controller
@@ -23,6 +24,74 @@ class WaiverController extends Controller
 
     public function __construct(private WaiverService $waivers)
     {
+    }
+
+    /**
+     * The waiver figures for a period, counted exactly the way the dashboard card counts
+     * them: same period helper, same location scope, same summary method, and deliberately
+     * ignoring any status filter the list is using. Records shows these so the two screens
+     * can be reconciled without anyone having to remember that the dashboard total includes
+     * pending waivers while the list defaults to completed only.
+     */
+    public function periodSummary(Request $request): JsonResponse
+    {
+        // applyAuthScope narrows nothing for a principal that is not a staff User, so a
+        // customer token would otherwise read counts across every company. Counts only,
+        // but there is no reason to hand them out.
+        $authUser = $request->user();
+        if (!$authUser instanceof \App\Models\User) {
+            return response()->json(['success' => false, 'message' => 'Forbidden'], 403);
+        }
+
+        try {
+            $metrics = app(WaiverMetricsService::class);
+            $timezone = config('app.timezone', 'UTC');
+
+            $query = Waiver::query();
+            $this->applyAuthScope($query, $request);
+            $this->applyLocationScope($query, $request);
+
+            $timeframe = $request->string('timeframe')->toString();
+            $from = null;
+            $to = null;
+
+            if ($request->boolean('all')) {
+                // Unbounded on purpose.
+            } elseif (in_array($timeframe, WaiverMetricsService::TIMEFRAMES, true)) {
+                [$from, $to] = $metrics->periodFor(
+                    $timeframe,
+                    $request->date('start_date'),
+                    $request->date('end_date'),
+                    $timezone
+                );
+            } else {
+                $day = $request->date('date') ?? now();
+                $from = $day;
+                $to = $day;
+            }
+
+            if ($from !== null || $to !== null) {
+                $metrics->scopeToPeriod($query, $from, $to, $timezone);
+            }
+
+            $summary = $metrics->summary($query);
+
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'total' => $summary['total'],
+                    'completed' => $summary['completed'],
+                    'pending' => $summary['pending'],
+                    'checked_in' => $summary['checked_in'],
+                    'minors_covered' => $summary['minors_covered'],
+                    'people_covered' => $summary['people_covered'],
+                ],
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('Failed to summarise waivers for a period', ['error' => $e->getMessage()]);
+
+            return response()->json(['success' => false, 'message' => 'Could not summarise waivers'], 500);
+        }
     }
 
     /**
@@ -86,6 +155,11 @@ class WaiverController extends Controller
                     $metrics->scopeToPeriod($query, $date, $date, $timezone);
                 }
             }
+
+            // The dashboard narrows waivers to the location picked in the sidebar. Records has to
+            // honour the same choice or a company admin compares one location's card against
+            // every location's rows and concludes the two screens disagree.
+            $this->applyLocationScope($query, $request);
 
             $this->applySearchFilters($query, $request);
 
@@ -574,6 +648,7 @@ class WaiverController extends Controller
                 fn ($q) => $q->where('status', $request->string('status')->toString() ?: Waiver::STATUS_COMPLETED)
             );
         $this->applyAuthScope($query, $request);
+        $this->applyLocationScope($query, $request);
 
         // Exports must cover exactly the rows the page showed, so they use the same rule.
         if (!$request->boolean('all')) {
@@ -888,6 +963,20 @@ class WaiverController extends Controller
             return true;
         }
         return (int) $authUser->location_id === (int) $locationId;
+    }
+
+    /**
+     * Narrow to one location when the caller names one. Managers and attendants are already
+     * pinned to their own location by applyAuthScope, so this only widens nothing and exists
+     * for the company admin's sidebar selection.
+     */
+    private function applyLocationScope($query, Request $request): void
+    {
+        $locationId = $request->integer('location_id');
+
+        if ($locationId > 0) {
+            $query->where('location_id', $locationId);
+        }
     }
 
     private function applySearchFilters($query, Request $request): void

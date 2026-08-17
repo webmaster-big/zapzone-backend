@@ -710,8 +710,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('waivers/{waiver}/undo-check-in', [WaiverController::class, 'undoCheckIn']);
     Route::get('waivers/{waiver}/print',    [WaiverController::class, 'print']);
     Route::get('waivers',                   [WaiverController::class, 'index']);
-    Route::get('waivers/{waiver}',          [WaiverController::class, 'show']);
-    Route::delete('waivers/{waiver}',       [WaiverController::class, 'destroy']);
+    Route::get('waivers/period-summary',    [WaiverController::class, 'periodSummary']);
+    Route::get('waivers/{waiver}',          [WaiverController::class, 'show'])->whereNumber('waiver');
+    Route::delete('waivers/{waiver}',       [WaiverController::class, 'destroy'])->whereNumber('waiver');
 
     // Every photo endpoint requires a real staff User with an approved role. The shared
     // ScopesByAuthUser trait applies no scoping at all for a non-User principal, so this
