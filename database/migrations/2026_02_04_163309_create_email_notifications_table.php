@@ -51,7 +51,6 @@ return new class extends Migration
             $table->timestamps();
 
             $table->index(['email_notification_id', 'status']);
-            $table->index(['notifiable_type', 'notifiable_id']);
         });
         }
     }

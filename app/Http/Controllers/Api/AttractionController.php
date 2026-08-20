@@ -105,7 +105,7 @@ class AttractionController extends Controller
     private function buildGroupedAttractions(?string $search, Carbon $date): array
     {
         $query = Attraction::with(['location', 'packages', 'addOns'])
-            ->select(['id', 'name', 'description', 'price', 'pricing_type', 'category', 'max_capacity', 'display_capacity_to_customers', 'duration', 'duration_unit', 'rating', 'min_age', 'availability', 'display_order', 'location_id', 'is_active'])
+            ->select(['id', 'name', 'description', 'price', 'pricing_type', 'category', 'max_capacity', 'max_tickets_per_slot', 'display_capacity_to_customers', 'duration', 'duration_unit', 'rating', 'min_age', 'availability', 'display_order', 'location_id', 'is_active'])
             ->where('is_active', true);
 
         if ($search) {
@@ -143,6 +143,7 @@ class AttractionController extends Controller
                     'pricing_type' => $attraction->pricing_type,
                     'category' => $attraction->category,
                     'max_capacity' => $attraction->max_capacity,
+                    'max_tickets_per_slot' => $attraction->max_tickets_per_slot,
                     'display_capacity_to_customers' => $attraction->display_capacity_to_customers,
                     'duration' => $attraction->duration,
                     'duration_unit' => $attraction->duration_unit,
@@ -195,6 +196,7 @@ class AttractionController extends Controller
             'price' => 'required|numeric|min:0',
             'pricing_type' => 'required|string',
             'max_capacity' => 'required|integer|min:1',
+            'max_tickets_per_slot' => 'nullable|integer|min:1|max:10000',
             'display_capacity_to_customers' => 'boolean',
             'category' => 'required|string|max:255',
             'unit' => 'nullable|string|max:50',
@@ -290,6 +292,7 @@ class AttractionController extends Controller
             'price' => 'sometimes|numeric|min:0',
             'pricing_type' => 'required|string',
             'max_capacity' => 'sometimes|integer|min:1',
+            'max_tickets_per_slot' => 'sometimes|nullable|integer|min:1|max:10000',
             'display_capacity_to_customers' => 'boolean',
             'category' => 'sometimes|string|max:255',
             'unit' => 'nullable|string|max:50',
@@ -776,6 +779,35 @@ class AttractionController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Attractions reordered successfully',
+        ]);
+    }
+
+    public function slotAvailability(int $id, string $date): \Illuminate\Http\JsonResponse
+    {
+        $attraction = \App\Models\Attraction::findOrFail($id);
+
+        if (\Carbon\Carbon::hasFormat($date, 'Y-m-d') === false) {
+            return response()->json(['success' => false, 'message' => 'Invalid date.'], 422);
+        }
+
+        $booked = $attraction->getBookedSeatsBySlot($date);
+        $remaining = null;
+
+        if ($attraction->max_tickets_per_slot !== null) {
+            $remaining = [];
+            foreach ($booked as $slot => $seats) {
+                $remaining[$slot] = max(0, $attraction->max_tickets_per_slot - $seats);
+            }
+        }
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'date' => $date,
+                'max_tickets_per_slot' => $attraction->max_tickets_per_slot,
+                'booked_by_slot' => $booked,
+                'remaining_by_slot' => $remaining,
+            ],
         ]);
     }
 }

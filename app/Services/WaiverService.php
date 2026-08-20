@@ -560,6 +560,113 @@ class WaiverService
     }
 
     /** Create a pending waiver for an attraction purchase when a template applies. */
+    /**
+     * One waiver per visit day for a bulk order, not one per line.
+     *
+     * Creating a waiver per line looks harmless but is not: findDuplicate() matches on
+     * (template, date, person) and the shipped template's duplicate_rule is manager_only,
+     * so the guest signs the first and every later link answers 409 forever. Attaching a
+     * single waiver to the day's first line keeps every existing purchase-waiver lookup
+     * working unchanged.
+     *
+     * @return array<int, Waiver>
+     */
+    public function ensureForTicketOrder(\App\Models\TicketOrder $order): array
+    {
+        $order->loadMissing([
+            'attractionPurchases.attraction.location',
+            'eventPurchases.event',
+            'eventPurchases.location',
+            'customer',
+        ]);
+
+        $companyId = $order->company_id
+            ?? $order->attractionPurchases->first()?->attraction?->location?->company_id
+            ?? $order->eventPurchases->first()?->location?->company_id;
+
+        if (!$companyId) {
+            return [];
+        }
+
+        $byDay = [];
+
+        foreach ($order->lines() as $line) {
+            $model = $line['model'];
+
+            $day = $line['type'] === 'attraction'
+                ? ($model->scheduled_date ?? $model->purchase_date)
+                : ($model->purchase_date);
+
+            $key = $day instanceof \DateTimeInterface ? $day->format('Y-m-d') : (string) $day;
+
+            $byDay[$key] ??= ['attraction_ids' => [], 'event_id' => null, 'first_line' => null];
+
+            if ($line['type'] === 'attraction') {
+                $byDay[$key]['attraction_ids'][] = (int) $model->attraction_id;
+                $byDay[$key]['first_line'] ??= $model;
+            } else {
+                $byDay[$key]['event_id'] ??= (int) $model->event_id;
+            }
+        }
+
+        $created = [];
+
+        foreach ($byDay as $day => $group) {
+            $firstLine = $group['first_line'];
+
+            if ($firstLine === null && $group['event_id'] === null) {
+                continue;
+            }
+
+            $existing = $firstLine !== null
+                ? Waiver::where('attraction_purchase_id', $firstLine->id)->first()
+                : Waiver::where('event_id', $group['event_id'])
+                    ->where('customer_id', $order->customer_id)
+                    ->whereDate('selected_date', $day)
+                    ->first();
+
+            if ($existing) {
+                $created[] = $existing;
+                continue;
+            }
+
+            $template = WaiverTemplate::resolveForActivity(
+                $companyId,
+                $order->location_id,
+                null,
+                array_values(array_unique($group['attraction_ids'])),
+                $group['event_id'],
+            );
+
+            if (!$template) {
+                continue;
+            }
+
+            $attributes = [
+                'company_id' => $companyId,
+                'location_id' => $order->location_id,
+                'customer_id' => $order->customer_id,
+                'selected_date' => $day,
+                'adult_email' => $order->customer_email,
+                'adult_phone' => $order->customer_phone,
+            ];
+
+            if ($firstLine !== null) {
+                $attributes['attraction_purchase_id'] = $firstLine->id;
+            } else {
+                $attributes['event_id'] = $group['event_id'];
+            }
+
+            $waiver = $this->createPending($template, $attributes);
+
+            if ($waiver) {
+                $created[] = $waiver;
+            }
+        }
+
+        return $created;
+    }
+
     public function ensureForAttractionPurchase(\App\Models\AttractionPurchase $purchase): ?Waiver
     {
         $existing = Waiver::where('attraction_purchase_id', $purchase->id)->first();

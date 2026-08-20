@@ -12,6 +12,7 @@ use App\Models\DayOff;
 use App\Mail\AttractionPurchaseReceipt;
 use App\Services\GmailApiService;
 use App\Services\EmailNotificationService;
+use App\Services\PurchaseCompletionService;
 use App\Models\ActivityLog;
 use App\Models\Contact;
 use App\Models\CustomerNotification;
@@ -169,6 +170,7 @@ class AttractionPurchaseController extends Controller
                 'id', 'attraction_id', 'customer_id', 'created_by',
                 'guest_name', 'guest_email', 'guest_phone',
                 'guest_address', 'guest_city', 'guest_state', 'guest_zip', 'guest_country',
+                'ticket_order_id', 'line_position',
                 'quantity', 'total_amount', 'amount_paid',
                 'payment_method', 'status',
                 'transaction_id', 'purchase_date', 'scheduled_date', 'scheduled_time',
@@ -345,7 +347,29 @@ class AttractionPurchaseController extends Controller
             }
         }
 
-        $purchase = DB::transaction(function () use (&$validated, $discounts, $request, $attractionLocationId) {
+        try {
+            $purchase = DB::transaction(function () use (&$validated, $discounts, $request, $attractionLocationId) {
+            $capAttraction = \App\Models\Attraction::where('id', $validated['attraction_id'])->lockForUpdate()->first();
+
+            if ($capAttraction && $capAttraction->max_tickets_per_slot !== null
+                && (empty($validated['scheduled_date']) || empty($validated['scheduled_time']))) {
+                throw new \RuntimeException("Please pick a visit date and time for {$capAttraction->name}.");
+            }
+
+            if ($capAttraction && $capAttraction->max_tickets_per_slot !== null
+                && !empty($validated['scheduled_date']) && !empty($validated['scheduled_time'])) {
+                $slotDate = Carbon::parse($validated['scheduled_date'])->toDateString();
+                $remaining = $capAttraction->remainingTicketsForSlot($slotDate, (string) $validated['scheduled_time']);
+
+                if ((int) ($validated['quantity'] ?? 1) > $remaining) {
+                    throw new \RuntimeException(
+                        $remaining === 0
+                            ? 'That time just sold out. Please pick another time.'
+                            : "Only {$remaining} ticket" . ($remaining === 1 ? '' : 's') . ' left for that time. Pick fewer tickets or another time.'
+                    );
+                }
+            }
+
             $hasCode = !empty($validated['promo_id']) || !empty($validated['gift_card_id'])
                 || !empty($validated['promo_code']) || !empty($validated['gift_card_code']);
 
@@ -381,7 +405,10 @@ class AttractionPurchaseController extends Controller
             }
 
             return AttractionPurchase::create($validated);
-        });
+            });
+        } catch (\RuntimeException $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+        }
 
         if (isset($validated['additional_addons']) && is_array($validated['additional_addons'])) {
             foreach ($validated['additional_addons'] as $addon) {
@@ -396,149 +423,7 @@ class AttractionPurchaseController extends Controller
 
         $purchase->load(['attraction', 'customer', 'createdBy', 'addOns']);
 
-        // Create a pending waiver if a template covers this attraction, so the
-        // confirmation can include the {{waiver_link}}. Non-fatal.
-        try {
-            app(\App\Services\WaiverService::class)->ensureForAttractionPurchase($purchase);
-        } catch (\Throwable $e) {
-            \Illuminate\Support\Facades\Log::warning('Failed to create waiver for attraction purchase', [
-                'attraction_purchase_id' => $purchase->id,
-                'error' => $e->getMessage(),
-            ]);
-        }
-
-        $this->recordMembershipRedemptions($purchase, $validated);
-
-        if ($purchase->customer_id && $purchase->status !== AttractionPurchase::STATUS_PENDING && (float) ($purchase->amount_paid ?? 0) > 0) {
-            CustomerNotification::create([
-                'customer_id' => $purchase->customer_id,
-                'location_id' => $purchase->attraction->location_id ?? null,
-                'type' => 'payment',
-                'priority' => 'medium',
-                'title' => 'Attraction Purchase Confirmed',
-                'message' => "Your purchase of {$purchase->quantity} x {$purchase->attraction->name} has been confirmed. Total: $" . number_format($purchase->total_amount, 2),
-                'status' => 'unread',
-                'action_url' => "/attractions/purchases/{$purchase->id}",
-                'action_text' => 'View Purchase',
-                'metadata' => [
-                    'purchase_id' => $purchase->id,
-                    'attraction_id' => $purchase->attraction_id,
-                    'quantity' => $purchase->quantity,
-                    'total_amount' => $purchase->total_amount,
-                ],
-            ]);
-        }
-
-        $customerName = $purchase->customer ? "{$purchase->customer->first_name} {$purchase->customer->last_name}" : $purchase->guest_name;
-        if ($purchase->status !== AttractionPurchase::STATUS_PENDING && $purchase->attraction->location_id && (float) ($purchase->amount_paid ?? 0) > 0) {
-            Notification::create([
-                'location_id' => $purchase->attraction->location_id,
-                'type' => 'payment',
-                'priority' => 'medium',
-                'user_id' => $purchase->created_by ?? auth()->id(),
-                'title' => 'New Attraction Purchase',
-                'message' => "{$customerName} — {$purchase->quantity}x {$purchase->attraction->name} • $" . number_format($purchase->total_amount, 2),
-                'status' => 'unread',
-                'action_url' => "/attractions/purchases/{$purchase->id}",
-                'action_text' => 'View Purchase',
-                'metadata' => [
-                    'purchase_id' => $purchase->id,
-                    'attraction_id' => $purchase->attraction_id,
-                    'customer_id' => $purchase->customer_id,
-                    'quantity' => $purchase->quantity,
-                    'total_amount' => $purchase->total_amount,
-                ],
-            ]);
-        }
-
-        if($purchase->created_by){
-            $purchase->load('createdBy');
-
-        ActivityLog::log(
-            action: 'Attraction Purchase Created',
-            category: 'create',
-            description: "Attraction purchase: {$purchase->quantity} x {$purchase->attraction->name} by {$customerName}",
-            userId: $purchase->created_by,
-            locationId: $purchase->attraction->location_id ?? null,
-            entityType: 'attraction_purchase',
-            entityId: $purchase->id,
-            metadata: [
-                'created_by' => [
-                    'user_id' => $purchase->created_by,
-                    'name' => $purchase->createdBy ? $purchase->createdBy->first_name . ' ' . $purchase->createdBy->last_name : null,
-                    'email' => $purchase->createdBy?->email,
-                ],
-                'created_at' => now()->toIso8601String(),
-                'purchase_details' => [
-                    'purchase_id' => $purchase->id,
-                    'attraction_id' => $purchase->attraction_id,
-                    'attraction_name' => $purchase->attraction->name,
-                    'quantity' => $purchase->quantity,
-                    'total_amount' => $purchase->total_amount,
-                    'amount_paid' => $purchase->amount_paid,
-                    'payment_method' => $purchase->payment_method,
-                    'status' => $purchase->status,
-                ],
-                'customer_details' => [
-                    'customer_id' => $purchase->customer_id,
-                    'name' => $customerName,
-                    'email' => $purchase->customer?->email ?? $purchase->guest_email,
-                    'phone' => $purchase->customer?->phone ?? $purchase->guest_phone,
-                ],
-            ]
-          );
-        }
-
-        try {
-            $contactEmail = $purchase->customer?->email ?? $purchase->guest_email;
-            $contactName = $purchase->customer
-                ? trim($purchase->customer->first_name . ' ' . $purchase->customer->last_name)
-                : $purchase->guest_name;
-            $contactPhone = $purchase->customer?->phone ?? $purchase->guest_phone;
-
-            if ($contactEmail && $purchase->attraction->location_id) {
-                $location = $purchase->attraction->location;
-                if ($location && $location->company_id) {
-                    Contact::createOrUpdateFromSource(
-                        companyId: $location->company_id,
-                        data: [
-                            'email' => $contactEmail,
-                            'name' => $contactName,
-                            'phone' => $contactPhone,
-                            'sms_consent' => $validated['sms_consent'] ?? false,
-                        ],
-                        source: 'attraction_purchase',
-                        tags: ['attraction_purchase', 'customer'],
-                        locationId: $purchase->attraction->location_id,
-                        createdBy: auth()->id()
-                    );
-                }
-            }
-        } catch (\Exception $e) {
-            Log::warning('Failed to create contact from attraction purchase', [
-                'purchase_id' => $purchase->id,
-                'error' => $e->getMessage(),
-            ]);
-        }
-
-        $sendEmail = $validated['send_email'] ?? true;
-        if ($sendEmail && $purchase->status !== AttractionPurchase::STATUS_PENDING) {
-            try {
-                $emailNotificationService = new EmailNotificationService();
-                $emailNotificationService->processPurchaseCreated($purchase);
-            } catch (\Exception $e) {
-                Log::warning('Failed to send automated email notifications for attraction purchase', [
-                    'purchase_id' => $purchase->id,
-                    'error' => $e->getMessage(),
-                ]);
-            }
-        } else {
-            Log::info('Email notifications skipped per send_email=false', [
-                'purchase_id' => $purchase->id,
-            ]);
-        }
-
-        $this->recordConversion('purchase_completed', $purchase, (float) ($purchase->total_amount ?? 0));
+        app(PurchaseCompletionService::class)->completeAttractionPurchase($purchase, $validated);
 
         return response()->json([
             'success' => true,
@@ -805,6 +690,52 @@ class AttractionPurchaseController extends Controller
             'additional_addons.*.price_at_purchase' => 'nullable|numeric|min:0',
         ]);
 
+        $slotTouched = array_intersect(array_keys($validated), ['quantity', 'scheduled_date', 'scheduled_time', 'attraction_id']) !== []
+            || (isset($validated['status']) && $attractionPurchase->status === AttractionPurchase::STATUS_CANCELLED && $validated['status'] !== AttractionPurchase::STATUS_CANCELLED);
+
+        if ($slotTouched && ($validated['status'] ?? $attractionPurchase->status) !== AttractionPurchase::STATUS_CANCELLED) {
+            $targetAttraction = \App\Models\Attraction::find($validated['attraction_id'] ?? $attractionPurchase->attraction_id);
+
+            if ($targetAttraction && $targetAttraction->max_tickets_per_slot !== null) {
+                $slotDate = isset($validated['scheduled_date']) ? Carbon::parse($validated['scheduled_date'])->toDateString() : $attractionPurchase->scheduled_date?->toDateString();
+                $slotTime = isset($validated['scheduled_time']) ? substr((string) $validated['scheduled_time'], 0, 5) : $attractionPurchase->scheduled_time?->format('H:i');
+
+                if (!$slotDate || !$slotTime) {
+                    return response()->json(['success' => false, 'message' => "Please set a visit date and time for {$targetAttraction->name}."], 422);
+                }
+
+                $takenByOthers = (int) $targetAttraction->purchases()
+                    ->where('scheduled_date', $slotDate)
+                    ->whereNotIn('status', ['cancelled', 'refunded'])
+                    ->where('id', '!=', $attractionPurchase->id)
+                    ->whereRaw("TIME_FORMAT(scheduled_time, '%H:%i') = ?", [$slotTime])
+                    ->sum('quantity');
+                $remaining = max(0, $targetAttraction->max_tickets_per_slot - $takenByOthers);
+                $wanted = (int) ($validated['quantity'] ?? $attractionPurchase->quantity);
+
+                if ($wanted > $remaining) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => $remaining === 0
+                            ? 'That time slot is already full.'
+                            : "Only {$remaining} ticket" . ($remaining === 1 ? '' : 's') . ' fit in that time slot.',
+                    ], 422);
+                }
+            }
+        }
+
+        if ($attractionPurchase->ticket_order_id !== null) {
+            $orderLineSafe = ['scheduled_date', 'scheduled_time', 'notes'];
+            $blocked = collect($validated)->keys()->reject(fn ($key) => in_array($key, $orderLineSafe, true));
+
+            if ($blocked->isNotEmpty()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This purchase is line ' . $attractionPurchase->line_position . ' of order ' . $attractionPurchase->ticketOrder?->reference_number . '. Only the visit schedule and notes can change here — manage everything else on the order.',
+                ], 422);
+            }
+        }
+
         if ($request->has('total_amount')) {
             $validated['total_amount'] = (float) $request->input('total_amount');
         } elseif (isset($validated['attraction_id']) || isset($validated['quantity'])) {
@@ -885,6 +816,13 @@ class AttractionPurchaseController extends Controller
                     'success' => false,
                     'message' => 'Attraction purchase not found',
                 ], 404);
+            }
+
+            if ($attractionPurchase->ticket_order_id !== null) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This purchase belongs to order ' . $attractionPurchase->ticketOrder?->reference_number . ' and cannot be deleted on its own. Cancel or refund the whole order instead.',
+                ], 422);
             }
 
             $userId = null;
@@ -969,6 +907,13 @@ class AttractionPurchaseController extends Controller
             'payment_method' => ['nullable', Rule::in(['card', 'in-store', 'paylater', 'authorize.net'])],
         ]);
 
+        if ($attractionPurchase->ticket_order_id !== null) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This ticket is line ' . $attractionPurchase->line_position . ' of order ' . $attractionPurchase->ticketOrder?->reference_number . '. Check in, pay, cancel or refund on the order so every ticket stays in sync.',
+            ], 422);
+        }
+
         $previousStatus = $attractionPurchase->status;
 
         if (isset($validated['amount_paid']) && !isset($validated['status'])) {
@@ -991,6 +936,13 @@ class AttractionPurchaseController extends Controller
 
     public function markAsConfirmed(AttractionPurchase $attractionPurchase): JsonResponse
     {
+        if ($attractionPurchase->ticket_order_id !== null) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This ticket is line ' . $attractionPurchase->line_position . ' of order ' . $attractionPurchase->ticketOrder?->reference_number . '. Manage it on the order so every ticket stays in sync.',
+            ], 422);
+        }
+
         if ($attractionPurchase->status === AttractionPurchase::STATUS_CONFIRMED) {
             return response()->json([
                 'success' => false,
@@ -1017,6 +969,13 @@ class AttractionPurchaseController extends Controller
 
     public function cancel(AttractionPurchase $attractionPurchase): JsonResponse
     {
+        if ($attractionPurchase->ticket_order_id !== null) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This ticket belongs to order ' . $attractionPurchase->ticketOrder?->reference_number . '. Cancel the order instead.',
+            ], 422);
+        }
+
         if ($attractionPurchase->status === AttractionPurchase::STATUS_CANCELLED) {
             return response()->json([
                 'success' => false,
@@ -1060,9 +1019,20 @@ class AttractionPurchaseController extends Controller
         if ($request->filled('end_date')) {
             $query->where('purchase_date', '<=', $request->end_date);
         }
+        if ($request->filled('location_id')) {
+            $query->whereHas('attraction', fn ($q) => $q->where('location_id', $request->location_id));
+        }
+
+        $lineItems = (clone $query)->count();
+        $orderCount = (clone $query)->whereNotNull('ticket_order_id')->distinct()->count('ticket_order_id');
+        $standaloneCount = (clone $query)->whereNull('ticket_order_id')->count();
 
         $stats = [
-            'total_purchases' => $query->count(),
+            'total_purchases' => $lineItems,
+            'total_line_items' => $lineItems,
+            'total_transactions' => $standaloneCount + $orderCount,
+            'bulk_orders' => $orderCount,
+            'bulk_line_items' => $lineItems - $standaloneCount,
             'total_revenue' => (clone $query)->whereIn('status', [AttractionPurchase::STATUS_CONFIRMED, AttractionPurchase::STATUS_CHECKED_IN])->sum('total_amount'),
             'pending_purchases' => (clone $query)->where('status', AttractionPurchase::STATUS_PENDING)->count(),
             'confirmed_purchases' => (clone $query)->where('status', AttractionPurchase::STATUS_CONFIRMED)->count(),
@@ -1070,11 +1040,13 @@ class AttractionPurchaseController extends Controller
             'cancelled_purchases' => (clone $query)->where('status', AttractionPurchase::STATUS_CANCELLED)->count(),
             'refunded_purchases' => (clone $query)->where('status', AttractionPurchase::STATUS_REFUNDED)->count(),
             'total_quantity_sold' => (clone $query)->whereIn('status', [AttractionPurchase::STATUS_CONFIRMED, AttractionPurchase::STATUS_CHECKED_IN])->sum('quantity'),
-            'by_payment_method' => AttractionPurchase::selectRaw('payment_method, COUNT(*) as count, SUM(total_amount) as revenue')
+            'by_payment_method' => (clone $query)
+                ->selectRaw("payment_method, COUNT(*) as line_count, COUNT(DISTINCT COALESCE(CONCAT('o', ticket_order_id), CONCAT('p', id))) as count, SUM(total_amount) as revenue")
                 ->whereIn('status', [AttractionPurchase::STATUS_CONFIRMED, AttractionPurchase::STATUS_CHECKED_IN])
                 ->groupBy('payment_method')
                 ->get(),
-            'top_attractions' => AttractionPurchase::with('attraction')
+            'top_attractions' => (clone $query)
+                ->with('attraction')
                 ->selectRaw('attraction_id, COUNT(*) as purchase_count, SUM(quantity) as total_quantity, SUM(total_amount) as total_revenue')
                 ->whereIn('status', [AttractionPurchase::STATUS_CONFIRMED, AttractionPurchase::STATUS_CHECKED_IN])
                 ->groupBy('attraction_id')
@@ -1240,6 +1212,10 @@ public function checkIn(Request $request, int $id): JsonResponse
         $purchase->checked_in_by = $authUser ? $authUser->id : null;
         $purchase->save();
 
+        if ($purchase->ticket_order_id !== null && $purchase->ticketOrder) {
+            app(\App\Services\TicketOrderService::class)->syncCheckInStatus($purchase->ticketOrder);
+        }
+
         $purchase->load(['attraction', 'customer']);
 
         $customerName = $purchase->customer
@@ -1323,7 +1299,13 @@ public function checkIn(Request $request, int $id): JsonResponse
         $deletedCount = 0;
         $locationIds = [];
 
+        $skippedOrderLines = 0;
+
         foreach ($purchases as $purchase) {
+            if ($purchase->ticket_order_id !== null) {
+                $skippedOrderLines++;
+                continue;
+            }
             if ($purchase->attraction && $purchase->attraction->location_id) {
                 $locationIds[] = $purchase->attraction->location_id;
             }
@@ -1354,7 +1336,9 @@ public function checkIn(Request $request, int $id): JsonResponse
 
         return response()->json([
             'success' => true,
-            'message' => "{$deletedCount} attraction purchases deleted successfully",
+            'message' => $skippedOrderLines > 0
+                ? "{$deletedCount} attraction purchases deleted; {$skippedOrderLines} skipped because they belong to bulk orders"
+                : "{$deletedCount} attraction purchases deleted successfully",
             'data' => ['deleted_count' => $deletedCount],
         ]);
     }
@@ -1579,6 +1563,13 @@ public function checkIn(Request $request, int $id): JsonResponse
                 return response()->json([
                     'success' => false,
                     'message' => 'Only pending attraction purchases can be force deleted',
+                ], 403);
+            }
+
+            if ($attractionPurchase->ticket_order_id !== null) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This purchase belongs to an order. Roll back the order instead.',
                 ], 403);
             }
 

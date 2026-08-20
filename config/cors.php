@@ -29,7 +29,9 @@ return [
         'https://zapzone-backend-yt1lm2w5.on-forge.com',
     ],
 
-    'allowed_origins_patterns' => [],
+    'allowed_origins_patterns' => env('APP_ENV') === 'local'
+        ? ['#^https?://(localhost|127\.0\.0\.1)(:\d+)?$#']
+        : [],
 
     'allowed_headers' => [
         'Content-Type',

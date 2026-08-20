@@ -88,7 +88,8 @@ class MobileAvailabilityController extends Controller
             ->active()
             ->get([
                 'id', 'name', 'description', 'category',
-                'price', 'min_participants', 'max_participants',
+                'price', 'pricing_type', 'min_participants', 'max_participants',
+                'max_tickets_per_slot', 'participant_label', 'display_label',
                 'duration', 'duration_unit', 'image', 'display_order',
                 'location_id',
             ]);
@@ -100,7 +101,7 @@ class MobileAvailabilityController extends Controller
         $result = $filteredPackages->values()->map(function ($package) use ($date) {
             $isBlocked = $this->isPackageFullyBlocked($package->location_id, $package->id, $date);
             $availableSlots = [];
-            if (!$isBlocked && $package->rooms->isNotEmpty()) {
+            if (!$isBlocked && ($package->rooms->isNotEmpty() || $package->max_tickets_per_slot !== null)) {
                 $availableSlots = $this->generateAvailableSlotsWithRooms($package, $date);
             }
 
@@ -160,7 +161,7 @@ class MobileAvailabilityController extends Controller
         $isBlocked = $this->isPackageFullyBlocked($locationId, $packageId, $date);
 
         $availableSlots = [];
-        if (!$isBlocked && $package->rooms->isNotEmpty()) {
+        if (!$isBlocked && ($package->rooms->isNotEmpty() || $package->max_tickets_per_slot !== null)) {
             $availableSlots = $this->generateAvailableSlotsWithRooms($package, $date);
         }
 

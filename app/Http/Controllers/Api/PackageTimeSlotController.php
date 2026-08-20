@@ -244,7 +244,7 @@ class PackageTimeSlotController extends Controller
             try {
                 $package = Package::with('rooms')->findOrFail($packageId);
 
-                if ($package->rooms->isEmpty()) {
+                if ($package->rooms->isEmpty() && $package->max_tickets_per_slot === null) {
                     echo "event: error\n";
                     echo "data: " . json_encode([
                         'error' => 'No rooms available',

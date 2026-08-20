@@ -15,6 +15,7 @@ class Payment extends Model
     public const TYPE_BOOKING = 'booking';
     public const TYPE_ATTRACTION_PURCHASE = 'attraction_purchase';
     public const TYPE_EVENT_PURCHASE = 'event_purchase';
+    public const TYPE_TICKET_ORDER = 'ticket_order';
 
     protected $fillable = [
         'payable_id',
@@ -60,6 +61,11 @@ class Payment extends Model
     {
         return $this->belongsTo(AttractionPurchase::class, 'payable_id')
             ->where(fn($q) => $this->payable_type === self::TYPE_ATTRACTION_PURCHASE);
+    }
+
+    public function ticketOrder(): BelongsTo
+    {
+        return $this->belongsTo(TicketOrder::class, 'payable_id');
     }
 
     public function eventPurchase(): BelongsTo
@@ -137,6 +143,8 @@ class Payment extends Model
             return AttractionPurchase::withTrashed()->find($this->payable_id);
         } elseif ($this->isForEventPurchase()) {
             return EventPurchase::withTrashed()->find($this->payable_id);
+        } elseif ($this->payable_type === self::TYPE_TICKET_ORDER) {
+            return TicketOrder::withTrashed()->find($this->payable_id);
         }
         return null;
     }

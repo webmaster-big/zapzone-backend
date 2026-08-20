@@ -2,6 +2,8 @@
 
 namespace App\Services;
 
+use App\Mail\TicketOrderReceipt;
+
 use App\Models\AttractionPurchase;
 use App\Models\Booking;
 use App\Models\EventPurchase;
@@ -10,19 +12,20 @@ use App\Models\EmailNotification;
 use App\Models\EmailNotificationLog;
 use App\Models\Location;
 use App\Models\Payment;
+use App\Models\TicketOrder;
 use App\Models\User;
 use App\Models\Waiver;
 use Database\Seeders\DefaultEmailNotificationSeeder;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Storage;
 
 class EmailNotificationService
 {
-    protected GmailApiService $gmailService;
+    protected ?GmailApiService $gmailService = null;
 
     public function __construct()
     {
-        $this->gmailService = new GmailApiService();
     }
 
 
@@ -81,6 +84,57 @@ class EmailNotificationService
             ]);
         } finally {
             $this->dispatchSms(fn ($sms) => $sms->triggerPurchaseNotification($purchase, $triggerType));
+        }
+    }
+
+    public function triggerOrderNotification(TicketOrder $order): void
+    {
+        try {
+            $order->loadMissing([
+                'location.company',
+                'customer',
+                'attractionPurchases.attraction',
+                'attractionPurchases.addOns',
+                'eventPurchases.event',
+                'eventPurchases.addOns',
+            ]);
+
+            $recipient = $order->customer_email;
+
+            if ($recipient) {
+                $mailable = new TicketOrderReceipt($order, $order->qr_code);
+
+                $html = view('emails.ticket-order-receipt', [
+                    'order' => $order,
+                    'lines' => $mailable->lines,
+                    'qrCodeBase64' => $order->qr_code,
+                ])->render();
+
+                $attachments = [];
+
+                if ($order->qr_code && base64_decode($order->qr_code, true) !== false) {
+                    $attachments[] = [
+                        'data' => $order->qr_code,
+                        'filename' => 'order-qrcode.png',
+                        'mime_type' => 'image/png',
+                    ];
+                }
+
+                $this->sendEmail(
+                    $recipient,
+                    'Your ZapZone order ' . $order->reference_number,
+                    $html,
+                    ['company_name' => $order->location?->company?->name ?? 'Zap Zone'],
+                    $attachments
+                );
+            }
+        } catch (\Throwable $e) {
+            Log::error('Order receipt email failed', [
+                'order_id' => $order->id,
+                'error' => $e->getMessage(),
+            ]);
+        } finally {
+            $this->dispatchSms(fn ($sms) => $sms->triggerOrderNotification($order));
         }
     }
 
@@ -895,6 +949,7 @@ HTML;
             (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
 
         if ($useGmailApi) {
+            $this->gmailService ??= new GmailApiService();
             $this->gmailService->sendEmail(
                 $to,
                 $subject,

@@ -300,7 +300,7 @@ class WaiverController extends Controller
     public function kioskSession(Request $request): JsonResponse
     {
         $authUser = $this->resolveAuthUser($request);
-        if ($guard = $this->guardManager($authUser)) {
+        if ($guard = $this->guardStaff($authUser)) {
             return $guard;
         }
 
@@ -400,9 +400,10 @@ class WaiverController extends Controller
 
     private function kioskForAttractionPurchase($authUser, array $data, ?WaiverTemplate $template): ?Waiver
     {
-        $purchase = \App\Models\AttractionPurchase::with(['location', 'customer', 'attraction'])->findOrFail($data['source_id']);
+        $purchase = \App\Models\AttractionPurchase::with(['attraction.location', 'customer'])->findOrFail($data['source_id']);
+        $purchaseLocationId = $purchase->attraction?->location_id;
 
-        if (!$this->locAllowed($authUser, $purchase->location_id)) {
+        if (!$this->locAllowed($authUser, $purchaseLocationId)) {
             return null;
         }
 
@@ -415,12 +416,12 @@ class WaiverController extends Controller
             return null;
         }
 
-        $companyId = $purchase->location?->company_id ?? $authUser->company_id;
+        $companyId = $purchase->attraction?->location?->company_id ?? $authUser->company_id;
         $version = $this->waivers->syncVersion($template, $authUser->id);
 
         return Waiver::create([
             'company_id'                => $companyId,
-            'location_id'               => $purchase->location_id,
+            'location_id'               => $purchaseLocationId,
             'waiver_template_id'        => $template->id,
             'waiver_template_version_id' => $version->id,
             'status'                    => Waiver::STATUS_PENDING,
@@ -1033,6 +1034,14 @@ class WaiverController extends Controller
             return null;
         }
         return $this->forbidden('Only location managers and admins can perform this action.');
+    }
+
+    private function guardStaff($authUser): ?JsonResponse
+    {
+        if ($authUser && in_array($authUser->role, ['company_admin', 'admin', 'location_manager', 'attendant'], true)) {
+            return null;
+        }
+        return $this->forbidden('Only staff can perform this action.');
     }
 
     private function guardAdmin($authUser): ?JsonResponse

@@ -26,6 +26,8 @@ class AttractionPurchase extends Model
     ];
 
     protected $fillable = [
+        'ticket_order_id',
+        'line_position',
         'attraction_id',
         'customer_id',
         'membership_id',
@@ -40,6 +42,8 @@ class AttractionPurchase extends Model
         'guest_zip',
         'guest_country',
         'quantity',
+        'unit_price',
+        'unit_price_after_discount',
         'total_amount',
         'applied_fees',
         'discount_amount',
@@ -59,6 +63,7 @@ class AttractionPurchase extends Model
     ];
 
     protected $casts = [
+        'line_position' => 'integer',
         'purchase_date' => 'date',
         'scheduled_date' => 'date',
         'scheduled_time' => 'datetime:H:i',
@@ -93,6 +98,11 @@ class AttractionPurchase extends Model
             return $this->customer->phone;
         }
         return $this->guest_phone;
+    }
+
+    public function ticketOrder(): BelongsTo
+    {
+        return $this->belongsTo(TicketOrder::class);
     }
 
     public function attraction()

@@ -45,6 +45,9 @@ trait GeneratesAvailableTimeSlots
 
         $totalRooms = $package->rooms->count();
 
+        $ticketCap = $package->max_tickets_per_slot;
+        $bookedSeats = $ticketCap !== null ? $package->getBookedSeatsBySlot($date) : [];
+
         foreach ($timeSlots as $timeSlot) {
             $currentTime = Carbon::parse($date . ' ' . $timeSlot);
             $slotEndTime = (clone $currentTime)->addMinutes($slotDurationInMinutes);
@@ -65,6 +68,16 @@ trait GeneratesAvailableTimeSlots
                     'location_id' => $locationId,
                 ]);
                 continue; // Skip this slot
+            }
+
+            $remainingTickets = null;
+
+            if ($ticketCap !== null) {
+                $remainingTickets = max(0, $ticketCap - ($bookedSeats[$currentTime->format('H:i')] ?? 0));
+
+                if ($remainingTickets < max(1, (int) ($package->min_participants ?? 1))) {
+                    continue;
+                }
             }
 
             $availableRoom = $this->findAvailableRoom(
@@ -91,6 +104,19 @@ trait GeneratesAvailableTimeSlots
                         $durationUnit
                     ),
                     'total_rooms' => $totalRooms,
+                    'remaining_tickets' => $remainingTickets,
+                ];
+            } elseif ($totalRooms === 0 && $ticketCap !== null) {
+                $availableSlots[] = [
+                    'start_time' => $currentTime->format('H:i'),
+                    'end_time' => $slotEndTime->format('H:i'),
+                    'duration' => $duration,
+                    'duration_unit' => $durationUnit,
+                    'room_id' => null,
+                    'room_name' => null,
+                    'available_rooms_count' => 0,
+                    'total_rooms' => 0,
+                    'remaining_tickets' => $remainingTickets,
                 ];
             }
         }

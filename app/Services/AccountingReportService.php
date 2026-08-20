@@ -7,6 +7,7 @@ use App\Models\Payment;
 use App\Support\DateRange;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class AccountingReportService
 {
@@ -651,7 +652,7 @@ class AccountingReportService
             return [];
         }
 
-        return DB::table('payments')
+        $amounts = DB::table('payments')
             ->where('payable_type', $payableType)
             ->where('method', 'authorize.net')
             ->where('status', 'completed')
@@ -660,6 +661,45 @@ class AccountingReportService
             ->groupBy('payable_id')
             ->pluck(DB::raw('SUM(amount) as gateway_amount'), 'payable_id')
             ->map(fn($v) => (float) $v)
+            ->all();
+
+        foreach ($this->getOrderGatewayAmounts($payableIds, $payableType) as $payableId => $amount) {
+            $amounts[$payableId] = round(($amounts[$payableId] ?? 0) + $amount, 2);
+        }
+
+        return $amounts;
+    }
+
+    private function getOrderGatewayAmounts(array $payableIds, string $payableType): array
+    {
+        $table = match ($payableType) {
+            Payment::TYPE_ATTRACTION_PURCHASE => 'attraction_purchases',
+            Payment::TYPE_EVENT_PURCHASE => 'event_purchases',
+            default => null,
+        };
+
+        if ($table === null || !Schema::hasColumn($table, 'ticket_order_id')) {
+            return [];
+        }
+
+        $gatewayOrderIds = DB::table('payments')
+            ->where('payable_type', Payment::TYPE_TICKET_ORDER)
+            ->where('method', 'authorize.net')
+            ->where('status', 'completed')
+            ->whereNull('deleted_at')
+            ->distinct()
+            ->pluck('payable_id');
+
+        if ($gatewayOrderIds->isEmpty()) {
+            return [];
+        }
+
+        return DB::table($table)
+            ->whereIn('id', $payableIds)
+            ->whereIn('ticket_order_id', $gatewayOrderIds)
+            ->whereNull('deleted_at')
+            ->pluck('amount_paid', 'id')
+            ->map(fn ($v) => (float) $v)
             ->all();
     }
 

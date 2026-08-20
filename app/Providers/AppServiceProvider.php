@@ -20,6 +20,7 @@ class AppServiceProvider extends ServiceProvider
             'booking' => \App\Models\Booking::class,
             'attraction_purchase' => \App\Models\AttractionPurchase::class,
             'event_purchase' => \App\Models\EventPurchase::class,
+            'ticket_order' => \App\Models\TicketOrder::class,
         ]);
 
         \App\Models\Company::created(function (\App\Models\Company $company) {

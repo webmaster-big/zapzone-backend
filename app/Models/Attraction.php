@@ -19,6 +19,7 @@ class Attraction extends Model
         'price',
         'pricing_type',
         'max_capacity',
+        'max_tickets_per_slot',
         'display_capacity_to_customers',
         'category',
         'unit',
@@ -88,5 +89,30 @@ class Attraction extends Model
     public function scopeByPricingType($query, $pricingType)
     {
         return $query->where('pricing_type', $pricingType);
+    }
+
+    public function getBookedSeatsBySlot(string $date): array
+    {
+        $counts = $this->purchases()
+            ->where('scheduled_date', $date)
+            ->whereNotIn('status', ['cancelled', 'refunded'])
+            ->whereNotNull('scheduled_time')
+            ->selectRaw("TIME_FORMAT(scheduled_time, '%H:%i') as slot_time, SUM(quantity) as seats")
+            ->groupBy('slot_time')
+            ->pluck('seats', 'slot_time')
+            ->toArray();
+
+        return array_map('intval', $counts);
+    }
+
+    public function remainingTicketsForSlot(string $date, string $time): ?int
+    {
+        if ($this->max_tickets_per_slot === null) {
+            return null;
+        }
+
+        $taken = $this->getBookedSeatsBySlot($date)[substr($time, 0, 5)] ?? 0;
+
+        return max(0, $this->max_tickets_per_slot - $taken);
     }
 }

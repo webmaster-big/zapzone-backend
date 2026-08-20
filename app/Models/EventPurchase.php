@@ -14,6 +14,8 @@ class EventPurchase extends Model
     use HasFactory, SoftDeletes;
 
     protected $fillable = [
+        'ticket_order_id',
+        'line_position',
         'reference_number',
         'event_id',
         'customer_id',
@@ -26,6 +28,8 @@ class EventPurchase extends Model
         'purchase_date',
         'purchase_time',
         'quantity',
+        'unit_price',
+        'unit_price_after_discount',
         'total_amount',
         'applied_fees',
         'applied_discounts',
@@ -45,6 +49,7 @@ class EventPurchase extends Model
     ];
 
     protected $casts = [
+        'line_position' => 'integer',
         'purchase_date' => 'date',
         'purchase_time' => 'datetime:H:i',
         'total_amount' => 'decimal:2',
@@ -55,7 +60,13 @@ class EventPurchase extends Model
         'membership_discount' => 'decimal:2',
         'completed_at' => 'datetime',
         'cancelled_at' => 'datetime',
+        'checked_in_at' => 'datetime',
     ];
+
+    public function ticketOrder(): BelongsTo
+    {
+        return $this->belongsTo(TicketOrder::class);
+    }
 
     public function event(): BelongsTo
     {

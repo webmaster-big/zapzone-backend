@@ -52,6 +52,7 @@ class EventController extends Controller
                 'time_end' => 'required|date_format:H:i|after:time_start',
                 'interval_minutes' => 'required|integer|min:5',
                 'max_bookings_per_slot' => 'nullable|integer|min:1',
+                'max_tickets_per_slot' => 'nullable|integer|min:1|max:10000',
                 'price' => 'nullable|numeric|min:0',
                 'features' => 'nullable|array',
                 'features.*' => 'string',
@@ -107,6 +108,7 @@ class EventController extends Controller
                 'time_end' => 'sometimes|date_format:H:i',
                 'interval_minutes' => 'sometimes|integer|min:5',
                 'max_bookings_per_slot' => 'nullable|integer|min:1',
+                'max_tickets_per_slot' => 'nullable|integer|min:1|max:10000',
                 'price' => 'nullable|numeric|min:0',
                 'features' => 'nullable|array',
                 'features.*' => 'string',
@@ -178,7 +180,17 @@ class EventController extends Controller
 
         $slots = $event->getAvailableTimeSlotsForDate($date);
 
-        return response()->json(['date' => $date, 'time_slots' => $slots]);
+        $remaining = null;
+
+        if ($event->max_tickets_per_slot !== null) {
+            $taken = $event->getBookedTicketsBySlot($date);
+            $remaining = [];
+            foreach ($slots as $slot) {
+                $remaining[$slot] = max(0, $event->max_tickets_per_slot - ($taken[$slot] ?? 0));
+            }
+        }
+
+        return response()->json(['date' => $date, 'time_slots' => $slots, 'remaining_tickets' => $remaining]);
     }
 
     public function eventsGroupedByName(Request $request): JsonResponse
@@ -209,7 +221,7 @@ class EventController extends Controller
 
         $query = Event::with(['location', 'addOns'])
             ->select(['id', 'name', 'description', 'image', 'date_type', 'start_date', 'end_date',
-                'time_start', 'time_end', 'interval_minutes', 'max_bookings_per_slot',
+                'time_start', 'time_end', 'interval_minutes', 'max_bookings_per_slot', 'max_tickets_per_slot',
                 'price', 'features', 'location_id', 'is_active'])
             ->where('is_active', true);
 
@@ -236,6 +248,7 @@ class EventController extends Controller
                         'time_end' => $event->time_end,
                         'interval_minutes' => $event->interval_minutes,
                         'max_bookings_per_slot' => $event->max_bookings_per_slot,
+                        'max_tickets_per_slot' => $event->max_tickets_per_slot,
                         'price' => $event->price,
                         'features' => $event->features,
                         'locations' => [],

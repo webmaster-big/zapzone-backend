@@ -201,6 +201,19 @@ class EventPurchaseController extends Controller
                 return response()->json(['message' => 'Selected time slot is not available'], 422);
             }
 
+            if ($event->max_tickets_per_slot !== null) {
+                $remaining = $event->remainingTicketsForSlot($validated['purchase_date'], $validated['purchase_time']);
+
+                if ((int) $validated['quantity'] > $remaining) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => $remaining === 0
+                            ? 'That time just sold out. Please pick another time.'
+                            : "Only {$remaining} ticket" . ($remaining === 1 ? '' : 's') . ' left for that time. Pick fewer tickets or another time.',
+                    ], 422);
+                }
+            }
+
             $duplicateQuery = EventPurchase::where('event_id', $validated['event_id'])
                 ->where('purchase_date', $validated['purchase_date'])
                 ->where('purchase_time', $validated['purchase_time'])
@@ -237,6 +250,20 @@ class EventPurchaseController extends Controller
             unset($validated['add_ons'], $validated['send_email'], $validated['sms_consent']);
 
             $purchase = DB::transaction(function () use (&$validated, $discounts, $request) {
+                $capEvent = Event::where('id', $validated['event_id'])->lockForUpdate()->first();
+
+                if ($capEvent && $capEvent->max_tickets_per_slot !== null) {
+                    $lockedRemaining = $capEvent->remainingTicketsForSlot($validated['purchase_date'], (string) $validated['purchase_time']);
+
+                    if ((int) $validated['quantity'] > $lockedRemaining) {
+                        throw new \RuntimeException(
+                            $lockedRemaining === 0
+                                ? 'That time just sold out. Please pick another time.'
+                                : "Only {$lockedRemaining} ticket" . ($lockedRemaining === 1 ? '' : 's') . ' left for that time. Pick fewer tickets or another time.'
+                        );
+                    }
+                }
+
                 $hasCode = !empty($validated['promo_id']) || !empty($validated['gift_card_id'])
                     || !empty($validated['promo_code']) || !empty($validated['gift_card_code']);
 
@@ -431,8 +458,11 @@ class EventPurchaseController extends Controller
             return response()->json($purchase, 201);
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json(['message' => 'Validation failed', 'errors' => $e->errors()], 422);
+        } catch (\RuntimeException $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
         } catch (\Exception $e) {
-            return response()->json(['message' => 'Failed to create event purchase', 'error' => $e->getMessage()], 500);
+            Log::error('Event purchase creation failed', ['error' => $e->getMessage()]);
+            return response()->json(['message' => 'Failed to create event purchase. Please try again.'], 500);
         }
     }
 
@@ -528,6 +558,52 @@ class EventPurchaseController extends Controller
                 'add_ons.*.price_at_purchase' => 'required_with:add_ons|numeric|min:0',
             ]);
 
+            $slotTouched = array_intersect(array_keys($validated), ['quantity', 'purchase_date', 'purchase_time']) !== []
+                || (isset($validated['status']) && $eventPurchase->status === 'cancelled' && $validated['status'] !== 'cancelled');
+
+            if ($slotTouched && ($validated['status'] ?? $eventPurchase->status) !== 'cancelled') {
+                $targetEvent = Event::find($eventPurchase->event_id);
+
+                if ($targetEvent && $targetEvent->max_tickets_per_slot !== null) {
+                    $slotDate = isset($validated['purchase_date']) ? \Carbon\Carbon::parse($validated['purchase_date'])->toDateString() : $eventPurchase->purchase_date?->toDateString();
+                    $slotTime = isset($validated['purchase_time']) ? substr((string) $validated['purchase_time'], 0, 5) : ($eventPurchase->purchase_time ? substr((string) $eventPurchase->purchase_time, 0, 5) : null);
+
+                    if (!$slotDate || !$slotTime) {
+                        return response()->json(['success' => false, 'message' => "Please set a date and time for {$targetEvent->name}."], 422);
+                    }
+
+                    $takenByOthers = (int) $targetEvent->eventPurchases()
+                        ->where('purchase_date', $slotDate)
+                        ->whereNotIn('status', ['cancelled'])
+                        ->where('id', '!=', $eventPurchase->id)
+                        ->whereRaw("TIME_FORMAT(purchase_time, '%H:%i') = ?", [$slotTime])
+                        ->sum('quantity');
+                    $remaining = max(0, $targetEvent->max_tickets_per_slot - $takenByOthers);
+                    $wanted = (int) ($validated['quantity'] ?? $eventPurchase->quantity);
+
+                    if ($wanted > $remaining) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => $remaining === 0
+                                ? 'That time slot is already full.'
+                                : "Only {$remaining} ticket" . ($remaining === 1 ? '' : 's') . ' fit in that time slot.',
+                        ], 422);
+                    }
+                }
+            }
+
+            if ($eventPurchase->ticket_order_id !== null) {
+                $orderLineSafe = ['purchase_date', 'purchase_time', 'notes', 'special_requests'];
+                $blocked = collect($validated)->keys()->reject(fn ($key) => in_array($key, $orderLineSafe, true));
+
+                if ($blocked->isNotEmpty()) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'This purchase is line ' . $eventPurchase->line_position . ' of order ' . $eventPurchase->ticketOrder?->reference_number . '. Only the visit schedule, notes and special requests can change here — manage everything else on the order.',
+                    ], 422);
+                }
+            }
+
             $addOns = $validated['add_ons'] ?? null;
             unset($validated['add_ons']);
 
@@ -608,6 +684,13 @@ class EventPurchaseController extends Controller
                 ], 404);
             }
 
+            if ($eventPurchase->ticket_order_id !== null) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This purchase belongs to order ' . $eventPurchase->ticketOrder?->reference_number . ' and cannot be deleted on its own. Cancel or refund the whole order instead.',
+                ], 422);
+            }
+
             $userId = null;
             $user = null;
             try {
@@ -684,6 +767,13 @@ class EventPurchaseController extends Controller
 
     public function cancel(EventPurchase $eventPurchase): JsonResponse
     {
+        if ($eventPurchase->ticket_order_id !== null) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This ticket belongs to order ' . $eventPurchase->ticketOrder?->reference_number . '. Cancel the order instead.',
+            ], 422);
+        }
+
         $wasCancelled = $eventPurchase->status === 'cancelled';
 
         $eventPurchase->update([
@@ -715,6 +805,13 @@ class EventPurchaseController extends Controller
 
     public function updateStatus(Request $request, EventPurchase $eventPurchase): JsonResponse
     {
+        if ($eventPurchase->ticket_order_id !== null) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This ticket is line ' . $eventPurchase->line_position . ' of order ' . $eventPurchase->ticketOrder?->reference_number . '. Check in, pay, cancel or refund on the order so every ticket stays in sync.',
+            ], 422);
+        }
+
         $validated = $request->validate([
             'status' => 'required|in:pending,confirmed,checked-in,completed,cancelled',
         ]);
@@ -761,6 +858,7 @@ class EventPurchaseController extends Controller
     {
         $query = EventPurchase::select([
                 'id', 'reference_number', 'event_id', 'customer_id', 'location_id',
+                'ticket_order_id', 'line_position',
                 'guest_name', 'guest_email', 'guest_phone',
                 'purchase_date', 'purchase_time',
                 'quantity', 'total_amount', 'amount_paid', 'discount_amount',
@@ -877,6 +975,13 @@ class EventPurchaseController extends Controller
                 return response()->json([
                     'success' => false,
                     'message' => 'Only pending event purchases can be force deleted',
+                ], 403);
+            }
+
+            if ($eventPurchase->ticket_order_id !== null) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This purchase belongs to an order. Roll back the order instead.',
                 ], 403);
             }
 

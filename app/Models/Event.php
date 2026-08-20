@@ -26,6 +26,7 @@ class Event extends Model
         'time_end',
         'interval_minutes',
         'max_bookings_per_slot',
+        'max_tickets_per_slot',
         'price',
         'features',
         'add_ons_order',
@@ -39,6 +40,7 @@ class Event extends Model
         'is_active' => 'boolean',
         'interval_minutes' => 'integer',
         'max_bookings_per_slot' => 'integer',
+        'max_tickets_per_slot' => 'integer',
         'features' => 'array',
         'add_ons_order' => 'array',
     ];
@@ -116,6 +118,13 @@ class Event extends Model
             return !DayOff::isTimeSlotBlockedForEvent($this->location_id, $this->id, $date, $slot, $slotEnd);
         }));
 
+        if ($this->max_tickets_per_slot !== null) {
+            $seatCounts = $this->getBookedTicketsBySlot($date);
+            $allSlots = array_values(array_filter($allSlots, function ($slot) use ($seatCounts) {
+                return ($seatCounts[$slot] ?? 0) < $this->max_tickets_per_slot;
+            }));
+        }
+
         if ($this->max_bookings_per_slot === null) {
             return $allSlots;
         }
@@ -143,5 +152,29 @@ class Event extends Model
         }
 
         return $date->between($this->start_date, $this->end_date);
+    }
+
+    public function getBookedTicketsBySlot(string $date): array
+    {
+        $counts = $this->eventPurchases()
+            ->where('purchase_date', $date)
+            ->whereNotIn('status', ['cancelled'])
+            ->selectRaw("TIME_FORMAT(purchase_time, '%H:%i') as slot_time, SUM(quantity) as seats")
+            ->groupBy('slot_time')
+            ->pluck('seats', 'slot_time')
+            ->toArray();
+
+        return array_map('intval', $counts);
+    }
+
+    public function remainingTicketsForSlot(string $date, string $time): ?int
+    {
+        if ($this->max_tickets_per_slot === null) {
+            return null;
+        }
+
+        $taken = $this->getBookedTicketsBySlot($date)[substr($time, 0, 5)] ?? 0;
+
+        return max(0, $this->max_tickets_per_slot - $taken);
     }
 }

@@ -26,6 +26,8 @@ class PageView extends Model
         'my_events',             // /customer/events
         'my_gift_cards',         // /customer/gift-cards
         'my_notifications',      // /customer/notifications
+        'cart',
+        'checkout',
         'other',
     ];
 
@@ -38,6 +40,7 @@ class PageView extends Model
         'event_purchase',
         'gift_card',
         'promo',
+        'ticket_order',
     ];
 
     protected $fillable = [

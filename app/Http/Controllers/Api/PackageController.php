@@ -109,7 +109,7 @@ class PackageController extends Controller
         $groupedPackages = [];
 
         $query = Package::with(['location', 'availabilitySchedules'])
-            ->select(['id', 'name', 'description', 'price', 'category', 'min_participants', 'max_participants', 'duration', 'location_id', 'is_active', 'display_order', 'package_type', 'duration_unit', 'price_per_additional'])
+            ->select(['id', 'name', 'description', 'price', 'pricing_type', 'category', 'min_participants', 'max_participants', 'max_tickets_per_slot', 'participant_label', 'display_label', 'duration', 'location_id', 'is_active', 'display_order', 'package_type', 'duration_unit', 'price_per_additional'])
             ->where('is_active', true);
 
         if ($search) {
@@ -150,6 +150,10 @@ class PackageController extends Controller
                     'package_type' => $package->package_type,
                     'min_participants' => $package->min_participants,
                     'price_per_additional' => $package->price_per_additional,
+                    'pricing_type' => $package->pricing_type ?? 'base',
+                    'participant_label' => $package->participant_label,
+                    'display_label' => $package->display_label,
+                    'max_tickets_per_slot' => $package->max_tickets_per_slot,
                     'availability_schedules' => $package->availabilitySchedules,
                     'display_order' => $package->display_order,
                     'special_pricing' => $priceBreakdown,
@@ -675,6 +679,10 @@ class PackageController extends Controller
             'packages.*.features.*' => 'nullable|string',
             'packages.*.price_per_additional' => 'nullable|numeric|min:0',
             'packages.*.min_participants' => 'nullable|integer|min:1',
+            'packages.*.pricing_type' => ['sometimes', 'string', \Illuminate\Validation\Rule::in(['base', 'per_person'])],
+            'packages.*.max_tickets_per_slot' => 'nullable|integer|min:1|max:10000',
+            'packages.*.participant_label' => 'nullable|string|max:50',
+            'packages.*.display_label' => 'nullable|string|max:100',
             'packages.*.max_participants' => 'nullable|integer|min:1',
             'packages.*.duration' => 'nullable|numeric|min:0.01',
             'packages.*.duration_unit' => 'nullable|string',

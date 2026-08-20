@@ -21,9 +21,13 @@ class Package extends Model
         'package_type',
         'features',
         'price',
+        'pricing_type',
         'price_per_additional',
         'min_participants',
         'max_participants',
+        'max_tickets_per_slot',
+        'participant_label',
+        'display_label',
         'duration',
         'duration_unit',
         'price_per_additional_30min',
@@ -44,6 +48,7 @@ class Package extends Model
 
     protected $casts = [
         'price' => 'decimal:2',
+        'max_tickets_per_slot' => 'integer',
         'price_per_additional' => 'decimal:2',
         'price_per_additional_30min' => 'decimal:2',
         'price_per_additional_1hr' => 'decimal:2',
@@ -150,5 +155,29 @@ class Package extends Model
         }
 
         return (int) round($duration);
+    }
+
+    public function getBookedSeatsBySlot(string $date): array
+    {
+        $counts = $this->bookings()
+            ->where('booking_date', $date)
+            ->whereNotIn('status', ['cancelled'])
+            ->selectRaw("TIME_FORMAT(booking_time, '%H:%i') as slot_time, SUM(participants) as seats")
+            ->groupBy('slot_time')
+            ->pluck('seats', 'slot_time')
+            ->toArray();
+
+        return array_map('intval', $counts);
+    }
+
+    public function remainingTicketsForSlot(string $date, string $time): ?int
+    {
+        if ($this->max_tickets_per_slot === null) {
+            return null;
+        }
+
+        $taken = $this->getBookedSeatsBySlot($date)[substr($time, 0, 5)] ?? 0;
+
+        return max(0, $this->max_tickets_per_slot - $taken);
     }
 }

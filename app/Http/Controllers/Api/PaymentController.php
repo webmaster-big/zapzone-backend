@@ -6,6 +6,8 @@ use App\Http\Controllers\Controller;
 use App\Http\Traits\RecordsPageAnalytics;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Models\Payment;
+use App\Models\TicketOrder;
+use App\Services\TicketOrderService;
 use App\Models\Booking;
 use App\Models\AttractionPurchase;
 use App\Models\EventPurchase;
@@ -47,7 +49,7 @@ class PaymentController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        $query = Payment::with(['customer', 'location', 'booking', 'attractionPurchase', 'eventPurchase']);
+        $query = Payment::with(['customer', 'location', 'booking', 'attractionPurchase', 'eventPurchase', 'ticketOrder']);
 
         $authUser = $this->resolveAuthUser($request);
         if ($authUser) {
@@ -156,7 +158,7 @@ class PaymentController extends Controller
     {
         $validated = $request->validate([
             'payable_id' => 'nullable|integer',
-            'payable_type' => ['nullable', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE, Payment::TYPE_EVENT_PURCHASE])],
+            'payable_type' => ['nullable', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE, Payment::TYPE_EVENT_PURCHASE, Payment::TYPE_TICKET_ORDER])],
             'booking_id' => 'nullable|exists:bookings,id',
             'attraction_purchase_id' => 'nullable|exists:attraction_purchases,id',
             'event_purchase_id' => 'nullable|exists:event_purchases,id',
@@ -213,6 +215,24 @@ class PaymentController extends Controller
             }
         }
 
+        if (!empty($validated['payable_id']) && !empty($validated['payable_type'])) {
+            $lineOwner = null;
+            if ($validated['payable_type'] === Payment::TYPE_ATTRACTION_PURCHASE) {
+                $lineOwner = AttractionPurchase::find($validated['payable_id'])?->ticket_order_id;
+            } elseif ($validated['payable_type'] === Payment::TYPE_EVENT_PURCHASE) {
+                $lineOwner = EventPurchase::find($validated['payable_id'])?->ticket_order_id;
+            }
+
+            if ($lineOwner !== null) {
+                $orderRef = TicketOrder::find($lineOwner)?->reference_number;
+
+                return response()->json([
+                    'success' => false,
+                    'message' => "This purchase is part of order {$orderRef}. Take the payment on the order instead so every ticket settles together.",
+                ], 422);
+            }
+        }
+
         $validated['transaction_id'] = 'TXN' . now()->format('YmdHis') . strtoupper(Str::random(6));
 
         if (isset($validated['signature_image']) && !empty($validated['signature_image'])) {
@@ -262,6 +282,32 @@ class PaymentController extends Controller
                         'amount_paid' => $totalPaid,
                         'payment_status' => $totalPaid >= $payable->total_amount ? 'paid' : 'partial',
                     ]);
+                }
+            } elseif ($payment->payable_type === Payment::TYPE_TICKET_ORDER) {
+                $order = TicketOrder::find($payment->payable_id);
+                if ($order) {
+                    $completed = Payment::where('payable_id', $order->id)
+                        ->where('payable_type', Payment::TYPE_TICKET_ORDER)
+                        ->where('status', 'completed')
+                        ->sum('amount');
+                    $refunded = Payment::where('payable_id', $order->id)
+                        ->where('payable_type', Payment::TYPE_TICKET_ORDER)
+                        ->where('status', 'refunded')
+                        ->sum('amount');
+                    $netPaid = min(max(0, (float) $completed - (float) $refunded), (float) $order->total_amount);
+
+                    try {
+                        \Illuminate\Support\Facades\DB::transaction(function () use ($order, $netPaid) {
+                            $order->update(['amount_paid' => 0]);
+                            app(TicketOrderService::class)->applyPayment($order->fresh(), $netPaid);
+                        });
+                    } catch (\Throwable $settleError) {
+                        Log::error('Order settle bookkeeping failed after recording a manual payment — review manually', [
+                            'ticket_order_id' => $order->id,
+                            'payment_id' => $payment->id,
+                            'error' => $settleError->getMessage(),
+                        ]);
+                    }
                 }
             }
         }
@@ -377,7 +423,7 @@ class PaymentController extends Controller
     {
         $payment->delete();
 
-        if ($payment->payable_id && $payment->payable_type && $payment->status === 'completed') {
+        if ($payment->payable_id && $payment->payable_type && in_array($payment->status, ['completed', 'refunded'], true)) {
             $this->recalculatePayableAmountPaid($payment->payable_id, $payment->payable_type);
         }
 
@@ -401,7 +447,7 @@ class PaymentController extends Controller
         $payment = Payment::onlyTrashed()->findOrFail($id);
         $payment->restore();
 
-        if ($payment->payable_id && $payment->payable_type && $payment->status === 'completed') {
+        if ($payment->payable_id && $payment->payable_type && in_array($payment->status, ['completed', 'refunded'], true)) {
             $this->recalculatePayableAmountPaid($payment->payable_id, $payment->payable_type);
         }
 
@@ -444,7 +490,7 @@ class PaymentController extends Controller
 
     public function trashed(Request $request): JsonResponse
     {
-        $query = Payment::onlyTrashed()->with(['customer', 'location', 'booking', 'attractionPurchase', 'eventPurchase']);
+        $query = Payment::onlyTrashed()->with(['customer', 'location', 'booking', 'attractionPurchase', 'eventPurchase', 'ticketOrder']);
 
         if ($request->has('payable_type')) {
             $query->where('payable_type', $request->payable_type);
@@ -552,6 +598,30 @@ class PaymentController extends Controller
                     'payment_status' => $totalPaid >= $payable->total_amount ? 'paid' : ($totalPaid > 0 ? 'partial' : 'pending'),
                 ]);
             }
+        } elseif ($payableType === Payment::TYPE_TICKET_ORDER) {
+            $order = TicketOrder::find($payableId);
+
+            if ($order) {
+                $refunded = Payment::where('payable_id', $payableId)
+                    ->where('payable_type', $payableType)
+                    ->where('status', 'refunded')
+                    ->sum('amount');
+                $netPaid = min(max(0, (float) $totalPaid - (float) $refunded), (float) $order->total_amount);
+                $current = (float) $order->amount_paid;
+
+                try {
+                    if ($netPaid < $current) {
+                        app(TicketOrderService::class)->applyRefund($order, $current - $netPaid, false, 'resync');
+                    } elseif ($netPaid > $current) {
+                        app(TicketOrderService::class)->applyPayment($order, $netPaid - $current);
+                    }
+                } catch (\Throwable $e) {
+                    Log::error('Order amount recalculation failed — order left as-is, review manually', [
+                        'ticket_order_id' => $payableId,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
         }
     }
 
@@ -565,7 +635,7 @@ class PaymentController extends Controller
 
         $validated = $request->validate([
             'payable_id' => 'required|integer',
-            'payable_type' => ['required', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE, Payment::TYPE_EVENT_PURCHASE])],
+            'payable_type' => ['required', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE, Payment::TYPE_EVENT_PURCHASE, Payment::TYPE_TICKET_ORDER])],
         ]);
 
         if ($validated['payable_type'] === Payment::TYPE_BOOKING) {
@@ -584,6 +654,31 @@ class PaymentController extends Controller
                     'message' => 'Attraction purchase not found',
                 ], 404);
             }
+        } elseif ($validated['payable_type'] === Payment::TYPE_TICKET_ORDER) {
+            $order = TicketOrder::find($validated['payable_id']);
+
+            if (!$order) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Order not found',
+                ], 404);
+            }
+
+            $payment->payable_id = $order->id;
+            $payment->payable_type = Payment::TYPE_TICKET_ORDER;
+            $payment->save();
+
+            app(TicketOrderService::class)->applyPayment(
+                $order,
+                (float) $payment->amount,
+                $payment->transaction_id,
+            );
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Order settled',
+                'data' => $order->fresh(['attractionPurchases', 'eventPurchases']),
+            ]);
         } elseif ($validated['payable_type'] === Payment::TYPE_EVENT_PURCHASE) {
             $payable = EventPurchase::find($validated['payable_id']);
             if (!$payable) {
@@ -1002,6 +1097,11 @@ class PaymentController extends Controller
                                 'cancelled_at' => $isCancelled ? now() : $payable->cancelled_at,
                             ]);
                         }
+                    } elseif ($payment->payable_type === Payment::TYPE_TICKET_ORDER && $payment->payable_id) {
+                        $payable = TicketOrder::withTrashed()->find($payment->payable_id);
+                        if ($payable) {
+                            $payable = app(TicketOrderService::class)->applyRefund($payable, (float) $refundAmount, (bool) $isCancelled);
+                        }
                     }
 
                     if ($isCancelled && $payable) {
@@ -1167,6 +1267,11 @@ class PaymentController extends Controller
                                         'status' => 'cancelled',
                                         'cancelled_at' => now(),
                                     ]);
+                                }
+                            } elseif ($payment->payable_type === Payment::TYPE_TICKET_ORDER && $payment->payable_id) {
+                                $payable = TicketOrder::withTrashed()->find($payment->payable_id);
+                                if ($payable) {
+                                    $payable = app(TicketOrderService::class)->applyRefund($payable, (float) $payment->amount, false, 'void');
                                 }
                             }
 
@@ -1498,6 +1603,11 @@ class PaymentController extends Controller
                     'cancelled_at' => $isCancelled ? now() : $payable->cancelled_at,
                 ]);
             }
+        } elseif ($payment->payable_type === Payment::TYPE_TICKET_ORDER && $payment->payable_id) {
+            $payable = TicketOrder::withTrashed()->find($payment->payable_id);
+            if ($payable) {
+                $payable = app(TicketOrderService::class)->applyRefund($payable, (float) $refundAmount, (bool) $isCancelled);
+            }
         }
 
         try {
@@ -1738,6 +1848,11 @@ class PaymentController extends Controller
                                 'cancelled_at' => now(),
                             ]);
                         }
+                    } elseif ($payment->payable_type === Payment::TYPE_TICKET_ORDER && $payment->payable_id) {
+                        $payable = TicketOrder::withTrashed()->find($payment->payable_id);
+                        if ($payable) {
+                            $payable = app(TicketOrderService::class)->applyRefund($payable, (float) $voidAmount, false, 'void');
+                        }
                     }
 
                     if ($payable) {
@@ -1872,13 +1987,29 @@ class PaymentController extends Controller
             'signature_image' => 'nullable|string',
             'terms_accepted' => 'nullable|boolean',
             'payable_id' => 'nullable|integer',
-            'payable_type' => ['nullable', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE, Payment::TYPE_EVENT_PURCHASE])],
+            'payable_type' => ['nullable', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE, Payment::TYPE_EVENT_PURCHASE, Payment::TYPE_TICKET_ORDER])],
             'send_email' => 'nullable|boolean',
             'qr_code' => 'nullable|string', // Base64 encoded QR code for email attachment
         ]);
 
         try {
             if ($request->payable_id && $request->payable_type) {
+                $chargeLineOwner = null;
+                if ($request->payable_type === Payment::TYPE_ATTRACTION_PURCHASE) {
+                    $chargeLineOwner = AttractionPurchase::find($request->payable_id)?->ticket_order_id;
+                } elseif ($request->payable_type === Payment::TYPE_EVENT_PURCHASE) {
+                    $chargeLineOwner = EventPurchase::find($request->payable_id)?->ticket_order_id;
+                }
+
+                if ($chargeLineOwner !== null) {
+                    $chargeOrderRef = TicketOrder::find($chargeLineOwner)?->reference_number;
+
+                    return response()->json([
+                        'success' => false,
+                        'message' => "This purchase is part of order {$chargeOrderRef}. Charge the order instead so every ticket settles together.",
+                    ], 422);
+                }
+
                 $existingPayment = Payment::where('payable_id', $request->payable_id)
                     ->where('payable_type', $request->payable_type)
                     ->where('amount', $request->amount)
@@ -2215,6 +2346,30 @@ class PaymentController extends Controller
                                     'payment_status' => $totalPaid >= $payable->total_amount ? 'paid' : 'partial',
                                     'status' => 'confirmed',
                                 ]);
+                            }
+                        } elseif ($payment->payable_type === Payment::TYPE_TICKET_ORDER) {
+                            $order = TicketOrder::withTrashed()->find($payment->payable_id);
+
+                            if ($order && !$order->trashed()) {
+                                try {
+                                    $completedSum = (float) Payment::where('payable_id', $order->id)
+                                        ->where('payable_type', Payment::TYPE_TICKET_ORDER)
+                                        ->where('status', 'completed')
+                                        ->sum('amount');
+                                    $refundedSum = (float) Payment::where('payable_id', $order->id)
+                                        ->where('payable_type', Payment::TYPE_TICKET_ORDER)
+                                        ->where('status', 'refunded')
+                                        ->sum('amount');
+                                    $netPaid = min(max(0, $completedSum - $refundedSum), (float) $order->total_amount);
+                                    $order->update(['amount_paid' => 0]);
+                                    app(TicketOrderService::class)->applyPayment($order->fresh(), $netPaid, $payment->transaction_id);
+                                } catch (\Throwable $settleError) {
+                                    Log::error('Order settle bookkeeping failed after a successful charge — order kept, review manually', [
+                                        'order_id' => $order->id,
+                                        'payment_id' => $payment->id,
+                                        'error' => $settleError->getMessage(),
+                                    ]);
+                                }
                             }
                         }
                     }
@@ -2686,6 +2841,30 @@ class PaymentController extends Controller
                 $payable = AttractionPurchase::find($payableId);
             } elseif ($payableType === Payment::TYPE_EVENT_PURCHASE) {
                 $payable = EventPurchase::find($payableId);
+            } elseif ($payableType === Payment::TYPE_TICKET_ORDER) {
+                $order = TicketOrder::with(['attractionPurchases', 'eventPurchases'])->find($payableId);
+
+                if ($order
+                    && (float) $order->amount_paid <= 0
+                    && in_array($order->status, [TicketOrder::STATUS_DRAFT, TicketOrder::STATUS_PENDING], true)
+                    && $order->payment_method === 'authorize.net'
+                    && $order->created_at?->gt(now()->subDay())
+                    && !Payment::where('payable_type', Payment::TYPE_TICKET_ORDER)
+                        ->where('payable_id', $order->id)
+                        ->where('status', 'completed')
+                        ->exists()
+                ) {
+                    foreach ($order->lines() as $line) {
+                        $line['model']->forceDelete();
+                    }
+
+                    $order->forceDelete();
+                    Log::info('Force deleted pending order after payment failure', [
+                        'ticket_order_id' => $payableId,
+                    ]);
+                }
+
+                return;
             }
 
             if (!$payable) {
@@ -2843,7 +3022,7 @@ class PaymentController extends Controller
             'location_id' => 'nullable|exists:locations,id',
             'status' => ['nullable', Rule::in(['pending', 'completed', 'failed', 'refunded', 'voided'])],
             'method' => ['nullable', Rule::in(['card', 'cash', 'authorize.net', 'in-store'])],
-            'payable_type' => ['nullable', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE, Payment::TYPE_EVENT_PURCHASE])],
+            'payable_type' => ['nullable', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE, Payment::TYPE_EVENT_PURCHASE, Payment::TYPE_TICKET_ORDER])],
             'customer_id' => 'nullable|exists:customers,id',
             'start_date' => 'nullable|date',
             'end_date' => 'nullable|date|after_or_equal:start_date',
@@ -3081,7 +3260,7 @@ class PaymentController extends Controller
         $request->validate([
             'payment_ids' => 'nullable|array',
             'payment_ids.*' => 'exists:payments,id',
-            'payable_type' => ['nullable', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE, Payment::TYPE_EVENT_PURCHASE])],
+            'payable_type' => ['nullable', Rule::in([Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE, Payment::TYPE_EVENT_PURCHASE, Payment::TYPE_TICKET_ORDER])],
             'date' => 'nullable|date',
             'start_date' => 'nullable|date',
             'end_date' => 'nullable|date|after_or_equal:start_date',

@@ -396,6 +396,25 @@ class BookingController extends Controller
             ], 200);
         }
 
+        if (!empty($validated['package_id']) && isset($bookedPackage) && $bookedPackage) {
+            $players = (int) $validated['participants'];
+            $label = strtolower($bookedPackage->participant_label ?: 'participant');
+
+            if ($bookedPackage->min_participants !== null && $players < (int) $bookedPackage->min_participants) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "This experience needs at least {$bookedPackage->min_participants} {$label}s.",
+                ], 422);
+            }
+
+            if ($bookedPackage->max_participants !== null && $players > (int) $bookedPackage->max_participants) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "This experience takes at most {$bookedPackage->max_participants} {$label}s.",
+                ], 422);
+            }
+        }
+
         do {
             $validated['reference_number'] = 'BK' . now()->format('Ymd') . strtoupper(Str::random(6));
         } while (Booking::where('reference_number', $validated['reference_number'])->exists());
@@ -414,7 +433,28 @@ class BookingController extends Controller
             }
         }
 
-        $booking = DB::transaction(function () use (&$validated, $discountItems, $request, $discounts) {
+        try {
+            $booking = DB::transaction(function () use (&$validated, $discountItems, $request, $discounts) {
+            if (!empty($validated['package_id'])) {
+                $capPackage = \App\Models\Package::where('id', $validated['package_id'])->lockForUpdate()->first();
+
+                if ($capPackage && $capPackage->max_tickets_per_slot !== null) {
+                    $slotDate = Carbon::parse($validated['booking_date'])->toDateString();
+                    $slotTime = substr($validated['booking_time'], 0, 5);
+                    $taken = $capPackage->getBookedSeatsBySlot($slotDate)[$slotTime] ?? 0;
+                    $remaining = max(0, $capPackage->max_tickets_per_slot - $taken);
+
+                    if ((int) $validated['participants'] > $remaining) {
+                        $label = strtolower($capPackage->participant_label ?: 'ticket');
+                        throw new \RuntimeException(
+                            $remaining === 0
+                                ? 'That time slot just sold out. Please pick another slot.'
+                                : "Only {$remaining} {$label}" . ($remaining === 1 ? '' : 's') . ' left for that time slot.'
+                        );
+                    }
+                }
+            }
+
             $hasCode = !empty($validated['promo_id']) || !empty($validated['gift_card_id'])
                 || !empty($validated['promo_code']) || !empty($validated['gift_card_code']);
 
@@ -458,7 +498,10 @@ class BookingController extends Controller
             }
 
             return Booking::create($validated);
-        });
+            });
+        } catch (\RuntimeException $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+        }
 
         if (isset($validated['additional_attractions']) && is_array($validated['additional_attractions'])) {
             foreach ($validated['additional_attractions'] as $attraction) {
@@ -496,7 +539,7 @@ class BookingController extends Controller
             ]);
         }
 
-        if ($validated['room_id']) {
+        if (!empty($validated['room_id'])) {
             PackageTimeSlot::create([
                 'package_id' => $validated['package_id'],
                 'booking_id' => $booking->id,
@@ -1030,6 +1073,55 @@ class BookingController extends Controller
             }
             if ($guard = $this->guardLocationAccess($request, (int) $validated['location_id'])) {
                 return $guard;
+            }
+        }
+
+        $slotFieldsTouched = array_intersect_key($validated, array_flip(['participants', 'booking_date', 'booking_time', 'package_id'])) !== []
+            || (isset($validated['status']) && $booking->status === 'cancelled' && $validated['status'] !== 'cancelled');
+        $targetPackageId = array_key_exists('package_id', $validated) ? $validated['package_id'] : $booking->package_id;
+        $targetStatus = $validated['status'] ?? $booking->status;
+
+        if ($slotFieldsTouched && $targetPackageId && $targetStatus !== 'cancelled') {
+            $capPackage = \App\Models\Package::find($targetPackageId);
+
+            if ($capPackage) {
+                $players = (int) ($validated['participants'] ?? $booking->participants);
+                $label = strtolower($capPackage->participant_label ?: 'participant');
+
+                if ($capPackage->min_participants !== null && $players < (int) $capPackage->min_participants) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => "This experience needs at least {$capPackage->min_participants} {$label}s.",
+                    ], 422);
+                }
+
+                if ($capPackage->max_participants !== null && $players > (int) $capPackage->max_participants) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => "This experience takes at most {$capPackage->max_participants} {$label}s.",
+                    ], 422);
+                }
+
+                if ($capPackage->max_tickets_per_slot !== null) {
+                    $slotDate = Carbon::parse($validated['booking_date'] ?? $booking->booking_date)->toDateString();
+                    $slotTime = substr((string) ($validated['booking_time'] ?? ($booking->booking_time?->format('H:i') ?? $booking->booking_time)), 0, 5);
+                    $takenByOthers = (int) $capPackage->bookings()
+                        ->where('booking_date', $slotDate)
+                        ->whereNotIn('status', ['cancelled'])
+                        ->where('id', '!=', $booking->id)
+                        ->whereRaw("TIME_FORMAT(booking_time, '%H:%i') = ?", [$slotTime])
+                        ->sum('participants');
+                    $remaining = max(0, $capPackage->max_tickets_per_slot - $takenByOthers);
+
+                    if ($players > $remaining) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => $remaining === 0
+                                ? 'That time slot is already full.'
+                                : "Only {$remaining} {$label}" . ($remaining === 1 ? '' : 's') . ' fit in that time slot.',
+                        ], 422);
+                    }
+                }
             }
         }
 

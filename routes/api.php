@@ -52,6 +52,7 @@ use App\Http\Controllers\Api\PromoController;
 use App\Http\Controllers\Api\RoomController;
 use App\Http\Controllers\Api\RsvpController;
 use App\Http\Controllers\Api\SpecialPricingController;
+use App\Http\Controllers\Api\TicketOrderController;
 use App\Http\Controllers\Api\ShareableTokenController;
 use App\Http\Controllers\Api\MobileAvailabilityController;
 use App\Http\Controllers\Api\MobilePackageController;
@@ -205,6 +206,7 @@ Route::get('/packages/{id}', [PackageController::class, 'show']); // include
 Route::get('attractions/grouped', [AttractionController::class, 'attractionsGroupedByName']);  // include
 Route::get('attractions/popular', [AttractionController::class, 'getPopular']);
 Route::get('attractions/location/{locationId}', [AttractionController::class, 'getByLocation']);
+Route::get('attractions/{id}/slot-availability/{date}', [AttractionController::class, 'slotAvailability'])->middleware('throttle:120,1');
 Route::get('attractions/{id}', [AttractionController::class, 'show']); // include
 Route::get('packages/location/{locationId}', [PackageController::class, 'getByLocation']);
 
@@ -222,6 +224,11 @@ Route::post('bookings', [BookingController::class, 'store']); // include
 Route::post('bookings/{booking}/qrcode', [BookingController::class, 'storeQrCode']); // include
 Route::delete('bookings/{booking}', [BookingController::class, 'destroy']);
 Route::delete('bookings/{id}/force-delete', [BookingController::class, 'publicForceDelete']);
+
+Route::post('ticket-orders/quote', [TicketOrderController::class, 'quote'])->middleware('throttle:30,1');
+Route::post('ticket-orders', [TicketOrderController::class, 'store'])->middleware('throttle:10,1');
+Route::delete('ticket-orders/{id}/rollback', [TicketOrderController::class, 'publicRollback'])->middleware('throttle:10,1');
+Route::post('ticket-orders/{id}/qrcode', [TicketOrderController::class, 'storeQrCode'])->middleware('throttle:20,1');
 
 Route::post('attraction-purchases', [AttractionPurchaseController::class, 'store']); // include
 Route::post('attraction-purchases/{attractionPurchase}/qrcode', [AttractionPurchaseController::class, 'storeQrCode']); // include
@@ -286,6 +293,11 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     Route::post('logout', [ApiAuthController::class, 'logout']); // include
+
+    Route::get('ticket-orders', [TicketOrderController::class, 'index']);
+    Route::get('ticket-orders/{ticketOrder}', [TicketOrderController::class, 'show']);
+    Route::post('ticket-orders/{ticketOrder}/check-in', [TicketOrderController::class, 'checkIn']);
+    Route::post('ticket-orders/{ticketOrder}/cancel', [TicketOrderController::class, 'cancel']);
 
     Route::get('metrics/dashboard/{user}', [MetricsController::class, 'dashboard']);
     Route::get('metrics/attendant', [MetricsController::class, 'attendant']);

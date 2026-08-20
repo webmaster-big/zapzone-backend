@@ -5,7 +5,9 @@ namespace App\Services;
 use App\Models\AttractionPurchase;
 use App\Models\Booking;
 use App\Models\Company;
+use App\Models\Contact;
 use App\Models\EventPurchase;
+use App\Models\TicketOrder;
 use App\Models\Payment;
 use App\Models\SmsNotification;
 use App\Models\SmsNotificationLog;
@@ -62,6 +64,64 @@ class SmsNotificationService
 
         foreach ($notifications as $notification) {
             $this->send($notification, $purchase, 'purchase');
+        }
+    }
+
+    public function triggerOrderNotification(TicketOrder $order): void
+    {
+        if (!$this->enabled()) {
+            return;
+        }
+
+        $phone = $order->customer_phone;
+
+        if (!$phone) {
+            return;
+        }
+
+        $order->loadMissing(['location.company', 'customer']);
+
+        $companyId = $order->location?->company_id;
+
+        if (!$companyId) {
+            return;
+        }
+
+        $this->ensureDefaultsSeeded($order->location?->company);
+
+        $configured = SmsNotification::active()
+            ->forTrigger(SmsNotification::TRIGGER_PURCHASE_CONFIRMED)
+            ->where('company_id', $companyId)
+            ->get()
+            ->contains(fn ($notification) => in_array(SmsNotification::RECIPIENT_CUSTOMER, $notification->recipient_types ?? [], true));
+
+        if (!$configured) {
+            return;
+        }
+
+        $contactEmail = $order->customer?->email ?? $order->guest_email;
+        $contact = $contactEmail
+            ? Contact::where('company_id', $companyId)->where('email', $contactEmail)->first()
+            : null;
+
+        if (!$contact || $contact->sms_consent !== true) {
+            return;
+        }
+
+        $venue = $order->location?->name ? ' at ' . $order->location->name : '';
+        $items = $order->item_count . ' ' . ($order->item_count === 1 ? 'item' : 'items');
+        $tickets = $order->ticket_count . ' ' . ($order->ticket_count === 1 ? 'ticket' : 'tickets');
+        $body = "ZapZone order {$order->reference_number}{$venue}: {$items}, {$tickets}, $"
+            . number_format((float) $order->total_amount, 2)
+            . '. Show this reference when you arrive.';
+
+        try {
+            app(SmsService::class)->sendSms($phone, $body);
+        } catch (\Throwable $e) {
+            Log::warning('Order SMS failed', [
+                'order_id' => $order->id,
+                'error' => $e->getMessage(),
+            ]);
         }
     }
 

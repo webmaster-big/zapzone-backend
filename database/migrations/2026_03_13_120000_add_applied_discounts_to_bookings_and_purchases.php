@@ -8,18 +8,26 @@ return new class extends Migration
 {
     public function up(): void
     {
-        Schema::table('bookings', function (Blueprint $table) {
-            $table->json('applied_discounts')->nullable()->after('applied_fees');
-        });
+        if (!Schema::hasColumn('bookings', 'applied_discounts')) {
+            Schema::table('bookings', function (Blueprint $table) {
+                $table->json('applied_discounts')->nullable();
+            });
+        }
 
         Schema::table('attraction_purchases', function (Blueprint $table) {
-            $table->decimal('discount_amount', 10, 2)->default(0)->after('applied_fees');
-            $table->json('applied_discounts')->nullable()->after('discount_amount');
+            if (!Schema::hasColumn('attraction_purchases', 'discount_amount')) {
+                $table->decimal('discount_amount', 10, 2)->default(0);
+            }
+            if (!Schema::hasColumn('attraction_purchases', 'applied_discounts')) {
+                $table->json('applied_discounts')->nullable();
+            }
         });
 
-        Schema::table('event_purchases', function (Blueprint $table) {
-            $table->json('applied_discounts')->nullable()->after('applied_fees');
-        });
+        if (!Schema::hasColumn('event_purchases', 'applied_discounts')) {
+            Schema::table('event_purchases', function (Blueprint $table) {
+                $table->json('applied_discounts')->nullable();
+            });
+        }
     }
 
     public function down(): void

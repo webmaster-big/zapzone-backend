@@ -42,6 +42,9 @@ return Application::configure(basePath: dirname(__DIR__))
 
         // Ask Expo what became of recent pushes and retire the tokens it reports as gone.
         $schedule->command('push:check-receipts')->everyFifteenMinutes()->withoutOverlapping(10);
+
+        // Cancel unpaid pay-on-arrival orders whose last visit day passed over a week ago.
+        $schedule->command('orders:expire-stale')->dailyAt('04:45')->withoutOverlapping(30);
     })
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->use([
