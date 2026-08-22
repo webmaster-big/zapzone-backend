@@ -671,7 +671,7 @@ class MetricsController extends Controller
         ];
 
         if ($user->role === 'company_admin') {
-            $locationStats = $this->getLocationStats($dateFrom, $dateTo, $useDateTime);
+            $locationStats = $this->getLocationStats($dateFrom, $dateTo, $useDateTime, is_string($timeframe) ? $timeframe : 'all_time', $timezone);
             $response['locationStats'] = $locationStats;
             Log::info('Added location stats for company_admin', ['locations_count' => count($locationStats)]);
         }
@@ -1158,8 +1158,20 @@ class MetricsController extends Controller
         }
     }
 
-    private function getLocationStats($dateFrom = null, $dateTo = null, $useDateTime = false)
+    private function getLocationStats($dateFrom = null, $dateTo = null, $useDateTime = false, string $timeframe = 'all_time', string $timezone = 'UTC')
     {
+        [$waiverFrom, $waiverTo] = $this->waiverPeriodFor($timeframe, $dateFrom, $dateTo, $timezone);
+        $waiverRows = app(\App\Services\WaiverMetricsService::class)
+            ->scopeToPeriod(\App\Models\Waiver::query(), $waiverFrom, $waiverTo, $timezone)
+            ->select(
+                'location_id',
+                DB::raw('COUNT(*) as waivers_total'),
+                DB::raw("SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as waivers_signed")
+            )
+            ->groupBy('location_id')
+            ->get()
+            ->keyBy('location_id');
+
         $applyRange = function ($query, $column) use ($dateFrom, $dateTo, $useDateTime) {
             if ($dateFrom) {
                 $useDateTime
@@ -1253,6 +1265,8 @@ class MetricsController extends Controller
                 'bookingRevenue' => round($bookingRevenue, 2),
                 'purchaseRevenue' => round($purchaseRevenue, 2),
                 'eventPurchaseRevenue' => round($eventRevenue, 2),
+                'waivers' => (int) ($waiverRows->get($location->id)->waivers_total ?? 0),
+                'waiversSigned' => (int) ($waiverRows->get($location->id)->waivers_signed ?? 0),
             ];
         }
 

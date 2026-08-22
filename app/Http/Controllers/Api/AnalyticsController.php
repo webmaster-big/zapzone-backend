@@ -944,7 +944,18 @@ class AnalyticsController extends Controller
 
         $locations = Location::whereIn('id', $locationIds)->get();
 
-        return $locations->map(function ($location) use ($startDate, $endDate) {
+        $waiverRows = app(WaiverMetricsService::class)
+            ->scopeToPeriod(Waiver::query()->whereIn('location_id', $locationIds), $startDate, $endDate, config('app.timezone', 'UTC'))
+            ->select(
+                'location_id',
+                DB::raw('COUNT(*) as waivers_total'),
+                DB::raw("SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as waivers_signed")
+            )
+            ->groupBy('location_id')
+            ->get()
+            ->keyBy('location_id');
+
+        return $locations->map(function ($location) use ($startDate, $endDate, $waiverRows) {
             $bookingsRevenue = Booking::where('location_id', $location->id)
                 ->whereBetween('created_at', [$startDate, $endDate])
                 ->whereNotIn('status', ['cancelled'])
@@ -974,6 +985,8 @@ class AnalyticsController extends Controller
                 'location_id' => $location->id,
                 'revenue' => round($totalRevenue, 2),
                 'bookings' => $bookingsCount,
+                'waivers' => (int) ($waiverRows->get($location->id)->waivers_total ?? 0),
+                'waivers_signed' => (int) ($waiverRows->get($location->id)->waivers_signed ?? 0),
             ];
         })->sortByDesc('revenue')->values();
     }
