@@ -45,8 +45,8 @@ trait GeneratesAvailableTimeSlots
 
         $totalRooms = $package->rooms->count();
 
-        $ticketCap = $package->max_tickets_per_slot;
-        $bookedSeats = $ticketCap !== null ? $package->getBookedSeatsBySlot($date) : [];
+        $ticketCap = $package->effectiveTicketCap();
+        $bookedWindows = $ticketCap !== null ? $package->bookedWindowsForDate($date) : [];
 
         foreach ($timeSlots as $timeSlot) {
             $currentTime = Carbon::parse($date . ' ' . $timeSlot);
@@ -73,7 +73,7 @@ trait GeneratesAvailableTimeSlots
             $remainingTickets = null;
 
             if ($ticketCap !== null) {
-                $remainingTickets = max(0, $ticketCap - ($bookedSeats[$currentTime->format('H:i')] ?? 0));
+                $remainingTickets = max(0, $ticketCap - $package->seatsHeldDuring($bookedWindows, $currentTime->format('H:i')));
 
                 if ($remainingTickets < max(1, (int) ($package->min_participants ?? 1))) {
                     continue;
@@ -106,7 +106,7 @@ trait GeneratesAvailableTimeSlots
                     'total_rooms' => $totalRooms,
                     'remaining_tickets' => $remainingTickets,
                 ];
-            } elseif ($totalRooms === 0 && $ticketCap !== null) {
+            } elseif ($totalRooms === 0) {
                 $availableSlots[] = [
                     'start_time' => $currentTime->format('H:i'),
                     'end_time' => $slotEndTime->format('H:i'),

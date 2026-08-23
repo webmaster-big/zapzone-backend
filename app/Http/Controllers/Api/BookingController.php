@@ -438,11 +438,13 @@ class BookingController extends Controller
             if (!empty($validated['package_id'])) {
                 $capPackage = \App\Models\Package::where('id', $validated['package_id'])->lockForUpdate()->first();
 
-                if ($capPackage && $capPackage->max_tickets_per_slot !== null) {
+                $storeCap = $capPackage?->effectiveTicketCap();
+
+                if ($capPackage && $storeCap !== null) {
                     $slotDate = Carbon::parse($validated['booking_date'])->toDateString();
                     $slotTime = substr($validated['booking_time'], 0, 5);
-                    $taken = $capPackage->getBookedSeatsBySlot($slotDate)[$slotTime] ?? 0;
-                    $remaining = max(0, $capPackage->max_tickets_per_slot - $taken);
+                    $taken = $capPackage->seatsHeldDuring($capPackage->bookedWindowsForDate($slotDate), $slotTime);
+                    $remaining = max(0, $storeCap - $taken);
 
                     if ((int) $validated['participants'] > $remaining) {
                         $label = strtolower($capPackage->participant_label ?: 'ticket');
@@ -1102,16 +1104,17 @@ class BookingController extends Controller
                     ], 422);
                 }
 
-                if ($capPackage->max_tickets_per_slot !== null) {
+                $updateCap = $capPackage->effectiveTicketCap();
+
+                if ($updateCap !== null) {
                     $slotDate = Carbon::parse($validated['booking_date'] ?? $booking->booking_date)->toDateString();
                     $slotTime = substr((string) ($validated['booking_time'] ?? ($booking->booking_time?->format('H:i') ?? $booking->booking_time)), 0, 5);
-                    $takenByOthers = (int) $capPackage->bookings()
-                        ->where('booking_date', $slotDate)
-                        ->whereNotIn('status', ['cancelled'])
-                        ->where('id', '!=', $booking->id)
-                        ->whereRaw("TIME_FORMAT(booking_time, '%H:%i') = ?", [$slotTime])
-                        ->sum('participants');
-                    $remaining = max(0, $capPackage->max_tickets_per_slot - $takenByOthers);
+                    $takenByOthers = $capPackage->seatsHeldDuring(
+                        $capPackage->bookedWindowsForDate($slotDate),
+                        $slotTime,
+                        $booking->id
+                    );
+                    $remaining = max(0, $updateCap - $takenByOthers);
 
                     if ($players > $remaining) {
                         return response()->json([

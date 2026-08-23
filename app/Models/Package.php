@@ -170,14 +170,94 @@ class Package extends Model
         return array_map('intval', $counts);
     }
 
-    public function remainingTicketsForSlot(string $date, string $time): ?int
+    /**
+     * Every booked window on a date, as minutes-from-midnight plus the seats it holds.
+     * Start times alone are not enough: a schedule can start a new slot every 30 minutes
+     * for an experience that runs an hour, so 12:00 and 12:30 occupy the same room and
+     * must share one capacity. Loaded once and reused across a day's slots.
+     *
+     * @return array<int, array{start:int,end:int,seats:int,id:int}>
+     */
+    public function bookedWindowsForDate(string $date): array
     {
-        if ($this->max_tickets_per_slot === null) {
+        return $this->bookings()
+            ->where('booking_date', $date)
+            ->whereNotIn('status', ['cancelled'])
+            ->get(['id', 'booking_time', 'duration', 'duration_unit', 'participants'])
+            ->map(function ($booking) {
+                $time = $booking->booking_time instanceof \DateTimeInterface
+                    ? $booking->booking_time->format('H:i')
+                    : substr((string) $booking->booking_time, 0, 5);
+
+                [$hours, $minutes] = array_pad(array_map('intval', explode(':', $time)), 2, 0);
+                $start = ($hours * 60) + $minutes;
+
+                $length = (float) $booking->duration;
+                $lengthMinutes = in_array($booking->duration_unit, ['hours', 'hours and minutes'], true)
+                    ? (int) round($length * 60)
+                    : (int) round($length);
+
+                return [
+                    'start' => $start,
+                    'end' => $start + max(1, $lengthMinutes),
+                    'seats' => (int) $booking->participants,
+                    'id' => (int) $booking->id,
+                ];
+            })
+            ->all();
+    }
+
+    /** Seats already held during the window this slot occupies, overlaps included. */
+    public function seatsHeldDuring(array $windows, string $time, ?int $excludeBookingId = null): int
+    {
+        [$hours, $minutes] = array_pad(array_map('intval', explode(':', substr($time, 0, 5))), 2, 0);
+        $slotStart = ($hours * 60) + $minutes;
+        $slotEnd = $slotStart + max(1, $this->getDurationInMinutes());
+
+        $held = 0;
+
+        foreach ($windows as $window) {
+            if ($excludeBookingId !== null && $window['id'] === $excludeBookingId) {
+                continue;
+            }
+
+            if ($window['start'] < $slotEnd && $slotStart < $window['end']) {
+                $held += $window['seats'];
+            }
+        }
+
+        return $held;
+    }
+
+    /**
+     * Seats sellable per slot. A per-player experience IS the room — an escape room that
+     * takes 3-6 players holds 6 people in a slot, so its party size caps the slot even when
+     * no explicit ticket limit was typed. Room-based packages stay uncapped here and are
+     * limited by room availability instead.
+     */
+    public function effectiveTicketCap(): ?int
+    {
+        if ($this->max_tickets_per_slot !== null) {
+            return (int) $this->max_tickets_per_slot;
+        }
+
+        if ($this->pricing_type === 'per_person' && $this->max_participants !== null) {
+            return (int) $this->max_participants;
+        }
+
+        return null;
+    }
+
+    public function remainingTicketsForSlot(string $date, string $time, ?int $excludeBookingId = null): ?int
+    {
+        $cap = $this->effectiveTicketCap();
+
+        if ($cap === null) {
             return null;
         }
 
-        $taken = $this->getBookedSeatsBySlot($date)[substr($time, 0, 5)] ?? 0;
+        $taken = $this->seatsHeldDuring($this->bookedWindowsForDate($date), $time, $excludeBookingId);
 
-        return max(0, $this->max_tickets_per_slot - $taken);
+        return max(0, $cap - $taken);
     }
 }
