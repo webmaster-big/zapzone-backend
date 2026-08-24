@@ -49,7 +49,7 @@ class EventController extends Controller
                 'start_date' => 'required|date',
                 'end_date' => 'nullable|date|after_or_equal:start_date|required_if:date_type,date_range',
                 'time_start' => 'required|date_format:H:i',
-                'time_end' => 'required|date_format:H:i|after:time_start',
+                'time_end' => 'required|date_format:H:i',
                 'interval_minutes' => 'required|integer|min:5',
                 'max_bookings_per_slot' => 'nullable|integer|min:1',
                 'max_tickets_per_slot' => 'nullable|integer|min:1|max:10000',

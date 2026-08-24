@@ -99,6 +99,13 @@ class Event extends Model
         $start = Carbon::parse($this->time_start);
         $end = Carbon::parse($this->time_end);
 
+        // A late event runs past midnight — 8:00 PM to 1:00 AM ends on the next
+        // calendar day, so the end has to move forward a day or the loop never runs
+        // and the event offers no times at all.
+        if ($end->lte($start)) {
+            $end->addDay();
+        }
+
         while ($start->lt($end)) {
             $slotEnd = $start->copy()->addMinutes($this->interval_minutes);
             if ($slotEnd->gt($end)) {
