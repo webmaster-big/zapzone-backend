@@ -56,7 +56,7 @@ class LocationController extends Controller
             'locations:storefront',
             CacheGroups::TTL_CATALOG,
             function () {
-                $columns = ['id', 'name', 'slug', 'address', 'city', 'state', 'zip_code', 'phone'];
+                $columns = ['id', 'name', 'slug', 'address', 'city', 'state', 'zip_code', 'phone', 'email'];
 
                 // Coordinates arrived in a later migration than the endpoint. Asking for a column
                 // that does not exist yet is a fatal query on MySQL, which would take the whole
