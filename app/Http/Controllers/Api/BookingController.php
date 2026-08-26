@@ -99,6 +99,7 @@ class BookingController extends Controller
                     'creator:id,first_name,last_name,email',
                     'attractions:id,name',  // BelongsToMany - pivot data loaded automatically
                     'addOns:id,name',       // BelongsToMany - pivot data loaded automatically
+                    'customFieldResponses:id,respondable_type,respondable_id,label,value',
                 ]);
 
             $this->applyAuthScope($query, $request);
@@ -336,7 +337,13 @@ class BookingController extends Controller
             'additional_addons.*.quantity' => 'required|integer|min:1',
             'additional_addons.*.price_at_booking' => 'nullable|numeric|min:0',
             'sms_consent' => 'nullable|boolean',
+            'custom_fields' => 'nullable|array|max:50',
+            'custom_fields.*.id' => 'required_with:custom_fields|integer|min:1',
+            'custom_fields.*.value' => 'nullable|boolean',
         ]);
+
+        $customFieldAnswers = $validated['custom_fields'] ?? null;
+        unset($validated['custom_fields']);
 
         if (!empty($validated['package_id'])) {
             $bookedPackage = \App\Models\Package::find($validated['package_id']);
@@ -434,7 +441,7 @@ class BookingController extends Controller
         }
 
         try {
-            $booking = DB::transaction(function () use (&$validated, $discountItems, $request, $discounts) {
+            $booking = DB::transaction(function () use (&$validated, $discountItems, $request, $discounts, $customFieldAnswers) {
             if (!empty($validated['package_id'])) {
                 $capPackage = \App\Models\Package::where('id', $validated['package_id'])->lockForUpdate()->first();
 
@@ -499,7 +506,22 @@ class BookingController extends Controller
                 }
             }
 
-            return Booking::create($validated);
+            $created = Booking::create($validated);
+
+            // Inside the transaction on purpose: an unticked required box must undo the
+            // booking rather than leave one behind with a missing answer.
+            if (!empty($validated['package_id'])) {
+                $customFields = app(\App\Services\CustomFieldService::class);
+                $customFields->handle(
+                    $created,
+                    'package',
+                    (int) $validated['package_id'],
+                    $customFieldAnswers,
+                    $customFields->audienceFor($request->user('sanctum')),
+                );
+            }
+
+            return $created;
             });
         } catch (\RuntimeException $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
@@ -983,7 +1005,7 @@ class BookingController extends Controller
 
     public function show(Request $request, Booking $booking): JsonResponse
     {
-        $booking->load(['customer', 'package', 'location', 'room', 'creator', 'giftCard', 'promo', 'attractions', 'addOns', 'payments']);
+        $booking->load(['customer', 'package', 'location', 'room', 'creator', 'giftCard', 'promo', 'attractions', 'addOns', 'payments', 'customFieldResponses']);
 
         if (!$this->authorizeRecordScope($booking)) {
             return response()->json([

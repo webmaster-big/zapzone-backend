@@ -48,6 +48,22 @@ class AppServiceProvider extends ServiceProvider
 
         $this->registerCacheInvalidation();
         $this->registerPhotoRateLimiters();
+        $this->registerCustomFieldRateLimiter();
+    }
+
+    /**
+     * Own counter for the checkout questions endpoint.
+     *
+     * Same trap as the photo routes above: on the string form of the throttle middleware
+     * this endpoint would share one per-IP counter with POST ticket-orders (10/min), so a
+     * guest with a multi-line cart could spend their own payment's allowance just by
+     * opening the payment step.
+     */
+    private function registerCustomFieldRateLimiter(): void
+    {
+        RateLimiter::for('custom-fields', function (Request $request) {
+            return Limit::perMinute(240)->by('cf:' . $request->ip());
+        });
     }
 
     /**

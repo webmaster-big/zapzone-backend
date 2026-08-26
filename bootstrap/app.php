@@ -53,6 +53,7 @@ return Application::configure(basePath: dirname(__DIR__))
 
         $middleware->alias([
             'photo.staff' => \App\Http\Middleware\EnsurePhotoStaff::class,
+            'staff' => \App\Http\Middleware\EnsureStaff::class,
         ]);
 
         $middleware->validateCsrfTokens(except: [

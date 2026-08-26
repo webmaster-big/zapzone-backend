@@ -148,4 +148,9 @@ class AttractionPurchase extends Model
             $q->where('location_id', $locationId);
         });
     }
+
+    public function customFieldResponses(): \Illuminate\Database\Eloquent\Relations\MorphMany
+    {
+        return $this->morphMany(\App\Models\CustomFieldResponse::class, 'respondable');
+    }
 }

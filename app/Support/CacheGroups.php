@@ -13,6 +13,7 @@ class CacheGroups
     public const MEMBERSHIP_PLANS = 'membership-plans';
     public const LOCATIONS = 'locations';
     public const DASHBOARDS = 'dashboards';
+    public const CUSTOM_FIELDS = 'custom-fields';
 
     public const TTL_CATALOG = 600;
     public const TTL_DASHBOARD = 300;

@@ -172,6 +172,9 @@ class EventPurchaseController extends Controller
                 'special_requests' => 'nullable|string',
                 'send_email' => 'nullable|boolean',
                 'sms_consent' => 'nullable|boolean',
+                'custom_fields' => 'nullable|array|max:50',
+                'custom_fields.*.id' => 'required_with:custom_fields|integer|min:1',
+                'custom_fields.*.value' => 'nullable|boolean',
                 'add_ons' => 'nullable|array',
                 'add_ons.*.add_on_id' => 'required_with:add_ons|exists:add_ons,id',
                 'add_ons.*.quantity' => 'required_with:add_ons|integer|min:1',
@@ -247,9 +250,10 @@ class EventPurchaseController extends Controller
             $addOns = $validated['add_ons'] ?? [];
             $sendEmail = $validated['send_email'] ?? true;
             $smsConsent = $validated['sms_consent'] ?? false;
-            unset($validated['add_ons'], $validated['send_email'], $validated['sms_consent']);
+            $customFieldAnswers = $validated['custom_fields'] ?? null;
+            unset($validated['add_ons'], $validated['send_email'], $validated['sms_consent'], $validated['custom_fields']);
 
-            $purchase = DB::transaction(function () use (&$validated, $discounts, $request) {
+            $purchase = DB::transaction(function () use (&$validated, $discounts, $request, $customFieldAnswers) {
                 $capEvent = Event::where('id', $validated['event_id'])->lockForUpdate()->first();
 
                 if ($capEvent && $capEvent->max_tickets_per_slot !== null) {
@@ -306,7 +310,18 @@ class EventPurchaseController extends Controller
                     }
                 }
 
-                return EventPurchase::create($validated);
+                $created = EventPurchase::create($validated);
+
+                $customFields = app(\App\Services\CustomFieldService::class);
+                $customFields->handle(
+                    $created,
+                    'event',
+                    (int) $validated['event_id'],
+                    $customFieldAnswers,
+                    $customFields->audienceFor($request->user('sanctum')),
+                );
+
+                return $created;
             });
 
             if (!empty($addOns)) {
@@ -520,7 +535,7 @@ class EventPurchaseController extends Controller
     public function show(EventPurchase $eventPurchase): JsonResponse
     {
         return response()->json(
-            $eventPurchase->load(['event', 'customer', 'location:id,name', 'addOns'])
+            $eventPurchase->load(['event', 'customer', 'location:id,name', 'addOns', 'customFieldResponses'])
         );
     }
 

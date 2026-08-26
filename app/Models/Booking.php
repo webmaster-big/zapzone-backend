@@ -208,4 +208,9 @@ class Booking extends Model
         }
         return $this->guest_phone;
     }
+
+    public function customFieldResponses(): \Illuminate\Database\Eloquent\Relations\MorphMany
+    {
+        return $this->morphMany(\App\Models\CustomFieldResponse::class, 'respondable');
+    }
 }

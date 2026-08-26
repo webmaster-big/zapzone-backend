@@ -207,6 +207,7 @@ Route::get('attractions/grouped', [AttractionController::class, 'attractionsGrou
 Route::get('attractions/popular', [AttractionController::class, 'getPopular']);
 Route::get('attractions/location/{locationId}', [AttractionController::class, 'getByLocation']);
 Route::get('attractions/{id}/slot-availability/{date}', [AttractionController::class, 'slotAvailability'])->middleware('throttle:120,1');
+Route::get('custom-fields/applicable', [\App\Http\Controllers\Api\CustomFieldController::class, 'applicable'])->middleware('throttle:custom-fields');
 Route::get('attractions/{id}', [AttractionController::class, 'show']); // include
 Route::get('packages/location/{locationId}', [PackageController::class, 'getByLocation']);
 
@@ -293,6 +294,23 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     Route::post('logout', [ApiAuthController::class, 'logout']); // include
+
+    // auth:sanctum alone would let a customer token in — ScopesByAuthUser applies no
+    // scoping for a non-staff principal, so these need the fail-closed staff gate.
+    Route::middleware('staff')->group(function () {
+        Route::get('targeting-options', [\App\Http\Controllers\Api\TargetingOptionController::class, 'index']);
+
+        Route::get('custom-fields', [\App\Http\Controllers\Api\CustomFieldController::class, 'index']);
+        Route::get('custom-fields/{customField}', [\App\Http\Controllers\Api\CustomFieldController::class, 'show']);
+    });
+
+    // Creating or retargeting a required question changes what every guest is asked, so
+    // it stays with the roles the admin UI already limits the page to.
+    Route::middleware('staff:company_admin|admin|location_manager')->group(function () {
+        Route::post('custom-fields', [\App\Http\Controllers\Api\CustomFieldController::class, 'store']);
+        Route::put('custom-fields/{customField}', [\App\Http\Controllers\Api\CustomFieldController::class, 'update']);
+        Route::delete('custom-fields/{customField}', [\App\Http\Controllers\Api\CustomFieldController::class, 'destroy']);
+    });
 
     Route::get('ticket-orders', [TicketOrderController::class, 'index']);
     Route::get('ticket-orders/{ticketOrder}', [TicketOrderController::class, 'show']);

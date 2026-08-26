@@ -291,7 +291,13 @@ class AttractionPurchaseController extends Controller
             'additional_addons.*.addon_id' => 'required_with:additional_addons|exists:add_ons,id',
             'additional_addons.*.quantity' => 'nullable|integer|min:1',
             'additional_addons.*.price_at_purchase' => 'nullable|numeric|min:0',
+            'custom_fields' => 'nullable|array|max:50',
+            'custom_fields.*.id' => 'required_with:custom_fields|integer|min:1',
+            'custom_fields.*.value' => 'nullable|boolean',
         ]);
+
+        $customFieldAnswers = $validated['custom_fields'] ?? null;
+        unset($validated['custom_fields']);
 
         $duplicateQuery = AttractionPurchase::where('attraction_id', $validated['attraction_id'])
             ->where('quantity', $validated['quantity'])
@@ -348,7 +354,7 @@ class AttractionPurchaseController extends Controller
         }
 
         try {
-            $purchase = DB::transaction(function () use (&$validated, $discounts, $request, $attractionLocationId) {
+            $purchase = DB::transaction(function () use (&$validated, $discounts, $request, $attractionLocationId, $customFieldAnswers) {
             $capAttraction = \App\Models\Attraction::where('id', $validated['attraction_id'])->lockForUpdate()->first();
 
             if ($capAttraction && $capAttraction->max_tickets_per_slot !== null
@@ -404,7 +410,18 @@ class AttractionPurchaseController extends Controller
                 }
             }
 
-            return AttractionPurchase::create($validated);
+            $created = AttractionPurchase::create($validated);
+
+            $customFields = app(\App\Services\CustomFieldService::class);
+            $customFields->handle(
+                $created,
+                'attraction',
+                (int) $validated['attraction_id'],
+                $customFieldAnswers,
+                $customFields->audienceFor($request->user('sanctum')),
+            );
+
+            return $created;
             });
         } catch (\RuntimeException $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
@@ -647,7 +664,7 @@ class AttractionPurchaseController extends Controller
 
     public function show(AttractionPurchase $attractionPurchase): JsonResponse
     {
-        $attractionPurchase->load(['attraction', 'customer', 'createdBy', 'addOns']);
+        $attractionPurchase->load(['attraction', 'customer', 'createdBy', 'addOns', 'customFieldResponses']);
 
         return response()->json([
             'success' => true,

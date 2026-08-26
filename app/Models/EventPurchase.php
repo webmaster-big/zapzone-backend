@@ -134,4 +134,9 @@ class EventPurchase extends Model
     {
         return $this->amount_paid >= $this->total_amount;
     }
+
+    public function customFieldResponses(): \Illuminate\Database\Eloquent\Relations\MorphMany
+    {
+        return $this->morphMany(\App\Models\CustomFieldResponse::class, 'respondable');
+    }
 }

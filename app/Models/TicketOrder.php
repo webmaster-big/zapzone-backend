@@ -200,4 +200,9 @@ class TicketOrder extends Model
     {
         return $query->whereNotIn('status', [self::STATUS_DRAFT, self::STATUS_CANCELLED]);
     }
+
+    public function customFieldResponses(): \Illuminate\Database\Eloquent\Relations\MorphMany
+    {
+        return $this->morphMany(\App\Models\CustomFieldResponse::class, 'respondable');
+    }
 }

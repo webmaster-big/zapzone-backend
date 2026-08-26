@@ -73,6 +73,9 @@ class TicketOrderController extends Controller
             'guest_country' => 'nullable|string|max:100',
             'payment_method' => ['nullable', Rule::in(['card', 'in-store', 'paylater', 'authorize.net'])],
             'sms_consent' => 'nullable|boolean',
+            'custom_fields' => 'nullable|array|max:50',
+            'custom_fields.*.id' => 'required_with:custom_fields|integer|min:1',
+            'custom_fields.*.value' => 'nullable|boolean',
             'notes' => 'nullable|string|max:2000',
         ]);
 
@@ -94,6 +97,17 @@ class TicketOrderController extends Controller
         }
 
         try {
+            // Resolved before the order exists so a missing required answer stops the
+            // purchase instead of leaving an order that has to be cleaned up.
+            $customFields = app(\App\Services\CustomFieldService::class);
+            $orderFields = $customFields->applicableForMany(
+                $validated['items'],
+                $customFields->audienceFor($staff),
+            );
+
+            $orderAnswers = $customFields->normalizeAnswers($validated['custom_fields'] ?? null);
+            $customFields->assertRequired($orderFields, $orderAnswers);
+
             $order = $this->orders->create($validated['items'], [
                 'customer_id' => $validated['customer_id'] ?? null,
                 'membership_id' => $validated['membership_id'] ?? null,
@@ -109,6 +123,10 @@ class TicketOrderController extends Controller
                 'payment_method' => $method,
                 'notes' => $validated['notes'] ?? null,
             ]);
+
+            if ($orderFields->isNotEmpty()) {
+                $customFields->saveFor($order, $orderFields, $orderAnswers);
+            }
 
             $lineInput = array_key_exists('sms_consent', $validated) && $validated['sms_consent'] !== null
                 ? ['sms_consent' => (bool) $validated['sms_consent']]
@@ -196,7 +214,7 @@ class TicketOrderController extends Controller
             return $guard;
         }
 
-        $ticketOrder->load(['location', 'customer', 'attractionPurchases.attraction', 'attractionPurchases.addOns', 'eventPurchases.event', 'eventPurchases.addOns']);
+        $ticketOrder->load(['location', 'customer', 'attractionPurchases.attraction', 'attractionPurchases.addOns', 'eventPurchases.event', 'eventPurchases.addOns', 'customFieldResponses']);
 
         return response()->json(['success' => true, 'data' => $this->present($ticketOrder)]);
     }
@@ -601,6 +619,13 @@ class TicketOrderController extends Controller
                     'reference_number' => $line['type'] === 'event' ? $model->reference_number : null,
                 ];
             })->all(),
+            'custom_field_responses' => $order->relationLoaded('customFieldResponses')
+                ? $order->customFieldResponses->map(fn ($response) => [
+                    'id' => $response->id,
+                    'label' => $response->label,
+                    'value' => (bool) $response->value,
+                ])->values()->all()
+                : [],
         ];
     }
 }
