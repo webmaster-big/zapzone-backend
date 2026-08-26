@@ -189,12 +189,21 @@ class GmailApiService
             'hasInlineImages' => $hasInlineImages,
         ]);
 
+        $headerSafe = static fn ($value) => trim(str_replace(["\r", "\n", "\0"], ' ', (string) $value));
+
+        $fromName = $headerSafe($fromName);
+        $from = $headerSafe($from);
+        $to = $headerSafe($to);
+        $subject = $headerSafe($subject);
+
         $emailContent = "From: {$fromName} <{$from}>\r\n";
         $emailContent .= "To: {$to}\r\n";
         $emailContent .= "Reply-To: {$from}\r\n";
         $emailContent .= "Subject: {$subject}\r\n";
 
         foreach ($extraHeaders as $headerName => $headerValue) {
+            $headerName = $headerSafe($headerName);
+            $headerValue = $headerSafe($headerValue);
             $emailContent .= "{$headerName}: {$headerValue}\r\n";
         }
 

@@ -32,6 +32,15 @@ class AppServiceProvider extends ServiceProvider
                     ['company_id' => $company->id, 'error' => $e->getMessage()]
                 );
             }
+
+            try {
+                \Database\Seeders\DefaultSmsNotificationSeeder::seedForCompany($company);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::error(
+                    'Failed to seed default SMS notifications for new company',
+                    ['company_id' => $company->id, 'error' => $e->getMessage()]
+                );
+            }
         });
 
         // Push hangs off the notification row so no producer had to change, and never escapes: a failed push must not fail the booking or payment behind it.
@@ -48,6 +57,7 @@ class AppServiceProvider extends ServiceProvider
 
         $this->registerCacheInvalidation();
         $this->registerPhotoRateLimiters();
+        $this->registerCheckoutConcernRateLimiters();
         $this->registerCustomFieldRateLimiter();
     }
 
@@ -104,6 +114,30 @@ class AppServiceProvider extends ServiceProvider
         // Staff testing a channel. Each real send costs money, so keep the pace sensible.
         RateLimiter::for('photo-test-message', fn (Request $request) => Limit::perMinute(6)
             ->by('photo:test:' . ($this->photoRequestUserId($request) ?? $request->ip())));
+    }
+
+    private function registerCheckoutConcernRateLimiters(): void
+    {
+        RateLimiter::for('checkout-concern', fn (Request $request) => [
+            Limit::perMinute(6)->by('concern:ip:' . $request->ip()),
+            Limit::perHour(120)->by('concern:venue:' . ($request->input('location_id') ?? 'na')),
+        ]);
+
+        $beaconLocation = static function (Request $request) {
+            $location = $request->input('location_id');
+
+            if ($location === null) {
+                $decoded = json_decode((string) $request->getContent(), true);
+                $location = is_array($decoded) ? ($decoded['location_id'] ?? null) : null;
+            }
+
+            return $location === null ? 'na' : (string) $location;
+        };
+
+        RateLimiter::for('checkout-abandon', fn (Request $request) => [
+            Limit::perMinute(10)->by('abandon:ip:' . $request->ip()),
+            Limit::perHour(300)->by('abandon:venue:' . $beaconLocation($request)),
+        ]);
     }
 
     private function photoRequestUserId(Request $request): ?int

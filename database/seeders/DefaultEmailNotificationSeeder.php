@@ -51,6 +51,40 @@ class DefaultEmailNotificationSeeder extends Seeder
     {
         return [
             [
+                'default_key' => EmailNotification::DEFAULT_SCHEDULE_HELP_STAFF,
+                'name' => 'Schedule Help Requested (Staff)',
+                'description' => 'Sent to venue staff when a guest cannot find a workable time on a checkout calendar and asks to be contacted. The guest is expecting a call back.',
+                'trigger_type' => EmailNotification::TRIGGER_SCHEDULE_HELP_REQUESTED,
+                'entity_type' => EmailNotification::ENTITY_ALL,
+                'entity_ids' => [],
+                'recipient_types' => [
+                    EmailNotification::RECIPIENT_STAFF,
+                    EmailNotification::RECIPIENT_COMPANY_ADMIN,
+                    EmailNotification::RECIPIENT_LOCATION_MANAGER,
+                ],
+                'custom_emails' => [],
+                'include_qr_code' => false,
+                'subject' => 'Schedule help needed - {{customer_name}} ({{location_name}})',
+                'body' => self::getScheduleHelpStaffBody(),
+            ],
+            [
+                'default_key' => EmailNotification::DEFAULT_CHECKOUT_ABANDONED_STAFF,
+                'name' => 'Checkout Left Unfinished (Staff)',
+                'description' => 'Sent to venue staff when a guest fills in their details at checkout and leaves before paying. The guest is never told their details were kept.',
+                'trigger_type' => EmailNotification::TRIGGER_CHECKOUT_ABANDONED,
+                'entity_type' => EmailNotification::ENTITY_ALL,
+                'entity_ids' => [],
+                'recipient_types' => [
+                    EmailNotification::RECIPIENT_STAFF,
+                    EmailNotification::RECIPIENT_COMPANY_ADMIN,
+                    EmailNotification::RECIPIENT_LOCATION_MANAGER,
+                ],
+                'custom_emails' => [],
+                'include_qr_code' => false,
+                'subject' => 'Unfinished checkout - {{customer_name}} ({{location_name}})',
+                'body' => self::getCheckoutAbandonedStaffBody(),
+            ],
+            [
                 'default_key' => EmailNotification::DEFAULT_BOOKING_CONFIRMATION_CUSTOMER,
                 'name' => 'Booking Confirmation (Customer)',
                 'description' => 'Sent to the customer when a new booking is created. Includes booking details, package info, location, and QR code.',
@@ -1374,5 +1408,48 @@ HTML;
             ],
             'If you have any questions, contact us at {{location_email}} or {{location_phone}}.'
         );
+    }
+
+    private static function getScheduleHelpStaffBody(): string
+    {
+        return <<<'HTML'
+<h2>A customer needs help with the schedule</h2>
+<p>They could not find a time that works while booking online at <strong>{{location_name}}</strong> and asked to be contacted. <strong>They are expecting a call back.</strong></p>
+<h3>Who to contact</h3>
+<ul>
+    <li><strong>Name:</strong> {{customer_name}}</li>
+    <li><strong>Phone:</strong> {{customer_phone}}</li>
+    <li><strong>Email:</strong> {{customer_email}}</li>
+</ul>
+<h3>What they were booking</h3>
+<ul>
+    <li><strong>Item:</strong> {{item_name}}</li>
+    <li><strong>Date they wanted:</strong> {{preferred_date}}</li>
+    <li><strong>Time they wanted:</strong> {{preferred_time}}</li>
+</ul>
+<h3>In their words</h3>
+<p>{{concern_message}}</p>
+HTML;
+    }
+
+    private static function getCheckoutAbandonedStaffBody(): string
+    {
+        return <<<'HTML'
+<h2>A customer left checkout unfinished</h2>
+<p>They filled in their details at <strong>{{location_name}}</strong> and then closed the page before paying. Nothing was charged, and <strong>they have not been told we saved this</strong> &mdash; treat a call as a fresh offer of help, not a follow-up.</p>
+<h3>Who to contact</h3>
+<ul>
+    <li><strong>Name:</strong> {{customer_name}}</li>
+    <li><strong>Phone:</strong> {{customer_phone}}</li>
+    <li><strong>Email:</strong> {{customer_email}}</li>
+</ul>
+<h3>How far they got</h3>
+<ul>
+    <li><strong>Item:</strong> {{item_name}}</li>
+    <li><strong>Date:</strong> {{preferred_date}}</li>
+    <li><strong>Time:</strong> {{preferred_time}}</li>
+    <li><strong>Last step reached:</strong> {{step_reached}}</li>
+</ul>
+HTML;
     }
 }

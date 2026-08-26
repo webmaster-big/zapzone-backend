@@ -13,6 +13,7 @@ use App\Http\Controllers\Api\LocationChangeRequestController;
 use App\Http\Controllers\Api\BookingInvitationController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\CompanyController;
+use App\Http\Controllers\Api\CheckoutConcernController;
 use App\Http\Controllers\Api\ContactController;
 use App\Http\Controllers\Api\CustomerController;
 use App\Http\Controllers\Api\CustomerNotificationController;
@@ -253,6 +254,9 @@ Route::post('shareable-tokens/check', [ShareableTokenController::class, 'check']
 Route::post('shareable-tokens', [ShareableTokenController::class, 'store']);
 
 Route::post('contacts/deactivate', [ContactController::class, 'deactivate']);
+
+Route::post('checkout-concerns', [CheckoutConcernController::class, 'store'])->middleware('throttle:checkout-concern');
+Route::post('checkout-concerns/abandoned', [CheckoutConcernController::class, 'abandon'])->middleware('throttle:checkout-abandon');
 
 Route::get('rsvp/{token}', [RsvpController::class, 'show']); // include
 Route::post('rsvp/{token}', [RsvpController::class, 'store']); // include
@@ -588,6 +592,13 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('/{emailCampaign}', [EmailCampaignController::class, 'destroy']);
         Route::post('/{emailCampaign}/cancel', [EmailCampaignController::class, 'cancel']);
         Route::post('/{emailCampaign}/resend', [EmailCampaignController::class, 'resend']);
+    });
+
+    Route::prefix('checkout-concerns')->group(function () {
+        Route::get('/', [CheckoutConcernController::class, 'index']);
+        Route::get('/statistics', [CheckoutConcernController::class, 'statistics']);
+        Route::get('/{checkoutConcern}', [CheckoutConcernController::class, 'show']);
+        Route::put('/{checkoutConcern}', [CheckoutConcernController::class, 'update']);
     });
 
     Route::prefix('contacts')->group(function () {

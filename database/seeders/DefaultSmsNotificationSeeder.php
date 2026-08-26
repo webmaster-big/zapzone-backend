@@ -53,6 +53,29 @@ class DefaultSmsNotificationSeeder extends Seeder
         ];
 
         return [
+            [
+                'default_key' => SmsNotification::DEFAULT_SCHEDULE_HELP_STAFF,
+                'name' => 'Schedule Help Requested (Staff)',
+                'description' => 'Sent to venue staff when a guest cannot find a workable time on a checkout calendar and asks to be contacted.',
+                'trigger_type' => SmsNotification::TRIGGER_SCHEDULE_HELP_REQUESTED,
+                'entity_type' => SmsNotification::ENTITY_ALL,
+                'entity_ids' => [],
+                'recipient_types' => $STAFF,
+                'custom_phones' => [],
+                'body' => 'Schedule help: {{customer_name}} ({{customer_phone}}) at {{location_name}}. {{what_they_wanted}}. "{{concern_message}}" Please call them back.',
+            ],
+            [
+                'default_key' => SmsNotification::DEFAULT_CHECKOUT_ABANDONED_STAFF,
+                'name' => 'Checkout Left Unfinished (Staff)',
+                'description' => 'Sent to venue staff when a guest fills in their details at checkout and leaves before paying. The guest is never told.',
+                'trigger_type' => SmsNotification::TRIGGER_CHECKOUT_ABANDONED,
+                'entity_type' => SmsNotification::ENTITY_ALL,
+                'entity_ids' => [],
+                'recipient_types' => $STAFF,
+                'custom_phones' => [],
+                'body' => 'Unfinished checkout: {{customer_name}} ({{customer_phone}}) at {{location_name}} left before paying. {{what_they_wanted}}. Worth a call.',
+            ],
+
             // ---- Parties (packages) ----
             [
                 'default_key' => SmsNotification::DEFAULT_BOOKING_CONFIRMATION_CUSTOMER,

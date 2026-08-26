@@ -72,6 +72,12 @@ class SmsNotification extends Model
     const DEFAULT_WAIVER_BULK_CHAPERONE = 'waiver_bulk_chaperone';
     const DEFAULT_WAIVER_PARENT_INVITE = 'waiver_parent_invite';
 
+    const DEFAULT_SCHEDULE_HELP_STAFF = 'schedule_help_staff';
+    const DEFAULT_CHECKOUT_ABANDONED_STAFF = 'checkout_abandoned_staff';
+
+    const TRIGGER_SCHEDULE_HELP_REQUESTED = 'schedule_help_requested';
+    const TRIGGER_CHECKOUT_ABANDONED = 'checkout_abandoned';
+
     const ENTITY_PACKAGE = 'package';
     const ENTITY_ATTRACTION = 'attraction';
     const ENTITY_EVENT = 'event';
@@ -293,6 +299,22 @@ class SmsNotification extends Model
             })
             ->get()
             ->filter(fn ($n) => $n->appliesToEntity($waiver->waiver_template_id));
+    }
+
+    public static function findForConcern($concern, string $triggerType): \Illuminate\Support\Collection
+    {
+        if (!$concern->company_id) {
+            return collect();
+        }
+
+        return self::active()
+            ->forTrigger($triggerType)
+            ->where('company_id', $concern->company_id)
+            ->where(function ($query) use ($concern) {
+                $query->whereNull('location_id')
+                    ->orWhere('location_id', $concern->location_id);
+            })
+            ->get();
     }
 
     public static function findForPayment($payment, string $triggerType): \Illuminate\Support\Collection

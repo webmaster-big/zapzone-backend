@@ -56,7 +56,8 @@ class Contact extends Model
 
     public function getFullNameAttribute(): string
     {
-        return trim("{$this->first_name} {$this->last_name}") ?: $this->email;
+        return trim("{$this->first_name} {$this->last_name}")
+            ?: ($this->email ?: ($this->phone ?: 'Unnamed contact'));
     }
 
     public function getFullAddressAttribute(): ?string
@@ -184,13 +185,16 @@ class Contact extends Model
         ?int $locationId = null,
         ?int $createdBy = null
     ): self {
-        if (empty($data['email'])) {
-            throw new \InvalidArgumentException('Email is required to create or update a contact');
+        $email = $data['email'] ?? null;
+        $phone = $data['phone'] ?? null;
+
+        if (empty($email) && empty($phone)) {
+            throw new \InvalidArgumentException('An email address or a phone number is required to create or update a contact');
         }
 
-        $contact = self::where('company_id', $companyId)
-            ->where('email', $data['email'])
-            ->first();
+        $contact = empty($email)
+            ? self::where('company_id', $companyId)->whereNull('email')->where('phone', $phone)->first()
+            : self::where('company_id', $companyId)->where('email', $email)->first();
 
         if ($contact) {
             $updateData = [];
@@ -201,8 +205,12 @@ class Contact extends Model
             if (!empty($data['last_name']) && empty($contact->last_name)) {
                 $updateData['last_name'] = $data['last_name'];
             }
-            if (!empty($data['phone']) && empty($contact->phone)) {
-                $updateData['phone'] = $data['phone'];
+            if (!empty($phone) && empty($contact->phone)) {
+                $updateData['phone'] = $phone;
+            }
+
+            if (!empty($email) && empty($contact->email)) {
+                $updateData['email'] = $email;
             }
             if (!empty($data['date_of_birth']) && empty($contact->date_of_birth)) {
                 $updateData['date_of_birth'] = $data['date_of_birth'];
@@ -254,10 +262,10 @@ class Contact extends Model
         $contact = self::create([
             'company_id' => $companyId,
             'location_id' => $locationId,
-            'email' => $data['email'],
+            'email' => $email ?: null,
             'first_name' => $firstName,
             'last_name' => $lastName,
-            'phone' => $data['phone'] ?? null,
+            'phone' => $phone,
             'date_of_birth' => $data['date_of_birth'] ?? null,
             'address' => $data['address'] ?? null,
             'city' => $data['city'] ?? null,

@@ -88,7 +88,8 @@ class ContactController extends Controller
             'company_id' => 'required|exists:companies,id',
             'location_id' => 'nullable|exists:locations,id',
             'email' => [
-                'required',
+                'nullable',
+                'required_without:phone',
                 'email',
                 Rule::unique('contacts')->where(function ($query) use ($request) {
                     return $query->where('company_id', $request->company_id);
@@ -96,7 +97,7 @@ class ContactController extends Controller
             ],
             'first_name' => 'nullable|string|max:255',
             'last_name' => 'nullable|string|max:255',
-            'phone' => 'nullable|string|max:50',
+            'phone' => 'nullable|string|max:50|required_without:email',
             'date_of_birth' => 'nullable|date',
             'company_name' => 'nullable|string|max:255',
             'job_title' => 'nullable|string|max:255',
@@ -170,6 +171,7 @@ class ContactController extends Controller
             'location_id' => 'nullable|exists:locations,id',
             'email' => [
                 'sometimes',
+                'nullable',
                 'email',
                 Rule::unique('contacts')->where(function ($query) use ($contact) {
                     return $query->where('company_id', $contact->company_id);

@@ -67,6 +67,29 @@ class SmsNotificationService
         }
     }
 
+    public function triggerCheckoutConcernNotification(\App\Models\CheckoutConcern $concern, string $triggerType): void
+    {
+        if (!$this->enabled()) {
+            return;
+        }
+
+        $concern->loadMissing(['location.company']);
+        $this->ensureDefaultsSeeded($concern->location?->company);
+
+        $notifications = SmsNotification::findForConcern($concern, $triggerType);
+
+        foreach ($notifications as $notification) {
+            if ($concern->kind === \App\Models\CheckoutConcern::KIND_ABANDONED_CHECKOUT) {
+                $notification->recipient_types = array_values(array_diff(
+                    $notification->recipient_types ?? [],
+                    [SmsNotification::RECIPIENT_CUSTOMER]
+                ));
+            }
+
+            $this->send($notification, $concern, 'concern');
+        }
+    }
+
     public function triggerOrderNotification(TicketOrder $order): void
     {
         if (!$this->enabled()) {
@@ -325,12 +348,18 @@ class SmsNotificationService
             return $entity->adult_phone ?? $entity->customer?->phone;
         }
 
+        if ($type === 'concern') {
+            return $entity->kind === \App\Models\CheckoutConcern::KIND_ABANDONED_CHECKOUT
+                ? null
+                : $entity->phone;
+        }
+
         return $entity->customer?->phone ?? ($entity->guest_phone ?? null);
     }
 
     protected function resolveLocationId($entity, string $type): ?int
     {
-        if ($type === 'booking' || $type === 'event' || $type === 'waiver') {
+        if ($type === 'booking' || $type === 'event' || $type === 'waiver' || $type === 'concern') {
             return $entity->location_id;
         }
         if ($type === 'purchase') {
@@ -346,7 +375,7 @@ class SmsNotificationService
 
     protected function resolveCompanyId($entity, string $type): ?int
     {
-        if ($type === 'waiver') {
+        if ($type === 'waiver' || $type === 'concern') {
             return $entity->company_id ?? $entity->location?->company_id;
         }
         if ($type === 'booking' || $type === 'event') {

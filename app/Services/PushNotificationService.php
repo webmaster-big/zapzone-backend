@@ -29,6 +29,8 @@ class PushNotificationService
         'Location Change Approved',
         'Location Change Rejected',
         'Photo delivery failed',
+        'Customer needs help with the schedule',
+        'Checkout left unfinished',
     ];
 
     public const ADMIN_ROLES = ['company_admin', 'admin', 'owner'];

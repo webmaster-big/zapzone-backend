@@ -87,6 +87,36 @@ class EmailNotificationService
         }
     }
 
+    public function triggerCheckoutConcernNotification(\App\Models\CheckoutConcern $concern, string $triggerType): void
+    {
+        try {
+            $concern->loadMissing(['location.company']);
+
+            $this->ensureDefaultsSeeded($concern->location?->company);
+
+            $notifications = EmailNotification::findForConcern($concern, $triggerType);
+
+            foreach ($notifications as $notification) {
+                if ($concern->kind === \App\Models\CheckoutConcern::KIND_ABANDONED_CHECKOUT) {
+                    $notification->recipient_types = array_values(array_diff(
+                        $notification->recipient_types ?? [],
+                        [EmailNotification::RECIPIENT_CUSTOMER]
+                    ));
+                }
+
+                $this->sendNotification($notification, $concern, 'concern');
+            }
+        } catch (\Exception $e) {
+            Log::error('Error processing checkout concern notification', [
+                'checkout_concern_id' => $concern->id,
+                'trigger_type' => $triggerType,
+                'error' => $e->getMessage(),
+            ]);
+        } finally {
+            $this->dispatchSms(fn ($sms) => $sms->triggerCheckoutConcernNotification($concern, $triggerType));
+        }
+    }
+
     public function triggerOrderNotification(TicketOrder $order): void
     {
         try {
@@ -497,12 +527,18 @@ class EmailNotificationService
             return $entity->adult_email ?? $entity->customer?->email;
         }
 
+        if ($type === 'concern') {
+            return $entity->kind === \App\Models\CheckoutConcern::KIND_ABANDONED_CHECKOUT
+                ? null
+                : $entity->email;
+        }
+
         return $entity->customer?->email ?? $entity->guest_email;
     }
 
     protected function resolveLocationId($entity, string $type): ?int
     {
-        if ($type === 'booking' || $type === 'waiver') {
+        if ($type === 'booking' || $type === 'waiver' || $type === 'concern') {
             return $entity->location_id;
         }
 
@@ -520,7 +556,7 @@ class EmailNotificationService
 
     protected function resolveLocation($entity, string $type)
     {
-        if ($type === 'booking' || $type === 'waiver') {
+        if ($type === 'booking' || $type === 'waiver' || $type === 'concern') {
             return $entity->location;
         }
 
@@ -534,6 +570,27 @@ class EmailNotificationService
         }
 
         return $entity->attraction->location ?? null;
+    }
+
+    protected function buildConcernVariables($concern): array
+    {
+        $location = $concern->location;
+
+        return array_merge($this->buildCommonVariables(), [
+            'customer_name' => $concern->name,
+            'customer_phone' => $concern->phone,
+            'customer_email' => $concern->email ?? '',
+            'concern_message' => $concern->message ?? '',
+            'concern_kind' => $concern->isScheduleHelp() ? 'Schedule help' : 'Unfinished checkout',
+            'item_name' => $concern->entity_name ?? 'Not chosen yet',
+            'preferred_date' => $concern->preferred_date ? $concern->preferred_date->format('l, F j, Y') : 'None selected',
+            'preferred_time' => $concern->preferred_time_label ?? 'None selected',
+            'what_they_wanted' => $concern->what_they_wanted,
+            'step_reached' => data_get($concern->context, 'step_label', 'Details'),
+            'location_name' => $location?->name ?? '',
+            'location_phone' => $location?->phone ?? '',
+            'company_name' => $location?->company?->company_name ?? 'Zap Zone',
+        ]);
     }
 
     protected function getStaffEmails($entity, string $type): array
@@ -587,6 +644,7 @@ class EmailNotificationService
     public function buildVariables($entity, string $type, bool $includeQrCode = true): array
     {
         $variables = match ($type) {
+            'concern' => $this->buildConcernVariables($entity),
             'booking' => $this->buildBookingVariables($entity, $includeQrCode),
             'purchase' => $this->buildPurchaseVariables($entity, $includeQrCode),
             'event' => $this->buildEventVariables($entity),
