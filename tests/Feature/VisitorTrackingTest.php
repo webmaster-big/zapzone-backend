@@ -207,6 +207,68 @@ class VisitorTrackingTest extends TestCase
         $this->assertSame('visitor-abc', $sessions[0]['visitor_id']);
     }
 
+    public function test_sessions_split_between_known_and_anonymous(): void
+    {
+        $this->trackView('visitor-known', '/brighton', '2026-08-25 10:00:00');
+        $this->trackView('visitor-anon', '/brighton', '2026-08-25 11:00:00');
+        VisitorIdentity::create([
+            'visitor_id' => 'visitor-known',
+            'name' => 'Clark Raven',
+            'phone' => '8105550101',
+        ]);
+
+        $known = $this->actingAs($this->admin, 'sanctum')
+            ->getJson('/api/visitor-sessions?identified=known')
+            ->assertStatus(200)
+            ->json('data.sessions');
+        $this->assertCount(1, $known);
+        $this->assertSame('visitor-known', $known[0]['visitor_id']);
+
+        $anonymous = $this->actingAs($this->admin, 'sanctum')
+            ->getJson('/api/visitor-sessions?identified=anonymous')
+            ->json('data.sessions');
+        $this->assertCount(1, $anonymous);
+        $this->assertSame('visitor-anon', $anonymous[0]['visitor_id']);
+    }
+
+    public function test_sessions_can_be_filtered_by_activity(): void
+    {
+        $this->trackView('visitor-looker', '/brighton', '2026-08-25 10:00:00');
+        $this->trackView('visitor-clicker', '/brighton', '2026-08-25 11:00:00');
+        $this->trackClick('visitor-clicker', '/brighton', '2026-08-25 11:01:00', 'Book Now');
+
+        $clicked = $this->actingAs($this->admin, 'sanctum')
+            ->getJson('/api/visitor-sessions?activity=clicked')
+            ->assertStatus(200)
+            ->json('data.sessions');
+
+        $this->assertCount(1, $clicked);
+        $this->assertSame('visitor-clicker', $clicked[0]['visitor_id']);
+
+        $this->actingAs($this->admin, 'sanctum')
+            ->getJson('/api/visitor-sessions?activity=bogus')
+            ->assertStatus(422);
+    }
+
+    public function test_export_honors_the_same_filters(): void
+    {
+        $this->trackView('visitor-known', '/brighton', '2026-08-25 10:00:00');
+        $this->trackView('visitor-anon', '/brighton', '2026-08-25 11:00:00');
+        VisitorIdentity::create([
+            'visitor_id' => 'visitor-known',
+            'name' => 'Clark Raven',
+            'phone' => '8105550101',
+        ]);
+
+        $rows = $this->actingAs($this->admin, 'sanctum')
+            ->getJson('/api/visitor-sessions/export?identified=known&date_from=2026-08-25&date_to=2026-08-25')
+            ->assertStatus(200)
+            ->json('data.sessions');
+
+        $this->assertCount(1, $rows);
+        $this->assertSame('Clark Raven', $rows[0]['guest_name']);
+    }
+
     public function test_statistics_report_scoped_session_counts(): void
     {
         $this->trackView('visitor-abc', '/brighton', now()->format('Y-m-d H:i:s'));

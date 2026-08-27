@@ -89,6 +89,9 @@ class VisitorTrackingController extends Controller
         $request->validate([
             'date_from' => ['nullable', 'date_format:Y-m-d'],
             'date_to' => ['nullable', 'date_format:Y-m-d'],
+            'identified' => ['nullable', 'in:known,anonymous'],
+            'device_type' => ['nullable', 'in:desktop,mobile,tablet'],
+            'activity' => ['nullable', 'in:purchased,clicked,multi_page,reached_checkout'],
             'per_page' => ['nullable', 'integer', 'min:1', 'max:100'],
         ]);
 
@@ -144,7 +147,7 @@ class VisitorTrackingController extends Controller
             'data' => [
                 'sessions_today' => $this->groupedSessions($request, ['date_from' => $today, 'date_to' => $today])->getCountForPagination(),
                 'sessions_week' => $this->groupedSessions($request, ['date_from' => $weekAgo, 'date_to' => $today])->getCountForPagination(),
-                'identified_today' => $this->groupedSessions($request, ['date_from' => $today, 'date_to' => $today, 'identified_only' => true])->getCountForPagination(),
+                'identified_today' => $this->groupedSessions($request, ['date_from' => $today, 'date_to' => $today, 'identified' => 'known'])->getCountForPagination(),
                 'identified_total' => $identityScope->count(),
             ],
         ]);
@@ -252,6 +255,9 @@ class VisitorTrackingController extends Controller
         $request->validate([
             'date_from' => ['nullable', 'date_format:Y-m-d'],
             'date_to' => ['nullable', 'date_format:Y-m-d'],
+            'identified' => ['nullable', 'in:known,anonymous'],
+            'device_type' => ['nullable', 'in:desktop,mobile,tablet'],
+            'activity' => ['nullable', 'in:purchased,clicked,multi_page,reached_checkout'],
         ]);
 
         $rows = $this->groupedSessions($request)
@@ -327,7 +333,10 @@ class VisitorTrackingController extends Controller
 
         $dateFrom = $overrides['date_from'] ?? ($request->filled('date_from') ? $request->date_from : null);
         $dateTo = $overrides['date_to'] ?? ($request->filled('date_to') ? $request->date_to : null);
-        $identifiedOnly = $overrides['identified_only'] ?? $request->boolean('identified_only');
+        $identified = $overrides['identified'] ?? $request->get('identified');
+        if ($request->boolean('identified_only')) {
+            $identified = 'known';
+        }
 
         if ($dateFrom) {
             $query->whereRaw('DATE(pv.created_at) >= ?', [$dateFrom]);
@@ -336,8 +345,26 @@ class VisitorTrackingController extends Controller
             $query->whereRaw('DATE(pv.created_at) <= ?', [$dateTo]);
         }
 
-        if ($identifiedOnly) {
+        if ($identified === 'known') {
             $query->whereNotNull('vi.id');
+        } elseif ($identified === 'anonymous') {
+            $query->whereNull('vi.id');
+        }
+
+        $deviceType = $request->get('device_type');
+        if (in_array($deviceType, ['desktop', 'mobile', 'tablet'], true)) {
+            $query->havingRaw('MAX(pv.device_type) = ?', [$deviceType]);
+        }
+
+        $activity = $request->get('activity');
+        if ($activity === 'purchased') {
+            $query->havingRaw("SUM(pv.event_type = 'conversion') > 0");
+        } elseif ($activity === 'clicked') {
+            $query->havingRaw("SUM(pv.event_type = 'engagement') > 0");
+        } elseif ($activity === 'multi_page') {
+            $query->havingRaw("SUM(pv.event_type = 'page_view') >= 2");
+        } elseif ($activity === 'reached_checkout') {
+            $query->havingRaw("SUM(pv.page_type IN ('package_book', 'attraction_buy', 'event_buy', 'cart', 'checkout')) > 0");
         }
 
         if ($request->filled('search')) {
