@@ -1189,6 +1189,7 @@ class AnalyticsController extends Controller
 
         $summary = $service->summary($ranged);
         $ageBrackets = $service->ageBrackets($ranged);
+        $minorAgeBrackets = $service->minorAgeBrackets($ranged);
         $sources = $service->sourceBreakdown($ranged);
 
         $perDay = [];
@@ -1230,6 +1231,7 @@ class AnalyticsController extends Controller
             'summary' => $summary,
             'per_day' => $perDay,
             'age_brackets' => $ageBrackets,
+            'minor_age_brackets' => $minorAgeBrackets,
             'by_source' => $sourceChart,
         ];
     }

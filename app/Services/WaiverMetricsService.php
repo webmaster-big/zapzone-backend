@@ -19,6 +19,13 @@ class WaiverMetricsService
         ['label' => '60+', 'min' => 60, 'max' => null],
     ];
 
+    public const MINOR_AGE_BRACKETS = [
+        ['label' => 'Under 5', 'min' => 0, 'max' => 4],
+        ['label' => '5–9', 'min' => 5, 'max' => 9],
+        ['label' => '10–13', 'min' => 10, 'max' => 13],
+        ['label' => '14–17', 'min' => 14, 'max' => 17],
+    ];
+
     public const SOURCE_LABELS = [
         Waiver::SOURCE_KIOSK => 'Kiosk',
         Waiver::SOURCE_CONFIRMATION_EMAIL => 'Email',
@@ -235,6 +242,52 @@ class WaiverMetricsService
         }
         foreach (self::AGE_BRACKETS as $bracket) {
             $out[] = ['bracket' => $bracket['label'], 'count' => $counts[$bracket['label']]];
+        }
+        return $out;
+    }
+
+    public function minorAgeBrackets(Builder $base): array
+    {
+        $rows = WaiverMinor::query()
+            ->join('waivers', 'waivers.id', '=', 'waiver_minors.waiver_id')
+            ->whereIn('waiver_minors.waiver_id', (clone $base)->where('status', Waiver::STATUS_COMPLETED)->select('waivers.id'))
+            ->whereNotNull('waiver_minors.date_of_birth')
+            ->get([
+                'waiver_minors.date_of_birth',
+                \Illuminate\Support\Facades\DB::raw(self::EFFECTIVE_DATE . ' as effective_date'),
+            ]);
+
+        $counts = [];
+        foreach (self::MINOR_AGE_BRACKETS as $bracket) {
+            $counts[$bracket['label']] = 0;
+        }
+        $adults = 0;
+
+        foreach ($rows as $row) {
+            $dob = Carbon::parse($row->date_of_birth);
+            $asOf = $row->effective_date ? Carbon::parse($row->effective_date) : Carbon::now();
+            if ($dob->gt($asOf)) {
+                continue;
+            }
+            $age = $dob->diffInYears($asOf);
+            if ($age >= 18) {
+                $adults++;
+                continue;
+            }
+            foreach (self::MINOR_AGE_BRACKETS as $bracket) {
+                if ($age >= $bracket['min'] && $age <= $bracket['max']) {
+                    $counts[$bracket['label']]++;
+                    break;
+                }
+            }
+        }
+
+        $out = [];
+        foreach (self::MINOR_AGE_BRACKETS as $bracket) {
+            $out[] = ['bracket' => $bracket['label'], 'count' => $counts[$bracket['label']]];
+        }
+        if ($adults > 0) {
+            $out[] = ['bracket' => '18+', 'count' => $adults];
         }
         return $out;
     }

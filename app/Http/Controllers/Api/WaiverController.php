@@ -79,6 +79,7 @@ class WaiverController extends Controller
                     'checked_in' => $summary['checked_in'],
                     'minors_covered' => $summary['minors_covered'],
                     'people_covered' => $summary['people_covered'],
+                    'minor_age_brackets' => $metrics->minorAgeBrackets($query),
                 ],
             ]);
         } catch (\Throwable $e) {
