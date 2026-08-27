@@ -11,6 +11,8 @@ use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\Rule;
 
 class PageAnalyticsController extends Controller
@@ -309,10 +311,28 @@ class PageAnalyticsController extends Controller
             if (!$cls) continue;
             $ids = $group->pluck('entity_id')->filter()->unique()->values()->all();
             if (empty($ids)) continue;
-            $named = $cls::whereIn('id', $ids)->get(['id', 'name', 'title', 'code'])->keyBy('id');
-            foreach ($group as $item) {
-                $m = $named[$item->entity_id] ?? null;
-                $item->entity_name = $m?->name ?? $m?->title ?? $m?->code ?? null;
+
+            try {
+                $table = (new $cls)->getTable();
+                $nameColumns = array_values(array_filter(
+                    ['name', 'title', 'code'],
+                    fn ($column) => Schema::hasColumn($table, $column)
+                ));
+                $named = $cls::whereIn('id', $ids)
+                    ->get(array_merge(['id'], $nameColumns))
+                    ->keyBy('id');
+
+                foreach ($group as $item) {
+                    $m = $named[$item->entity_id] ?? null;
+                    $item->entity_name = $m?->name ?? $m?->title ?? $m?->code ?? null;
+                }
+            } catch (\Throwable $e) {
+                Log::error('Could not resolve entity names for the conversions list', [
+                    'entity_type' => $type,
+                    'entity_ids' => $ids,
+                    'error' => $e->getMessage(),
+                    'exception' => get_class($e),
+                ]);
             }
         }
 

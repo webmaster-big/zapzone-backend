@@ -95,20 +95,31 @@ class VisitorTrackingController extends Controller
             'per_page' => ['nullable', 'integer', 'min:1', 'max:100'],
         ]);
 
-        $query = $this->groupedSessions($request);
+        try {
+            $query = $this->groupedSessions($request);
 
-        $perPage = min((int) $request->get('per_page', 20), 100);
-        $paginated = $query->paginate($perPage);
+            $perPage = min((int) $request->get('per_page', 20), 100);
+            $paginated = $query->paginate($perPage);
 
-        $rows = collect($paginated->items());
-        $edges = $this->sessionEdges($rows);
+            $rows = collect($paginated->items());
+            $edges = $this->sessionEdges($rows);
 
-        $sessions = $rows->map(function ($row) use ($edges) {
-            $key = $row->visitor_id . '|' . $row->session_date;
-            $edge = $edges[$key] ?? null;
+            $sessions = $rows->map(function ($row) use ($edges) {
+                $key = $row->visitor_id . '|' . $row->session_date;
+                $edge = $edges[$key] ?? null;
 
-            return $this->presentSession($row, $edge);
-        })->values();
+                return $this->presentSession($row, $edge);
+            })->values();
+        } catch (\Throwable $e) {
+            Log::error('Visitor sessions listing failed', [
+                'user_id' => $request->user()?->id,
+                'filters' => $request->only(['location_id', 'date_from', 'date_to', 'identified', 'device_type', 'activity', 'search', 'page']),
+                'error' => $e->getMessage(),
+                'exception' => get_class($e),
+            ]);
+
+            return response()->json(['success' => false, 'message' => 'Could not load visitor sessions.'], 500);
+        }
 
         return response()->json([
             'success' => true,
@@ -130,7 +141,9 @@ class VisitorTrackingController extends Controller
         $weekAgo = now()->subDays(6)->toDateString();
 
         $user = $request->user();
-        $identityScope = VisitorIdentity::query();
+
+        try {
+            $identityScope = VisitorIdentity::query();
         if ($user && in_array($user->role, ['location_manager', 'attendant'], true) && $user->location_id) {
             $identityScope->where(function ($q) use ($user) {
                 $q->whereNull('location_id')->orWhere('location_id', $user->location_id);
@@ -142,15 +155,25 @@ class VisitorTrackingController extends Controller
             });
         }
 
-        return response()->json([
-            'success' => true,
-            'data' => [
-                'sessions_today' => $this->groupedSessions($request, ['date_from' => $today, 'date_to' => $today])->getCountForPagination(),
-                'sessions_week' => $this->groupedSessions($request, ['date_from' => $weekAgo, 'date_to' => $today])->getCountForPagination(),
-                'identified_today' => $this->groupedSessions($request, ['date_from' => $today, 'date_to' => $today, 'identified' => 'known'])->getCountForPagination(),
-                'identified_total' => $identityScope->count(),
-            ],
-        ]);
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'sessions_today' => $this->groupedSessions($request, ['date_from' => $today, 'date_to' => $today])->getCountForPagination(),
+                    'sessions_week' => $this->groupedSessions($request, ['date_from' => $weekAgo, 'date_to' => $today])->getCountForPagination(),
+                    'identified_today' => $this->groupedSessions($request, ['date_from' => $today, 'date_to' => $today, 'identified' => 'known'])->getCountForPagination(),
+                    'identified_total' => $identityScope->count(),
+                ],
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('Visitor session statistics failed', [
+                'user_id' => $user?->id,
+                'location_id' => $request->get('location_id'),
+                'error' => $e->getMessage(),
+                'exception' => get_class($e),
+            ]);
+
+            return response()->json(['success' => false, 'message' => 'Could not load statistics.'], 500);
+        }
     }
 
     public function detail(Request $request): JsonResponse
@@ -197,6 +220,14 @@ class VisitorTrackingController extends Controller
         }
 
         $identity = VisitorIdentity::where('visitor_id', $validated['visitor_id'])->first();
+
+        Log::info('Visitor session timeline viewed', [
+            'user_id' => $user?->id,
+            'visitor_id' => $validated['visitor_id'],
+            'session_date' => $validated['date'],
+            'events' => $events->count(),
+            'identified' => (bool) $identity,
+        ]);
 
         $timeline = $events->map(function ($event) {
             return [
@@ -260,9 +291,20 @@ class VisitorTrackingController extends Controller
             'activity' => ['nullable', 'in:purchased,clicked,multi_page,reached_checkout'],
         ]);
 
-        $rows = $this->groupedSessions($request)
-            ->limit(self::EXPORT_MAX_SESSIONS + 1)
-            ->get();
+        try {
+            $rows = $this->groupedSessions($request)
+                ->limit(self::EXPORT_MAX_SESSIONS + 1)
+                ->get();
+        } catch (\Throwable $e) {
+            Log::error('Visitor sessions export failed', [
+                'user_id' => $request->user()?->id,
+                'filters' => $request->only(['location_id', 'date_from', 'date_to', 'identified', 'device_type', 'activity', 'search']),
+                'error' => $e->getMessage(),
+                'exception' => get_class($e),
+            ]);
+
+            return response()->json(['success' => false, 'message' => 'Export failed.'], 500);
+        }
 
         $truncated = $rows->count() > self::EXPORT_MAX_SESSIONS;
         $rows = $rows->take(self::EXPORT_MAX_SESSIONS);
