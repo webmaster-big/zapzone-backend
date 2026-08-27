@@ -33,6 +33,7 @@ class CheckoutConcernController extends Controller
     {
         $validated = $request->validate([
             'location_id' => ['required', 'integer', 'exists:locations,id'],
+            'kind' => ['nullable', Rule::in([CheckoutConcern::KIND_SCHEDULE_HELP, CheckoutConcern::KIND_CALL_TO_BOOK])],
             'name' => ['required', 'string', 'min:2', 'max:120', 'regex:/^[^\r\n]+$/'],
             'phone' => ['required', 'string', 'min:7', 'max:40', 'regex:/^[^\r\n]+$/'],
             'email' => ['nullable', 'email', 'max:190'],
@@ -58,12 +59,13 @@ class CheckoutConcernController extends Controller
             ], 422);
         }
 
-        $validated['kind'] = CheckoutConcern::KIND_SCHEDULE_HELP;
+        $validated['kind'] = $validated['kind'] ?? CheckoutConcern::KIND_SCHEDULE_HELP;
         $validated['entity_name'] = $this->trimEntityName($validated['entity_name'] ?? null);
         $validated['fingerprint'] = $this->fingerprint($validated);
 
         if ($existing = $this->recentDuplicate($validated)) {
-            Log::info('Schedule-help request ignored as a duplicate', [
+            Log::info('Guest concern ignored as a duplicate', [
+                'kind' => $validated['kind'],
                 'existing_checkout_concern_id' => $existing->id,
                 'location_id' => $validated['location_id'],
                 'guest' => $validated['name'],
@@ -80,7 +82,8 @@ class CheckoutConcernController extends Controller
         try {
             $concern = $this->concerns->record($validated);
         } catch (\Throwable $e) {
-            Log::error('Could not store a schedule-help request', [
+            Log::error('Could not store a guest concern', [
+                'kind' => $validated['kind'] ?? null,
                 'location_id' => $validated['location_id'] ?? null,
                 'guest' => $validated['name'] ?? null,
                 'phone' => $validated['phone'] ?? null,
@@ -281,6 +284,7 @@ class CheckoutConcernController extends Controller
                 'open' => $scoped()->open()->count(),
                 'schedule_help' => $scoped()->byKind(CheckoutConcern::KIND_SCHEDULE_HELP)->count(),
                 'abandoned_checkout' => $scoped()->byKind(CheckoutConcern::KIND_ABANDONED_CHECKOUT)->count(),
+                'call_to_book' => $scoped()->byKind(CheckoutConcern::KIND_CALL_TO_BOOK)->count(),
                 'today' => $scoped()->whereDate('created_at', now()->toDateString())->count(),
             ],
         ]);
@@ -423,7 +427,7 @@ class CheckoutConcernController extends Controller
             $data['entity_id'] ?? '',
         ];
 
-        if ($data['kind'] === CheckoutConcern::KIND_SCHEDULE_HELP) {
+        if (in_array($data['kind'], [CheckoutConcern::KIND_SCHEDULE_HELP, CheckoutConcern::KIND_CALL_TO_BOOK], true)) {
             $parts[] = sha1(trim($data['message'] ?? ''));
             $parts[] = $data['preferred_date'] ?? '';
             $parts[] = $data['preferred_time'] ?? '';
@@ -434,9 +438,9 @@ class CheckoutConcernController extends Controller
 
     private function recentDuplicate(array $data): ?CheckoutConcern
     {
-        $minutes = $data['kind'] === CheckoutConcern::KIND_SCHEDULE_HELP
-            ? self::SCHEDULE_HELP_DEDUPE_MINUTES
-            : self::ABANDONED_DEDUPE_MINUTES;
+        $minutes = $data['kind'] === CheckoutConcern::KIND_ABANDONED_CHECKOUT
+            ? self::ABANDONED_DEDUPE_MINUTES
+            : self::SCHEDULE_HELP_DEDUPE_MINUTES;
 
         return CheckoutConcern::where('fingerprint', $data['fingerprint'])
             ->where('created_at', '>=', now()->subMinutes($minutes))

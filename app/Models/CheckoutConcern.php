@@ -12,6 +12,7 @@ class CheckoutConcern extends Model
 
     public const KIND_SCHEDULE_HELP = 'schedule_help';
     public const KIND_ABANDONED_CHECKOUT = 'abandoned_checkout';
+    public const KIND_CALL_TO_BOOK = 'call_to_book';
 
     public const STATUS_NEW = 'new';
     public const STATUS_CONTACTED = 'contacted';
@@ -103,11 +104,18 @@ class CheckoutConcern extends Model
         return $this->kind === self::KIND_SCHEDULE_HELP;
     }
 
+    public function isCallToBook(): bool
+    {
+        return $this->kind === self::KIND_CALL_TO_BOOK;
+    }
+
     public function getHeadlineAttribute(): string
     {
-        return $this->isScheduleHelp()
-            ? 'Schedule help requested'
-            : 'Checkout left unfinished';
+        return match ($this->kind) {
+            self::KIND_CALL_TO_BOOK => 'Call to book request',
+            self::KIND_SCHEDULE_HELP => 'Schedule help requested',
+            default => 'Checkout left unfinished',
+        };
     }
 
     public function getPreferredTimeLabelAttribute(): ?string

@@ -180,6 +180,170 @@ class CheckoutConcernTest extends TestCase
         $this->assertNotContains('left@zapzone.test', $alerted['emails_sent']);
     }
 
+    public function test_a_call_to_book_request_is_stored_with_its_own_kind(): void
+    {
+        $response = $this->postJson('/api/checkout-concerns', $this->schedulePayload([
+            'kind' => 'call_to_book',
+            'message' => 'We want to book the mystery room for a work party.',
+        ]));
+
+        $response->assertStatus(201);
+
+        $concern = CheckoutConcern::first();
+        $this->assertSame(CheckoutConcern::KIND_CALL_TO_BOOK, $concern->kind);
+        $this->assertSame('Call to book request', $concern->headline);
+    }
+
+    public function test_a_call_to_book_request_alerts_staff_immediately(): void
+    {
+        $this->postJson('/api/checkout-concerns', $this->schedulePayload([
+            'kind' => 'call_to_book',
+        ]))->assertStatus(201);
+
+        $concern = CheckoutConcern::first();
+        $this->assertNotNull($concern->alerted_at);
+        $this->assertEqualsCanonicalizing(
+            ['manager@zapzone.test', 'attendant@zapzone.test'],
+            $concern->alerted['emails_sent']
+        );
+
+        $notification = Notification::first();
+        $this->assertSame('Customer wants to book by phone', $notification->title);
+        $this->assertSame('call_to_book', $notification->metadata['kind']);
+    }
+
+    public function test_a_call_to_book_contact_is_tagged_as_such(): void
+    {
+        $this->postJson('/api/checkout-concerns', $this->schedulePayload([
+            'kind' => 'call_to_book',
+        ]))->assertStatus(201);
+
+        $contact = Contact::where('email', 'dana@example.com')->first();
+        $this->assertNotNull($contact);
+        $this->assertContains('call-to-book', $contact->tags);
+        $this->assertSame('call_to_book', $contact->source);
+    }
+
+    public function test_the_public_form_cannot_forge_an_abandoned_checkout(): void
+    {
+        $this->postJson('/api/checkout-concerns', $this->schedulePayload([
+            'kind' => 'abandoned_checkout',
+        ]))->assertStatus(422);
+
+        $this->assertSame(0, CheckoutConcern::count());
+    }
+
+    public function test_call_to_book_and_schedule_help_do_not_dedupe_each_other(): void
+    {
+        $this->postJson('/api/checkout-concerns', $this->schedulePayload())->assertStatus(201);
+        $this->postJson('/api/checkout-concerns', $this->schedulePayload([
+            'kind' => 'call_to_book',
+        ]))->assertStatus(201);
+
+        $this->assertSame(2, CheckoutConcern::count());
+    }
+
+    public function test_statistics_count_call_to_book_requests_separately(): void
+    {
+        $this->postJson('/api/checkout-concerns', $this->schedulePayload([
+            'kind' => 'call_to_book',
+        ]))->assertStatus(201);
+
+        $stats = $this->actingAs($this->manager, 'sanctum')
+            ->getJson('/api/checkout-concerns/statistics')
+            ->assertStatus(200)
+            ->json('data');
+
+        $this->assertSame(1, $stats['call_to_book']);
+        $this->assertSame(0, $stats['schedule_help']);
+    }
+
+    public function test_every_company_gets_the_call_to_book_templates(): void
+    {
+        $this->assertSame(
+            1,
+            \App\Models\EmailNotification::where('company_id', $this->company->id)
+                ->where('default_key', \App\Models\EmailNotification::DEFAULT_CALL_TO_BOOK_STAFF)
+                ->count()
+        );
+        $this->assertSame(
+            1,
+            \App\Models\SmsNotification::where('company_id', $this->company->id)
+                ->where('default_key', \App\Models\SmsNotification::DEFAULT_CALL_TO_BOOK_STAFF)
+                ->count()
+        );
+    }
+
+    public function test_an_event_without_times_offers_no_slots(): void
+    {
+        $event = \App\Models\Event::create([
+            'location_id' => $this->location->id,
+            'name' => 'Private Group Night',
+            'date_type' => 'one_time',
+            'start_date' => now()->addDays(7)->toDateString(),
+            'time_start' => null,
+            'time_end' => null,
+            'interval_minutes' => null,
+            'price' => 0,
+            'is_active' => true,
+        ]);
+
+        $this->assertSame([], $event->getTimeSlots());
+
+        $this->getJson("/api/events/{$event->id}/available-time-slots/" . now()->addDays(7)->toDateString())
+            ->assertStatus(200)
+            ->assertJsonPath('time_slots', []);
+    }
+
+    public function test_a_call_to_book_event_cannot_enter_a_ticket_order(): void
+    {
+        $event = \App\Models\Event::create([
+            'location_id' => $this->location->id,
+            'name' => 'Private Group Night',
+            'date_type' => 'one_time',
+            'start_date' => now()->addDays(7)->toDateString(),
+            'time_start' => null,
+            'time_end' => null,
+            'interval_minutes' => null,
+            'price' => 25,
+            'is_active' => true,
+        ]);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessageMatches('/booked by phone/');
+
+        app(\App\Services\TicketOrderPricer::class)->priceCart([
+            ['type' => 'event', 'id' => $event->id, 'quantity' => 4],
+        ]);
+    }
+
+    public function test_a_package_can_have_all_schedules_removed(): void
+    {
+        $package = \App\Models\Package::create([
+            'location_id' => $this->location->id,
+            'name' => 'Mystery Room',
+            'description' => 'Escape room booked by phone',
+            'category' => 'Escape Rooms',
+            'price' => 150,
+            'duration' => 1,
+            'duration_unit' => 'hours',
+            'max_participants' => 10,
+        ]);
+
+        $package->availabilitySchedules()->create([
+            'availability_type' => 'daily',
+            'time_slot_start' => '10:00',
+            'time_slot_end' => '20:00',
+            'time_slot_interval' => 60,
+        ]);
+
+        $this->actingAs($this->manager, 'sanctum')
+            ->putJson("/api/packages/{$package->id}/availability-schedules", ['schedules' => []])
+            ->assertStatus(200);
+
+        $this->assertSame(0, $package->availabilitySchedules()->count());
+    }
+
     public function test_the_concern_reaches_staff_as_an_in_app_notification_for_that_location(): void
     {
         $this->postJson('/api/checkout-concerns', $this->schedulePayload())->assertStatus(201);

@@ -81,11 +81,13 @@ class EmailNotification extends Model
 
     const DEFAULT_SCHEDULE_HELP_STAFF = 'schedule_help_staff';
     const DEFAULT_CHECKOUT_ABANDONED_STAFF = 'checkout_abandoned_staff';
+    const DEFAULT_CALL_TO_BOOK_STAFF = 'call_to_book_staff';
 
     const DEFAULT_END_OF_DAY_SALES_REPORT = 'end_of_day_sales_report';
 
     const TRIGGER_SCHEDULE_HELP_REQUESTED = 'schedule_help_requested';
     const TRIGGER_CHECKOUT_ABANDONED = 'checkout_abandoned';
+    const TRIGGER_CALL_TO_BOOK_REQUESTED = 'call_to_book_requested';
 
     const ENTITY_PACKAGE = 'package';
     const ENTITY_ATTRACTION = 'attraction';
@@ -478,6 +480,11 @@ class EmailNotification extends Model
                 self::TRIGGER_WAIVER_STAFF_SENT => 'Waiver Link Sent (Staff)',
                 self::TRIGGER_WAIVER_BULK_CHAPERONE => 'Bulk Waiver Invite (Chaperone)',
                 self::TRIGGER_WAIVER_PARENT_INVITE => 'Waiver Invite (Parent/Guardian)',
+            ],
+            'concern' => [
+                self::TRIGGER_SCHEDULE_HELP_REQUESTED => 'Schedule Help Requested (Staff)',
+                self::TRIGGER_CALL_TO_BOOK_REQUESTED => 'Call to Book Requested (Staff)',
+                self::TRIGGER_CHECKOUT_ABANDONED => 'Checkout Left Unfinished (Staff)',
             ],
             'report' => [
                 self::TRIGGER_END_OF_DAY_SALES_REPORT => 'End of Day Sales Report',

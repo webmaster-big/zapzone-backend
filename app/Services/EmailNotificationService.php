@@ -581,7 +581,11 @@ class EmailNotificationService
             'customer_phone' => $concern->phone,
             'customer_email' => $concern->email ?? '',
             'concern_message' => $concern->message ?? '',
-            'concern_kind' => $concern->isScheduleHelp() ? 'Schedule help' : 'Unfinished checkout',
+            'concern_kind' => match ($concern->kind) {
+                \App\Models\CheckoutConcern::KIND_CALL_TO_BOOK => 'Call to book',
+                \App\Models\CheckoutConcern::KIND_SCHEDULE_HELP => 'Schedule help',
+                default => 'Unfinished checkout',
+            },
             'item_name' => $concern->entity_name ?? 'Not chosen yet',
             'preferred_date' => $concern->preferred_date ? $concern->preferred_date->format('l, F j, Y') : 'None selected',
             'preferred_time' => $concern->preferred_time_label ?? 'None selected',

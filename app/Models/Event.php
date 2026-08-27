@@ -95,6 +95,10 @@ class Event extends Model
 
     public function getTimeSlots(): array
     {
+        if (!$this->time_start || !$this->time_end) {
+            return [];
+        }
+
         $slots = [];
         $start = Carbon::parse($this->time_start);
         $end = Carbon::parse($this->time_end);
@@ -106,13 +110,15 @@ class Event extends Model
             $end->addDay();
         }
 
+        $interval = (int) ($this->interval_minutes ?: 60);
+
         while ($start->lt($end)) {
-            $slotEnd = $start->copy()->addMinutes($this->interval_minutes);
+            $slotEnd = $start->copy()->addMinutes($interval);
             if ($slotEnd->gt($end)) {
                 break;
             }
             $slots[] = $start->format('H:i');
-            $start->addMinutes($this->interval_minutes);
+            $start->addMinutes($interval);
         }
 
         return $slots;
@@ -120,8 +126,10 @@ class Event extends Model
 
     public function getAvailableTimeSlotsForDate(string $date): array
     {
-        $allSlots = array_values(array_filter($this->getTimeSlots(), function ($slot) use ($date) {
-            $slotEnd = Carbon::parse($slot)->addMinutes($this->interval_minutes)->format('H:i');
+        $interval = (int) ($this->interval_minutes ?: 60);
+
+        $allSlots = array_values(array_filter($this->getTimeSlots(), function ($slot) use ($date, $interval) {
+            $slotEnd = Carbon::parse($slot)->addMinutes($interval)->format('H:i');
             return !DayOff::isTimeSlotBlockedForEvent($this->location_id, $this->id, $date, $slot, $slotEnd);
         }));
 

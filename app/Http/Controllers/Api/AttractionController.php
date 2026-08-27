@@ -169,6 +169,7 @@ class AttractionController extends Controller
                 'city' => $attraction->location->city,
                 'state' => $attraction->location->state,
                 'phone' => $attraction->location->phone,
+                'availability' => $attraction->availability,
                 'special_pricing' => $priceBreakdown,
             ];
 

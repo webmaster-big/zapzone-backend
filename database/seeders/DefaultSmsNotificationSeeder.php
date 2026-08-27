@@ -75,6 +75,17 @@ class DefaultSmsNotificationSeeder extends Seeder
                 'custom_phones' => [],
                 'body' => 'Unfinished checkout: {{customer_name}} ({{customer_phone}}) at {{location_name}} left before paying. {{what_they_wanted}}. Worth a call.',
             ],
+            [
+                'default_key' => SmsNotification::DEFAULT_CALL_TO_BOOK_STAFF,
+                'name' => 'Call to Book Requested (Staff)',
+                'description' => 'Sent to venue staff when a guest asks to book an item that has no online schedule and leaves their details through the Call to Book form.',
+                'trigger_type' => SmsNotification::TRIGGER_CALL_TO_BOOK_REQUESTED,
+                'entity_type' => SmsNotification::ENTITY_ALL,
+                'entity_ids' => [],
+                'recipient_types' => $STAFF,
+                'custom_phones' => [],
+                'body' => 'Call to book: {{customer_name}} ({{customer_phone}}) wants {{item_name}} at {{location_name}}. "{{concern_message}}" Please call them back.',
+            ],
 
             // ---- Parties (packages) ----
             [

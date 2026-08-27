@@ -138,6 +138,11 @@ class AppServiceProvider extends ServiceProvider
             Limit::perMinute(10)->by('abandon:ip:' . $request->ip()),
             Limit::perHour(300)->by('abandon:venue:' . $beaconLocation($request)),
         ]);
+
+        RateLimiter::for('analytics-identify', fn (Request $request) => [
+            Limit::perMinute(10)->by('identify:v:' . ($request->input('visitor_id') ?: $request->ip())),
+            Limit::perHour(600)->by('identify:ip:' . $request->ip()),
+        ]);
     }
 
     private function photoRequestUserId(Request $request): ?int

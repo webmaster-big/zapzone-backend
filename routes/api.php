@@ -123,6 +123,9 @@ Route::middleware('throttle:120,1')->group(function () {
     Route::post('analytics/duration',    [PageAnalyticsController::class, 'patchDuration']);
 });
 
+Route::post('analytics/identify', [\App\Http\Controllers\Api\VisitorTrackingController::class, 'identify'])
+    ->middleware('throttle:analytics-identify');
+
 Route::get('authorize-net/public-key/{locationId}', [AuthorizeNetAccountController::class, 'getPublicKey']); // include
 Route::get('authorize-net/accounts/all', [AuthorizeNetAccountController::class, 'allAccounts']);
 Route::post('authorize-net/test-connection', [AuthorizeNetAccountController::class, 'testConnection'])->middleware('auth:sanctum');
@@ -346,6 +349,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('page-analytics/live',              [PageAnalyticsController::class, 'live']);
     Route::get('page-analytics/landing-pages',     [PageAnalyticsController::class, 'landingPages']);
     Route::get('page-analytics/searches',          [PageAnalyticsController::class, 'searches']);
+
+    Route::prefix('visitor-sessions')->middleware('staff')->group(function () {
+        Route::get('/', [\App\Http\Controllers\Api\VisitorTrackingController::class, 'sessions']);
+        Route::get('/statistics', [\App\Http\Controllers\Api\VisitorTrackingController::class, 'statistics']);
+        Route::get('/export', [\App\Http\Controllers\Api\VisitorTrackingController::class, 'export']);
+        Route::get('/detail', [\App\Http\Controllers\Api\VisitorTrackingController::class, 'detail']);
+    });
     Route::get('page-analytics/promo-performance', [PageAnalyticsController::class, 'promoPerformance']);
     Route::get('page-analytics/gift-card-performance', [PageAnalyticsController::class, 'giftCardPerformance']);
     Route::get('page-analytics/attribution',       [PageAnalyticsController::class, 'attribution']);

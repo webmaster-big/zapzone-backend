@@ -123,6 +123,14 @@ class PageAnalyticsRecorder
             $payload['country'] = null; // CF unknown
         }
 
+        if (empty($payload['location_id']) && !empty($payload['location_slug'])) {
+            $bySlug = Location::query()->bySlug($payload['location_slug'])->first(['id']);
+            if ($bySlug) {
+                $payload['location_id'] = $bySlug->id;
+            }
+        }
+        unset($payload['location_slug']);
+
         [$companyId, $locationId] = $this->resolveTenancy(
             $payload['entity_type'] ?? null,
             $payload['entity_id'] ?? null,

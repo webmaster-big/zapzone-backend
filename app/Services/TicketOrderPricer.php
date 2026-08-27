@@ -192,6 +192,10 @@ class TicketOrderPricer
             throw new RuntimeException('That event is not available.');
         }
 
+        if (!$event->time_start || !$event->time_end) {
+            throw new RuntimeException("{$event->name} is booked by phone — please call the venue to reserve it.");
+        }
+
         $locationId = (int) $event->location_id;
         $this->assertLocation($locationId, $expectedLocationId);
 

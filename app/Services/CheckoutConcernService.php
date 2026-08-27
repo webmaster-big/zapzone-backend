@@ -120,8 +120,16 @@ class CheckoutConcernService
                     'name' => $concern->name,
                     'phone' => $concern->phone,
                 ],
-                $concern->isScheduleHelp() ? 'checkout_schedule_help' : 'abandoned_checkout',
-                [$concern->isScheduleHelp() ? 'schedule-help' : 'abandoned-checkout'],
+                match ($concern->kind) {
+                    CheckoutConcern::KIND_CALL_TO_BOOK => 'call_to_book',
+                    CheckoutConcern::KIND_SCHEDULE_HELP => 'checkout_schedule_help',
+                    default => 'abandoned_checkout',
+                },
+                [match ($concern->kind) {
+                    CheckoutConcern::KIND_CALL_TO_BOOK => 'call-to-book',
+                    CheckoutConcern::KIND_SCHEDULE_HELP => 'schedule-help',
+                    default => 'abandoned-checkout',
+                }],
                 $concern->location_id
             );
         } catch (\Throwable $e) {
@@ -153,9 +161,11 @@ class CheckoutConcernService
             'sms_failed' => [],
         ];
 
-        $triggerType = $concern->isScheduleHelp()
-            ? \App\Models\EmailNotification::TRIGGER_SCHEDULE_HELP_REQUESTED
-            : \App\Models\EmailNotification::TRIGGER_CHECKOUT_ABANDONED;
+        $triggerType = match ($concern->kind) {
+            CheckoutConcern::KIND_CALL_TO_BOOK => \App\Models\EmailNotification::TRIGGER_CALL_TO_BOOK_REQUESTED,
+            CheckoutConcern::KIND_SCHEDULE_HELP => \App\Models\EmailNotification::TRIGGER_SCHEDULE_HELP_REQUESTED,
+            default => \App\Models\EmailNotification::TRIGGER_CHECKOUT_ABANDONED,
+        };
 
         Log::info('Alerting venue staff about a checkout concern', [
             'checkout_concern_id' => $concern->id,
@@ -203,9 +213,11 @@ class CheckoutConcernService
             return $result;
         }
 
-        $view = $concern->isScheduleHelp()
-            ? 'emails.staff-schedule-concern'
-            : 'emails.staff-abandoned-checkout';
+        $view = match ($concern->kind) {
+            CheckoutConcern::KIND_CALL_TO_BOOK => 'emails.staff-call-to-book',
+            CheckoutConcern::KIND_SCHEDULE_HELP => 'emails.staff-schedule-concern',
+            default => 'emails.staff-abandoned-checkout',
+        };
 
         $subject = $this->subjectFor($concern);
 
@@ -301,10 +313,12 @@ class CheckoutConcernService
             Notification::create([
                 'location_id' => $concern->location_id,
                 'type' => 'customer',
-                'priority' => $concern->isScheduleHelp() ? 'high' : 'medium',
-                'title' => $concern->isScheduleHelp()
-                    ? 'Customer needs help with the schedule'
-                    : 'Checkout left unfinished',
+                'priority' => $concern->isScheduleHelp() || $concern->isCallToBook() ? 'high' : 'medium',
+                'title' => match ($concern->kind) {
+                    CheckoutConcern::KIND_CALL_TO_BOOK => 'Customer wants to book by phone',
+                    CheckoutConcern::KIND_SCHEDULE_HELP => 'Customer needs help with the schedule',
+                    default => 'Checkout left unfinished',
+                },
                 'message' => $this->smsBodyFor($concern),
                 'status' => 'unread',
                 'action_url' => '/customer-concerns',
@@ -368,15 +382,27 @@ class CheckoutConcernService
         $venue = $this->singleLine($concern->location?->name) ?: 'your venue';
         $name = Str::limit($this->singleLine($concern->name), 60);
 
-        return $concern->isScheduleHelp()
-            ? "Schedule help needed — {$name} ({$venue})"
-            : "Unfinished checkout — {$name} ({$venue})";
+        return match ($concern->kind) {
+            CheckoutConcern::KIND_CALL_TO_BOOK => "Call to book request — {$name} ({$venue})",
+            CheckoutConcern::KIND_SCHEDULE_HELP => "Schedule help needed — {$name} ({$venue})",
+            default => "Unfinished checkout — {$name} ({$venue})",
+        };
     }
 
     protected function smsBodyFor(CheckoutConcern $concern): string
     {
         $venue = $this->singleLine($concern->location?->name);
         $what = $concern->what_they_wanted;
+
+        if ($concern->isCallToBook()) {
+            $body = "Call to book: {$concern->name} ({$concern->phone}) wants {$what} at {$venue}.";
+
+            if ($concern->message) {
+                $body .= ' "' . Str::limit($this->singleLine($concern->message), 90) . '"';
+            }
+
+            return $body . ' Please call them back.';
+        }
 
         if ($concern->isScheduleHelp()) {
             $body = "Schedule help: {$concern->name} ({$concern->phone}) at {$venue}. {$what}.";

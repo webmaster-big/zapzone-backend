@@ -817,6 +817,7 @@ class PageAnalyticsController extends Controller
             'entity_type'     => ['sometimes', 'nullable', Rule::in(array_keys(PageAnalyticsRecorder::ENTITY_MAP))],
             'entity_id'       => 'sometimes|nullable|integer',
             'location_id'     => 'sometimes|nullable|integer|exists:locations,id',
+            'location_slug'   => 'sometimes|nullable|string|max:150',
 
             'conversion_value' => 'sometimes|nullable|numeric|min:0',
             'currency'        => 'sometimes|nullable|string|max:8',

@@ -15,7 +15,7 @@ class StorePackageAvailabilityScheduleRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'schedules' => 'required|array|min:1',
+            'schedules' => 'present|array',
             'schedules.*.availability_type' => ['required', Rule::in(['daily', 'weekly', 'monthly'])],
             'schedules.*.day_configuration' => 'nullable|array',
             'schedules.*.day_configuration.*' => [
@@ -51,7 +51,7 @@ class StorePackageAvailabilityScheduleRequest extends FormRequest
     public function messages(): array
     {
         return [
-            'schedules.required' => 'At least one schedule is required',
+            'schedules.present' => 'Schedules must be provided, even as an empty list',
             'schedules.array' => 'Schedules must be an array',
             'schedules.*.availability_type.required' => 'Availability type is required for each schedule',
             'schedules.*.availability_type.in' => 'Availability type must be daily, weekly, or monthly',

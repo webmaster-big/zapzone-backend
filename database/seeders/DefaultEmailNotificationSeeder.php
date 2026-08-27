@@ -85,6 +85,23 @@ class DefaultEmailNotificationSeeder extends Seeder
                 'body' => self::getCheckoutAbandonedStaffBody(),
             ],
             [
+                'default_key' => EmailNotification::DEFAULT_CALL_TO_BOOK_STAFF,
+                'name' => 'Call to Book Requested (Staff)',
+                'description' => 'Sent to venue staff when a guest asks to book an item that has no online schedule and leaves their details through the Call to Book form. The guest is expecting a call back.',
+                'trigger_type' => EmailNotification::TRIGGER_CALL_TO_BOOK_REQUESTED,
+                'entity_type' => EmailNotification::ENTITY_ALL,
+                'entity_ids' => [],
+                'recipient_types' => [
+                    EmailNotification::RECIPIENT_STAFF,
+                    EmailNotification::RECIPIENT_COMPANY_ADMIN,
+                    EmailNotification::RECIPIENT_LOCATION_MANAGER,
+                ],
+                'custom_emails' => [],
+                'include_qr_code' => false,
+                'subject' => 'Call to book request - {{customer_name}} ({{location_name}})',
+                'body' => self::getCallToBookStaffBody(),
+            ],
+            [
                 'default_key' => EmailNotification::DEFAULT_BOOKING_CONFIRMATION_CUSTOMER,
                 'name' => 'Booking Confirmation (Customer)',
                 'description' => 'Sent to the customer when a new booking is created. Includes booking details, package info, location, and QR code.',
@@ -1450,6 +1467,26 @@ HTML;
     <li><strong>Time:</strong> {{preferred_time}}</li>
     <li><strong>Last step reached:</strong> {{step_reached}}</li>
 </ul>
+HTML;
+    }
+
+    private static function getCallToBookStaffBody(): string
+    {
+        return <<<'HTML'
+<h2>A customer wants to book by phone</h2>
+<p>They were looking at an item with no online schedule at <strong>{{location_name}}</strong> and asked to be contacted through the Call to Book form. <strong>They are expecting a call back.</strong></p>
+<h3>Who to contact</h3>
+<ul>
+    <li><strong>Name:</strong> {{customer_name}}</li>
+    <li><strong>Phone:</strong> {{customer_phone}}</li>
+    <li><strong>Email:</strong> {{customer_email}}</li>
+</ul>
+<h3>What they want to book</h3>
+<ul>
+    <li><strong>Item:</strong> {{item_name}}</li>
+</ul>
+<h3>In their words</h3>
+<p>{{concern_message}}</p>
 HTML;
     }
 }
