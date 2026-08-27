@@ -26,6 +26,14 @@ class PageView extends Model
         'my_events',             // /customer/events
         'my_gift_cards',         // /customer/gift-cards
         'my_notifications',      // /customer/notifications
+        'my_membership',         // /customer/membership
+        'membership_purchase',   // /customer/membership/purchase
+        'membership_update_payment', // /customer/membership/update-payment
+        'waiver_kiosk',          // /waiver/kiosk/:id
+        'waiver_kiosk_session',  // /waiver/kiosk-session/:token
+        'waiver_bulk',           // /waiver/bulk/:manageToken
+        'waiver_sign',           // /waiver/:token
+        'customer_photos',       // /photos/:accessToken
         'cart',
         'checkout',
         'other',
