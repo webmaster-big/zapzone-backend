@@ -307,6 +307,7 @@ class VisitorTrackingController extends Controller
             ->selectRaw("SUM(pv.event_type = 'engagement') as clicks")
             ->selectRaw("SUM(pv.event_type = 'conversion') as conversions")
             ->selectRaw("COALESCE(SUM(CASE WHEN pv.event_type = 'page_view' THEN pv.duration_ms END), 0) as duration_ms")
+            ->selectRaw("SUM(pv.page_type IN ('package_book', 'attraction_buy', 'event_buy', 'cart', 'checkout')) > 0 as reached_checkout")
             ->selectRaw('MAX(vi.name) as guest_name')
             ->selectRaw('MAX(vi.phone) as guest_phone')
             ->selectRaw('MAX(vi.email) as guest_email')
@@ -476,6 +477,9 @@ class VisitorTrackingController extends Controller
             'visitor_id' => $row->visitor_id,
             'session_date' => $row->session_date,
             'date_label' => Carbon::parse($row->session_date)->format('D, M j, Y'),
+            'first_seen' => (string) $row->first_seen,
+            'last_seen' => (string) $row->last_seen,
+            'reached_checkout' => (bool) ($row->reached_checkout ?? false),
             'guest_name' => $row->guest_name,
             'guest_phone' => $row->guest_phone,
             'guest_email' => $row->guest_email,
