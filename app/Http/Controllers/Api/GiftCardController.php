@@ -130,6 +130,13 @@ class GiftCardController extends Controller
             'event_ids.*' => 'integer|exists:events,id',
         ]);
 
+        if ($validated['type'] === 'percentage' && (float) $validated['initial_value'] > 100) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Percentage gift cards cannot exceed 100%',
+            ], 422);
+        }
+
         foreach (['location_ids', 'package_ids', 'attraction_ids', 'event_ids'] as $field) {
             if (array_key_exists($field, $validated)) {
                 $validated[$field] = GiftCard::normalizeIds($validated[$field]);
@@ -191,6 +198,13 @@ class GiftCardController extends Controller
             'event_ids' => 'sometimes|nullable|array',
             'event_ids.*' => 'integer|exists:events,id',
         ]);
+
+        if (($validated['type'] ?? $giftCard->type) === 'percentage' && isset($validated['initial_value']) && (float) $validated['initial_value'] > 100) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Percentage gift cards cannot exceed 100%',
+            ], 422);
+        }
 
         foreach (['location_ids', 'package_ids', 'attraction_ids', 'event_ids'] as $field) {
             if (array_key_exists($field, $validated)) {

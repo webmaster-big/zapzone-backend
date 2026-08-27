@@ -3,6 +3,7 @@
 namespace App\Http\Requests;
 
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Validation\Rule;
 
 class StorePackageRequest extends FormRequest
@@ -53,6 +54,23 @@ class StorePackageRequest extends FormRequest
             'partial_payment_fixed' => 'nullable|numeric|min:0|regex:/^\d+(\.\d{1,2})?$/',
             'display_order' => 'nullable|integer|min:0',
         ];
+    }
+
+    public function withValidator(Validator $validator): void
+    {
+        $validator->after(function (Validator $validator) {
+            $min = $this->input('min_participants');
+            $max = $this->input('max_participants');
+            $cap = $this->input('max_tickets_per_slot');
+
+            if ($min !== null && $max !== null && (int) $max < (int) $min) {
+                $validator->errors()->add('max_participants', 'Maximum participants cannot be lower than minimum participants');
+            }
+
+            if ($min !== null && $cap !== null && (int) $cap < (int) $min) {
+                $validator->errors()->add('max_tickets_per_slot', 'Max tickets per time slot cannot be lower than minimum participants, or no time slot could ever be booked');
+            }
+        });
     }
 
     public function messages(): array

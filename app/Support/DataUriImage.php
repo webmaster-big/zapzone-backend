@@ -6,7 +6,7 @@ final class DataUriImage
 {
     public static function isDataUri(mixed $value): bool
     {
-        return is_string($value) && str_starts_with($value, 'data:image');
+        return is_string($value) && stripos($value, 'data:') === 0;
     }
 
     public static function contains(mixed $images): bool
@@ -28,8 +28,8 @@ final class DataUriImage
 
     public static function store(string $dataUri, string $directory): string
     {
-        if (!preg_match('/^data:image\/([a-zA-Z0-9.+-]+);base64,/', $dataUri, $matches)) {
-            throw new \InvalidArgumentException('Image must be a base64 data URI');
+        if (!preg_match('/^data:image\/([a-zA-Z0-9.+-]+);base64,/i', $dataUri, $matches)) {
+            throw new \InvalidArgumentException('Only base64 image data URIs are accepted');
         }
 
         $extension = strtolower($matches[1]);

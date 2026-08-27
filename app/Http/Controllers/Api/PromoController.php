@@ -126,6 +126,13 @@ class PromoController extends Controller
             'event_ids.*' => 'integer|exists:events,id',
         ]);
 
+        if ($validated['type'] === 'percentage' && (float) $validated['value'] > 100) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Percentage discount cannot exceed 100%',
+            ], 422);
+        }
+
         foreach (['location_ids', 'package_ids', 'attraction_ids', 'event_ids'] as $field) {
             if (array_key_exists($field, $validated)) {
                 $validated[$field] = Promo::normalizeIds($validated[$field]);
@@ -180,6 +187,13 @@ class PromoController extends Controller
             'event_ids' => 'sometimes|nullable|array',
             'event_ids.*' => 'integer|exists:events,id',
         ]);
+
+        if (($validated['type'] ?? $promo->type) === 'percentage' && isset($validated['value']) && (float) $validated['value'] > 100) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Percentage discount cannot exceed 100%',
+            ], 422);
+        }
 
         foreach (['location_ids', 'package_ids', 'attraction_ids', 'event_ids'] as $field) {
             if (array_key_exists($field, $validated)) {
@@ -352,6 +366,13 @@ class PromoController extends Controller
             'code_length' => 'nullable|integer|min:4|max:16',
             'usage_limit_per_code' => 'nullable|integer|min:1',
         ]);
+
+        if ($validated['type'] === 'percentage' && (float) $validated['value'] > 100) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Percentage discount cannot exceed 100%',
+            ], 422);
+        }
 
         $quantity = $validated['quantity'];
         $prefix = strtoupper($validated['code_prefix'] ?? 'ZAP');

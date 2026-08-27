@@ -3,6 +3,8 @@
 namespace App\Http\Requests;
 
 use Illuminate\Foundation\Http\FormRequest;
+use App\Models\Package;
+use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Validation\Rule;
 
 class UpdatePackageRequest extends FormRequest
@@ -52,6 +54,28 @@ class UpdatePackageRequest extends FormRequest
             'partial_payment_fixed' => 'nullable|numeric|min:0|regex:/^\d+(\.\d{1,2})?$/',
             'display_order' => 'nullable|integer|min:0',
         ];
+    }
+
+    public function withValidator(Validator $validator): void
+    {
+        $validator->after(function (Validator $validator) {
+            $package = null;
+            if (!$this->has('min_participants') || !$this->has('max_participants') || !$this->has('max_tickets_per_slot')) {
+                $routePackage = $this->route('package');
+                $package = $routePackage instanceof Package ? $routePackage : Package::find($routePackage);
+            }
+            $min = $this->has('min_participants') ? $this->input('min_participants') : $package?->min_participants;
+            $max = $this->has('max_participants') ? $this->input('max_participants') : $package?->max_participants;
+            $cap = $this->has('max_tickets_per_slot') ? $this->input('max_tickets_per_slot') : $package?->max_tickets_per_slot;
+
+            if ($min !== null && $max !== null && (int) $max < (int) $min) {
+                $validator->errors()->add('max_participants', 'Maximum participants cannot be lower than minimum participants');
+            }
+
+            if ($min !== null && $cap !== null && (int) $cap < (int) $min) {
+                $validator->errors()->add('max_tickets_per_slot', 'Max tickets per time slot cannot be lower than minimum participants, or no time slot could ever be booked');
+            }
+        });
     }
 
     public function messages(): array

@@ -674,7 +674,7 @@ class PackageController extends Controller
             'packages.*.display_label' => 'nullable|string|max:100',
             'packages.*.max_participants' => 'nullable|integer|min:1',
             'packages.*.duration' => 'nullable|numeric|min:0.01',
-            'packages.*.duration_unit' => 'nullable|string',
+            'packages.*.duration_unit' => ['nullable', 'string', \Illuminate\Validation\Rule::in(['hours', 'minutes', 'hours and minutes'])],
             'packages.*.price_per_additional_30min' => 'nullable|numeric|min:0',
             'packages.*.price_per_additional_1hr' => 'nullable|numeric|min:0',
             'packages.*.image' => 'nullable|max:30000000',
@@ -715,6 +715,14 @@ class PackageController extends Controller
         foreach ($validated['packages'] as $index => $packageData) {
             try {
                 $packageData['image'] = $this->normalizeImages($packageData['image'] ?? null);
+
+                $minParticipants = $packageData['min_participants'] ?? null;
+                if ($minParticipants !== null && isset($packageData['max_participants']) && (int) $packageData['max_participants'] < (int) $minParticipants) {
+                    throw new \InvalidArgumentException('max_participants cannot be lower than min_participants');
+                }
+                if ($minParticipants !== null && isset($packageData['max_tickets_per_slot']) && (int) $packageData['max_tickets_per_slot'] < (int) $minParticipants) {
+                    throw new \InvalidArgumentException('max_tickets_per_slot cannot be lower than min_participants');
+                }
 
                 $attractionIds = $packageData['attraction_ids'] ?? [];
                 if (empty($attractionIds) && isset($packageData['attractions']) && is_array($packageData['attractions'])) {
@@ -870,6 +878,10 @@ class PackageController extends Controller
     {
         if (DataUriImage::isDataUri($image)) {
             return DataUriImage::store($image, 'images/packages');
+        }
+
+        if (strlen($image) > 2048) {
+            throw new \InvalidArgumentException('Image must be a base64 data URI or a stored file path');
         }
 
         return $image;
