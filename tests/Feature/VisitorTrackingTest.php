@@ -39,6 +39,8 @@ class VisitorTrackingTest extends TestCase
         $this->admin = $this->makeUser('company_admin', 'boss@zapzone.test', null);
         $this->manager = $this->makeUser('location_manager', 'manager@zapzone.test', $this->location);
 
+        \Illuminate\Support\Facades\Cache::flush();
+
         $this->withoutMiddleware(\Illuminate\Routing\Middleware\ThrottleRequests::class);
     }
 

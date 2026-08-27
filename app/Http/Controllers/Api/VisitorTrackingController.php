@@ -8,6 +8,7 @@ use App\Models\VisitorIdentity;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -96,20 +97,44 @@ class VisitorTrackingController extends Controller
         ]);
 
         try {
-            $query = $this->groupedSessions($request);
+            $user = $request->user();
+            $cacheKey = 'visitor-sessions:' . md5(implode('|', [
+                $user?->company_id,
+                in_array($user?->role, ['location_manager', 'attendant'], true) ? $user?->location_id : '',
+                $request->get('location_id', ''),
+                $request->get('date_from', ''),
+                $request->get('date_to', ''),
+                $request->get('identified', ''),
+                $request->get('device_type', ''),
+                $request->get('activity', ''),
+                $request->get('search', ''),
+                $request->get('page', 1),
+                min((int) $request->get('per_page', 20), 100),
+            ]));
 
-            $perPage = min((int) $request->get('per_page', 20), 100);
-            $paginated = $query->paginate($perPage);
+            [$sessions, $pageMeta] = Cache::remember($cacheKey, 45, function () use ($request) {
+                $query = $this->groupedSessions($request);
 
-            $rows = collect($paginated->items());
-            $edges = $this->sessionEdges($rows);
+                $perPage = min((int) $request->get('per_page', 20), 100);
+                $paginated = $query->paginate($perPage);
 
-            $sessions = $rows->map(function ($row) use ($edges) {
-                $key = $row->visitor_id . '|' . $row->session_date;
-                $edge = $edges[$key] ?? null;
+                $rows = collect($paginated->items());
+                $edges = $this->sessionEdges($rows);
 
-                return $this->presentSession($row, $edge);
-            })->values();
+                $sessions = $rows->map(function ($row) use ($edges) {
+                    $key = $row->visitor_id . '|' . $row->session_date;
+                    $edge = $edges[$key] ?? null;
+
+                    return $this->presentSession($row, $edge);
+                })->values();
+
+                return [$sessions, [
+                    'current_page' => $paginated->currentPage(),
+                    'last_page' => $paginated->lastPage(),
+                    'per_page' => $paginated->perPage(),
+                    'total' => $paginated->total(),
+                ]];
+            });
         } catch (\Throwable $e) {
             Log::error('Visitor sessions listing failed', [
                 'user_id' => $request->user()?->id,
@@ -125,12 +150,7 @@ class VisitorTrackingController extends Controller
             'success' => true,
             'data' => [
                 'sessions' => $sessions,
-                'pagination' => [
-                    'current_page' => $paginated->currentPage(),
-                    'last_page' => $paginated->lastPage(),
-                    'per_page' => $paginated->perPage(),
-                    'total' => $paginated->total(),
-                ],
+                'pagination' => $pageMeta,
             ],
         ]);
     }
@@ -155,15 +175,21 @@ class VisitorTrackingController extends Controller
             });
         }
 
-            return response()->json([
-                'success' => true,
-                'data' => [
-                    'sessions_today' => $this->groupedSessions($request, ['date_from' => $today, 'date_to' => $today])->getCountForPagination(),
-                    'sessions_week' => $this->groupedSessions($request, ['date_from' => $weekAgo, 'date_to' => $today])->getCountForPagination(),
-                    'identified_today' => $this->groupedSessions($request, ['date_from' => $today, 'date_to' => $today, 'identified' => 'known'])->getCountForPagination(),
-                    'identified_total' => $identityScope->count(),
-                ],
+            $statsKey = 'visitor-stats:' . md5(implode('|', [
+                $user?->company_id,
+                in_array($user?->role, ['location_manager', 'attendant'], true) ? $user?->location_id : '',
+                $request->get('location_id', ''),
+                $today,
+            ]));
+
+            $data = Cache::remember($statsKey, 60, fn () => [
+                'sessions_today' => $this->groupedSessions($request, ['date_from' => $today, 'date_to' => $today])->getCountForPagination(),
+                'sessions_week' => $this->groupedSessions($request, ['date_from' => $weekAgo, 'date_to' => $today])->getCountForPagination(),
+                'identified_today' => $this->groupedSessions($request, ['date_from' => $today, 'date_to' => $today, 'identified' => 'known'])->getCountForPagination(),
+                'identified_total' => $identityScope->count(),
             ]);
+
+            return response()->json(['success' => true, 'data' => $data]);
         } catch (\Throwable $e) {
             Log::error('Visitor session statistics failed', [
                 'user_id' => $user?->id,
