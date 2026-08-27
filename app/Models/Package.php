@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\DataUriImage;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -63,6 +64,15 @@ class Package extends Model
         'booking_window_days' => 'integer',
         'min_booking_notice_hours' => 'integer',
     ];
+
+    protected static function booted(): void
+    {
+        static::saving(function (Package $package) {
+            if (DataUriImage::contains($package->image)) {
+                $package->image = DataUriImage::externalize($package->image, 'images/packages');
+            }
+        });
+    }
 
     public function location(): BelongsTo
     {

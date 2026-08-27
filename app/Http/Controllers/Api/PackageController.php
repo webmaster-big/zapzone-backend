@@ -16,6 +16,7 @@ use App\Models\PackageAttraction;
 use App\Models\PackageRoom;
 use App\Models\SpecialPricing;
 use App\Models\User;
+use App\Support\DataUriImage;
 use App\Support\LocationSlug;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -190,16 +191,15 @@ class PackageController extends Controller
     {
         $validated = $request->validated();
 
-        if (isset($validated['image']) && is_array($validated['image']) && count($validated['image']) > 0) {
-            $uploadedImages = [];
-            foreach ($validated['image'] as $image) {
-                if (!empty($image)) {
-                    $uploadedImages[] = $this->handleImageUpload($image);
-                }
-            }
-            $validated['image'] = !empty($uploadedImages) ? $uploadedImages : null;
-        } else {
-            $validated['image'] = null;
+        try {
+            $validated['image'] = $this->normalizeImages($validated['image'] ?? null);
+        } catch (\Throwable $e) {
+            Log::error('Package image upload failed', ['error' => $e->getMessage()]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Image upload failed: ' . $e->getMessage(),
+            ], 422);
         }
 
         if (isset($validated['invitation_file']) && !empty($validated['invitation_file'])) {
@@ -280,31 +280,20 @@ class PackageController extends Controller
 
         $validated = $request->validated();
 
-        if (isset($validated['image']) && is_array($validated['image']) && count($validated['image']) > 0) {
-            if ($package->image && is_array($package->image)) {
-                foreach ($package->image as $oldImage) {
-                    $oldImagePath = storage_path('app/public/' . $oldImage);
-                    if (file_exists($oldImagePath)) {
-                        unlink($oldImagePath);
-                        Log::info('Deleted old image', ['path' => $oldImagePath]);
-                    }
-                }
+        if (array_key_exists('image', $validated)) {
+            try {
+                $newImages = $this->normalizeImages($validated['image']);
+            } catch (\Throwable $e) {
+                Log::error('Package image upload failed', ['package_id' => $package->id, 'error' => $e->getMessage()]);
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Image upload failed: ' . $e->getMessage(),
+                ], 422);
             }
 
-            $uploadedImages = [];
-            foreach ($validated['image'] as $image) {
-                if (!empty($image)) {
-                    try {
-                        $uploadedImages[] = $this->handleImageUpload($image);
-                    } catch (\Exception $e) {
-                        Log::error('Failed to upload image during package update', [
-                            'package_id' => $package->id,
-                            'error' => $e->getMessage()
-                        ]);
-                    }
-                }
-            }
-            $validated['image'] = !empty($uploadedImages) ? $uploadedImages : null;
+            $this->deleteReplacedImages($package->image, $newImages);
+            $validated['image'] = $newImages;
         }
 
         if (isset($validated['invitation_file']) && !empty($validated['invitation_file'])) {
@@ -725,18 +714,7 @@ class PackageController extends Controller
 
         foreach ($validated['packages'] as $index => $packageData) {
             try {
-                if (isset($packageData['image']) && is_array($packageData['image']) && count($packageData['image']) > 0) {
-                    $uploadedImages = [];
-                    foreach ($packageData['image'] as $image) {
-                        if (!empty($image)) {
-                            $uploadedImages[] = $this->handleImageUpload($image);
-                        }
-                    }
-                    $packageData['image'] = !empty($uploadedImages) ? $uploadedImages : null;
-                } else {
-                    $packageData['image'] = null;
-                }
-
+                $packageData['image'] = $this->normalizeImages($packageData['image'] ?? null);
 
                 $attractionIds = $packageData['attraction_ids'] ?? [];
                 if (empty($attractionIds) && isset($packageData['attractions']) && is_array($packageData['attractions'])) {
@@ -858,76 +836,42 @@ class PackageController extends Controller
         return response()->json($response, count($errors) > 0 ? 207 : 201);
     }
 
-    private function handleImageUpload($image): string
+    private function normalizeImages(mixed $images): ?array
     {
-        if (is_string($image) && strpos($image, 'data:image') === 0) {
-            try {
-                preg_match('/data:image\/(\w+);base64,/', $image, $matches);
+        $list = is_array($images) ? $images : [$images];
+        $paths = [];
 
-                if (empty($matches)) {
-                    Log::error('Invalid base64 image format', ['image_start' => substr($image, 0, 100)]);
-                    throw new \Exception('Invalid image format');
-                }
-
-                $imageType = $matches[1] ?? 'png';
-                $base64Data = substr($image, strpos($image, ',') + 1);
-
-                if (empty($base64Data)) {
-                    Log::error('Empty base64 data');
-                    throw new \Exception('Empty image data');
-                }
-
-                $imageData = base64_decode($base64Data, true);
-
-                if ($imageData === false) {
-                    Log::error('Failed to decode base64 data', [
-                        'data_length' => strlen($base64Data),
-                        'data_start' => substr($base64Data, 0, 100)
-                    ]);
-                    throw new \Exception('Failed to decode image data');
-                }
-
-                $filename = uniqid() . '.' . $imageType;
-                $path = 'images/packages';
-                $fullPath = storage_path('app/public/' . $path);
-
-                Log::info('Package image upload attempt', [
-                    'filename' => $filename,
-                    'path' => $path,
-                    'fullPath' => $fullPath,
-                    'imageType' => $imageType,
-                    'imageSize' => strlen($imageData)
-                ]);
-
-                if (!file_exists($fullPath)) {
-                    mkdir($fullPath, 0755, true);
-                    Log::info('Created directory', ['path' => $fullPath]);
-                }
-
-                $bytesWritten = file_put_contents($fullPath . '/' . $filename, $imageData);
-
-                if ($bytesWritten === false) {
-                    Log::error('Failed to write image file', ['file' => $fullPath . '/' . $filename]);
-                    throw new \Exception('Failed to save image file');
-                }
-
-                Log::info('Image saved successfully', [
-                    'file' => $fullPath . '/' . $filename,
-                    'bytes' => $bytesWritten
-                ]);
-
-                return $path . '/' . $filename;
-
-            } catch (\Exception $e) {
-                Log::error('Error handling image upload', [
-                    'error' => $e->getMessage(),
-                    'trace' => $e->getTraceAsString()
-                ]);
-                throw $e;
+        foreach ($list as $image) {
+            if (is_string($image) && trim($image) !== '') {
+                $paths[] = $this->handleImageUpload($image);
             }
         }
 
-        Log::info('Image path returned as-is', ['image' => substr($image, 0, 100)]);
+        return $paths === [] ? null : $paths;
+    }
+
+    private function deleteReplacedImages(mixed $oldImages, ?array $newImages): void
+    {
+        $old = is_array($oldImages) ? $oldImages : (is_string($oldImages) ? [$oldImages] : []);
+
+        foreach ($old as $image) {
+            if (!is_string($image) || DataUriImage::isDataUri($image) || in_array($image, $newImages ?? [], true)) {
+                continue;
+            }
+
+            $path = storage_path('app/public/' . $image);
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+    }
+
+    private function handleImageUpload($image): string
+    {
+        if (DataUriImage::isDataUri($image)) {
+            return DataUriImage::store($image, 'images/packages');
+        }
+
         return $image;
     }
 
