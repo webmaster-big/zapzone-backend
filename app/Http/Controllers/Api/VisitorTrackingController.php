@@ -94,11 +94,16 @@ class VisitorTrackingController extends Controller
             'device_type' => ['nullable', 'in:desktop,mobile,tablet'],
             'activity' => ['nullable', 'in:purchased,clicked,multi_page,reached_checkout'],
             'per_page' => ['nullable', 'integer', 'min:1', 'max:100'],
+            'all' => ['nullable', 'boolean'],
+            'limit' => ['nullable', 'integer', 'min:1', 'max:5000'],
         ]);
 
         try {
             $user = $request->user();
+            $loadAll = $request->boolean('all');
+            $allLimit = min((int) $request->get('limit', 3000), 5000);
             $cacheKey = 'visitor-sessions:' . md5(implode('|', [
+                $loadAll ? 'all:' . $allLimit : 'page',
                 $user?->company_id,
                 in_array($user?->role, ['location_manager', 'attendant'], true) ? $user?->location_id : '',
                 $request->get('location_id', ''),
@@ -112,8 +117,29 @@ class VisitorTrackingController extends Controller
                 min((int) $request->get('per_page', 20), 100),
             ]));
 
-            [$sessions, $pageMeta] = Cache::remember($cacheKey, 45, function () use ($request) {
+            [$sessions, $pageMeta] = Cache::remember($cacheKey, 180, function () use ($request, $loadAll, $allLimit) {
                 $query = $this->groupedSessions($request);
+
+                if ($loadAll) {
+                    $rows = collect($query->limit($allLimit + 1)->get());
+                    $capped = $rows->count() > $allLimit;
+                    $rows = $rows->take($allLimit);
+                    $edges = $this->sessionEdges($rows);
+
+                    $sessions = $rows->map(function ($row) use ($edges) {
+                        $key = $row->visitor_id . '|' . $row->session_date;
+
+                        return $this->presentSession($row, $edges[$key] ?? null);
+                    })->values();
+
+                    return [$sessions, [
+                        'current_page' => 1,
+                        'last_page' => 1,
+                        'per_page' => $allLimit,
+                        'total' => $sessions->count(),
+                        'capped' => $capped,
+                    ]];
+                }
 
                 $perPage = min((int) $request->get('per_page', 20), 100);
                 $paginated = $query->paginate($perPage);
@@ -133,6 +159,7 @@ class VisitorTrackingController extends Controller
                     'last_page' => $paginated->lastPage(),
                     'per_page' => $paginated->perPage(),
                     'total' => $paginated->total(),
+                    'capped' => false,
                 ]];
             });
         } catch (\Throwable $e) {
@@ -182,7 +209,7 @@ class VisitorTrackingController extends Controller
                 $today,
             ]));
 
-            $data = Cache::remember($statsKey, 60, fn () => [
+            $data = Cache::remember($statsKey, 180, fn () => [
                 'sessions_today' => $this->groupedSessions($request, ['date_from' => $today, 'date_to' => $today])->getCountForPagination(),
                 'sessions_week' => $this->groupedSessions($request, ['date_from' => $weekAgo, 'date_to' => $today])->getCountForPagination(),
                 'identified_today' => $this->groupedSessions($request, ['date_from' => $today, 'date_to' => $today, 'identified' => 'known'])->getCountForPagination(),
@@ -387,7 +414,9 @@ class VisitorTrackingController extends Controller
         $user = $request->user();
 
         if ($user && $user->company_id) {
-            $query->havingRaw('(SUM(pv.company_id = ?) > 0 OR COUNT(pv.company_id) = 0)', [(int) $user->company_id]);
+            $query->where(function ($q) use ($user) {
+                $q->where('pv.company_id', (int) $user->company_id)->orWhereNull('pv.company_id');
+            });
         }
 
         $locationId = null;
@@ -408,10 +437,10 @@ class VisitorTrackingController extends Controller
         }
 
         if ($dateFrom) {
-            $query->whereRaw('DATE(pv.created_at) >= ?', [$dateFrom]);
+            $query->where('pv.created_at', '>=', $dateFrom . ' 00:00:00');
         }
         if ($dateTo) {
-            $query->whereRaw('DATE(pv.created_at) <= ?', [$dateTo]);
+            $query->where('pv.created_at', '<', \Carbon\Carbon::parse($dateTo)->addDay()->toDateString() . ' 00:00:00');
         }
 
         if ($identified === 'known') {
@@ -452,6 +481,15 @@ class VisitorTrackingController extends Controller
         return $query;
     }
 
+    private function sessionDateRange($rows): array
+    {
+        $dates = $rows->pluck('session_date')->filter()->map(fn ($d) => Carbon::parse($d)->toDateString());
+        $from = ($dates->min() ?? Carbon::today()->toDateString()) . ' 00:00:00';
+        $to = Carbon::parse($dates->max() ?? Carbon::today()->toDateString())->addDay()->toDateString() . ' 00:00:00';
+
+        return [$from, $to];
+    }
+
     private function sessionEdges($rows): array
     {
         if ($rows->isEmpty()) {
@@ -461,9 +499,13 @@ class VisitorTrackingController extends Controller
         $placeholders = implode(', ', array_fill(0, $rows->count(), '(?, ?)'));
         $bindings = $rows->flatMap(fn ($r) => [$r->visitor_id, $r->session_date])->all();
 
+        [$rangeFrom, $rangeTo] = $this->sessionDateRange($rows);
+
         $views = DB::table('page_views')
             ->selectRaw('visitor_id, DATE(created_at) as session_date, page_path, page_title, id')
             ->where('event_type', 'page_view')
+            ->where('created_at', '>=', $rangeFrom)
+            ->where('created_at', '<', $rangeTo)
             ->whereRaw("(visitor_id, DATE(created_at)) IN ($placeholders)", $bindings)
             ->orderBy('id')
             ->limit(50000)
@@ -492,8 +534,12 @@ class VisitorTrackingController extends Controller
         $placeholders = implode(', ', array_fill(0, $rows->count(), '(?, ?)'));
         $bindings = $rows->flatMap(fn ($r) => [$r->visitor_id, $r->session_date])->all();
 
+        [$rangeFrom, $rangeTo] = $this->sessionDateRange($rows);
+
         $events = DB::table('page_views')
             ->selectRaw('visitor_id, DATE(created_at) as session_date, event_type, event_name, page_path, page_title, duration_ms, conversion_value, metadata, created_at, id')
+            ->where('created_at', '>=', $rangeFrom)
+            ->where('created_at', '<', $rangeTo)
             ->whereRaw("(visitor_id, DATE(created_at)) IN ($placeholders)", $bindings)
             ->orderBy('id')
             ->limit(30000)

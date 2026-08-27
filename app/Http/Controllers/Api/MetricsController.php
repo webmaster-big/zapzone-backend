@@ -539,6 +539,7 @@ class MetricsController extends Controller
         $waiverBreakdownData = [];
         $waiverStatusBreakdownData = [];
         $waiverAgeBreakdownData = [];
+        $waiverMinorAgeBreakdownData = [];
         try {
             $waiverBase = Waiver::query();
             if ($user->company_id) {
@@ -593,6 +594,14 @@ class MetricsController extends Controller
                     'label' => $row['bracket'],
                     'count' => $row['count'],
                     'percentage' => round($row['count'] / $waiverCompletedTotal * 100, 1),
+                ];
+            }
+            $waiverMinorsTotal = max(1, (int) $waiverSummary['minors_covered']);
+            foreach ($waiverService->minorAgeBrackets($waiverBase) as $row) {
+                $waiverMinorAgeBreakdownData[] = [
+                    'label' => $row['bracket'],
+                    'count' => $row['count'],
+                    'percentage' => round($row['count'] / $waiverMinorsTotal * 100, 1),
                 ];
             }
         } catch (\Throwable $e) {
@@ -665,6 +674,7 @@ class MetricsController extends Controller
                 'waiverBreakdown'    => $waiverBreakdownData,
                 'waiverStatusBreakdown' => $waiverStatusBreakdownData,
                 'waiverAgeBreakdown' => $waiverAgeBreakdownData,
+                'waiverMinorAgeBreakdown' => $waiverMinorAgeBreakdownData,
             ],
             'recentPurchases' => $recentPurchases,
             'recentEventPurchases' => $recentEventPurchases,
