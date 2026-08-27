@@ -13,6 +13,7 @@ use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
+use App\Support\CatalogRules;
 
 class GiftCardController extends Controller
 {
@@ -204,6 +205,19 @@ class GiftCardController extends Controller
                 'success' => false,
                 'message' => 'Percentage gift cards cannot exceed 100%',
             ], 422);
+        }
+
+        if (array_key_exists('expiry_date', $validated) && $validated['expiry_date'] !== null) {
+            $incoming = \Carbon\Carbon::parse($validated['expiry_date'])->toDateString();
+            $stored = $giftCard->expiry_date?->toDateString();
+
+            if ($incoming !== $stored && $incoming < now()->toDateString()) {
+                $denied = CatalogRules::reject('gift_cards', 'expiry_date', 'Expiry date cannot be in the past. Leave it unchanged or pick a future date.', ['gift_card_id' => $giftCard->id, 'incoming' => $incoming, 'stored' => $stored, 'user_id' => auth()->id()]);
+
+                if ($denied) {
+                    return $denied;
+                }
+            }
         }
 
         foreach (['location_ids', 'package_ids', 'attraction_ids', 'event_ids'] as $field) {

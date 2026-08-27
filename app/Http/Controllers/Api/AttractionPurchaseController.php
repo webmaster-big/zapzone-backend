@@ -21,6 +21,8 @@ use App\Models\User;
 use App\Models\Membership;
 use App\Services\DiscountService;
 use App\Services\MembershipBenefitService;
+use App\Services\Checkout\CheckoutPricer;
+use App\Services\Checkout\CheckoutTotalGuard;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
@@ -299,6 +301,10 @@ class AttractionPurchaseController extends Controller
         $customFieldAnswers = $validated['custom_fields'] ?? null;
         unset($validated['custom_fields']);
 
+        $rules = app(\App\Services\AddOnRuleService::class);
+        $isStaff = $rules->isStaff($request->user('sanctum'));
+        $addOnLines = $rules->normalize($validated['additional_addons'] ?? [], 'addon_id', 'price_at_purchase');
+
         $duplicateQuery = AttractionPurchase::where('attraction_id', $validated['attraction_id'])
             ->where('quantity', $validated['quantity'])
             ->where('status', AttractionPurchase::STATUS_PENDING);
@@ -337,7 +343,39 @@ class AttractionPurchaseController extends Controller
 
         $validated['created_by'] = auth()->id() ?? null;
 
-        $attractionLocationId = Attraction::find($validated['attraction_id'])?->location_id;
+        $attractionModel = Attraction::find($validated['attraction_id']);
+        $attractionLocationId = $attractionModel?->location_id;
+
+        $checkoutActor = $request->user('sanctum');
+        $checkoutMembership = app(MembershipBenefitService::class)->membershipForCheckout(
+            $validated['membership_id'] ?? null,
+            $checkoutActor,
+            isset($validated['customer_id']) ? (int) $validated['customer_id'] : null,
+            $attractionLocationId ? (int) $attractionLocationId : null,
+            'attraction_purchase'
+        );
+        if (! $checkoutMembership) {
+            unset($validated['membership_id'], $validated['membership_applied']);
+        }
+
+        if ($attractionModel) {
+            $expectation = app(CheckoutPricer::class)->forAttractionPurchase($validated, $attractionModel, $checkoutMembership);
+            $rejection = app(CheckoutTotalGuard::class)->check($expectation, (float) $validated['total_amount'], $checkoutActor, [
+                'purchase_type' => 'attraction_purchase',
+                'attraction_id' => $attractionModel->id,
+                'location_id' => $attractionLocationId,
+                'customer_id' => $validated['customer_id'] ?? null,
+                'created_by' => $validated['created_by'] ?? null,
+                'payment_method' => $validated['payment_method'] ?? null,
+                'amount_paid' => $validated['amount_paid'] ?? null,
+                'client_applied_fees' => $validated['applied_fees'] ?? null,
+                'client_applied_discounts' => $validated['applied_discounts'] ?? null,
+                'client_membership_applied' => $validated['membership_applied'] ?? null,
+            ]);
+            if ($rejection) {
+                return response()->json(['success' => false, 'code' => 'PRICE_MISMATCH', 'message' => $rejection], 422);
+            }
+        }
 
         if (!empty($validated['scheduled_date']) && $attractionLocationId) {
             $scheduledDate = Carbon::parse($validated['scheduled_date'])->toDateString();
@@ -354,7 +392,7 @@ class AttractionPurchaseController extends Controller
         }
 
         try {
-            $purchase = DB::transaction(function () use (&$validated, $discounts, $request, $attractionLocationId, $customFieldAnswers) {
+            $purchase = DB::transaction(function () use (&$validated, $discounts, $request, $attractionLocationId, $customFieldAnswers, $rules, $isStaff, $addOnLines) {
             $capAttraction = \App\Models\Attraction::where('id', $validated['attraction_id'])->lockForUpdate()->first();
 
             if ($capAttraction && $capAttraction->max_tickets_per_slot !== null
@@ -375,6 +413,8 @@ class AttractionPurchaseController extends Controller
                     );
                 }
             }
+
+            $rules->assertQuantities($addOnLines, null, $isStaff, 'attraction_purchase.store');
 
             $hasCode = !empty($validated['promo_id']) || !empty($validated['gift_card_id'])
                 || !empty($validated['promo_code']) || !empty($validated['gift_card_code']);
@@ -412,6 +452,15 @@ class AttractionPurchaseController extends Controller
 
             $created = AttractionPurchase::create($validated);
 
+            foreach ($addOnLines as $line) {
+                AttractionPurchaseAddOn::create([
+                    'attraction_purchase_id' => $created->id,
+                    'add_on_id' => $line['id'],
+                    'quantity' => $line['quantity'],
+                    'price_at_purchase' => $line['price'] ?? 0,
+                ]);
+            }
+
             $customFields = app(\App\Services\CustomFieldService::class);
             $customFields->handle(
                 $created,
@@ -427,16 +476,6 @@ class AttractionPurchaseController extends Controller
             return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
         }
 
-        if (isset($validated['additional_addons']) && is_array($validated['additional_addons'])) {
-            foreach ($validated['additional_addons'] as $addon) {
-                AttractionPurchaseAddOn::create([
-                    'attraction_purchase_id' => $purchase->id,
-                    'add_on_id' => $addon['addon_id'],
-                    'quantity' => $addon['quantity'] ?? 1,
-                    'price_at_purchase' => $addon['price_at_purchase'] ?? 0,
-                ]);
-            }
-        }
 
         $purchase->load(['attraction', 'customer', 'createdBy', 'addOns']);
 
@@ -763,20 +802,35 @@ class AttractionPurchaseController extends Controller
             $validated['total_amount'] = $attraction->price * $quantity;
         }
 
-        $attractionPurchase->update($validated);
+        $rules = app(\App\Services\AddOnRuleService::class);
+        $isStaff = $rules->isStaff($request->user('sanctum'));
+        $addOnLines = isset($validated['additional_addons'])
+            ? $rules->normalize(is_array($validated['additional_addons']) ? $validated['additional_addons'] : [], 'addon_id', 'price_at_purchase')
+            : null;
 
-        if (isset($validated['additional_addons'])) {
-            AttractionPurchaseAddOn::where('attraction_purchase_id', $attractionPurchase->id)->delete();
-            if (is_array($validated['additional_addons'])) {
-                foreach ($validated['additional_addons'] as $addon) {
-                    AttractionPurchaseAddOn::create([
-                        'attraction_purchase_id' => $attractionPurchase->id,
-                        'add_on_id' => $addon['addon_id'],
-                        'quantity' => $addon['quantity'] ?? 1,
-                        'price_at_purchase' => $addon['price_at_purchase'] ?? 0,
-                    ]);
+        try {
+            DB::transaction(function () use ($validated, $attractionPurchase, $rules, $isStaff, $addOnLines) {
+                if ($addOnLines !== null) {
+                    $rules->assertQuantities($addOnLines, null, $isStaff, 'attraction_purchase.update');
                 }
-            }
+
+                $attractionPurchase->update($validated);
+
+                if ($addOnLines !== null) {
+                    AttractionPurchaseAddOn::where('attraction_purchase_id', $attractionPurchase->id)->delete();
+
+                    foreach ($addOnLines as $line) {
+                        AttractionPurchaseAddOn::create([
+                            'attraction_purchase_id' => $attractionPurchase->id,
+                            'add_on_id' => $line['id'],
+                            'quantity' => $line['quantity'],
+                            'price_at_purchase' => $line['price'] ?? 0,
+                        ]);
+                    }
+                }
+            });
+        } catch (\RuntimeException $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
         }
 
         $attractionPurchase->load(['attraction', 'customer', 'createdBy', 'addOns']);
@@ -942,6 +996,16 @@ class AttractionPurchaseController extends Controller
             }
         }
 
+        $inactive = [AttractionPurchase::STATUS_CANCELLED, AttractionPurchase::STATUS_REFUNDED];
+
+        if (isset($validated['status']) && in_array($previousStatus, $inactive, true) && !in_array($validated['status'], $inactive, true)) {
+            try {
+                app(\App\Services\SlotCapacityGuard::class)->assertAttractionPurchaseFits($attractionPurchase, 'attraction_purchase.updateStatus');
+            } catch (\RuntimeException $e) {
+                return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+            }
+        }
+
         $attractionPurchase->update($validated);
 
         return response()->json([
@@ -972,6 +1036,14 @@ class AttractionPurchaseController extends Controller
                 'success' => false,
                 'message' => 'Purchase has already been checked in',
             ], 400);
+        }
+
+        if (in_array($attractionPurchase->status, [AttractionPurchase::STATUS_CANCELLED, AttractionPurchase::STATUS_REFUNDED], true)) {
+            try {
+                app(\App\Services\SlotCapacityGuard::class)->assertAttractionPurchaseFits($attractionPurchase, 'attraction_purchase.markAsConfirmed');
+            } catch (\RuntimeException $e) {
+                return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+            }
         }
 
         $attractionPurchase->update(['status' => AttractionPurchase::STATUS_CONFIRMED]);

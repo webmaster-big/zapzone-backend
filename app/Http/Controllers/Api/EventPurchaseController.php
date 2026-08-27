@@ -16,6 +16,8 @@ use App\Models\Notification;
 use App\Models\Membership;
 use App\Services\DiscountService;
 use App\Services\MembershipBenefitService;
+use App\Services\Checkout\CheckoutPricer;
+use App\Services\Checkout\CheckoutTotalGuard;
 use App\Services\EmailNotificationService;
 use App\Services\GmailApiService;
 use Illuminate\Http\JsonResponse;
@@ -217,6 +219,36 @@ class EventPurchaseController extends Controller
                 }
             }
 
+            $checkoutActor = $request->user('sanctum');
+            $checkoutMembership = app(MembershipBenefitService::class)->membershipForCheckout(
+                $validated['membership_id'] ?? null,
+                $checkoutActor,
+                isset($validated['customer_id']) ? (int) $validated['customer_id'] : null,
+                (int) $event->location_id,
+                'event_purchase'
+            );
+            if (! $checkoutMembership) {
+                unset($validated['membership_id'], $validated['membership_applied']);
+            }
+
+            if (array_key_exists('total_amount', $validated) && $validated['total_amount'] !== null) {
+                $expectation = app(CheckoutPricer::class)->forEventPurchase($validated, $event, $checkoutMembership);
+                $rejection = app(CheckoutTotalGuard::class)->check($expectation, (float) $validated['total_amount'], $checkoutActor, [
+                    'purchase_type' => 'event_purchase',
+                    'event_id' => $event->id,
+                    'location_id' => $event->location_id,
+                    'customer_id' => $validated['customer_id'] ?? null,
+                    'payment_method' => $validated['payment_method'] ?? null,
+                    'amount_paid' => $validated['amount_paid'] ?? null,
+                    'client_applied_fees' => $validated['applied_fees'] ?? null,
+                    'client_applied_discounts' => $validated['applied_discounts'] ?? null,
+                    'client_membership_applied' => $validated['membership_applied'] ?? null,
+                ]);
+                if ($rejection) {
+                    return response()->json(['success' => false, 'code' => 'PRICE_MISMATCH', 'message' => $rejection], 422);
+                }
+            }
+
             $duplicateQuery = EventPurchase::where('event_id', $validated['event_id'])
                 ->where('purchase_date', $validated['purchase_date'])
                 ->where('purchase_time', $validated['purchase_time'])
@@ -247,13 +279,15 @@ class EventPurchaseController extends Controller
                 $validated['payment_method'] = 'paylater';
             }
 
-            $addOns = $validated['add_ons'] ?? [];
+            $rules = app(\App\Services\AddOnRuleService::class);
+            $isStaff = $rules->isStaff($request->user('sanctum'));
+            $addOnLines = $rules->normalize($validated['add_ons'] ?? [], 'add_on_id', 'price_at_purchase');
             $sendEmail = $validated['send_email'] ?? true;
             $smsConsent = $validated['sms_consent'] ?? false;
             $customFieldAnswers = $validated['custom_fields'] ?? null;
             unset($validated['add_ons'], $validated['send_email'], $validated['sms_consent'], $validated['custom_fields']);
 
-            $purchase = DB::transaction(function () use (&$validated, $discounts, $request, $customFieldAnswers) {
+            $purchase = DB::transaction(function () use (&$validated, $discounts, $request, $customFieldAnswers, $rules, $isStaff, $addOnLines) {
                 $capEvent = Event::where('id', $validated['event_id'])->lockForUpdate()->first();
 
                 if ($capEvent && $capEvent->max_tickets_per_slot !== null) {
@@ -310,7 +344,21 @@ class EventPurchaseController extends Controller
                     }
                 }
 
+                if ($capEvent && $capEvent->max_bookings_per_slot !== null
+                    && !in_array($validated['purchase_time'], $capEvent->getAvailableTimeSlotsForDate($validated['purchase_date']))) {
+                    throw new \RuntimeException('Selected time slot is not available');
+                }
+
+                $rules->assertQuantities($addOnLines, null, $isStaff, 'event_purchase.store');
+
                 $created = EventPurchase::create($validated);
+
+                foreach ($addOnLines as $line) {
+                    $created->addOns()->attach($line['id'], [
+                        'quantity' => $line['quantity'],
+                        'price_at_purchase' => $line['price'] ?? 0,
+                    ]);
+                }
 
                 $customFields = app(\App\Services\CustomFieldService::class);
                 $customFields->handle(
@@ -323,15 +371,6 @@ class EventPurchaseController extends Controller
 
                 return $created;
             });
-
-            if (!empty($addOns)) {
-                foreach ($addOns as $addOn) {
-                    $purchase->addOns()->attach($addOn['add_on_id'], [
-                        'quantity' => $addOn['quantity'],
-                        'price_at_purchase' => $addOn['price_at_purchase'],
-                    ]);
-                }
-            }
 
             $purchase->load(['event.location.company', 'customer', 'location:id,name', 'addOns']);
 
@@ -619,7 +658,46 @@ class EventPurchaseController extends Controller
                 }
             }
 
-            $addOns = $validated['add_ons'] ?? null;
+            if ($slotTouched && ($validated['status'] ?? $eventPurchase->status) !== 'cancelled') {
+                $bookingCapEvent = Event::find($eventPurchase->event_id);
+
+                if ($bookingCapEvent && $bookingCapEvent->max_bookings_per_slot !== null) {
+                    $slotDate = isset($validated['purchase_date']) ? \Carbon\Carbon::parse($validated['purchase_date'])->toDateString() : $eventPurchase->purchase_date?->toDateString();
+                    $slotTime = isset($validated['purchase_time']) ? substr((string) $validated['purchase_time'], 0, 5) : ($eventPurchase->purchase_time ? substr((string) $eventPurchase->purchase_time, 0, 5) : null);
+
+                    if ($slotDate && $slotTime) {
+                        $otherBookings = (int) $bookingCapEvent->eventPurchases()
+                            ->where('purchase_date', $slotDate)
+                            ->whereNotIn('status', ['cancelled'])
+                            ->where('id', '!=', $eventPurchase->id)
+                            ->whereRaw("TIME_FORMAT(purchase_time, '%H:%i') = ?", [$slotTime])
+                            ->count();
+
+                        if ($otherBookings >= (int) $bookingCapEvent->max_bookings_per_slot) {
+                            if ((string) config('booking_rules.capacity', 'log') === 'enforce') {
+                                return response()->json(['success' => false, 'message' => 'That time slot already has the maximum number of bookings.'], 422);
+                            }
+
+                            Log::warning('Event update bookings-per-slot (log-only)', ['purchase_id' => $eventPurchase->id, 'event_id' => $bookingCapEvent->id, 'date' => $slotDate, 'time' => $slotTime, 'others' => $otherBookings]);
+                        }
+                    }
+                }
+            }
+
+            $rules = app(\App\Services\AddOnRuleService::class);
+            $addOnLines = array_key_exists('add_ons', $validated) && $validated['add_ons'] !== null
+                ? $rules->normalize($validated['add_ons'], 'add_on_id', 'price_at_purchase')
+                : null;
+
+            if ($addOnLines !== null) {
+                $rules->assertQuantities($addOnLines, null, $rules->isStaff($request->user('sanctum')), 'event_purchase.update');
+            }
+
+            $addOns = $addOnLines === null ? null : array_map(fn ($line) => [
+                'add_on_id' => $line['id'],
+                'quantity' => $line['quantity'],
+                'price_at_purchase' => $line['price'] ?? 0,
+            ], $addOnLines);
             unset($validated['add_ons']);
 
             $originalDate = optional($eventPurchase->purchase_date)->format('Y-m-d');
@@ -679,6 +757,8 @@ class EventPurchaseController extends Controller
             ]);
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json(['message' => 'Validation failed', 'errors' => $e->errors()], 422);
+        } catch (\RuntimeException $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
         } catch (\Exception $e) {
             return response()->json(['message' => 'Failed to update event purchase', 'error' => $e->getMessage()], 500);
         }
@@ -846,6 +926,15 @@ class EventPurchaseController extends Controller
         }
 
         $originalStatus = $eventPurchase->status;
+
+        if ($originalStatus === 'cancelled' && $validated['status'] !== 'cancelled') {
+            try {
+                app(\App\Services\SlotCapacityGuard::class)->assertEventPurchaseFits($eventPurchase, 'event_purchase.updateStatus');
+            } catch (\RuntimeException $e) {
+                return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+            }
+        }
+
         $eventPurchase->update($updates);
 
         if ($validated['status'] === 'cancelled') {
@@ -1121,6 +1210,15 @@ class EventPurchaseController extends Controller
     public function restore(int $id): JsonResponse
     {
         $purchase = EventPurchase::onlyTrashed()->findOrFail($id);
+
+        if ($purchase->status !== 'cancelled') {
+            try {
+                app(\App\Services\SlotCapacityGuard::class)->assertEventPurchaseFits($purchase, 'event_purchase.restore');
+            } catch (\RuntimeException $e) {
+                return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+            }
+        }
+
         $purchase->restore();
         $purchase->load(['event', 'customer', 'location:id,name', 'addOns']);
 
@@ -1154,8 +1252,19 @@ class EventPurchaseController extends Controller
 
         $purchases = EventPurchase::onlyTrashed()->whereIn('id', $validated['ids'])->get();
         $restoredCount = 0;
+        $blocked = [];
+        $guard = app(\App\Services\SlotCapacityGuard::class);
 
         foreach ($purchases as $purchase) {
+            if ($purchase->status !== 'cancelled') {
+                try {
+                    $guard->assertEventPurchaseFits($purchase, 'event_purchase.bulkRestore');
+                } catch (\RuntimeException $e) {
+                    $blocked[] = ['id' => $purchase->id, 'message' => $e->getMessage()];
+                    continue;
+                }
+            }
+
             $purchase->restore();
             $restoredCount++;
         }
@@ -1176,6 +1285,7 @@ class EventPurchaseController extends Controller
         return response()->json([
             'success' => true,
             'message' => "{$restoredCount} event purchase(s) restored successfully",
+            'blocked' => $blocked,
         ]);
     }
 }

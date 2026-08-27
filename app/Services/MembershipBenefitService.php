@@ -6,6 +6,7 @@ use App\Models\Customer;
 use App\Models\Membership;
 use App\Models\MembershipBenefitRedemption;
 use App\Models\MembershipPlanBenefit;
+use App\Models\User;
 use App\Support\DateRange;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Collection;
@@ -200,6 +201,12 @@ class MembershipBenefitService
         ?int $locationId = null,
         ?int $staffUserId = null
     ): void {
+        $sanitized = $this->sanitizeApplied($membership, $applied);
+
+        if ((string) config('checkout.membership_hardening', 'log') === 'enforce') {
+            $applied = $sanitized;
+        }
+
         if (empty($applied)) {
             return;
         }
@@ -220,6 +227,115 @@ class MembershipBenefitService
                 ]);
             }
         });
+    }
+
+    public function membershipForCheckout(mixed $membershipId, mixed $actor, ?int $customerId, ?int $locationId, string $context): ?Membership
+    {
+        if (empty($membershipId)) {
+            return null;
+        }
+
+        $membership = Membership::with('plan')->find($membershipId);
+        $enforce = (string) config('checkout.membership_hardening', 'log') === 'enforce';
+
+        $drop = function (string $reason) use ($membershipId, $actor, $customerId, $context, $membership, $enforce) {
+            Log::warning('checkout.membership.dropped', [
+                'context' => $context,
+                'membership_id' => $membershipId,
+                'reason' => $reason,
+                'actor_type' => $actor ? class_basename($actor) : 'guest',
+                'actor_id' => $actor?->getKey(),
+                'customer_id' => $customerId,
+                'enforced' => $enforce,
+            ]);
+
+            return $enforce ? null : $membership;
+        };
+
+        if (! $membership) {
+            return $drop('not_found');
+        }
+
+        if (! $membership->isUsable()) {
+            return $drop('not_usable:' . $membership->status);
+        }
+
+        if ($actor instanceof Customer && (int) $membership->customer_id !== (int) $actor->id) {
+            return $drop('not_owned_by_authenticated_customer');
+        }
+
+        if (! ($actor instanceof User) && ! ($actor instanceof Customer)
+            && ($customerId === null || (int) $membership->customer_id !== $customerId)) {
+            return $drop('guest_claim_without_matching_customer_id');
+        }
+
+        if ($actor instanceof User && $customerId !== null && (int) $membership->customer_id !== $customerId) {
+            Log::info('checkout.membership.staff_customer_mismatch', [
+                'context' => $context,
+                'membership_id' => $membership->id,
+                'membership_customer_id' => $membership->customer_id,
+                'customer_id' => $customerId,
+                'staff_user_id' => $actor->id,
+            ]);
+        }
+
+        if ($locationId && $membership->plan && ! app(MembershipService::class)->locationAllowed($membership, $locationId)) {
+            return $drop('location_not_allowed');
+        }
+
+        return $membership;
+    }
+
+    public function sanitizeApplied(Membership $membership, array $applied): array
+    {
+        if (! $membership->isUsable()) {
+            Log::warning('checkout.membership.applied_dropped', [
+                'membership_id' => $membership->id,
+                'reason' => 'not_usable:' . $membership->status,
+                'rows' => count($applied),
+            ]);
+
+            return [];
+        }
+
+        $benefits = $this->benefitsFor($membership)->keyBy('id');
+        $kept = [];
+        $used = [];
+
+        foreach ($applied as $row) {
+            $benefitId = (int) ($row['membership_plan_benefit_id'] ?? 0);
+            $benefit = $benefits->get($benefitId);
+
+            if (! $benefit || $benefit->requires_manual_redemption) {
+                Log::warning('checkout.membership.applied_dropped', [
+                    'membership_id' => $membership->id,
+                    'benefit_id' => $benefitId,
+                    'reason' => $benefit ? 'manual_redemption_only' : 'not_in_plan',
+                ]);
+                continue;
+            }
+
+            $used[$benefitId] = ($used[$benefitId] ?? 0) + 1;
+            $remaining = $this->remainingRedemptions($membership, $benefit);
+            if ($remaining !== null && $used[$benefitId] > $remaining) {
+                Log::warning('checkout.membership.applied_dropped', [
+                    'membership_id' => $membership->id,
+                    'benefit_id' => $benefitId,
+                    'reason' => 'cap_reached',
+                    'remaining' => $remaining,
+                ]);
+                continue;
+            }
+
+            $kept[] = [
+                'membership_plan_benefit_id' => $benefit->id,
+                'benefit_type' => $benefit->benefit_type,
+                'value_mode' => $benefit->value_mode,
+                'value_applied' => max(0, round((float) ($row['value_applied'] ?? 0), 2)),
+            ];
+        }
+
+        return $kept;
     }
 
     public function redeemPass(

@@ -3,20 +3,25 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Middleware\EnsureStaff;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Mail\StaffAccountCredentialsMail;
 use App\Models\ActivityLog;
 use App\Models\Location;
+use App\Models\ShareableToken;
 use App\Models\User;
 use App\Services\GmailApiService;
+use App\Support\DataUriImage;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class UserController extends Controller
 {
@@ -122,28 +127,71 @@ class UserController extends Controller
             'assigned_areas' => 'nullable|array',
             'hire_date' => 'nullable|date',
             'status' => ['sometimes', Rule::in(['active', 'inactive'])],
+            'registration_token' => 'nullable|string|max:64',
         ]);
+
+        $tokenValue = $validated['registration_token'] ?? null;
+        unset($validated['registration_token']);
+
+        $staff = $this->resolveStaffUser($request);
+
+        if ($staff) {
+            if ((bool) config('registration.require_token') && ($denied = $this->guardStaffCreate($staff, $validated))) {
+                return $denied;
+            }
+        } elseif ($tokenValue === null) {
+            if ($denied = $this->denyUninvitedRegistration($request)) {
+                return $denied;
+            }
+        }
+
+        try {
+            $validated['profile_path'] = $this->normalizeProfilePath($validated['profile_path'] ?? null);
+        } catch (\InvalidArgumentException $e) {
+            return $this->profilePathError($e);
+        }
 
         $validated['password'] = Hash::make($validated['password']);
 
-        $user = User::create($validated);
+        $invitationId = null;
+
+        $user = DB::transaction(function () use (&$validated, &$invitationId, $tokenValue, $staff) {
+            $invitation = null;
+
+            if (!$staff && $tokenValue !== null) {
+                $invitation = $this->resolveInvitation($tokenValue, $validated);
+                if ($invitation) {
+                    $validated = $this->applyInvitation($invitation, $validated);
+                    $invitationId = $invitation->id;
+                }
+            }
+
+            $user = User::create($validated);
+
+            if ($invitation) {
+                $invitation->forceFill(['used_at' => now()])->save();
+            }
+
+            return $user;
+        });
+
         $user->load(['company', 'location']);
 
-        $currentUser = auth()->user();
         ActivityLog::log(
             action: 'User Created',
             category: 'create',
             description: "New user {$user->first_name} {$user->last_name} ({$user->role}) created",
-            userId: auth()->id(),
+            userId: $staff?->id,
             locationId: $user->location_id,
             entityType: 'user',
             entityId: $user->id,
             metadata: [
                 'created_by' => [
-                    'user_id' => auth()->id(),
-                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
-                    'email' => $currentUser?->email,
+                    'user_id' => $staff?->id,
+                    'name' => $staff ? $staff->first_name . ' ' . $staff->last_name : null,
+                    'email' => $staff?->email,
                 ],
+                'invitation_token_id' => $invitationId,
                 'created_at' => now()->toIso8601String(),
                 'user_details' => [
                     'user_id' => $user->id,
@@ -161,6 +209,189 @@ class UserController extends Controller
             'message' => 'User created successfully',
             'data' => $user,
         ], 201);
+    }
+
+    private function resolveStaffUser(Request $request): ?User
+    {
+        $user = $request->user('sanctum');
+
+        return $user instanceof User && in_array((string) $user->role, EnsureStaff::ROLES, true) ? $user : null;
+    }
+
+    private function guardStaffCreate(User $staff, array &$validated): ?JsonResponse
+    {
+        if (!in_array($staff->role, ['company_admin', 'location_manager'], true)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Forbidden: only company admins or location managers may create staff accounts',
+            ], 403);
+        }
+
+        if ($staff->role === 'location_manager') {
+            if ($validated['role'] === 'company_admin') {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Forbidden: location managers may only create managers and attendants',
+                ], 403);
+            }
+            $validated['location_id'] = $staff->location_id;
+        }
+
+        if ($staff->company_id) {
+            $validated['company_id'] = $staff->company_id;
+        }
+
+        if (!empty($validated['location_id'])) {
+            $location = Location::find($validated['location_id']);
+            if (!$location || ($staff->company_id && (int) $location->company_id !== (int) $staff->company_id)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Forbidden: location does not belong to your company',
+                ], 403);
+            }
+        }
+
+        return null;
+    }
+
+    private function denyUninvitedRegistration(Request $request): ?JsonResponse
+    {
+        $enforce = (bool) config('registration.require_token');
+
+        Log::warning('Public user registration without invitation token', [
+            'email' => $request->input('email'),
+            'role' => $request->input('role'),
+            'company_id' => $request->input('company_id'),
+            'location_id' => $request->input('location_id'),
+            'ip' => $request->ip(),
+            'enforced' => $enforce,
+        ]);
+
+        if (!$enforce) {
+            return null;
+        }
+
+        return response()->json([
+            'success' => false,
+            'message' => 'A registration invitation is required. Please use the link from your invitation email.',
+            'errors' => ['registration_token' => ['A registration invitation is required.']],
+        ], 422);
+    }
+
+    private function resolveInvitation(string $tokenValue, array $validated): ?ShareableToken
+    {
+        $enforce = (bool) config('registration.require_token');
+        $token = ShareableToken::where('token', $tokenValue)->lockForUpdate()->first();
+
+        $problem = match (true) {
+            !$token => 'Invalid registration link.',
+            $token->isUsed() => 'This registration link has already been used.',
+            !$token->is_active => 'This registration link is no longer active.',
+            $token->isExpired() => 'This registration link has expired.',
+            $token->email && strcasecmp($token->email, $validated['email']) !== 0 => 'The email address must match the invitation.',
+            default => null,
+        };
+
+        if ($problem === null) {
+            return $token;
+        }
+
+        Log::warning('Public user registration with unusable invitation token', [
+            'email' => $validated['email'],
+            'token_id' => $token?->id,
+            'problem' => $problem,
+            'enforced' => $enforce,
+        ]);
+
+        if ($enforce) {
+            throw ValidationException::withMessages(['registration_token' => [$problem]]);
+        }
+
+        return null;
+    }
+
+    private function applyInvitation(ShareableToken $token, array $validated): array
+    {
+        $enforce = (bool) config('registration.require_token');
+
+        $forced = [
+            'role' => $token->role,
+            'company_id' => $token->company_id ?? ($validated['company_id'] ?? null),
+            'location_id' => $token->location_id ?? ($validated['location_id'] ?? null),
+        ];
+
+        $overridden = array_keys(array_filter($forced, fn ($value, $key) => ($validated[$key] ?? null) != $value, ARRAY_FILTER_USE_BOTH));
+        if ($overridden !== []) {
+            Log::warning('Invitation overrides submitted registration fields', [
+                'token_id' => $token->id,
+                'fields' => $overridden,
+                'submitted' => array_intersect_key($validated, $forced),
+                'forced' => $forced,
+            ]);
+        }
+
+        if (!empty($forced['location_id']) && !empty($forced['company_id'])) {
+            $location = Location::find($forced['location_id']);
+            if (!$location || (int) $location->company_id !== (int) $forced['company_id']) {
+                Log::warning('Invitation location does not belong to invited company', [
+                    'token_id' => $token->id,
+                    'location_id' => $forced['location_id'],
+                    'company_id' => $forced['company_id'],
+                    'enforced' => $enforce,
+                ]);
+                if ($enforce) {
+                    throw ValidationException::withMessages(['location_id' => ['The selected location does not belong to the invited company.']]);
+                }
+            }
+        }
+
+        $validated = array_merge($validated, $forced);
+        $validated['status'] = config('registration.self_registered_status', 'active');
+
+        return $validated;
+    }
+
+    private function normalizeProfilePath(?string $value): ?string
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        if (DataUriImage::isDataUri($value)) {
+            return DataUriImage::store($value, 'images/profiles');
+        }
+
+        if (strlen($value) > 255) {
+            throw new \InvalidArgumentException('Profile picture must be a base64 image data URI or a stored file path');
+        }
+
+        return $value;
+    }
+
+    private function profilePathError(\InvalidArgumentException $e): JsonResponse
+    {
+        return response()->json([
+            'success' => false,
+            'message' => $e->getMessage(),
+            'errors' => ['profile_path' => [$e->getMessage()]],
+        ], 422);
+    }
+
+    private function deleteStoredProfileImage(?string $path): void
+    {
+        if (!is_string($path) || $path === '' || DataUriImage::isDataUri($path)) {
+            return;
+        }
+
+        $relative = Str::startsWith($path, '/storage/') ? substr($path, strlen('/storage/')) : $path;
+
+        if (!Str::startsWith($relative, ['profiles/', 'images/profiles/'])) {
+            return;
+        }
+
+        if (Storage::disk('public')->exists($relative)) {
+            Storage::disk('public')->delete($relative);
+        }
     }
 
     public function show(User $user): JsonResponse
@@ -196,6 +427,17 @@ class UserController extends Controller
 
         if (isset($validated['password'])) {
             $validated['password'] = Hash::make($validated['password']);
+        }
+
+        if (array_key_exists('profile_path', $validated)) {
+            try {
+                $validated['profile_path'] = $this->normalizeProfilePath($validated['profile_path']);
+            } catch (\InvalidArgumentException $e) {
+                return $this->profilePathError($e);
+            }
+            if ($validated['profile_path'] !== $user->profile_path) {
+                $this->deleteStoredProfileImage($user->profile_path);
+            }
         }
 
         $user->update($validated);
@@ -237,24 +479,18 @@ class UserController extends Controller
     public function updateProfilePath(Request $request, User $user): JsonResponse
     {
         $validated = $request->validate([
-            'profile_path' => 'required|string|max:27262976', // 20MB in base64 is ~27MB
+            'profile_path' => 'required|string|max:27262976',
         ]);
 
-        if ($user->profile_path && Str::startsWith($user->profile_path, '/storage/profiles/')) {
-            $oldImagePath = str_replace('/storage/', '', $user->profile_path);
-            if (Storage::disk('public')->exists($oldImagePath)) {
-                Storage::disk('public')->delete($oldImagePath);
-            }
+        try {
+            $newPath = $this->normalizeProfilePath($validated['profile_path']);
+        } catch (\InvalidArgumentException $e) {
+            return $this->profilePathError($e);
         }
 
-        if (Str::startsWith($validated['profile_path'], 'data:image/')) {
-            $imageData = $validated['profile_path'];
-            $imageName = 'profiles/' . Str::uuid() . '.png';
-            Storage::disk('public')->put($imageName, base64_decode(preg_replace('#^data:image/\w+;base64,#i', '', $imageData)));
-            $validated['profile_path'] = '/storage/' . $imageName;
-        }
+        $this->deleteStoredProfileImage($user->profile_path);
 
-        $user->update(['profile_path' => $validated['profile_path']]);
+        $user->update(['profile_path' => $newPath]);
         $user->load(['company', 'location']);
 
         return response()->json([

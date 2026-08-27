@@ -72,6 +72,13 @@ class ShareableToken extends Model
         return $query->active()->unused()->notExpired();
     }
 
+    public function scopeNotExpired($query)
+    {
+        $ttl = (int) config('registration.token_ttl_days', 0);
+
+        return $ttl > 0 ? $query->where('created_at', '>=', now()->subDays($ttl)) : $query;
+    }
+
     public function scopeByRole($query, string $role)
     {
         return $query->where('role', $role);
@@ -82,10 +89,18 @@ class ShareableToken extends Model
         return $query->where('email', $email);
     }
 
+    public function isExpired(): bool
+    {
+        $ttl = (int) config('registration.token_ttl_days', 0);
+
+        return $ttl > 0 && $this->created_at !== null && $this->created_at->lt(now()->subDays($ttl));
+    }
+
     public function isValid(): bool
     {
         return $this->is_active
-            && is_null($this->used_at);
+            && is_null($this->used_at)
+            && !$this->isExpired();
     }
 
 

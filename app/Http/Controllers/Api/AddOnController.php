@@ -6,9 +6,11 @@ use App\Http\Controllers\Controller;
 use App\Models\ActivityLog;
 use App\Models\AddOn;
 use App\Models\User;
+use App\Support\DataUriImage;
 use App\Http\Traits\ScopesByAuthUser;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
+use App\Support\CatalogRules;
 use Illuminate\Support\Facades\Log;
 
 class AddOnController extends Controller
@@ -104,8 +106,21 @@ class AddOnController extends Controller
             'max_quantity' => 'sometimes|nullable|integer|min:1|gte:min_quantity',
         ]);
 
+        if ($denied = $this->rejectQuantityConflicts($validated, null)) {
+            return $denied;
+        }
+
         if (isset($validated['image']) && !empty($validated['image'])) {
-            $validated['image'] = $this->handleImageUpload($validated['image']);
+            try {
+                $validated['image'] = $this->handleImageUpload($validated['image']);
+            } catch (\Throwable $e) {
+                Log::error('Add-on image upload failed', ['error' => $e->getMessage()]);
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Image upload failed: ' . $e->getMessage(),
+                ], 422);
+            }
         } else {
             $validated['image'] = null;
         }
@@ -152,18 +167,33 @@ class AddOnController extends Controller
             'max_quantity' => 'sometimes|nullable|integer|min:1|gte:min_quantity',
         ]);
 
+        if ($denied = $this->rejectQuantityConflicts($validated, $addOn)) {
+            return $denied;
+        }
+
         Log::info('Update request received', [
             'addon_id' => $addOn->id,
             'addon_name' => $addOn->name,
-            'validated_data' => $validated,
+            'validated_data' => array_diff_key($validated, ['image' => true]),
             'has_image' => isset($validated['image'])
         ]);
 
         if (isset($validated['image']) && !empty($validated['image'])) {
-            if ($addOn->image && file_exists(storage_path('app/public/' . $addOn->image))) {
+            try {
+                $newImage = $this->handleImageUpload($validated['image']);
+            } catch (\Throwable $e) {
+                Log::error('Add-on image upload failed', ['addon_id' => $addOn->id, 'error' => $e->getMessage()]);
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Image upload failed: ' . $e->getMessage(),
+                ], 422);
+            }
+
+            if ($addOn->image && $addOn->image !== $newImage && file_exists(storage_path('app/public/' . $addOn->image))) {
                 unlink(storage_path('app/public/' . $addOn->image));
             }
-            $validated['image'] = $this->handleImageUpload($validated['image']);
+            $validated['image'] = $newImage;
             Log::info('Image processed', ['new_path' => $validated['image']]);
         }
 
@@ -299,35 +329,14 @@ class AddOnController extends Controller
 
     private function handleImageUpload($image): string
     {
-        if (is_string($image) && strpos($image, 'data:image') === 0) {
-            preg_match('/data:image\/(\w+);base64,/', $image, $matches);
-            $imageType = $matches[1] ?? 'png';
-            $imageData = substr($image, strpos($image, ',') + 1);
-            $imageData = base64_decode($imageData);
-
-            $filename = uniqid() . '.' . $imageType;
-            $path = 'images/addons';
-            $fullPath = storage_path('app/public/' . $path);
-
-            Log::info('AddOn image upload attempt', [
-                'filename' => $filename,
-                'path' => $path,
-                'fullPath' => $fullPath,
-                'imageType' => $imageType
-            ]);
-
-            if (!file_exists($fullPath)) {
-                mkdir($fullPath, 0755, true);
-                Log::info('Created directory', ['path' => $fullPath]);
-            }
-
-            file_put_contents($fullPath . '/' . $filename, $imageData);
-            Log::info('Image saved successfully', ['file' => $fullPath . '/' . $filename]);
-
-            return $path . '/' . $filename;
+        if (DataUriImage::isDataUri($image)) {
+            return DataUriImage::store($image, 'images/addons');
         }
 
-        Log::info('Image path returned as-is', ['image' => $image]);
+        if (!is_string($image) || strlen($image) > (int) config('media.max_path_length', 2048)) {
+            throw new \InvalidArgumentException('Image must be a base64 image data URI or a stored file path');
+        }
+
         return $image;
     }
 
@@ -440,15 +449,9 @@ class AddOnController extends Controller
                     $mappedData['price_each_packages'] = null;
                 }
 
-                if (isset($addOnData['image']) && !empty($addOnData['image'])) {
-                    if (is_string($addOnData['image']) && strpos($addOnData['image'], 'data:image') === 0) {
-                        $mappedData['image'] = $this->handleImageUpload($addOnData['image']);
-                    } else {
-                        $mappedData['image'] = $addOnData['image'];
-                    }
-                } else {
-                    $mappedData['image'] = null;
-                }
+                $mappedData['image'] = isset($addOnData['image']) && !empty($addOnData['image'])
+                    ? $this->handleImageUpload($addOnData['image'])
+                    : null;
 
                 if ($mappedData['max_quantity'] !== null && $mappedData['max_quantity'] < $mappedData['min_quantity']) {
                     throw new \Exception('Max quantity must be greater than or equal to min quantity');
@@ -521,5 +524,34 @@ class AddOnController extends Controller
         }
 
         return response()->json($response);
+    }
+
+    private function rejectQuantityConflicts(array $validated, ?AddOn $addOn): ?JsonResponse
+    {
+        $min = array_key_exists('min_quantity', $validated) ? $validated['min_quantity'] : ($addOn?->min_quantity ?? 1);
+        $max = array_key_exists('max_quantity', $validated) ? $validated['max_quantity'] : $addOn?->max_quantity;
+        $context = ['add_on_id' => $addOn?->id, 'user_id' => auth()->id()];
+
+        if ($max === null) {
+            return null;
+        }
+
+        if ($min !== null && (int) $min > (int) $max) {
+            if ($denied = CatalogRules::reject('add_ons', 'max_quantity', 'Maximum quantity cannot be lower than minimum quantity.', $context)) {
+                return $denied;
+            }
+        }
+
+        foreach ((array) ($validated['price_each_packages'] ?? []) as $index => $row) {
+            $rowMin = is_array($row) ? ($row['minimum_quantity'] ?? null) : null;
+
+            if ($rowMin !== null && (int) $rowMin > (int) $max) {
+                if ($denied = CatalogRules::reject('add_ons', "price_each_packages.{$index}.minimum_quantity", "Package minimum quantity ({$rowMin}) exceeds the add-on maximum ({$max}); that package could never add this item.", $context + ['index' => $index])) {
+                    return $denied;
+                }
+            }
+        }
+
+        return null;
     }
 }

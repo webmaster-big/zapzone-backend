@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Models\Event;
+use App\Support\DataUriImage;
 use App\Support\LocationSlug;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -49,7 +50,7 @@ class EventController extends Controller
                 'start_date' => 'required|date',
                 'end_date' => 'nullable|date|after_or_equal:start_date|required_if:date_type,date_range',
                 'time_start' => 'nullable|required_with:time_end|date_format:H:i',
-                'time_end' => 'nullable|required_with:time_start|date_format:H:i',
+                'time_end' => 'nullable|required_with:time_start|date_format:H:i|different:time_start',
                 'interval_minutes' => 'nullable|required_with:time_start|integer|min:5',
                 'max_bookings_per_slot' => 'nullable|integer|min:1',
                 'max_tickets_per_slot' => 'nullable|integer|min:1|max:10000',
@@ -61,14 +62,33 @@ class EventController extends Controller
                 'add_on_ids' => 'nullable|array',
                 'add_on_ids.*' => 'integer|exists:add_ons,id',
                 'is_active' => 'boolean',
+            ], [
+                'time_end.different' => 'Start and end time cannot be the same. For an event that runs past midnight, enter the next-day end time instead.',
             ]);
+
+            $window = \App\Support\CatalogRules::windowMinutes($validated['time_start'] ?? null, $validated['time_end'] ?? null);
+            $interval = (int) ($validated['interval_minutes'] ?? 0);
+
+            if ($window !== null && $interval > $window) {
+                $denied = \App\Support\CatalogRules::reject('events', 'interval_minutes', "Interval ({$interval} min) is longer than the event's time window ({$window} min), so no start times could be generated.", ['location_id' => $validated['location_id'], 'user_id' => auth()->id()]);
+
+                if ($denied) {
+                    return $denied;
+                }
+            }
 
             if ($validated['date_type'] === 'one_time') {
                 $validated['end_date'] = null;
             }
 
             if (isset($validated['image']) && !empty($validated['image'])) {
-                $validated['image'] = $this->handleImageUpload($validated['image']);
+                try {
+                    $validated['image'] = $this->handleImageUpload($validated['image']);
+                } catch (\InvalidArgumentException|\RuntimeException $e) {
+                    Log::error('Event image upload failed', ['error' => $e->getMessage()]);
+
+                    return response()->json(['message' => 'Image upload failed: ' . $e->getMessage()], 422);
+                }
             }
 
             $addOnIds = $validated['add_on_ids'] ?? [];
@@ -105,7 +125,7 @@ class EventController extends Controller
                 'start_date' => 'sometimes|date',
                 'end_date' => 'nullable|date|after_or_equal:start_date',
                 'time_start' => 'sometimes|nullable|date_format:H:i',
-                'time_end' => 'sometimes|nullable|date_format:H:i',
+                'time_end' => 'sometimes|nullable|date_format:H:i|different:time_start',
                 'interval_minutes' => 'sometimes|nullable|integer|min:5',
                 'max_bookings_per_slot' => 'nullable|integer|min:1',
                 'max_tickets_per_slot' => 'nullable|integer|min:1|max:10000',
@@ -117,7 +137,22 @@ class EventController extends Controller
                 'add_on_ids' => 'nullable|array',
                 'add_on_ids.*' => 'integer|exists:add_ons,id',
                 'is_active' => 'boolean',
+            ], [
+                'time_end.different' => 'Start and end time cannot be the same. For an event that runs past midnight, enter the next-day end time instead.',
             ]);
+
+            $timeStart = array_key_exists('time_start', $validated) ? $validated['time_start'] : $event->time_start;
+            $timeEnd = array_key_exists('time_end', $validated) ? $validated['time_end'] : $event->time_end;
+            $interval = (int) (array_key_exists('interval_minutes', $validated) ? $validated['interval_minutes'] : $event->interval_minutes);
+            $window = \App\Support\CatalogRules::windowMinutes($timeStart ? substr((string) $timeStart, 0, 5) : null, $timeEnd ? substr((string) $timeEnd, 0, 5) : null);
+
+            if ($window !== null && $interval > $window) {
+                $denied = \App\Support\CatalogRules::reject('events', 'interval_minutes', "Interval ({$interval} min) is longer than the event's time window ({$window} min), so no start times could be generated.", ['event_id' => $event->id, 'user_id' => auth()->id()]);
+
+                if ($denied) {
+                    return $denied;
+                }
+            }
 
             $dateType = $validated['date_type'] ?? $event->date_type;
             if ($dateType === 'one_time') {
@@ -125,13 +160,21 @@ class EventController extends Controller
             }
 
             if (isset($validated['image']) && !empty($validated['image'])) {
-                if ($event->image) {
+                try {
+                    $newImage = $this->handleImageUpload($validated['image']);
+                } catch (\InvalidArgumentException|\RuntimeException $e) {
+                    Log::error('Event image upload failed', ['event_id' => $event->id, 'error' => $e->getMessage()]);
+
+                    return response()->json(['message' => 'Image upload failed: ' . $e->getMessage()], 422);
+                }
+
+                if ($event->image && $event->image !== $newImage) {
                     $oldImagePath = storage_path('app/public/' . $event->image);
                     if (file_exists($oldImagePath)) {
                         unlink($oldImagePath);
                     }
                 }
-                $validated['image'] = $this->handleImageUpload($validated['image']);
+                $validated['image'] = $newImage;
             }
 
             $addOnIds = $validated['add_on_ids'] ?? null;
@@ -296,39 +339,12 @@ class EventController extends Controller
 
     private function handleImageUpload(string $image): string
     {
-        if (strpos($image, 'data:image') === 0) {
-            preg_match('/data:image\/(\w+);base64,/', $image, $matches);
+        if (DataUriImage::isDataUri($image)) {
+            return DataUriImage::store($image, 'images/events');
+        }
 
-            if (empty($matches)) {
-                Log::error('Invalid base64 image format for event');
-                throw new \Exception('Invalid image format');
-            }
-
-            $imageType = $matches[1] ?? 'png';
-            $base64Data = substr($image, strpos($image, ',') + 1);
-            $imageData = base64_decode($base64Data, true);
-
-            if ($imageData === false) {
-                Log::error('Failed to decode base64 event image data');
-                throw new \Exception('Failed to decode image data');
-            }
-
-            $filename = uniqid() . '.' . $imageType;
-            $path = 'images/events';
-            $fullPath = storage_path('app/public/' . $path);
-
-            if (!file_exists($fullPath)) {
-                mkdir($fullPath, 0755, true);
-            }
-
-            $bytesWritten = file_put_contents($fullPath . '/' . $filename, $imageData);
-
-            if ($bytesWritten === false) {
-                Log::error('Failed to write event image file');
-                throw new \Exception('Failed to save image file');
-            }
-
-            return $path . '/' . $filename;
+        if (strlen($image) > (int) config('media.max_path_length', 2048)) {
+            throw new \InvalidArgumentException('Image must be a base64 image data URI or a stored file path');
         }
 
         return $image;

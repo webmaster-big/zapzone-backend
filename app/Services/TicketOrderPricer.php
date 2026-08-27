@@ -9,6 +9,7 @@ use App\Models\Event;
 use App\Models\FeeSupport;
 use App\Models\SpecialPricing;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Log;
 use RuntimeException;
 
 class TicketOrderPricer
@@ -72,19 +73,46 @@ class TicketOrderPricer
 
             $model = ($lock ? $query->lockForUpdate() : $query)->first();
 
-            if (!$model || $model->max_tickets_per_slot === null) {
+            if (!$model) {
                 continue;
             }
 
-            $remaining = $model->remainingTicketsForSlot($date, $time);
+            if ($model->max_tickets_per_slot !== null) {
+                $remaining = $model->remainingTicketsForSlot($date, $time);
 
-            if ($wanted > $remaining) {
-                $name = $model->name;
-                throw new RuntimeException(
-                    $remaining === 0
-                        ? "The {$time} time for {$name} just sold out. Please pick another time."
-                        : "Only {$remaining} ticket" . ($remaining === 1 ? '' : 's') . " left for {$name} at {$time}. Pick fewer tickets or another time."
-                );
+                if ($wanted > $remaining) {
+                    $name = $model->name;
+                    throw new RuntimeException(
+                        $remaining === 0
+                            ? "The {$time} time for {$name} just sold out. Please pick another time."
+                            : "Only {$remaining} ticket" . ($remaining === 1 ? '' : 's') . " left for {$name} at {$time}. Pick fewer tickets or another time."
+                    );
+                }
+            }
+
+            if ($type === self::TYPE_EVENT && $model->max_bookings_per_slot !== null) {
+                $existing = (int) $model->eventPurchases()
+                    ->where('purchase_date', $date)
+                    ->whereNotIn('status', ['cancelled'])
+                    ->whereRaw("TIME_FORMAT(purchase_time, '%H:%i') = ?", [$time])
+                    ->count();
+                $wantedLines = $group->count();
+
+                if ($existing + $wantedLines > (int) $model->max_bookings_per_slot) {
+                    $message = "The {$time} time for {$model->name} has no booking slots left. Please pick another time.";
+
+                    if ((string) config('booking_rules.capacity', 'log') === 'enforce') {
+                        throw new RuntimeException($message);
+                    }
+
+                    Log::warning('Ticket order bookings-per-slot (log-only)', [
+                        'event_id' => (int) $id,
+                        'date' => $date,
+                        'time' => $time,
+                        'existing' => $existing,
+                        'wanted_lines' => $wantedLines,
+                    ]);
+                }
             }
         }
     }
@@ -278,6 +306,7 @@ class TicketOrderPricer
     {
         $lines = [];
         $total = 0.0;
+        $wanted = [];
 
         foreach ($requested as $addOnInput) {
             $quantity = (int) ($addOnInput['quantity'] ?? 0);
@@ -286,7 +315,12 @@ class TicketOrderPricer
                 continue;
             }
 
-            $addOn = AddOn::find($addOnInput['id'] ?? null);
+            $key = (int) ($addOnInput['id'] ?? 0);
+            $wanted[$key] = ($wanted[$key] ?? 0) + $quantity;
+        }
+
+        foreach ($wanted as $addOnId => $quantity) {
+            $addOn = AddOn::find($addOnId ?: null);
 
             if (!$addOn) {
                 throw new RuntimeException('An add-on in the cart no longer exists.');

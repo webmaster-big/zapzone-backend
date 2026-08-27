@@ -9,6 +9,8 @@ use App\Models\AttractionAddOn;
 use App\Models\SpecialPricing;
 use App\Models\User;
 use App\Http\Traits\ScopesByAuthUser;
+use App\Support\CatalogRules;
+use App\Support\DataUriImage;
 use App\Support\LocationSlug;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
@@ -216,6 +218,10 @@ class AttractionController extends Controller
             'display_order' => 'nullable|integer|min:0',
         ]);
 
+        if ($denied = $this->rejectSameClockAvailability($validated['availability'] ?? null, ['user_id' => auth()->id()])) {
+            return $denied;
+        }
+
         $validated['pricing_type'] = $validated['pricing_type'] ?? 'per_person';
 
         $uploadedImages = [];
@@ -235,14 +241,21 @@ class AttractionController extends Controller
         } elseif (isset($validated['image'])) {
             $images = is_array($validated['image']) ? $validated['image'] : [$validated['image']];
 
-            foreach ($images as $image) {
-                if (!empty($image)) {
-                    if (is_string($image) && strpos($image, 'data:image') === 0) {
-                        $uploadedImages[] = $this->handleBase64Upload($image);
-                    } else {
-                        $uploadedImages[] = $this->handleImageUpload($image);
+            try {
+                foreach ($images as $image) {
+                    if (!empty($image)) {
+                        $uploadedImages[] = DataUriImage::isDataUri($image)
+                            ? $this->handleBase64Upload($image)
+                            : $this->handleImageUpload($image);
                     }
                 }
+            } catch (\Throwable $e) {
+                Log::error('Attraction image upload failed', ['error' => $e->getMessage()]);
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Image upload failed: ' . $e->getMessage(),
+                ], 422);
             }
         }
 
@@ -311,9 +324,14 @@ class AttractionController extends Controller
             'display_order' => 'nullable|integer|min:0',
         ]);
 
+        if ($denied = $this->rejectSameClockAvailability($validated['availability'] ?? null, ['attraction_id' => $attraction->id, 'user_id' => auth()->id()])) {
+            return $denied;
+        }
+
         $validated['pricing_type'] = $validated['pricing_type'] ?? 'per_person';
 
         if ($request->hasFile('image') || isset($validated['image'])) {
+
             if ($attraction->image && is_array($attraction->image)) {
                 foreach ($attraction->image as $oldImage) {
                     $imagePath = public_path($oldImage);
@@ -340,14 +358,21 @@ class AttractionController extends Controller
             } elseif (isset($validated['image'])) {
                 $images = is_array($validated['image']) ? $validated['image'] : [$validated['image']];
 
-                foreach ($images as $image) {
-                    if (!empty($image)) {
-                        if (is_string($image) && strpos($image, 'data:image') === 0) {
-                            $uploadedImages[] = $this->handleBase64Upload($image);
-                        } else {
-                            $uploadedImages[] = $this->handleImageUpload($image);
+                try {
+                    foreach ($images as $image) {
+                        if (!empty($image)) {
+                            $uploadedImages[] = DataUriImage::isDataUri($image)
+                                ? $this->handleBase64Upload($image)
+                                : $this->handleImageUpload($image);
                         }
                     }
+                } catch (\Throwable $e) {
+                    Log::error('Attraction image upload failed', ['attraction_id' => $attraction->id, 'error' => $e->getMessage()]);
+
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Image upload failed: ' . $e->getMessage(),
+                    ], 422);
                 }
             }
 
@@ -558,6 +583,8 @@ class AttractionController extends Controller
                 'attractions.*.duration_unit' => 'nullable|string',
                 'attractions.*.durationUnit' => 'nullable|string',
                 'attractions.*.availability' => 'nullable|array',
+                'attractions.*.max_tickets_per_slot' => 'nullable|integer|min:1|max:10000',
+                'attractions.*.maxTicketsPerSlot' => 'nullable|integer|min:1|max:10000',
                 'attractions.*.image' => 'nullable', // Can be string or array
                 'attractions.*.images' => 'nullable|array', // Export format uses 'images'
                 'attractions.*.rating' => 'nullable|numeric|between:0,5',
@@ -565,6 +592,13 @@ class AttractionController extends Controller
                 'attractions.*.minAge' => 'nullable|integer|min:0',
                 'attractions.*.is_active' => 'nullable|boolean',
                 'attractions.*.status' => 'nullable|string', // Export format uses 'status'
+            ], [
+                'attractions.*.max_tickets_per_slot.integer' => 'Max tickets per time slot must be a whole number',
+                'attractions.*.max_tickets_per_slot.min' => 'Max tickets per time slot must be at least 1',
+                'attractions.*.max_tickets_per_slot.max' => 'Max tickets per time slot must not exceed 10000',
+                'attractions.*.maxTicketsPerSlot.integer' => 'Max tickets per time slot must be a whole number',
+                'attractions.*.maxTicketsPerSlot.min' => 'Max tickets per time slot must be at least 1',
+                'attractions.*.maxTicketsPerSlot.max' => 'Max tickets per time slot must not exceed 10000',
             ]);
 
             $importedAttractions = [];
@@ -582,6 +616,7 @@ class AttractionController extends Controller
                         'max_capacity' => $attractionData['max_capacity'] ?? $attractionData['maxCapacity'] ?? 1,
                         'duration' => $attractionData['duration'] ?? null,
                         'duration_unit' => $attractionData['duration_unit'] ?? $attractionData['durationUnit'] ?? null,
+                        'max_tickets_per_slot' => $attractionData['max_tickets_per_slot'] ?? $attractionData['maxTicketsPerSlot'] ?? null,
                         'availability' => $attractionData['availability'] ?? null,
                         'rating' => $attractionData['rating'] ?? null,
                         'min_age' => $attractionData['min_age'] ?? $attractionData['minAge'] ?? null,
@@ -603,26 +638,35 @@ class AttractionController extends Controller
                             $uploadedImages = [];
                             foreach ($imageData as $image) {
                                 if (!empty($image)) {
-                                    if (is_string($image) && strpos($image, 'data:image') === 0) {
-                                        $uploadedImages[] = $this->handleBase64Upload($image);
-                                    } else {
-                                        $uploadedImages[] = $image;
-                                    }
+                                    $uploadedImages[] = DataUriImage::isDataUri($image)
+                                        ? $this->handleBase64Upload($image)
+                                        : $this->handleImageUpload($image);
                                 }
                             }
                             $mappedData['image'] = !empty($uploadedImages) ? $uploadedImages : [];
                         } elseif (is_string($imageData) && !empty($imageData)) {
-                            if (strpos($imageData, 'data:image') === 0) {
-                                $uploadedImage = $this->handleBase64Upload($imageData);
-                            } else {
-                                $uploadedImage = $imageData;
-                            }
+                            $uploadedImage = DataUriImage::isDataUri($imageData)
+                                ? $this->handleBase64Upload($imageData)
+                                : $this->handleImageUpload($imageData);
                             $mappedData['image'] = [$uploadedImage];
                         } else {
                             $mappedData['image'] = [];
                         }
                     } else {
                         $mappedData['image'] = [];
+                    }
+
+                    $sameClockIndex = $this->sameClockAvailabilityIndex($mappedData['availability']);
+
+                    if ($sameClockIndex !== null) {
+                        $message = 'Schedule ' . ($sameClockIndex + 1) . ': start and end time cannot be the same.';
+
+                        if (CatalogRules::enforces('attractions')) {
+                            $errors[] = ['index' => $index, 'name' => $attractionData['name'], 'error' => $message];
+                            continue;
+                        }
+
+                        Log::warning('catalog rule violated (log-only)', ['group' => 'attractions', 'field' => "attractions.{$index}.availability.{$sameClockIndex}.end_time", 'message' => $message, 'user_id' => auth()->id()]);
                     }
 
                     $attraction = Attraction::create($mappedData);
@@ -680,35 +724,16 @@ class AttractionController extends Controller
 
     private function handleBase64Upload($base64String): string
     {
-        if (is_string($base64String) && strpos($base64String, 'data:image') === 0) {
-            preg_match('/data:image\/(\w+);base64,/', $base64String, $matches);
-            $imageType = $matches[1] ?? 'png';
-            $imageData = substr($base64String, strpos($base64String, ',') + 1);
-            $imageData = base64_decode($imageData);
-
-            $filename = uniqid() . '.' . $imageType;
-            $path = 'images/attractions';
-            $fullPath = storage_path('app/public/' . $path);
-
-            if (!file_exists($fullPath)) {
-                mkdir($fullPath, 0755, true);
-            }
-
-            file_put_contents($fullPath . '/' . $filename, $imageData);
-
-            return $path . '/' . $filename;
-        }
-
-        return $base64String;
+        return DataUriImage::store((string) $base64String, 'images/attractions');
     }
 
     private function handleImageUpload($image): string
     {
-        if (is_string($image)) {
-            $image = trim($image, '"');
+        if (!is_string($image) || DataUriImage::isDataUri($image) || strlen($image) > (int) config('media.max_path_length', 2048)) {
+            throw new \InvalidArgumentException('Image must be a base64 image data URI or a stored file path');
         }
 
-        return 'images/attractions/' . basename($image);
+        return 'images/attractions/' . basename(trim($image, '"'));
     }
 
     public function bulkDelete(Request $request): JsonResponse
@@ -810,5 +835,31 @@ class AttractionController extends Controller
                 'remaining_by_slot' => $remaining,
             ],
         ]);
+    }
+
+    private function sameClockAvailabilityIndex($availability): ?int
+    {
+        if (!is_array($availability)) {
+            return null;
+        }
+
+        foreach (array_values($availability) as $index => $block) {
+            if (is_array($block) && CatalogRules::sameClock($block['start_time'] ?? null, $block['end_time'] ?? null)) {
+                return $index;
+            }
+        }
+
+        return null;
+    }
+
+    private function rejectSameClockAvailability($availability, array $context = []): ?JsonResponse
+    {
+        $index = $this->sameClockAvailabilityIndex($availability);
+
+        if ($index === null) {
+            return null;
+        }
+
+        return CatalogRules::reject('attractions', "availability.{$index}.end_time", 'Schedule ' . ($index + 1) . ': start and end time cannot be the same.', $context);
     }
 }

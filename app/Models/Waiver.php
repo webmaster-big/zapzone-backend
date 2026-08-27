@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\ExcludesHeavyColumns;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -12,7 +13,9 @@ use Illuminate\Support\Str;
 
 class Waiver extends Model
 {
-    use HasFactory, SoftDeletes;
+    use ExcludesHeavyColumns, HasFactory, SoftDeletes;
+
+    public const HEAVY_COLUMNS = ['signature_image'];
 
     protected $fillable = [
         'company_id',

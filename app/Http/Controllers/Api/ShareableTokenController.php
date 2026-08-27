@@ -23,13 +23,68 @@ class ShareableTokenController extends Controller
                 'location_id' => 'nullable|exists:locations,id',
             ]);
 
-            $user = $request->user();
+            $enforce = (bool) config('registration.require_staff_to_invite');
+            $user = $request->user('sanctum');
+            $staff = $user instanceof \App\Models\User && in_array((string) $user->role, \App\Http\Middleware\EnsureStaff::ROLES, true) ? $user : null;
 
-            $validated['created_by'] = $user ? $user->id : null;
+            if (!$staff) {
+                Log::warning('Shareable token requested without a staff session', [
+                    'email' => $validated['email'],
+                    'role' => $validated['role'],
+                    'company_id' => $validated['company_id'] ?? null,
+                    'ip' => $request->ip(),
+                    'enforced' => $enforce,
+                ]);
+
+                if ($enforce) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Please sign in as staff to send invitations.',
+                    ], 403);
+                }
+            } else {
+                $roleProblem = match (true) {
+                    $staff->role === 'attendant' => 'Attendants cannot send invitations.',
+                    $staff->role === 'location_manager' && $validated['role'] === 'company_admin' => 'Location managers cannot invite company admins.',
+                    default => null,
+                };
+
+                if ($roleProblem !== null) {
+                    Log::warning('Shareable token requested outside inviter role', [
+                        'inviter_id' => $staff->id,
+                        'inviter_role' => $staff->role,
+                        'role' => $validated['role'],
+                        'problem' => $roleProblem,
+                        'enforced' => $enforce,
+                    ]);
+                    if ($enforce) {
+                        return response()->json(['success' => false, 'message' => $roleProblem], 403);
+                    }
+                }
+
+                if ($staff->company_id) {
+                    $validated['company_id'] = $staff->company_id;
+                }
+
+                if ($staff->role === 'location_manager' && $staff->location_id
+                    && !empty($validated['location_id']) && (int) $validated['location_id'] !== (int) $staff->location_id) {
+                    Log::warning('Location manager invited outside own location', [
+                        'inviter_id' => $staff->id,
+                        'submitted_location_id' => $validated['location_id'],
+                        'own_location_id' => $staff->location_id,
+                        'enforced' => $enforce,
+                    ]);
+                    if ($enforce) {
+                        $validated['location_id'] = $staff->location_id;
+                    }
+                }
+            }
+
+            $validated['created_by'] = $staff?->id;
 
             if (empty($validated['company_id'])) {
-                if ($user && $user->company_id) {
-                    $validated['company_id'] = $user->company_id;
+                if ($staff && $staff->company_id) {
+                    $validated['company_id'] = $staff->company_id;
                 } else {
                     $firstCompany = \App\Models\Company::first();
                     if (!$firstCompany) {
@@ -39,6 +94,23 @@ class ShareableTokenController extends Controller
                         ], 422);
                     }
                     $validated['company_id'] = $firstCompany->id;
+                }
+            }
+
+            if (!empty($validated['location_id']) && !empty($validated['company_id'])) {
+                $location = \App\Models\Location::find($validated['location_id']);
+                if (!$location || (int) $location->company_id !== (int) $validated['company_id']) {
+                    Log::warning('Shareable token location does not belong to company', [
+                        'location_id' => $validated['location_id'],
+                        'company_id' => $validated['company_id'],
+                        'enforced' => $enforce,
+                    ]);
+                    if ($enforce) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => 'The selected location does not belong to your company.',
+                        ], 422);
+                    }
                 }
             }
 
@@ -169,6 +241,13 @@ class ShareableTokenController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Token inactive',
+            ], 400);
+        }
+
+        if ($token->isExpired()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Token expired',
             ], 400);
         }
 

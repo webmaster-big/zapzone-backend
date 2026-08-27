@@ -244,7 +244,7 @@ Route::delete('attraction-purchases/{id}/force-delete', [AttractionPurchaseContr
 Route::get('locations', [LocationController::class, 'index']);
 Route::get('storefront/locations', [LocationController::class, 'storefront']);
 
-Route::post('users', [UserController::class, 'store']);
+Route::post('users', [UserController::class, 'store'])->middleware('throttle:10,1');
 
 Route::apiResource('package-time-slots', PackageTimeSlotController::class); // include
 Route::get('package-time-slots/available-slots/{packageId}/{date}', [PackageTimeSlotController::class, 'getAvailableSlotsAuto']); // include
@@ -253,8 +253,8 @@ Route::get('stream/bookings', [StreamController::class, 'bookingNotifications'])
 Route::get('stream/attraction-purchases', [StreamController::class, 'attractionPurchaseNotifications']); 
 Route::get('stream/notifications', [StreamController::class, 'combinedNotifications']); 
 
-Route::post('shareable-tokens/check', [ShareableTokenController::class, 'check']); 
-Route::post('shareable-tokens', [ShareableTokenController::class, 'store']);
+Route::post('shareable-tokens/check', [ShareableTokenController::class, 'check'])->middleware('throttle:30,1');
+Route::post('shareable-tokens', [ShareableTokenController::class, 'store'])->middleware('throttle:20,1');
 
 Route::post('contacts/deactivate', [ContactController::class, 'deactivate']);
 

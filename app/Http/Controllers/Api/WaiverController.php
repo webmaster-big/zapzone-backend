@@ -95,7 +95,7 @@ class WaiverController extends Controller
     public function index(Request $request): JsonResponse
     {
         try {
-            $query = Waiver::with([
+            $query = Waiver::query()->withoutHeavyColumns()->with([
                 'template:id,title',
                 'location:id,name',
                 'minors:id,waiver_id,first_name,last_name,date_of_birth',
@@ -200,8 +200,7 @@ class WaiverController extends Controller
         return response()->json([
             'success' => true,
             'data' => [
-                'waiver' => $waiver,
-                // legal body with autofill values applied (read-only view)
+                'waiver' => $waiver->makeVisible('signature_image'),
                 'rendered_body' => $this->waivers->renderForWaiver($waiver),
             ],
         ]);
@@ -628,7 +627,7 @@ class WaiverController extends Controller
             return $guard;
         }
 
-        $query = Waiver::with([
+        $query = Waiver::query()->withoutHeavyColumns()->with([
                 'template:id,title',
                 'location:id,name',
                 'minors:id,waiver_id,first_name,last_name,date_of_birth,relationship',
@@ -749,7 +748,7 @@ class WaiverController extends Controller
                 return response()->json(['success' => false, 'message' => 'Missing id'], 422);
             }
 
-            $query = Waiver::with([
+            $query = Waiver::query()->withoutHeavyColumns()->with([
                 'template:id,title',
                 'location:id,name',
                 'minors:id,waiver_id,first_name,last_name,date_of_birth',

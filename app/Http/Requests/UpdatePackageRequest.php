@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests;
 
+use App\Support\CatalogRules;
 use Illuminate\Foundation\Http\FormRequest;
 use App\Models\Package;
 use Illuminate\Contracts\Validation\Validator;
@@ -59,11 +60,8 @@ class UpdatePackageRequest extends FormRequest
     public function withValidator(Validator $validator): void
     {
         $validator->after(function (Validator $validator) {
-            $package = null;
-            if (!$this->has('min_participants') || !$this->has('max_participants') || !$this->has('max_tickets_per_slot')) {
-                $routePackage = $this->route('package');
-                $package = $routePackage instanceof Package ? $routePackage : Package::find($routePackage);
-            }
+            $routePackage = $this->route('package');
+            $package = $routePackage instanceof Package ? $routePackage : Package::find($routePackage);
             $min = $this->has('min_participants') ? $this->input('min_participants') : $package?->min_participants;
             $max = $this->has('max_participants') ? $this->input('max_participants') : $package?->max_participants;
             $cap = $this->has('max_tickets_per_slot') ? $this->input('max_tickets_per_slot') : $package?->max_tickets_per_slot;
@@ -74,6 +72,19 @@ class UpdatePackageRequest extends FormRequest
 
             if ($min !== null && $cap !== null && (int) $cap < (int) $min) {
                 $validator->errors()->add('max_tickets_per_slot', 'Max tickets per time slot cannot be lower than minimum participants, or no time slot could ever be booked');
+            }
+
+            $windowDays = $this->has('booking_window_days') ? $this->input('booking_window_days') : $package?->booking_window_days;
+            $noticeHours = $this->has('min_booking_notice_hours') ? $this->input('min_booking_notice_hours') : $package?->min_booking_notice_hours;
+
+            if ($windowDays !== null && $noticeHours !== null && (int) $noticeHours >= (int) $windowDays * 24) {
+                CatalogRules::flag($validator, 'package_booking_window', 'min_booking_notice_hours', 'Advance booking time must be shorter than the booking window (' . (int) $windowDays . ' days = ' . ((int) $windowDays * 24) . ' hours), or no date could ever be booked.', ['package_id' => $package?->id, 'booking_window_days' => $windowDays, 'min_booking_notice_hours' => $noticeHours]);
+            }
+
+            $pricingType = $this->has('pricing_type') ? $this->input('pricing_type') : $package?->pricing_type;
+
+            if ($pricingType === 'per_person' && ($min === null || $max === null)) {
+                CatalogRules::flag($validator, 'package_pricing', 'max_participants', 'Per-person pricing needs both minimum and maximum participants.', ['package_id' => $package?->id]);
             }
         });
     }

@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Models\ActivityLog;
 use App\Models\Company;
+use App\Support\DataUriImage;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Log;
@@ -56,7 +57,16 @@ class CompanyController extends Controller
         ]);
 
         if (isset($validated['logo_path'])) {
-            $validated['logo_path'] = $this->handleImageUpload($validated['logo_path']);
+            try {
+                $validated['logo_path'] = $this->handleImageUpload($validated['logo_path']);
+            } catch (\Throwable $e) {
+                Log::error('Company logo upload failed', ['error' => $e->getMessage()]);
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Logo upload failed: ' . $e->getMessage(),
+                ], 422);
+            }
         }
 
         $company = Company::create($validated);
@@ -89,7 +99,7 @@ class CompanyController extends Controller
         }
         $validated = $request->validate([
             'company_name' => 'sometimes|string|max:255|unique:companies,company_name,' . $company->id,
-            'logo_path' => 'sometimes|nullable|max:27262976', // 20MB in base64 is ~27MB
+            'logo_path' => 'sometimes|nullable|string|max:27262976',
             'email' => 'sometimes|email|unique:companies,email,' . $company->id,
             'website' => 'sometimes|nullable|url|max:255',
             'phone' => 'sometimes|string|max:20',
@@ -110,11 +120,22 @@ class CompanyController extends Controller
         ]);
 
         if (isset($validated['logo_path'])) {
-            if ($company->logo_path && file_exists(storage_path('app/public/' . $company->logo_path))) {
+            try {
+                $newLogoPath = $this->handleImageUpload($validated['logo_path']);
+            } catch (\Throwable $e) {
+                Log::error('Company logo upload failed', ['company_id' => $company->id, 'error' => $e->getMessage()]);
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Logo upload failed: ' . $e->getMessage(),
+                ], 422);
+            }
+
+            if ($company->logo_path && $company->logo_path !== $newLogoPath && file_exists(storage_path('app/public/' . $company->logo_path))) {
                 unlink(storage_path('app/public/' . $company->logo_path));
             }
 
-            $validated['logo_path'] = $this->handleImageUpload($validated['logo_path']);
+            $validated['logo_path'] = $newLogoPath;
         }
 
         $company->update($validated);
@@ -192,11 +213,20 @@ class CompanyController extends Controller
             'logo_path' => 'required|string|max:27262976', // 20MB in base64 is ~27MB
         ]);
 
-        if ($company->logo_path && file_exists(storage_path('app/public/' . $company->logo_path))) {
-            unlink(storage_path('app/public/' . $company->logo_path));
+        try {
+            $newLogoPath = $this->handleImageUpload($validated['logo_path']);
+        } catch (\Throwable $e) {
+            Log::error('Company logo upload failed', ['company_id' => $company->id, 'error' => $e->getMessage()]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Logo upload failed: ' . $e->getMessage(),
+            ], 422);
         }
 
-        $newLogoPath = $this->handleImageUpload($validated['logo_path']);
+        if ($company->logo_path && $company->logo_path !== $newLogoPath && file_exists(storage_path('app/public/' . $company->logo_path))) {
+            unlink(storage_path('app/public/' . $company->logo_path));
+        }
 
         $company->update(['logo_path' => $newLogoPath]);
         $company->load(['locations', 'users']);
@@ -210,35 +240,14 @@ class CompanyController extends Controller
 
     private function handleImageUpload($image): string
     {
-        if (is_string($image) && strpos($image, 'data:image') === 0) {
-            preg_match('/data:image\/(\w+);base64,/', $image, $matches);
-            $imageType = $matches[1] ?? 'png';
-            $imageData = substr($image, strpos($image, ',') + 1);
-            $imageData = base64_decode($imageData);
-
-            $filename = uniqid() . '.' . $imageType;
-            $path = 'images/company-logos';
-            $fullPath = storage_path('app/public/' . $path);
-
-            Log::info('Company logo upload attempt', [
-                'filename' => $filename,
-                'path' => $path,
-                'fullPath' => $fullPath,
-                'imageType' => $imageType
-            ]);
-
-            if (!file_exists($fullPath)) {
-                mkdir($fullPath, 0755, true);
-                Log::info('Created directory', ['path' => $fullPath]);
-            }
-
-            file_put_contents($fullPath . '/' . $filename, $imageData);
-            Log::info('Company logo saved successfully', ['file' => $fullPath . '/' . $filename]);
-
-            return $path . '/' . $filename;
+        if (DataUriImage::isDataUri($image)) {
+            return DataUriImage::store($image, 'images/company-logos');
         }
 
-        Log::info('Company logo path returned as-is', ['image' => $image]);
+        if (!is_string($image) || strlen($image) > (int) config('media.max_path_length', 2048)) {
+            throw new \InvalidArgumentException('Logo must be a base64 image data URI or a stored file path');
+        }
+
         return $image;
     }
 }

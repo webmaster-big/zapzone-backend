@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\ExcludesHeavyColumns;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -11,7 +12,9 @@ use Illuminate\Support\Str;
 
 class TicketOrder extends Model
 {
-    use SoftDeletes;
+    use ExcludesHeavyColumns, SoftDeletes;
+
+    public const HEAVY_COLUMNS = ['qr_code'];
 
     public const STATUS_DRAFT = 'draft';
     public const STATUS_PENDING = 'pending';

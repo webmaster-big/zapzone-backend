@@ -163,6 +163,7 @@ class TicketOrderController extends Controller
     public function index(Request $request): JsonResponse
     {
         $query = TicketOrder::query()
+            ->withoutHeavyColumns()
             ->with(['location', 'customer', 'attractionPurchases.attraction', 'attractionPurchases.addOns', 'eventPurchases.event', 'eventPurchases.addOns']);
 
         $this->applyAuthScope($query, $request);

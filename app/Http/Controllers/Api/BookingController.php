@@ -26,6 +26,8 @@ use App\Models\PackageTimeSlot;
 use App\Models\User;
 use App\Models\Membership;
 use App\Services\MembershipBenefitService;
+use App\Services\Checkout\CheckoutPricer;
+use App\Services\Checkout\CheckoutTotalGuard;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
@@ -345,6 +347,26 @@ class BookingController extends Controller
         $customFieldAnswers = $validated['custom_fields'] ?? null;
         unset($validated['custom_fields']);
 
+        $rules = app(\App\Services\AddOnRuleService::class);
+        $isStaff = $rules->isStaff($request->user('sanctum'));
+        $addOnLines = $rules->normalize($validated['additional_addons'] ?? [], 'addon_id', 'price_at_booking');
+        $attractionLines = $rules->normalize($validated['additional_attractions'] ?? [], 'attraction_id', 'price_at_booking');
+
+        if (empty($validated['package_id'])) {
+            if ((string) config('booking_rules.package_required', 'log') === 'enforce') {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Please choose a package for this booking.',
+                ], 422);
+            }
+
+            Log::warning('Booking store without package_id (log-only)', [
+                'location_id' => $validated['location_id'] ?? null,
+                'staff' => $isStaff,
+                'guest_email' => $validated['guest_email'] ?? null,
+            ]);
+        }
+
         if (!empty($validated['package_id'])) {
             $bookedPackage = \App\Models\Package::find($validated['package_id']);
             if ($bookedPackage && (int) ($validated['location_id'] ?? 0) !== (int) $bookedPackage->location_id) {
@@ -422,6 +444,38 @@ class BookingController extends Controller
             }
         }
 
+        $checkoutActor = $request->user('sanctum');
+        $checkoutMembership = app(MembershipBenefitService::class)->membershipForCheckout(
+            $validated['membership_id'] ?? null,
+            $checkoutActor,
+            isset($validated['customer_id']) ? (int) $validated['customer_id'] : null,
+            (int) $validated['location_id'],
+            'booking'
+        );
+        if (! $checkoutMembership) {
+            unset($validated['membership_id'], $validated['membership_applied']);
+        }
+
+        if (!empty($validated['package_id']) && isset($bookedPackage) && $bookedPackage) {
+            $expectation = app(CheckoutPricer::class)->forBooking($validated, $bookedPackage, $checkoutMembership);
+            $rejection = app(CheckoutTotalGuard::class)->check($expectation, (float) $validated['total_amount'], $checkoutActor, [
+                'purchase_type' => 'booking',
+                'package_id' => $bookedPackage->id,
+                'location_id' => $validated['location_id'],
+                'customer_id' => $validated['customer_id'] ?? null,
+                'created_by' => $validated['created_by'] ?? null,
+                'manual_entry' => $request->boolean('is_manual_entry'),
+                'payment_method' => $validated['payment_method'] ?? null,
+                'amount_paid' => $validated['amount_paid'] ?? null,
+                'client_applied_fees' => $validated['applied_fees'] ?? null,
+                'client_applied_discounts' => $validated['applied_discounts'] ?? null,
+                'client_membership_applied' => $validated['membership_applied'] ?? null,
+            ]);
+            if ($rejection) {
+                return response()->json(['success' => false, 'code' => 'PRICE_MISMATCH', 'message' => $rejection], 422);
+            }
+        }
+
         do {
             $validated['reference_number'] = 'BK' . now()->format('Ymd') . strtoupper(Str::random(6));
         } while (Booking::where('reference_number', $validated['reference_number'])->exists());
@@ -441,7 +495,9 @@ class BookingController extends Controller
         }
 
         try {
-            $booking = DB::transaction(function () use (&$validated, $discountItems, $request, $discounts, $customFieldAnswers) {
+            $booking = DB::transaction(function () use (&$validated, $discountItems, $request, $discounts, $customFieldAnswers, $rules, $isStaff, $addOnLines, $attractionLines) {
+            $capPackage = null;
+
             if (!empty($validated['package_id'])) {
                 $capPackage = \App\Models\Package::where('id', $validated['package_id'])->lockForUpdate()->first();
 
@@ -463,6 +519,12 @@ class BookingController extends Controller
                     }
                 }
             }
+
+            if ($capPackage) {
+                $rules->assertForced($capPackage, $addOnLines, $isStaff, 'booking.store');
+            }
+
+            $rules->assertQuantities($addOnLines, $capPackage?->id, $isStaff, 'booking.store');
 
             $hasCode = !empty($validated['promo_id']) || !empty($validated['gift_card_id'])
                 || !empty($validated['promo_code']) || !empty($validated['gift_card_code']);
@@ -508,6 +570,24 @@ class BookingController extends Controller
 
             $created = Booking::create($validated);
 
+            foreach ($attractionLines as $line) {
+                BookingAttraction::create([
+                    'booking_id' => $created->id,
+                    'attraction_id' => $line['id'],
+                    'quantity' => $line['quantity'],
+                    'price_at_booking' => $line['price'] ?? 0,
+                ]);
+            }
+
+            foreach ($addOnLines as $line) {
+                BookingAddOn::create([
+                    'booking_id' => $created->id,
+                    'add_on_id' => $line['id'],
+                    'quantity' => $line['quantity'],
+                    'price_at_booking' => $line['price'] ?? 0,
+                ]);
+            }
+
             // Inside the transaction on purpose: an unticked required box must undo the
             // booking rather than leave one behind with a missing answer.
             if (!empty($validated['package_id'])) {
@@ -527,27 +607,6 @@ class BookingController extends Controller
             return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
         }
 
-        if (isset($validated['additional_attractions']) && is_array($validated['additional_attractions'])) {
-            foreach ($validated['additional_attractions'] as $attraction) {
-                BookingAttraction::create([
-                    'booking_id' => $booking->id,
-                    'attraction_id' => $attraction['attraction_id'],
-                    'quantity' => $attraction['quantity'] ?? 1,
-                    'price_at_booking' => $attraction['price_at_booking'] ?? 0,
-                ]);
-            }
-        }
-
-        if (isset($validated['additional_addons']) && is_array($validated['additional_addons'])) {
-            foreach ($validated['additional_addons'] as $addon) {
-                BookingAddOn::create([
-                    'booking_id' => $booking->id,
-                    'add_on_id' => $addon['addon_id'],
-                    'quantity' => $addon['quantity'] ?? 1,
-                    'price_at_booking' => $addon['price_at_booking'] ?? 0,
-                ]);
-            }
-        }
 
         // Create a pending waiver if a template covers this booking's package/attractions,
         // so the confirmation email/SMS can include the {{waiver_link}}. Non-fatal.
@@ -1125,30 +1184,17 @@ class BookingController extends Controller
                         'message' => "This experience takes at most {$capPackage->max_participants} {$label}s.",
                     ], 422);
                 }
-
-                $updateCap = $capPackage->effectiveTicketCap();
-
-                if ($updateCap !== null) {
-                    $slotDate = Carbon::parse($validated['booking_date'] ?? $booking->booking_date)->toDateString();
-                    $slotTime = substr((string) ($validated['booking_time'] ?? ($booking->booking_time?->format('H:i') ?? $booking->booking_time)), 0, 5);
-                    $takenByOthers = $capPackage->seatsHeldDuring(
-                        $capPackage->bookedWindowsForDate($slotDate),
-                        $slotTime,
-                        $booking->id
-                    );
-                    $remaining = max(0, $updateCap - $takenByOthers);
-
-                    if ($players > $remaining) {
-                        return response()->json([
-                            'success' => false,
-                            'message' => $remaining === 0
-                                ? 'That time slot is already full.'
-                                : "Only {$remaining} {$label}" . ($remaining === 1 ? '' : 's') . ' fit in that time slot.',
-                        ], 422);
-                    }
-                }
             }
         }
+
+        $rules = app(\App\Services\AddOnRuleService::class);
+        $isStaff = $rules->isStaff($request->user('sanctum'));
+        $addOnLines = isset($validated['additional_addons'])
+            ? $rules->normalize(is_array($validated['additional_addons']) ? $validated['additional_addons'] : [], 'addon_id', 'price_at_booking')
+            : null;
+        $attractionLines = isset($validated['additional_attractions'])
+            ? $rules->normalize(is_array($validated['additional_attractions']) ? $validated['additional_attractions'] : [], 'attraction_id', 'price_at_booking')
+            : null;
 
         $originalValues = $booking->only([
             'status', 'payment_status', 'total_amount', 'amount_paid', 'discount_amount',
@@ -1187,65 +1233,97 @@ class BookingController extends Controller
             $validated['payment_status'] = $validated['amount_paid'] >= $validated['total_amount'] ? 'paid' : 'partial';
         }
 
-        $booking->update($validated);
+        try {
+            DB::transaction(function () use (&$validated, $booking, $slotFieldsTouched, $targetPackageId, $targetStatus, $rules, $isStaff, $addOnLines, $attractionLines) {
+                if ($slotFieldsTouched && $targetPackageId && $targetStatus !== 'cancelled') {
+                    $capPackage = \App\Models\Package::where('id', $targetPackageId)->lockForUpdate()->first();
+                    $updateCap = $capPackage?->effectiveTicketCap();
 
-        if (isset($validated['additional_attractions'])) {
-            BookingAttraction::where('booking_id', $booking->id)->delete();
+                    if ($capPackage && $updateCap !== null) {
+                        $players = (int) ($validated['participants'] ?? $booking->participants);
+                        $label = strtolower($capPackage->participant_label ?: 'participant');
+                        $slotDate = Carbon::parse($validated['booking_date'] ?? $booking->booking_date)->toDateString();
+                        $slotTime = substr((string) ($validated['booking_time'] ?? ($booking->booking_time?->format('H:i') ?? $booking->booking_time)), 0, 5);
+                        $takenByOthers = $capPackage->seatsHeldDuring(
+                            $capPackage->bookedWindowsForDate($slotDate),
+                            $slotTime,
+                            $booking->id
+                        );
+                        $remaining = max(0, $updateCap - $takenByOthers);
 
-            if (is_array($validated['additional_attractions'])) {
-                foreach ($validated['additional_attractions'] as $attraction) {
-                    BookingAttraction::create([
-                        'booking_id' => $booking->id,
-                        'attraction_id' => $attraction['attraction_id'],
-                        'quantity' => $attraction['quantity'] ?? 1,
-                        'price_at_booking' => $attraction['price_at_booking'] ?? 0,
-                    ]);
+                        if ($players > $remaining) {
+                            throw new \RuntimeException(
+                                $remaining === 0
+                                    ? 'That time slot is already full.'
+                                    : "Only {$remaining} {$label}" . ($remaining === 1 ? '' : 's') . ' fit in that time slot.'
+                            );
+                        }
+                    }
                 }
-            }
-        }
 
-        if (isset($validated['additional_addons'])) {
-            BookingAddOn::where('booking_id', $booking->id)->delete();
-
-            if (is_array($validated['additional_addons'])) {
-                foreach ($validated['additional_addons'] as $addon) {
-                    BookingAddOn::create([
-                        'booking_id' => $booking->id,
-                        'add_on_id' => $addon['addon_id'],
-                        'quantity' => $addon['quantity'] ?? 1,
-                        'price_at_booking' => $addon['price_at_booking'] ?? 0,
-                    ]);
+                if ($addOnLines !== null) {
+                    $rules->assertQuantities($addOnLines, $targetPackageId ? (int) $targetPackageId : null, $isStaff, 'booking.update');
                 }
-            }
-        }
 
-        if (isset($validated['room_id']) || isset($validated['booking_date']) || isset($validated['booking_time']) || isset($validated['duration']) || isset($validated['duration_unit'])) {
-            $timeSlot = PackageTimeSlot::where('booking_id', $booking->id)->first();
+                $booking->update($validated);
 
-            if ($timeSlot) {
-                $timeSlot->update([
-                    'room_id' => $validated['room_id'] ?? $timeSlot->room_id,
-                    'booked_date' => $validated['booking_date'] ?? $timeSlot->booked_date,
-                    'time_slot_start' => $validated['booking_time'] ?? $timeSlot->time_slot_start,
-                    'duration' => $validated['duration'] ?? $timeSlot->duration,
-                    'duration_unit' => $validated['duration_unit'] ?? $timeSlot->duration_unit,
-                    'notes' => $validated['notes'] ?? $timeSlot->notes,
-                ]);
-            } elseif (isset($validated['room_id']) && $validated['room_id']) {
-                PackageTimeSlot::create([
-                    'package_id' => $validated['package_id'] ?? $booking->package_id,
-                    'booking_id' => $booking->id,
-                    'room_id' => $validated['room_id'],
-                    'customer_id' => $validated['customer_id'] ?? $booking->customer_id,
-                    'user_id' => $booking->created_by,
-                    'booked_date' => $validated['booking_date'] ?? $booking->booking_date,
-                    'time_slot_start' => $validated['booking_time'] ?? $booking->booking_time,
-                    'duration' => $validated['duration'] ?? $booking->duration,
-                    'duration_unit' => $validated['duration_unit'] ?? $booking->duration_unit,
-                    'status' => 'booked',
-                    'notes' => $validated['notes'] ?? null,
-                ]);
-            }
+                if ($attractionLines !== null) {
+                    BookingAttraction::where('booking_id', $booking->id)->delete();
+
+                    foreach ($attractionLines as $line) {
+                        BookingAttraction::create([
+                            'booking_id' => $booking->id,
+                            'attraction_id' => $line['id'],
+                            'quantity' => $line['quantity'],
+                            'price_at_booking' => $line['price'] ?? 0,
+                        ]);
+                    }
+                }
+
+                if ($addOnLines !== null) {
+                    BookingAddOn::where('booking_id', $booking->id)->delete();
+
+                    foreach ($addOnLines as $line) {
+                        BookingAddOn::create([
+                            'booking_id' => $booking->id,
+                            'add_on_id' => $line['id'],
+                            'quantity' => $line['quantity'],
+                            'price_at_booking' => $line['price'] ?? 0,
+                        ]);
+                    }
+                }
+
+                if (isset($validated['room_id']) || isset($validated['booking_date']) || isset($validated['booking_time']) || isset($validated['duration']) || isset($validated['duration_unit'])) {
+                    $timeSlot = PackageTimeSlot::where('booking_id', $booking->id)->first();
+
+                    if ($timeSlot) {
+                        $timeSlot->update([
+                            'room_id' => $validated['room_id'] ?? $timeSlot->room_id,
+                            'booked_date' => $validated['booking_date'] ?? $timeSlot->booked_date,
+                            'time_slot_start' => $validated['booking_time'] ?? $timeSlot->time_slot_start,
+                            'duration' => $validated['duration'] ?? $timeSlot->duration,
+                            'duration_unit' => $validated['duration_unit'] ?? $timeSlot->duration_unit,
+                            'notes' => $validated['notes'] ?? $timeSlot->notes,
+                        ]);
+                    } elseif (isset($validated['room_id']) && $validated['room_id']) {
+                        PackageTimeSlot::create([
+                            'package_id' => $validated['package_id'] ?? $booking->package_id,
+                            'booking_id' => $booking->id,
+                            'room_id' => $validated['room_id'],
+                            'customer_id' => $validated['customer_id'] ?? $booking->customer_id,
+                            'user_id' => $booking->created_by,
+                            'booked_date' => $validated['booking_date'] ?? $booking->booking_date,
+                            'time_slot_start' => $validated['booking_time'] ?? $booking->booking_time,
+                            'duration' => $validated['duration'] ?? $booking->duration,
+                            'duration_unit' => $validated['duration_unit'] ?? $booking->duration_unit,
+                            'status' => 'booked',
+                            'notes' => $validated['notes'] ?? null,
+                        ]);
+                    }
+                }
+            });
+        } catch (\RuntimeException $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
         }
 
         $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
@@ -1671,6 +1749,14 @@ class BookingController extends Controller
 
         $previousStatus = $booking->status;
         $notificationData = null;
+
+        if ($previousStatus === 'cancelled' && $validated['status'] !== 'cancelled') {
+            try {
+                app(\App\Services\SlotCapacityGuard::class)->assertBookingFits($booking, 'booking.updateStatus');
+            } catch (\RuntimeException $e) {
+                return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+            }
+        }
 
         switch ($validated['status']) {
             case 'checked-in':
@@ -2588,6 +2674,14 @@ class BookingController extends Controller
     {
         $booking = Booking::onlyTrashed()->findOrFail($id);
 
+        if ($booking->status !== 'cancelled') {
+            try {
+                app(\App\Services\SlotCapacityGuard::class)->assertBookingFits($booking, 'booking.restore');
+            } catch (\RuntimeException $e) {
+                return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+            }
+        }
+
         $booking->restore();
         $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
 
@@ -2687,8 +2781,19 @@ class BookingController extends Controller
 
         $bookings = Booking::onlyTrashed()->whereIn('id', $validated['ids'])->get();
         $restoredCount = 0;
+        $blocked = [];
+        $guard = app(\App\Services\SlotCapacityGuard::class);
 
         foreach ($bookings as $booking) {
+            if ($booking->status !== 'cancelled') {
+                try {
+                    $guard->assertBookingFits($booking, 'booking.bulkRestore');
+                } catch (\RuntimeException $e) {
+                    $blocked[] = ['id' => $booking->id, 'reference_number' => $booking->reference_number, 'message' => $e->getMessage()];
+                    continue;
+                }
+            }
+
             $booking->restore();
             $restoredCount++;
 
@@ -2727,7 +2832,7 @@ class BookingController extends Controller
         return response()->json([
             'success' => true,
             'message' => "{$restoredCount} bookings restored successfully",
-            'data' => ['restored_count' => $restoredCount],
+            'data' => ['restored_count' => $restoredCount, 'blocked' => $blocked],
         ]);
     }
 

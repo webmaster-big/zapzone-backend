@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests;
 
+use App\Support\CatalogRules;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Validation\Rule;
@@ -69,6 +70,17 @@ class StorePackageRequest extends FormRequest
 
             if ($min !== null && $cap !== null && (int) $cap < (int) $min) {
                 $validator->errors()->add('max_tickets_per_slot', 'Max tickets per time slot cannot be lower than minimum participants, or no time slot could ever be booked');
+            }
+
+            $windowDays = $this->input('booking_window_days');
+            $noticeHours = $this->input('min_booking_notice_hours');
+
+            if ($windowDays !== null && $noticeHours !== null && (int) $noticeHours >= (int) $windowDays * 24) {
+                CatalogRules::flag($validator, 'package_booking_window', 'min_booking_notice_hours', 'Advance booking time must be shorter than the booking window (' . (int) $windowDays . ' days = ' . ((int) $windowDays * 24) . ' hours), or no date could ever be booked.', ['booking_window_days' => $windowDays, 'min_booking_notice_hours' => $noticeHours]);
+            }
+
+            if ($this->input('pricing_type') === 'per_person' && ($min === null || $max === null)) {
+                CatalogRules::flag($validator, 'package_pricing', 'max_participants', 'Per-person pricing needs both minimum and maximum participants.', ['pricing_type' => 'per_person']);
             }
         });
     }

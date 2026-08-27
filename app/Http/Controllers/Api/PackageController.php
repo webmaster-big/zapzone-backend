@@ -1056,6 +1056,23 @@ class PackageController extends Controller
             'validated_data' => $validated,
         ]);
 
+        $context = ['package_id' => $package->id, 'user_id' => auth()->id()];
+
+        if (\App\Support\CatalogRules::sameClock($validated['time_slot_start'], $validated['time_slot_end'])) {
+            if ($denied = \App\Support\CatalogRules::reject('package_schedules', 'time_slot_end', 'Start and end time cannot be the same. Use 00:00 as the end time for a window that runs to midnight.', $context)) {
+                return $denied;
+            }
+        }
+
+        $window = \App\Support\CatalogRules::windowMinutes($validated['time_slot_start'], $validated['time_slot_end']);
+        $durationMinutes = $package->getDurationInMinutes();
+
+        if ($window !== null && $durationMinutes > 0 && $durationMinutes > $window) {
+            if ($denied = \App\Support\CatalogRules::reject('package_schedules', 'time_slot_end', "The {$window}-minute window is shorter than the {$durationMinutes}-minute package duration, so no time slot could ever be offered.", $context)) {
+                return $denied;
+            }
+        }
+
         $validated['package_id'] = $package->id;
         $schedule = \App\Models\PackageAvailabilitySchedule::create($validated);
 
@@ -1230,6 +1247,25 @@ class PackageController extends Controller
 
         $packageIds = $validated['package_ids'];
         $minBookingNoticeHours = $validated['min_booking_notice_hours'];
+
+        $tooShort = Package::whereIn('id', $packageIds)
+            ->whereNotNull('booking_window_days')
+            ->whereRaw('booking_window_days * 24 <= ?', [$minBookingNoticeHours])
+            ->pluck('name')
+            ->all();
+
+        if ($tooShort !== []) {
+            $denied = \App\Support\CatalogRules::reject(
+                'package_booking_window',
+                'min_booking_notice_hours',
+                'Advance booking time must be shorter than each package\'s booking window, or the package could never be booked. Too short for: ' . implode(', ', $tooShort) . '.',
+                ['package_ids' => $packageIds, 'min_booking_notice_hours' => $minBookingNoticeHours, 'user_id' => auth()->id()]
+            );
+
+            if ($denied) {
+                return $denied;
+            }
+        }
 
         $updatedCount = Package::whereIn('id', $packageIds)
             ->update(['min_booking_notice_hours' => $minBookingNoticeHours]);

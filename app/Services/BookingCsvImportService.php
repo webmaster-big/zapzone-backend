@@ -9,6 +9,7 @@ use App\Models\Package;
 use App\Models\Room;
 use App\Models\BookingAddOn;
 use App\Models\PackageTimeSlot;
+use App\Services\SlotCapacityGuard;
 use Carbon\Carbon;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Log;
@@ -294,6 +295,16 @@ class BookingCsvImportService
         $completedAt = $status === 'completed' ? now() : null;
         $cancelledAt = $status === 'cancelled' ? now() : null;
 
+        $participants = $csvPersonsInt ?? $package?->min_participants ?? 10;
+
+        if ($package) {
+            $this->assertParticipants($package, $participants);
+
+            if ($status !== 'cancelled') {
+                $this->assertCapacity($package, $bookingDate, $bookingTime, $participants);
+            }
+        }
+
         $booking = Booking::create([
             'reference_number' => $referenceNumber,
             'customer_id' => null,
@@ -304,7 +315,7 @@ class BookingCsvImportService
             'type' => 'package',
             'booking_date' => $bookingDate,
             'booking_time' => $bookingTime,
-            'participants' => $csvPersonsInt ?? $package?->min_participants ?? 10,
+            'participants' => $participants,
             'duration' => $duration ?: ($package?->duration ?? 120),
             'duration_unit' => $durationUnit,
             'total_amount' => $paymentInfo['total_amount'],
@@ -632,5 +643,50 @@ class BookingCsvImportService
             'Appointment date' => $row['Appointment date'] ?? $row['appointment_date'] ?? null,
             'Status' => $row['Status'] ?? $row['status'] ?? null,
         ];
+    }
+
+    protected function assertParticipants(Package $package, int $participants): void
+    {
+        $label = strtolower($package->participant_label ?: 'participant');
+        $problem = null;
+
+        if ($package->min_participants !== null && $participants < (int) $package->min_participants) {
+            $problem = "{$package->name} needs at least {$package->min_participants} {$label}s (row has {$participants})";
+        } elseif ($package->max_participants !== null && $participants > (int) $package->max_participants) {
+            $problem = "{$package->name} takes at most {$package->max_participants} {$label}s (row has {$participants})";
+        }
+
+        if ($problem === null) {
+            return;
+        }
+
+        if ((string) config('booking_rules.csv_participants', 'log') === 'enforce') {
+            throw new \RuntimeException($problem);
+        }
+
+        Log::warning('CSV import participants rule (log-only)', ['package_id' => $package->id, 'participants' => $participants, 'problem' => $problem]);
+    }
+
+    protected function assertCapacity(Package $package, string $bookingDate, string $bookingTime, int $participants): void
+    {
+        $guard = app(SlotCapacityGuard::class);
+
+        if ($guard->isPast($bookingDate)) {
+            return;
+        }
+
+        $remaining = $package->remainingTicketsForSlot($bookingDate, $bookingTime);
+
+        if ($remaining === null || $participants <= $remaining) {
+            return;
+        }
+
+        $problem = "{$package->name} has only {$remaining} seat(s) left at {$bookingTime} on {$bookingDate}";
+
+        if ((string) config('booking_rules.capacity', 'log') === 'enforce') {
+            throw new \RuntimeException($problem);
+        }
+
+        Log::warning('CSV import capacity rule (log-only)', ['package_id' => $package->id, 'date' => $bookingDate, 'time' => $bookingTime, 'participants' => $participants, 'remaining' => $remaining]);
     }
 }
