@@ -295,7 +295,7 @@ class BookingCsvImportService
         $completedAt = $status === 'completed' ? now() : null;
         $cancelledAt = $status === 'cancelled' ? now() : null;
 
-        $participants = $csvPersonsInt ?? ($package ? $package->effectiveMinParticipants($bookingDate) : 10);
+        $participants = $csvPersonsInt ?? ($package?->min_participants !== null ? $package->effectiveMinParticipants($bookingDate) : 10);
 
         if ($package) {
             $this->assertParticipants($package, $participants, $bookingDate);
@@ -651,7 +651,7 @@ class BookingCsvImportService
         $problem = null;
         $effectiveMin = $package->effectiveMinParticipants($date);
 
-        if ($effectiveMin > 1 && $participants < $effectiveMin) {
+        if ($participants < $effectiveMin) {
             $problem = "{$package->name} needs at least {$effectiveMin} {$label}s (row has {$participants})";
         } elseif ($package->max_participants !== null && $participants > (int) $package->max_participants) {
             $problem = "{$package->name} takes at most {$package->max_participants} {$label}s (row has {$participants})";

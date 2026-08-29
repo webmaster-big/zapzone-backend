@@ -134,14 +134,25 @@ class Package extends Model
         return $query->where('package_type', '!=', 'regular');
     }
 
+    private array $resolvedScheduleForDate = [];
+
     public function scheduleForDate(string $date): ?PackageAvailabilitySchedule
     {
-        return $this->availabilitySchedules()
-            ->active()
-            ->get()
-            ->filter(fn ($schedule) => $schedule->matchesDate($date))
-            ->sortByDesc('priority')
-            ->first();
+        if (!array_key_exists($date, $this->resolvedScheduleForDate)) {
+            $this->resolvedScheduleForDate[$date] = $this->availabilitySchedules()
+                ->active()
+                ->get()
+                ->filter(fn ($schedule) => $schedule->matchesDate($date))
+                ->sortByDesc('priority')
+                ->first();
+        }
+
+        return $this->resolvedScheduleForDate[$date];
+    }
+
+    public function forgetResolvedSchedules(): void
+    {
+        $this->resolvedScheduleForDate = [];
     }
 
     public function getTimeSlotsForDate(string $date): array
@@ -281,7 +292,7 @@ class Package extends Model
         return null;
     }
 
-    public function remainingTicketsForSlotGivenWindows(array $windows, string $date, string $time, ?int $excludeBookingId = null): ?int
+    public function remainingTicketsForSlotGivenWindows(array $windows, string $date, string $time, ?int $excludeBookingId = null, ?bool $exclusive = null): ?int
     {
         $cap = $this->effectiveTicketCap();
 
@@ -291,7 +302,7 @@ class Package extends Model
 
         $taken = $this->seatsHeldDuring($windows, $time, $excludeBookingId);
 
-        if ($taken > 0 && $this->isExclusiveOn($date)) {
+        if ($taken > 0 && ($exclusive ?? $this->isExclusiveOn($date))) {
             return 0;
         }
 

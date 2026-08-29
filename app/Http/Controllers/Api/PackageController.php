@@ -796,6 +796,23 @@ class PackageController extends Controller
                             continue;
                         }
 
+                        $scheduleMin = $scheduleData['min_participants'] ?? null;
+
+                        if ($scheduleMin !== null) {
+                            $ceiling = $package->max_participants !== null ? (int) $package->max_participants : null;
+                            $cap = $package->effectiveTicketCap();
+                            $limit = $ceiling !== null && $cap !== null ? min($ceiling, $cap) : ($ceiling ?? $cap);
+
+                            if ($limit !== null && (int) $scheduleMin > $limit) {
+                                $scheduleMin = null;
+                                Log::warning('Imported schedule minimum exceeds slot capacity and was ignored', [
+                                    'package_id' => $package->id,
+                                    'requested_min' => (int) ($scheduleData['min_participants'] ?? 0),
+                                    'limit' => $limit,
+                                ]);
+                            }
+                        }
+
                         \App\Models\PackageAvailabilitySchedule::create([
                             'package_id' => $package->id,
                             'availability_type' => $scheduleData['availability_type'],
@@ -803,7 +820,7 @@ class PackageController extends Controller
                             'time_slot_start' => $scheduleData['time_slot_start'],
                             'time_slot_end' => $scheduleData['time_slot_end'],
                             'time_slot_interval' => $scheduleData['time_slot_interval'],
-                            'min_participants' => $scheduleData['min_participants'] ?? null,
+                            'min_participants' => $scheduleMin,
                             'priority' => $scheduleData['priority'] ?? 0,
                             'is_active' => $scheduleData['is_active'] ?? true,
                         ]);

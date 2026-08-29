@@ -45,6 +45,8 @@ trait GeneratesAvailableTimeSlots
 
         $totalRooms = $package->rooms->count();
 
+        $package->forgetResolvedSchedules();
+
         $ticketCap = $package->effectiveTicketCap();
         $bookedWindows = $ticketCap !== null ? $package->bookedWindowsForDate($date) : [];
         $minForDate = $package->effectiveMinParticipants($date);
@@ -75,7 +77,7 @@ trait GeneratesAvailableTimeSlots
             $remainingTickets = null;
 
             if ($ticketCap !== null) {
-                $remainingTickets = $package->remainingTicketsForSlotGivenWindows($bookedWindows, $date, $currentTime->format('H:i'));
+                $remainingTickets = $package->remainingTicketsForSlotGivenWindows($bookedWindows, $date, $currentTime->format('H:i'), null, $exclusive);
 
                 if ($remainingTickets < $minForDate) {
                     continue;
