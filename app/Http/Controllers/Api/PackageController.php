@@ -705,6 +705,7 @@ class PackageController extends Controller
             'packages.*.availability_schedules.*.time_slot_start' => 'nullable|string',
             'packages.*.availability_schedules.*.time_slot_end' => 'nullable|string',
             'packages.*.availability_schedules.*.time_slot_interval' => 'nullable|integer|min:15',
+            'packages.*.availability_schedules.*.min_participants' => 'nullable|integer|min:1',
             'packages.*.availability_schedules.*.priority' => 'nullable|integer|min:0',
             'packages.*.availability_schedules.*.is_active' => 'nullable|boolean',
         ]);
@@ -1047,6 +1048,7 @@ class PackageController extends Controller
             'time_slot_start' => 'required|date_format:H:i',
             'time_slot_end' => 'required|date_format:H:i',
             'time_slot_interval' => 'required|integer|min:15|max:240',
+            'min_participants' => 'nullable|integer|min:1|max:10000',
             'priority' => 'nullable|integer|min:0',
             'is_active' => 'nullable|boolean',
         ]);

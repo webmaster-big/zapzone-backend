@@ -17,6 +17,7 @@ class PackageAvailabilitySchedule extends Model
         'time_slot_start',
         'time_slot_end',
         'time_slot_interval',
+        'min_participants',
         'priority',
         'is_active',
     ];
@@ -26,6 +27,7 @@ class PackageAvailabilitySchedule extends Model
         'time_slot_start' => 'string',
         'time_slot_end' => 'string',
         'time_slot_interval' => 'integer',
+        'min_participants' => 'integer',
         'priority' => 'integer',
         'is_active' => 'boolean',
     ];

@@ -134,25 +134,54 @@ class Package extends Model
         return $query->where('package_type', '!=', 'regular');
     }
 
+    private array $resolvedScheduleForDate = [];
+
+    public function scheduleForDate(string $date): ?PackageAvailabilitySchedule
+    {
+        if (!array_key_exists($date, $this->resolvedScheduleForDate)) {
+            $this->resolvedScheduleForDate[$date] = $this->availabilitySchedules()
+                ->active()
+                ->get()
+                ->filter(fn ($schedule) => $schedule->matchesDate($date))
+                ->sortByDesc('priority')
+                ->first();
+        }
+
+        return $this->resolvedScheduleForDate[$date];
+    }
+
     public function getTimeSlotsForDate(string $date): array
     {
-        $matchingSchedules = $this->availabilitySchedules()
-            ->active()
-            ->get()
-            ->filter(function ($schedule) use ($date) {
-                return $schedule->matchesDate($date);
-            })
-            ->sortByDesc('priority');
+        $schedule = $this->scheduleForDate($date);
 
-        if ($matchingSchedules->isNotEmpty()) {
-            $schedule = $matchingSchedules->first();
-
-            $durationMinutes = $this->getDurationInMinutes();
-
-            return $schedule->getTimeSlotsForDate($date, $durationMinutes);
+        if ($schedule) {
+            return $schedule->getTimeSlotsForDate($date, $this->getDurationInMinutes());
         }
 
         return [];
+    }
+
+    public function effectiveMinParticipants(?string $date = null): int
+    {
+        $override = $date !== null ? $this->scheduleForDate($date)?->min_participants : null;
+
+        return max(1, (int) ($override ?? $this->min_participants ?? 1));
+    }
+
+    public function usesRooms(): bool
+    {
+        return $this->relationLoaded('rooms') ? $this->rooms->isNotEmpty() : $this->rooms()->exists();
+    }
+
+    public function isExclusiveOn(string $date): bool
+    {
+        if ((string) config('booking_rules.exclusive_slots', 'enforce') !== 'enforce') {
+            return false;
+        }
+
+        return $this->effectiveTicketCap() !== null
+            && !$this->usesRooms()
+            && $this->effectiveMinParticipants($date) > 1;
     }
 
     public function getDurationInMinutes(): int
@@ -258,7 +287,7 @@ class Package extends Model
         return null;
     }
 
-    public function remainingTicketsForSlot(string $date, string $time, ?int $excludeBookingId = null): ?int
+    public function remainingTicketsForSlotGivenWindows(array $windows, string $date, string $time, ?int $excludeBookingId = null): ?int
     {
         $cap = $this->effectiveTicketCap();
 
@@ -266,8 +295,17 @@ class Package extends Model
             return null;
         }
 
-        $taken = $this->seatsHeldDuring($this->bookedWindowsForDate($date), $time, $excludeBookingId);
+        $taken = $this->seatsHeldDuring($windows, $time, $excludeBookingId);
+
+        if ($taken > 0 && $this->isExclusiveOn($date)) {
+            return 0;
+        }
 
         return max(0, $cap - $taken);
+    }
+
+    public function remainingTicketsForSlot(string $date, string $time, ?int $excludeBookingId = null): ?int
+    {
+        return $this->remainingTicketsForSlotGivenWindows($this->bookedWindowsForDate($date), $date, $time, $excludeBookingId);
     }
 }

@@ -46,6 +46,7 @@ class StorePackageAvailabilityScheduleRequest extends FormRequest
             'schedules.*.time_slot_start' => 'required|date_format:H:i',
             'schedules.*.time_slot_end' => 'required|date_format:H:i',
             'schedules.*.time_slot_interval' => 'required|integer|min:15|max:240',
+            'schedules.*.min_participants' => 'nullable|integer|min:1|max:10000',
             'schedules.*.priority' => 'nullable|integer|min:0',
             'schedules.*.is_active' => 'nullable|boolean',
         ];
@@ -83,6 +84,18 @@ class StorePackageAvailabilityScheduleRequest extends FormRequest
 
                 if ($window !== null && $durationMinutes > 0 && $durationMinutes > $window) {
                     CatalogRules::flag($validator, 'package_schedules', "schedules.{$index}.time_slot_end", "{$label}: the {$window}-minute window is shorter than the {$durationMinutes}-minute package duration, so no time slot could ever be offered.", $context + ['index' => $index, 'window' => $window, 'duration' => $durationMinutes]);
+                }
+
+                $minOverride = $schedule['min_participants'] ?? null;
+
+                if ($minOverride !== null && $package) {
+                    $ceiling = $package->max_participants !== null ? (int) $package->max_participants : null;
+                    $cap = $package->effectiveTicketCap();
+                    $limit = $ceiling !== null && $cap !== null ? min($ceiling, $cap) : ($ceiling ?? $cap);
+
+                    if ($limit !== null && (int) $minOverride > $limit) {
+                        CatalogRules::flag($validator, 'package_schedules', "schedules.{$index}.min_participants", "{$label}: a minimum of {$minOverride} exceeds the {$limit} this package can take in one slot, so no booking could ever be made on those days.", $context + ['index' => $index, 'min_override' => (int) $minOverride, 'limit' => $limit]);
+                    }
                 }
             }
 

@@ -429,10 +429,12 @@ class BookingController extends Controller
             $players = (int) $validated['participants'];
             $label = strtolower($bookedPackage->participant_label ?: 'participant');
 
-            if ($bookedPackage->min_participants !== null && $players < (int) $bookedPackage->min_participants) {
+            $minRequired = $bookedPackage->effectiveMinParticipants(Carbon::parse($validated['booking_date'])->toDateString());
+
+            if ($players < $minRequired) {
                 return response()->json([
                     'success' => false,
-                    'message' => "This experience needs at least {$bookedPackage->min_participants} {$label}s.",
+                    'message' => "This experience needs at least {$minRequired} {$label}s.",
                 ], 422);
             }
 
@@ -501,15 +503,12 @@ class BookingController extends Controller
             if (!empty($validated['package_id'])) {
                 $capPackage = \App\Models\Package::where('id', $validated['package_id'])->lockForUpdate()->first();
 
-                $storeCap = $capPackage?->effectiveTicketCap();
-
-                if ($capPackage && $storeCap !== null) {
+                if ($capPackage) {
                     $slotDate = Carbon::parse($validated['booking_date'])->toDateString();
                     $slotTime = substr($validated['booking_time'], 0, 5);
-                    $taken = $capPackage->seatsHeldDuring($capPackage->bookedWindowsForDate($slotDate), $slotTime);
-                    $remaining = max(0, $storeCap - $taken);
+                    $remaining = $capPackage->remainingTicketsForSlot($slotDate, $slotTime);
 
-                    if ((int) $validated['participants'] > $remaining) {
+                    if ($remaining !== null && (int) $validated['participants'] > $remaining) {
                         $label = strtolower($capPackage->participant_label ?: 'ticket');
                         throw new \RuntimeException(
                             $remaining === 0
@@ -1171,10 +1170,12 @@ class BookingController extends Controller
                 $players = (int) ($validated['participants'] ?? $booking->participants);
                 $label = strtolower($capPackage->participant_label ?: 'participant');
 
-                if ($capPackage->min_participants !== null && $players < (int) $capPackage->min_participants) {
+                $minRequired = $capPackage->effectiveMinParticipants(Carbon::parse($validated['booking_date'] ?? $booking->booking_date)->toDateString());
+
+                if ($players < $minRequired) {
                     return response()->json([
                         'success' => false,
-                        'message' => "This experience needs at least {$capPackage->min_participants} {$label}s.",
+                        'message' => "This experience needs at least {$minRequired} {$label}s.",
                     ], 422);
                 }
 
@@ -1237,21 +1238,15 @@ class BookingController extends Controller
             DB::transaction(function () use (&$validated, $booking, $slotFieldsTouched, $targetPackageId, $targetStatus, $rules, $isStaff, $addOnLines, $attractionLines) {
                 if ($slotFieldsTouched && $targetPackageId && $targetStatus !== 'cancelled') {
                     $capPackage = \App\Models\Package::where('id', $targetPackageId)->lockForUpdate()->first();
-                    $updateCap = $capPackage?->effectiveTicketCap();
 
-                    if ($capPackage && $updateCap !== null) {
+                    if ($capPackage) {
                         $players = (int) ($validated['participants'] ?? $booking->participants);
                         $label = strtolower($capPackage->participant_label ?: 'participant');
                         $slotDate = Carbon::parse($validated['booking_date'] ?? $booking->booking_date)->toDateString();
                         $slotTime = substr((string) ($validated['booking_time'] ?? ($booking->booking_time?->format('H:i') ?? $booking->booking_time)), 0, 5);
-                        $takenByOthers = $capPackage->seatsHeldDuring(
-                            $capPackage->bookedWindowsForDate($slotDate),
-                            $slotTime,
-                            $booking->id
-                        );
-                        $remaining = max(0, $updateCap - $takenByOthers);
+                        $remaining = $capPackage->remainingTicketsForSlot($slotDate, $slotTime, (int) $booking->id);
 
-                        if ($players > $remaining) {
+                        if ($remaining !== null && $players > $remaining) {
                             throw new \RuntimeException(
                                 $remaining === 0
                                     ? 'That time slot is already full.'
