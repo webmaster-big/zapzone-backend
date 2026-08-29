@@ -295,10 +295,10 @@ class BookingCsvImportService
         $completedAt = $status === 'completed' ? now() : null;
         $cancelledAt = $status === 'cancelled' ? now() : null;
 
-        $participants = $csvPersonsInt ?? $package?->min_participants ?? 10;
+        $participants = $csvPersonsInt ?? ($package ? $package->effectiveMinParticipants($bookingDate) : 10);
 
         if ($package) {
-            $this->assertParticipants($package, $participants);
+            $this->assertParticipants($package, $participants, $bookingDate);
 
             if ($status !== 'cancelled') {
                 $this->assertCapacity($package, $bookingDate, $bookingTime, $participants);
@@ -645,13 +645,14 @@ class BookingCsvImportService
         ];
     }
 
-    protected function assertParticipants(Package $package, int $participants): void
+    protected function assertParticipants(Package $package, int $participants, ?string $date = null): void
     {
         $label = strtolower($package->participant_label ?: 'participant');
         $problem = null;
+        $effectiveMin = $package->effectiveMinParticipants($date);
 
-        if ($package->min_participants !== null && $participants < (int) $package->min_participants) {
-            $problem = "{$package->name} needs at least {$package->min_participants} {$label}s (row has {$participants})";
+        if ($effectiveMin > 1 && $participants < $effectiveMin) {
+            $problem = "{$package->name} needs at least {$effectiveMin} {$label}s (row has {$participants})";
         } elseif ($package->max_participants !== null && $participants > (int) $package->max_participants) {
             $problem = "{$package->name} takes at most {$package->max_participants} {$label}s (row has {$participants})";
         }

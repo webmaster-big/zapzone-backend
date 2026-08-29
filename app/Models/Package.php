@@ -134,20 +134,14 @@ class Package extends Model
         return $query->where('package_type', '!=', 'regular');
     }
 
-    private array $resolvedScheduleForDate = [];
-
     public function scheduleForDate(string $date): ?PackageAvailabilitySchedule
     {
-        if (!array_key_exists($date, $this->resolvedScheduleForDate)) {
-            $this->resolvedScheduleForDate[$date] = $this->availabilitySchedules()
-                ->active()
-                ->get()
-                ->filter(fn ($schedule) => $schedule->matchesDate($date))
-                ->sortByDesc('priority')
-                ->first();
-        }
-
-        return $this->resolvedScheduleForDate[$date];
+        return $this->availabilitySchedules()
+            ->active()
+            ->get()
+            ->filter(fn ($schedule) => $schedule->matchesDate($date))
+            ->sortByDesc('priority')
+            ->first();
     }
 
     public function getTimeSlotsForDate(string $date): array

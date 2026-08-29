@@ -803,6 +803,7 @@ class PackageController extends Controller
                             'time_slot_start' => $scheduleData['time_slot_start'],
                             'time_slot_end' => $scheduleData['time_slot_end'],
                             'time_slot_interval' => $scheduleData['time_slot_interval'],
+                            'min_participants' => $scheduleData['min_participants'] ?? null,
                             'priority' => $scheduleData['priority'] ?? 0,
                             'is_active' => $scheduleData['is_active'] ?? true,
                         ]);
@@ -1052,6 +1053,18 @@ class PackageController extends Controller
             'priority' => 'nullable|integer|min:0',
             'is_active' => 'nullable|boolean',
         ]);
+
+        if (($validated['min_participants'] ?? null) !== null) {
+            $ceiling = $package->max_participants !== null ? (int) $package->max_participants : null;
+            $cap = $package->effectiveTicketCap();
+            $limit = $ceiling !== null && $cap !== null ? min($ceiling, $cap) : ($ceiling ?? $cap);
+
+            if ($limit !== null && (int) $validated['min_participants'] > $limit) {
+                if ($denied = \App\Support\CatalogRules::reject('package_schedules', 'min_participants', "A minimum of {$validated['min_participants']} exceeds the {$limit} this package can take in one slot, so no booking could ever be made on those days.", ['package_id' => $package->id])) {
+                    return $denied;
+                }
+            }
+        }
 
         Log::info('Validation passed for availability schedule', [
             'package_id' => $package->id,
