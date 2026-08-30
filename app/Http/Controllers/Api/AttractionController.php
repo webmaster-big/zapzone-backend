@@ -160,9 +160,14 @@ class AttractionController extends Controller
                 ];
             }
 
+            if (empty($groupedAttractions[$attractionName]['image']) && !empty($attractionImages[$attraction->id])) {
+                $groupedAttractions[$attractionName]['image'] = $attractionImages[$attraction->id];
+            }
+
             $locationSlug = $attraction->location->slug ?: LocationSlug::make($attraction->location->name);
 
             $groupedAttractions[$attractionName]['locations'][] = [
+                'image' => \App\Support\CatalogImage::forCatalog($attractionImages[$attraction->id] ?? null),
                 'location_id' => $attraction->location->id,
                 'location_name' => $attraction->location->name,
                 'location_slug' => $locationSlug,

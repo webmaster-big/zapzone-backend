@@ -299,9 +299,14 @@ class EventController extends Controller
                     ];
                 }
 
+                if (empty($groupedEvents[$eventName]['image']) && !empty($event->image)) {
+                    $groupedEvents[$eventName]['image'] = $event->image;
+                }
+
                 $locationSlug = $event->location->slug ?: LocationSlug::make($event->location->name);
 
                 $groupedEvents[$eventName]['locations'][] = [
+                    'image' => \App\Support\CatalogImage::forCatalog($event->image),
                     'location_id' => $event->location->id,
                     'location_name' => $event->location->name,
                     'location_slug' => $locationSlug,

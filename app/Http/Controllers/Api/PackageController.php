@@ -161,9 +161,14 @@ class PackageController extends Controller
                 ];
             }
 
+            if (empty($groupedPackages[$packageName]['image']) && !empty($packageImages[$package->id])) {
+                $groupedPackages[$packageName]['image'] = $packageImages[$package->id];
+            }
+
             $locationSlug = $package->location->slug ?: LocationSlug::make($package->location->name);
 
             $groupedPackages[$packageName]['locations'][] = [
+                'image' => \App\Support\CatalogImage::forCatalog($packageImages[$package->id] ?? null),
                 'location_id' => $package->location->id,
                 'location_name' => $package->location->name,
                 'location_slug' => $locationSlug,
