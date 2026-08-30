@@ -90,7 +90,7 @@ class BookingController extends Controller
                     'id', 'reference_number', 'customer_id', 'package_id', 'location_id', 'room_id',
                     'created_by', 'guest_name', 'guest_email', 'guest_phone', 'booking_date', 'booking_time',
                     'participants', 'duration', 'duration_unit', 'total_amount', 'amount_paid',
-                    'discount_amount', 'applied_fees', 'payment_method', 'payment_status', 'status', 'notes',
+                    'discount_amount', 'applied_fees', 'payment_method', 'payment_status', 'status', 'notes', 'internal_notes',
                     'guest_of_honor_name', 'guest_of_honor_age', 'created_at', 'updated_at'
                 ])
                 ->with([
