@@ -15,8 +15,6 @@ class MobileAvailabilityController extends Controller
 {
     use GeneratesAvailableTimeSlots;
 
-    private const CLEANUP_BUFFER_MINUTES = 15;
-
     public function getLocations(): JsonResponse
     {
         $locations = Location::active()

@@ -22,6 +22,64 @@ trait GeneratesAvailableTimeSlots
         return (int) round($duration);
     }
 
+    private function cleanupBufferMinutes(): int
+    {
+        return max(0, (int) config('booking_rules.room_cleanup_minutes', 15));
+    }
+
+    private function roomDrivenTimeSlots($package, string $date, int $slotDurationInMinutes): ?array
+    {
+        if ((string) config('booking_rules.room_driven_slots', 'on') !== 'on') {
+            return null;
+        }
+
+        if ($slotDurationInMinutes <= 0) {
+            return null;
+        }
+
+        $rooms = $package->rooms->where('is_available', true)->values();
+
+        if ($rooms->isEmpty()) {
+            return null;
+        }
+
+        $intervals = $rooms->map(fn ($room) => (int) ($room->booking_interval ?? 0))->filter(fn ($minutes) => $minutes > 0);
+
+        if ($intervals->isEmpty()) {
+            return null;
+        }
+
+        $schedule = $package->scheduleForDate($date);
+
+        if (!$schedule) {
+            return null;
+        }
+
+        $stagger = (int) $intervals->min();
+        $windowStart = Carbon::parse($date . ' ' . $schedule->time_slot_start);
+        $windowEnd = Carbon::parse($date . ' ' . $schedule->time_slot_end);
+
+        if ($windowEnd->lte($windowStart)) {
+            $windowEnd->addDay();
+        }
+
+        $cycle = max($slotDurationInMinutes + $this->cleanupBufferMinutes(), $rooms->count() * $stagger);
+        $times = [];
+
+        foreach ($rooms as $index => $room) {
+            $cursor = (clone $windowStart)->addMinutes($index * $stagger);
+
+            while ((clone $cursor)->addMinutes($slotDurationInMinutes)->lte($windowEnd)) {
+                $times[$cursor->format('H:i')] = true;
+                $cursor->addMinutes($cycle);
+            }
+        }
+
+        ksort($times);
+
+        return array_keys($times);
+    }
+
     private function generateAvailableSlotsWithRooms($package, $date)
     {
         $availableSlots = [];
@@ -29,6 +87,13 @@ trait GeneratesAvailableTimeSlots
         $locationId = $package->location_id;
 
         $timeSlots = $package->getTimeSlotsForDate($date);
+
+        $slotDurationForGrid = $this->getDurationInMinutes($package->duration, $package->duration_unit);
+        $roomDriven = $this->roomDrivenTimeSlots($package, $date, $slotDurationForGrid);
+
+        if ($roomDriven !== null) {
+            $timeSlots = $roomDriven;
+        }
 
         if (empty($timeSlots)) {
             Log::info('No time slots found for package', [
@@ -272,7 +337,7 @@ trait GeneratesAvailableTimeSlots
             $existingDurationInMinutes = $this->getDurationInMinutes($slot->duration, $slot->duration_unit);
             $existingEnd = (clone $existingStart)->addMinutes($existingDurationInMinutes);
 
-            $existingEndWithBuffer = (clone $existingEnd)->addMinutes(self::CLEANUP_BUFFER_MINUTES);
+            $existingEndWithBuffer = (clone $existingEnd)->addMinutes($this->cleanupBufferMinutes());
 
             if ($start->lt($existingEndWithBuffer) && $end->gt($existingStart)) {
                 return true;

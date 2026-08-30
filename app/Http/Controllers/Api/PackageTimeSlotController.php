@@ -17,8 +17,6 @@ class PackageTimeSlotController extends Controller
     use GeneratesAvailableTimeSlots;
     use ScopesByAuthUser;
 
-    private const CLEANUP_BUFFER_MINUTES = 15;
-
     public function index(Request $request): JsonResponse
     {
         $query = PackageTimeSlot::with(['package', 'room', 'booking', 'customer', 'user']);
