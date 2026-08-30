@@ -280,20 +280,48 @@ class AccountingAnalyticsController extends Controller
                 fputcsv($file, [strtoupper($category['name'])]);
                 fputcsv($file, ['Item', 'Sub-Category', 'Qty', 'Gross Sales', 'Discounts', 'Net Sales', 'Fees', 'Tax', 'Amount Due', 'Collected', 'Balance Due']);
 
+                $byLabel = [];
+
                 foreach ($category['items'] as $item) {
-                    fputcsv($file, [
-                        $item['name'],
-                        $item['sub_category'],
-                        $item['quantity_sold'],
-                        '$' . number_format($item['gross_sales'], 2),
-                        '$' . number_format($item['discount_amount'], 2),
-                        '$' . number_format($item['net_sales'], 2),
-                        '$' . number_format($item['fee_amount'], 2),
-                        '$' . number_format($item['tax_amount'], 2),
-                        '$' . number_format($item['total_billed'], 2),
-                        '$' . number_format($item['grand_total'], 2),
-                        '$' . number_format($item['balance_due'], 2),
-                    ]);
+                    $byLabel[$item['sub_category'] ?: 'Uncategorized'][] = $item;
+                }
+
+                ksort($byLabel);
+
+                foreach ($byLabel as $label => $labelItems) {
+                    foreach ($labelItems as $item) {
+                        fputcsv($file, [
+                            $item['name'],
+                            $item['sub_category'],
+                            $item['quantity_sold'],
+                            '$' . number_format($item['gross_sales'], 2),
+                            '$' . number_format($item['discount_amount'], 2),
+                            '$' . number_format($item['net_sales'], 2),
+                            '$' . number_format($item['fee_amount'], 2),
+                            '$' . number_format($item['tax_amount'], 2),
+                            '$' . number_format($item['total_billed'], 2),
+                            '$' . number_format($item['grand_total'], 2),
+                            '$' . number_format($item['balance_due'], 2),
+                        ]);
+                    }
+
+                    if (count($byLabel) > 1) {
+                        $sum = fn (string $key) => array_sum(array_column($labelItems, $key));
+
+                        fputcsv($file, [
+                            $label . ' TOTAL',
+                            '',
+                            $sum('quantity_sold'),
+                            '$' . number_format($sum('gross_sales'), 2),
+                            '$' . number_format($sum('discount_amount'), 2),
+                            '$' . number_format($sum('net_sales'), 2),
+                            '$' . number_format($sum('fee_amount'), 2),
+                            '$' . number_format($sum('tax_amount'), 2),
+                            '$' . number_format($sum('total_billed'), 2),
+                            '$' . number_format($sum('grand_total'), 2),
+                            '$' . number_format($sum('balance_due'), 2),
+                        ]);
+                    }
                 }
 
                 fputcsv($file, [
