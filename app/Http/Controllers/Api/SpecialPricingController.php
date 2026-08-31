@@ -461,7 +461,7 @@ class SpecialPricingController extends Controller
         ]);
 
         $locationId = $validated['location_id'] ?? null;
-        $days = $validated['days'] ?? 30;
+        $days = (int) ($validated['days'] ?? 30);
         $entityType = $validated['entity_type'] ?? null;
 
         $query = SpecialPricing::active()->withinDateRange();
