@@ -267,12 +267,12 @@ class AccountingReportService
         }
 
         if (!empty($filters['category_filter'])) {
-            $query->where('packages.category', $filters['category_filter']);
+            $query->whereRaw("COALESCE(NULLIF(packages.display_label, ''), packages.category) = ?", [$filters['category_filter']]);
         }
 
         $bookings = $query->select(
             'bookings.id',
-            'packages.category as sub_category',
+            DB::raw("COALESCE(NULLIF(packages.display_label, ''), packages.category) as sub_category"),
             'packages.name as package_name',
             'bookings.total_amount',
             'bookings.amount_paid',

@@ -95,7 +95,7 @@ class BookingController extends Controller
                 ])
                 ->with([
                     'customer:id,first_name,last_name,email,phone',
-                    'package:id,name,price,category',
+                    'package:id,name,price,category,display_label',
                     'location:id,name',
                     'room:id,name',
                     'creator:id,first_name,last_name,email',
@@ -198,7 +198,7 @@ class BookingController extends Controller
             ])
             ->with([
                 'customer:id,first_name,last_name,email,phone',
-                'package:id,name,price,category,duration,duration_unit',
+                'package:id,name,price,category,display_label,duration,duration_unit',
                 'location:id,name',
                 'room:id,name',
                 'creator:id,first_name,last_name',
@@ -883,7 +883,7 @@ class BookingController extends Controller
             ])
             ->with([
                 'customer:id,first_name,last_name,email,phone',
-                'package:id,name,price,category',
+                'package:id,name,price,category,display_label',
                 'location:id,name',
                 'room:id,name',
                 'creator:id,first_name,last_name,email',
