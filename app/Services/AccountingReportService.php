@@ -18,11 +18,11 @@ class AccountingReportService
 
     const TAX_KEYWORDS = ['tax', 'vat', 'gst', 'hst', 'pst', 'sales tax', 'state tax', 'local tax'];
 
-    public function buildReportData(int $locationId, Carbon $startDate, Carbon $endDate, string $viewMode, array $filters = []): array
+    public function buildReportData(array $locationIds, Carbon $startDate, Carbon $endDate, string $viewMode, array $filters = []): array
     {
-        $partiesData = $this->getPartiesData($locationId, $startDate, $endDate, $viewMode, $filters);
-        $attractionsData = $this->getAttractionsData($locationId, $startDate, $endDate, $viewMode, $filters);
-        $eventsData = $this->getEventsData($locationId, $startDate, $endDate, $viewMode, $filters);
+        $partiesData = $this->getPartiesData($locationIds, $startDate, $endDate, $viewMode, $filters);
+        $attractionsData = $this->getAttractionsData($locationIds, $startDate, $endDate, $viewMode, $filters);
+        $eventsData = $this->getEventsData($locationIds, $startDate, $endDate, $viewMode, $filters);
 
         $categories = [
             $partiesData,
@@ -31,13 +31,13 @@ class AccountingReportService
         ];
 
         if ($filters['include_addons_breakdown'] ?? true) {
-            $addOnsData = $this->getAddOnsData($locationId, $startDate, $endDate, $viewMode, $filters);
+            $addOnsData = $this->getAddOnsData($locationIds, $startDate, $endDate, $viewMode, $filters);
             $categories[] = $addOnsData;
         }
 
         $summaryCategories = array_filter($categories, fn($cat) => $cat['name'] !== self::CATEGORY_ADDONS);
         $summary = $this->calculateOverallSummary($summaryCategories);
-        $summary['discount_by_source'] = $this->getDiscountBySource($locationId, $startDate, $endDate, $viewMode, $filters);
+        $summary['discount_by_source'] = $this->getDiscountBySource($locationIds, $startDate, $endDate, $viewMode, $filters);
 
         return [
             'summary' => $summary,
@@ -46,12 +46,12 @@ class AccountingReportService
         ];
     }
 
-    private function getDiscountBySource(int $locationId, Carbon $startDate, Carbon $endDate, string $viewMode, array $filters = []): array
+    private function getDiscountBySource(array $locationIds, Carbon $startDate, Carbon $endDate, string $viewMode, array $filters = []): array
     {
         $totals = ['special_pricing' => 0.0, 'membership' => 0.0, 'promo' => 0.0, 'gift_card' => 0.0, 'other' => 0.0];
 
         $bookings = DB::table('bookings')
-            ->where('location_id', $locationId)
+            ->whereIn('location_id', $locationIds)
             ->whereNotIn('status', ['cancelled'])
             ->whereNull('deleted_at')
             ->when(
@@ -65,7 +65,7 @@ class AccountingReportService
 
         $attractionPurchases = DB::table('attraction_purchases')
             ->join('attractions', 'attraction_purchases.attraction_id', '=', 'attractions.id')
-            ->where('attractions.location_id', $locationId)
+            ->whereIn('attractions.location_id', $locationIds)
             ->whereNotIn('attraction_purchases.status', ['cancelled', 'refunded'])
             ->whereNull('attraction_purchases.deleted_at')
             ->when(
@@ -78,7 +78,7 @@ class AccountingReportService
         $this->accumulateDiscountSources($attractionPurchases, $totals);
 
         $eventPurchases = DB::table('event_purchases')
-            ->where('location_id', $locationId)
+            ->whereIn('location_id', $locationIds)
             ->whereNotIn('status', ['cancelled', 'refunded'])
             ->whereNull('deleted_at')
             ->when(
@@ -156,7 +156,7 @@ class AccountingReportService
             ->get();
 
         foreach ($locations as $location) {
-            $report = $this->buildReportData($location->id, $date, $date, 'booked_on');
+            $report = $this->buildReportData([$location->id], $date, $date, 'booked_on');
             $summary = $report['summary'];
 
             foreach ($summaryKeys as $key) {
@@ -246,11 +246,11 @@ class AccountingReportService
         return '<tr><td colspan="4" style="padding: 14px 16px; text-align: center; color: #9ca3af; font-size: 13px;">No sales recorded for this day.</td></tr>';
     }
 
-    private function getPartiesData(int $locationId, Carbon $startDate, Carbon $endDate, string $viewMode, array $filters = []): array
+    private function getPartiesData(array $locationIds, Carbon $startDate, Carbon $endDate, string $viewMode, array $filters = []): array
     {
         $query = DB::table('bookings')
             ->join('packages', 'bookings.package_id', '=', 'packages.id')
-            ->where('bookings.location_id', $locationId)
+            ->whereIn('bookings.location_id', $locationIds)
             ->whereNotIn('bookings.status', ['cancelled'])
             ->whereNull('bookings.deleted_at');
 
@@ -305,11 +305,11 @@ class AccountingReportService
         return $this->buildCategoryResult(self::CATEGORY_PARTIES, $grouped);
     }
 
-    private function getAttractionsData(int $locationId, Carbon $startDate, Carbon $endDate, string $viewMode, array $filters = []): array
+    private function getAttractionsData(array $locationIds, Carbon $startDate, Carbon $endDate, string $viewMode, array $filters = []): array
     {
         $query = DB::table('attraction_purchases')
             ->join('attractions', 'attraction_purchases.attraction_id', '=', 'attractions.id')
-            ->where('attractions.location_id', $locationId)
+            ->whereIn('attractions.location_id', $locationIds)
             ->whereNotIn('attraction_purchases.status', ['cancelled', 'refunded'])
             ->whereNull('attraction_purchases.deleted_at');
 
@@ -363,11 +363,11 @@ class AccountingReportService
         return $this->buildCategoryResult(self::CATEGORY_ATTRACTIONS, $grouped);
     }
 
-    private function getEventsData(int $locationId, Carbon $startDate, Carbon $endDate, string $viewMode, array $filters = []): array
+    private function getEventsData(array $locationIds, Carbon $startDate, Carbon $endDate, string $viewMode, array $filters = []): array
     {
         $query = DB::table('event_purchases')
             ->join('events', 'event_purchases.event_id', '=', 'events.id')
-            ->where('event_purchases.location_id', $locationId)
+            ->whereIn('event_purchases.location_id', $locationIds)
             ->whereNotIn('event_purchases.status', ['cancelled', 'refunded'])
             ->whereNull('event_purchases.deleted_at');
 
@@ -418,14 +418,14 @@ class AccountingReportService
         return $this->buildCategoryResult(self::CATEGORY_EVENTS, $grouped);
     }
 
-    private function getAddOnsData(int $locationId, Carbon $startDate, Carbon $endDate, string $viewMode, array $filters = []): array
+    private function getAddOnsData(array $locationIds, Carbon $startDate, Carbon $endDate, string $viewMode, array $filters = []): array
     {
         $addOnsSummary = [];
 
         $bookingAddOns = DB::table('booking_add_ons')
             ->join('bookings', 'booking_add_ons.booking_id', '=', 'bookings.id')
             ->join('add_ons', 'booking_add_ons.add_on_id', '=', 'add_ons.id')
-            ->where('bookings.location_id', $locationId)
+            ->whereIn('bookings.location_id', $locationIds)
             ->whereNotIn('bookings.status', ['cancelled'])
             ->whereNull('bookings.deleted_at')
             ->when($viewMode === 'booked_on', function ($q) use ($startDate, $endDate) {
@@ -463,7 +463,7 @@ class AccountingReportService
             ->join('attraction_purchases', 'attraction_purchase_add_ons.attraction_purchase_id', '=', 'attraction_purchases.id')
             ->join('attractions', 'attraction_purchases.attraction_id', '=', 'attractions.id')
             ->join('add_ons', 'attraction_purchase_add_ons.add_on_id', '=', 'add_ons.id')
-            ->where('attractions.location_id', $locationId)
+            ->whereIn('attractions.location_id', $locationIds)
             ->whereNotIn('attraction_purchases.status', ['cancelled', 'refunded'])
             ->whereNull('attraction_purchases.deleted_at');
 
@@ -505,7 +505,7 @@ class AccountingReportService
         $eventAddOns = DB::table('event_purchase_add_ons')
             ->join('event_purchases', 'event_purchase_add_ons.event_purchase_id', '=', 'event_purchases.id')
             ->join('add_ons', 'event_purchase_add_ons.add_on_id', '=', 'add_ons.id')
-            ->where('event_purchases.location_id', $locationId)
+            ->whereIn('event_purchases.location_id', $locationIds)
             ->whereNotIn('event_purchases.status', ['cancelled', 'refunded'])
             ->whereNull('event_purchases.deleted_at')
             ->when($viewMode === 'booked_on', function ($q) use ($startDate, $endDate) {

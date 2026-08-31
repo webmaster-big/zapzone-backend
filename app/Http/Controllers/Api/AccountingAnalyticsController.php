@@ -20,10 +20,72 @@ class AccountingAnalyticsController extends Controller
     {
     }
 
+    /**
+     * Resolve which locations a report covers. A blank or "all" location_id means every
+     * location the caller may see, so the sidebar's All Locations gives company-wide
+     * figures instead of an empty page. Returns the scope, or a JsonResponse to return.
+     */
+    private function resolveReportScope(Request $request)
+    {
+        $requested = $request->get('location_id');
+        $authUser = $this->resolveAuthUser($request);
+
+        if ($requested !== null && $requested !== '' && $requested !== 'all') {
+            if ($denied = $this->guardLocationAccess($request, $requested)) {
+                return $denied;
+            }
+
+            $location = Location::with('company')->find((int) $requested);
+
+            if (!$location) {
+                return response()->json(['success' => false, 'message' => 'Location not found'], 404);
+            }
+
+            if ($authUser && $authUser->company_id && (int) $location->company_id !== (int) $authUser->company_id) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Forbidden: cannot access another company\'s data',
+                ], 403);
+            }
+
+            return [
+                'ids' => [$location->id],
+                'id' => $location->id,
+                'name' => $location->name,
+                'company_name' => $location->company?->name,
+                'timezone' => $location->timezone ?? 'UTC',
+            ];
+        }
+
+        $query = Location::with('company');
+
+        if ($authUser && in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
+            $query->where('id', $authUser->location_id);
+        } elseif ($authUser && $authUser->company_id) {
+            $query->where('company_id', $authUser->company_id);
+        }
+
+        $locations = $query->get();
+
+        if ($locations->isEmpty()) {
+            return response()->json(['success' => false, 'message' => 'No locations available'], 404);
+        }
+
+        $single = $locations->count() === 1 ? $locations->first() : null;
+
+        return [
+            'ids' => $locations->pluck('id')->all(),
+            'id' => $single?->id,
+            'name' => $single?->name ?? 'All Locations',
+            'company_name' => $locations->first()->company?->name,
+            'timezone' => $locations->first()->timezone ?? 'UTC',
+        ];
+    }
+
     public function getReport(Request $request): JsonResponse
     {
         $request->validate([
-            'location_id' => 'required|exists:locations,id',
+            'location_id' => 'nullable',
             'start_date' => 'required|date',
             'end_date' => 'nullable|date|after_or_equal:start_date',
             'compare_start_date' => 'nullable|date',
@@ -34,10 +96,10 @@ class AccountingAnalyticsController extends Controller
             'category_filter' => 'nullable|string', // Filter by specific package/attraction category
         ]);
 
-        $locationId = $request->location_id;
+        $scope = $this->resolveReportScope($request);
 
-        if ($scopeError = $this->guardLocationAccess($request, $locationId)) {
-            return $scopeError;
+        if ($scope instanceof JsonResponse) {
+            return $scope;
         }
 
         $startDate = Carbon::parse($request->start_date)->startOfDay();
@@ -56,9 +118,7 @@ class AccountingAnalyticsController extends Controller
         $includeAddonsBreakdown = $request->boolean('include_addons_breakdown', true);
         $categoryFilter = $request->get('category_filter');
 
-        $location = Location::with('company')->findOrFail($locationId);
-
-        $cacheKey = 'dashboards:accounting:' . $locationId . ':' . md5(json_encode([
+        $cacheKey = 'dashboards:accounting:' . implode('-', $scope['ids']) . ':' . md5(json_encode([
             $request->start_date, $request->end_date, $request->compare_start_date, $request->compare_end_date,
             $viewMode, $paymentStatus, $includeAddonsBreakdown, $categoryFilter,
         ]));
@@ -73,19 +133,20 @@ class AccountingAnalyticsController extends Controller
                 'category_filter' => $categoryFilter,
             ];
 
-            $primaryData = $this->reportService->buildReportData($locationId, $startDate, $endDate, $viewMode, $filters);
+            $primaryData = $this->reportService->buildReportData($scope['ids'], $startDate, $endDate, $viewMode, $filters);
 
             $comparisonData = null;
             if ($compareStartDate) {
-                $comparisonData = $this->reportService->buildReportData($locationId, $compareStartDate, $compareEndDate, $viewMode, $filters);
+                $comparisonData = $this->reportService->buildReportData($scope['ids'], $compareStartDate, $compareEndDate, $viewMode, $filters);
             }
 
             $data = [
                 'location' => [
-                    'id' => $location->id,
-                    'name' => $location->name,
-                    'company_name' => $location->company?->name,
-                    'timezone' => $location->timezone ?? 'UTC',
+                    'id' => $scope['id'],
+                    'name' => $scope['name'],
+                    'company_name' => $scope['company_name'],
+                    'timezone' => $scope['timezone'],
+                    'location_count' => count($scope['ids']),
                 ],
                 'start_date' => $startDate->toDateString(),
                 'end_date' => $endDate->toDateString(),
@@ -106,7 +167,7 @@ class AccountingAnalyticsController extends Controller
             Log::error('Error generating accounting analytics report', [
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
-                'location_id' => $locationId,
+                'location_ids' => $scope['ids'],
                 'start_date' => $startDate->toDateString(),
                 'end_date' => $endDate->toDateString(),
             ]);
@@ -122,29 +183,28 @@ class AccountingAnalyticsController extends Controller
     public function getSummaryTrend(Request $request): JsonResponse
     {
         $request->validate([
-            'location_id' => 'required|exists:locations,id',
+            'location_id' => 'nullable',
             'start_date' => 'required|date',
             'end_date' => 'required|date|after_or_equal:start_date',
             'view_mode' => ['nullable', Rule::in(['booked_on', 'booked_for'])],
         ]);
 
-        $locationId = $request->location_id;
         $startDate = Carbon::parse($request->start_date)->startOfDay();
         $endDate = Carbon::parse($request->end_date)->startOfDay();
         $viewMode = $request->get('view_mode', 'booked_for');
 
-        if ($scopeError = $this->guardLocationAccess($request, $locationId)) {
-            return $scopeError;
-        }
+        $scope = $this->resolveReportScope($request);
 
-        $location = Location::with('company')->findOrFail($locationId);
+        if ($scope instanceof JsonResponse) {
+            return $scope;
+        }
 
         try {
             $dailyData = [];
             $currentDate = $startDate->copy();
 
             while ($currentDate->lte($endDate)) {
-                $dayReport = $this->reportService->buildReportData($locationId, $currentDate, $currentDate, $viewMode);
+                $dayReport = $this->reportService->buildReportData($scope['ids'], $currentDate, $currentDate, $viewMode);
 
                 $dailyData[] = [
                     'date' => $currentDate->toDateString(),
@@ -175,9 +235,9 @@ class AccountingAnalyticsController extends Controller
                 'success' => true,
                 'data' => [
                     'location' => [
-                        'id' => $location->id,
-                        'name' => $location->name,
-                        'company_name' => $location->company?->name,
+                        'id' => $scope['id'],
+                        'name' => $scope['name'],
+                        'company_name' => $scope['company_name'],
                     ],
                     'date_range' => [
                         'start_date' => $startDate->toDateString(),
@@ -207,14 +267,13 @@ class AccountingAnalyticsController extends Controller
     public function exportReport(Request $request)
     {
         $request->validate([
-            'location_id' => 'required|exists:locations,id',
+            'location_id' => 'nullable',
             'start_date' => 'required|date',
             'end_date' => 'nullable|date|after_or_equal:start_date',
             'view_mode' => ['nullable', Rule::in(['booked_on', 'booked_for'])],
             'format' => ['required', Rule::in(['json', 'csv'])],
         ]);
 
-        $locationId = $request->location_id;
         $startDate = Carbon::parse($request->start_date)->startOfDay();
         $endDate = $request->filled('end_date')
             ? Carbon::parse($request->end_date)->startOfDay()
@@ -222,18 +281,19 @@ class AccountingAnalyticsController extends Controller
         $viewMode = $request->get('view_mode', 'booked_for');
         $format = $request->format;
 
-        if ($scopeError = $this->guardLocationAccess($request, $locationId)) {
-            return $scopeError;
+        $scope = $this->resolveReportScope($request);
+
+        if ($scope instanceof JsonResponse) {
+            return $scope;
         }
 
-        $location = Location::findOrFail($locationId);
-        $reportData = $this->reportService->buildReportData($locationId, $startDate, $endDate, $viewMode);
+        $reportData = $this->reportService->buildReportData($scope['ids'], $startDate, $endDate, $viewMode);
 
         if ($format === 'json') {
             return response()->json([
                 'success' => true,
                 'data' => [
-                    'location' => $location->name,
+                    'location' => $scope['name'],
                     'start_date' => $startDate->toDateString(),
                     'end_date' => $endDate->toDateString(),
                     'view_mode' => $viewMode,
@@ -245,18 +305,18 @@ class AccountingAnalyticsController extends Controller
         $dateLabel = $startDate->eq($endDate)
             ? $startDate->format('Y-m-d')
             : $startDate->format('Y-m-d') . '_to_' . $endDate->format('Y-m-d');
-        $filename = 'accounting_report_' . $location->name . '_' . $dateLabel . '.csv';
+        $filename = 'accounting_report_' . str_replace(['/', '\\', ' '], '_', $scope['name']) . '_' . $dateLabel . '.csv';
 
         $headers = [
             'Content-Type' => 'text/csv',
             'Content-Disposition' => 'attachment; filename="' . $filename . '"',
         ];
 
-        $callback = function () use ($reportData, $location, $startDate, $endDate, $viewMode) {
+        $callback = function () use ($reportData, $scope, $startDate, $endDate, $viewMode) {
             $file = fopen('php://output', 'w');
 
             fputcsv($file, ['Accounting Report']);
-            fputcsv($file, ['Location:', $location->name]);
+            fputcsv($file, ['Location:', $scope['name']]);
             fputcsv($file, ['Start Date:', $startDate->toDateString()]);
             fputcsv($file, ['End Date:', $endDate->toDateString()]);
             fputcsv($file, ['View Mode:', $viewMode === 'booked_on' ? 'Created On' : 'Booked For']);
