@@ -62,6 +62,9 @@ class RoomController extends Controller
                 'success' => true,
                 'data' => [
                     'rooms' => $rooms->items(),
+                    // the package form previews start times client-side and needs the
+                    // same cleanup gap the availability check applies
+                    'slot_cleanup_minutes' => max(0, (int) config('booking_rules.room_cleanup_minutes', 15)),
                     'pagination' => [
                         'current_page' => $rooms->currentPage(),
                         'last_page' => $rooms->lastPage(),

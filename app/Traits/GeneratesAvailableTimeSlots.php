@@ -70,14 +70,16 @@ trait GeneratesAvailableTimeSlots
             $cursor = (clone $windowStart)->addMinutes($index * $stagger);
 
             while ((clone $cursor)->addMinutes($slotDurationInMinutes)->lte($windowEnd)) {
-                $times[$cursor->format('H:i')] = true;
+                // key on minutes from the window start, not on H:i — a window that
+                // crosses midnight would otherwise sort 00:15 ahead of 18:00
+                $times[$windowStart->diffInMinutes($cursor, false)] = $cursor->format('H:i');
                 $cursor->addMinutes($cycle);
             }
         }
 
         ksort($times);
 
-        return array_keys($times);
+        return array_values(array_unique($times));
     }
 
     private function generateAvailableSlotsWithRooms($package, $date)
