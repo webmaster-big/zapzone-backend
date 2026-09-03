@@ -31,7 +31,7 @@ class WaiverAdController extends Controller
             return $denied;
         }
 
-        $ads = WaiverTemplateAd::with('location:id,name')
+        $ads = WaiverTemplateAd::query()
             ->where('waiver_template_id', $template->id)
             ->orderBy('is_fallback')
             ->orderBy('position')
@@ -70,26 +70,17 @@ class WaiverAdController extends Controller
             'name' => ['nullable', 'string', 'max:120'],
             'image' => ['required', 'file', 'mimes:png,jpg,jpeg,webp', 'max:8192'],
             'destination_url' => ['nullable', 'url', 'max:2048'],
-            'location_id' => ['nullable', 'integer', 'exists:locations,id'],
+            'location_ids' => ['nullable', 'array'],
+            'location_ids.*' => ['integer'],
             'starts_at' => ['nullable', 'date'],
             'ends_at' => ['nullable', 'date', 'after:starts_at'],
             'is_enabled' => ['nullable', 'boolean'],
             'is_fallback' => ['nullable', 'boolean'],
         ]);
 
-        $authUser = $this->resolveAuthUser($request);
-        if ($this->isLocationBound($authUser)) {
-            $validated['location_id'] = $authUser->location_id;
-        }
-
-        if (!empty($validated['location_id'])) {
-            if ($denied = $this->guardLocationAccess($request, $validated['location_id'])) {
-                return $denied;
-            }
-            $location = \App\Models\Location::find($validated['location_id']);
-            if (!$location || (int) $location->company_id !== (int) $template->company_id) {
-                return response()->json(['success' => false, 'message' => 'That location does not belong to this company.'], 422);
-            }
+        $targets = $this->resolveTargetLocations($request, $template, $validated);
+        if (isset($targets['error'])) {
+            return $targets['error'];
         }
 
         $isFallback = (bool) ($validated['is_fallback'] ?? false);
@@ -100,7 +91,7 @@ class WaiverAdController extends Controller
         $ad = WaiverTemplateAd::create([
             'company_id' => $template->company_id,
             'waiver_template_id' => $template->id,
-            'location_id' => $validated['location_id'] ?? null,
+            'location_ids' => $targets['ids'],
             'name' => $validated['name'] ?? null,
             'image_path' => $this->storeImage($request, $template->id),
             'destination_url' => $validated['destination_url'] ?? null,
@@ -117,12 +108,11 @@ class WaiverAdController extends Controller
             'waivers',
             sprintf('Added the post-waiver ad "%s"', $ad->name ?: ('#' . $ad->id)),
             $ad->created_by,
-            $ad->location_id,
+            $targets['ids'][0] ?? null,
             'waiver_template_ad',
             $ad->id
         );
 
-        $ad->load('location:id,name');
 
         return response()->json(['success' => true, 'data' => $this->present($ad)], 201);
     }
@@ -142,7 +132,8 @@ class WaiverAdController extends Controller
             'name' => ['nullable', 'string', 'max:120'],
             'image' => ['nullable', 'file', 'mimes:png,jpg,jpeg,webp', 'max:8192'],
             'destination_url' => ['nullable', 'url', 'max:2048'],
-            'location_id' => ['nullable', 'integer', 'exists:locations,id'],
+            'location_ids' => ['nullable', 'array'],
+            'location_ids.*' => ['integer'],
             'starts_at' => ['nullable', 'date'],
             'ends_at' => ['nullable', 'date'],
             'is_enabled' => ['nullable', 'boolean'],
@@ -163,21 +154,22 @@ class WaiverAdController extends Controller
             }
         }
 
-        if ($request->has('location_id')) {
-            $locationId = $validated['location_id'] ?? null;
-            if ($locationId === null && $this->isLocationBound($this->resolveAuthUser($request))) {
+        if ($request->has('location_ids')) {
+            $template = $waiverAd->template;
+            if (!$template) {
+                return response()->json(['success' => false, 'message' => 'That ad is no longer attached to a template.'], 404);
+            }
+
+            if (empty($validated['location_ids']) && $this->isLocationBound($this->resolveAuthUser($request))) {
                 return response()->json(['success' => false, 'message' => 'Only a company admin can make an ad apply to every location.'], 403);
             }
-            if ($locationId) {
-                if ($denied = $this->guardLocationAccess($request, $locationId)) {
-                    return $denied;
-                }
-                $location = \App\Models\Location::find($locationId);
-                if (!$location || (int) $location->company_id !== (int) $waiverAd->company_id) {
-                    return response()->json(['success' => false, 'message' => 'That location does not belong to this company.'], 422);
-                }
+
+            $targets = $this->resolveTargetLocations($request, $template, $validated);
+            if (isset($targets['error'])) {
+                return $targets['error'];
             }
-            $changes['location_id'] = $locationId;
+
+            $changes['location_ids'] = $targets['ids'];
         }
 
         if ($request->boolean('clear_schedule')) {
@@ -216,13 +208,13 @@ class WaiverAdController extends Controller
             'waivers',
             sprintf('Updated the post-waiver ad "%s"', $waiverAd->name ?: ('#' . $waiverAd->id)),
             $this->resolveAuthUser($request)?->id,
-            $waiverAd->location_id,
+            ($waiverAd->location_ids[0] ?? null),
             'waiver_template_ad',
             $waiverAd->id,
             $changes
         );
 
-        return response()->json(['success' => true, 'data' => $this->present($waiverAd->fresh(['location:id,name']))]);
+        return response()->json(['success' => true, 'data' => $this->present($waiverAd->fresh())]);
     }
 
     public function destroy(Request $request, WaiverTemplateAd $waiverAd): JsonResponse
@@ -237,7 +229,7 @@ class WaiverAdController extends Controller
         }
 
         $name = $waiverAd->name ?: ('#' . $waiverAd->id);
-        $locationId = $waiverAd->location_id;
+        $locationId = $waiverAd->location_ids[0] ?? null;
         $id = $waiverAd->id;
 
         $waiverAd->deleteMedia();
@@ -403,6 +395,47 @@ class WaiverAdController extends Controller
         ], $result['status']);
     }
 
+    protected function resolveTargetLocations(Request $request, WaiverTemplate $template, array $validated): array
+    {
+        $authUser = $this->resolveAuthUser($request);
+
+        if ($this->isLocationBound($authUser)) {
+            $requested = WaiverTemplateAd::normalizeIds($validated['location_ids'] ?? null) ?? [];
+            $own = (int) $authUser->location_id;
+
+            if ($requested && array_diff($requested, [$own])) {
+                return ['error' => response()->json([
+                    'success' => false,
+                    'message' => 'You can only target your own location. Ask a company admin to run an ad at other locations.',
+                ], 403)];
+            }
+
+            return ['ids' => [$own]];
+        }
+
+        $ids = WaiverTemplateAd::normalizeIds($validated['location_ids'] ?? null);
+
+        if (!$ids) {
+            return ['ids' => null];
+        }
+
+        $ids = array_values(array_unique($ids));
+        $valid = \App\Models\Location::whereIn('id', $ids)
+            ->where('company_id', $template->company_id)
+            ->pluck('id')
+            ->map(fn ($id) => (int) $id)
+            ->all();
+
+        if (count($valid) !== count($ids)) {
+            return ['error' => response()->json([
+                'success' => false,
+                'message' => 'One of those locations does not belong to this company.',
+            ], 422)];
+        }
+
+        return ['ids' => $valid];
+    }
+
     protected function isLocationBound(?\App\Models\User $user): bool
     {
         return $user !== null
@@ -412,7 +445,7 @@ class WaiverAdController extends Controller
 
     protected function guardCompanyWideAd(Request $request, WaiverTemplateAd $ad): ?JsonResponse
     {
-        if ($ad->location_id === null && $this->isLocationBound($this->resolveAuthUser($request))) {
+        if ($ad->isAllLocations() && $this->isLocationBound($this->resolveAuthUser($request))) {
             return response()->json(['success' => false, 'message' => 'This ad applies to every location, so only a company admin can change it.'], 403);
         }
 
@@ -450,8 +483,8 @@ class WaiverAdController extends Controller
         return [
             'id' => $ad->id,
             'waiver_template_id' => $ad->waiver_template_id,
-            'location_id' => $ad->location_id,
-            'location_name' => $ad->relationLoaded('location') ? $ad->location?->name : null,
+            'location_ids' => $ad->location_ids ?: [],
+            'location_names' => $ad->isAllLocations() ? [] : $ad->locations()->pluck('name')->all(),
             'name' => $ad->name,
             'image_path' => $ad->image_path,
             'destination_url' => $ad->destination_url,

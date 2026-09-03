@@ -6,14 +6,16 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use App\Traits\HasTargeting;
 use Illuminate\Support\Facades\Storage;
 
 class WaiverTemplateAd extends Model
 {
+    use HasTargeting;
+
     protected $fillable = [
         'company_id',
         'waiver_template_id',
-        'location_id',
         'name',
         'image_path',
         'destination_url',
@@ -38,9 +40,9 @@ class WaiverTemplateAd extends Model
         return $this->belongsTo(WaiverTemplate::class, 'waiver_template_id');
     }
 
-    public function location(): BelongsTo
+    public function locations()
     {
-        return $this->belongsTo(Location::class);
+        return Location::whereIn('id', $this->location_ids ?: [])->orderBy('name');
     }
 
     public function creator(): BelongsTo
@@ -66,9 +68,10 @@ class WaiverTemplateAd extends Model
             ->where('waiver_template_id', $templateId)
             ->where('is_enabled', true)
             ->where(function ($q) use ($locationId) {
-                $q->whereNull('location_id');
+                $q->whereNull('location_ids')->orWhereJsonLength('location_ids', 0);
                 if ($locationId) {
-                    $q->orWhere('location_id', $locationId);
+                    $q->orWhereJsonContains('location_ids', (int) $locationId)
+                        ->orWhereJsonContains('location_ids', (string) $locationId);
                 }
             })
             ->where(function ($q) use ($at) {
