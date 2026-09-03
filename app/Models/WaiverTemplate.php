@@ -27,6 +27,9 @@ class WaiverTemplate extends Model
         'max_minors',
         'duplicate_rule',
         'reminder_eligible',
+        'ads_enabled',
+        'ads_rotation_mode',
+        'ads_display_seconds',
         'assigned_package_ids',
         'assigned_attraction_ids',
         'assigned_event_ids',
@@ -56,6 +59,8 @@ class WaiverTemplate extends Model
         'validity_duration_days' => 'integer',
         'max_minors' => 'integer',
         'reminder_eligible' => 'boolean',
+        'ads_enabled' => 'boolean',
+        'ads_display_seconds' => 'integer',
         'assigned_package_ids' => 'array',
         'assigned_attraction_ids' => 'array',
         'assigned_event_ids' => 'array',
@@ -128,6 +133,11 @@ class WaiverTemplate extends Model
     public function versions(): HasMany
     {
         return $this->hasMany(WaiverTemplateVersion::class)->orderByDesc('version');
+    }
+
+    public function ads(): HasMany
+    {
+        return $this->hasMany(WaiverTemplateAd::class)->orderBy('position');
     }
 
     public function waivers(): HasMany

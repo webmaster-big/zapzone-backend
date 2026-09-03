@@ -115,10 +115,15 @@ class WaiverPublicController extends Controller
 
         $this->notifySigned($completed);
 
+        $ad = $request->boolean('kiosk')
+            ? app(\App\Services\WaiverAdService::class)
+                ->selectForSubmission($template, $completed->location_id, $completed)
+            : null;
+
         return response()->json([
             'success' => true,
             'message' => 'Waiver completed. Thank you!',
-            'data' => ['id' => $completed->id, 'status' => $completed->status],
+            'data' => ['id' => $completed->id, 'status' => $completed->status, 'ad' => $ad],
         ]);
     }
 
@@ -141,8 +146,6 @@ class WaiverPublicController extends Controller
         $settings = WaiverSetting::forCompany($template->company_id);
 
         // Resolve static tokens that are known at display time (company, location, dates).
-        // Signer-specific tokens (full_name, booking_date, activity_name) are left blank
-        // because the kiosk has no booking context — they are filled in after submission.
         $location = $template->location;
 
         $requestedLocationId = $request->input('location_id');
@@ -157,6 +160,11 @@ class WaiverPublicController extends Controller
 
         $staticVars = $this->waivers->staticContentVariables($template, $location);
 
+        $activity = $this->resolveKioskActivity($request, $template);
+        if (!empty($activity['manual_activity_name'])) {
+            $staticVars['activity_name'] = $activity['manual_activity_name'];
+        }
+
         $body = $this->waivers->render($version->body_text, $staticVars);
 
         return response()->json([
@@ -169,6 +177,7 @@ class WaiverPublicController extends Controller
                     'inactivity_timeout_seconds' => $settings->kiosk_inactivity_timeout_seconds,
                     'disable_autofill' => $settings->kiosk_disable_autofill,
                     'gps_capture_enabled' => (bool) $settings->gps_capture_enabled,
+                    'returning_enabled' => (bool) config('waivers.returning_enabled'),
                 ],
             ],
         ]);
@@ -199,7 +208,44 @@ class WaiverPublicController extends Controller
             }
         }
 
-        $waiver = Waiver::create([
+        $activity = $this->resolveKioskActivity($request, $template);
+
+        $profiles = app(\App\Services\WaiverProfileService::class);
+        $profile = null;
+        if (!empty($data['waiver_profile_id']) && config('waivers.returning_enabled')) {
+            $profile = \App\Models\WaiverProfile::where('id', $data['waiver_profile_id'])
+                ->where('company_id', $template->company_id)
+                ->first();
+            if (!$profile) {
+                return response()->json(['success' => false, 'message' => 'That saved record could not be found. Please continue as a new customer.'], 404);
+            }
+            if ($profile->needs_staff_review) {
+                return response()->json(['success' => false, 'message' => 'Please see the front desk to continue.'], 409);
+            }
+
+            $data['adult_first_name'] = $profile->first_name;
+            $data['adult_last_name'] = $profile->last_name;
+            $data['adult_email'] = $profile->email ?: ($data['adult_email'] ?? null);
+            $data['adult_phone'] = $profile->phone_raw ?: ($data['adult_phone'] ?? null);
+            $data['adult_dob'] = $profile->date_of_birth?->toDateString() ?: ($data['adult_dob'] ?? null);
+            $data['minors'] = $profiles->resolveMinorsForSubmission(
+                $profile,
+                $data['selected_dependent_ids'] ?? [],
+                $data['minors'] ?? []
+            );
+
+            $cap = max(1, (int) $template->max_minors);
+            if (count($data['minors']) > $cap) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This waiver covers up to ' . $cap . ' dependent' . ($cap === 1 ? '' : 's')
+                        . ' per signer. Please ask the front desk for help.',
+                ], 422);
+            }
+        }
+        unset($data['waiver_profile_id'], $data['selected_dependent_ids']);
+
+        $waiver = Waiver::create(array_merge([
             'company_id' => $template->company_id,
             'location_id' => $resolvedLocationId,
             'waiver_template_id' => $template->id,
@@ -207,7 +253,8 @@ class WaiverPublicController extends Controller
             'status' => Waiver::STATUS_PENDING,
             'selected_date' => $request->date('selected_date') ?? now()->toDateString(),
             'source' => Waiver::SOURCE_KIOSK,
-        ]);
+            'waiver_profile_id' => $profile?->id,
+        ], $activity));
 
         $data = $this->applyGpsGate($data, $template->company_id);
         $ua = (string) $request->userAgent();
@@ -223,11 +270,40 @@ class WaiverPublicController extends Controller
 
         $this->notifySigned($completed);
 
+        $ad = app(\App\Services\WaiverAdService::class)
+            ->selectForSubmission($template, $resolvedLocationId, $completed);
+
         return response()->json([
             'success' => true,
             'message' => 'Waiver completed.',
-            'data' => ['id' => $completed->id],
+            'data' => ['id' => $completed->id, 'ad' => $ad],
         ], 201);
+    }
+
+    public function kioskLookup(Request $request, int $templateId): JsonResponse
+    {
+        if (!config('waivers.returning_enabled')) {
+            return response()->json(['success' => false, 'message' => 'Waiver not available.'], 404);
+        }
+
+        $template = WaiverTemplate::active()->find($templateId);
+        if (!$template) {
+            return response()->json(['success' => false, 'message' => 'Waiver not available.'], 404);
+        }
+
+        $validated = $request->validate([
+            'phone' => ['required', 'string', 'max:30'],
+        ]);
+
+        $profiles = app(\App\Services\WaiverProfileService::class);
+        $result = $profiles->lookup($template->company_id, $validated['phone']);
+
+        $payload = ['status' => $result['status']];
+        if ($result['status'] === \App\Services\WaiverProfileService::STATUS_FOUND) {
+            $payload['profile'] = $profiles->presentForKiosk($result['profile']);
+        }
+
+        return response()->json(['success' => true, 'data' => $payload]);
     }
 
     // ---- bulk / chaperone (public, manage-token addressed) ----
@@ -467,6 +543,41 @@ class WaiverPublicController extends Controller
         return $data;
     }
 
+    private function resolveKioskActivity(Request $request, WaiverTemplate $template): array
+    {
+        $models = [
+            'package_id' => \App\Models\Package::class,
+            'attraction_id' => \App\Models\Attraction::class,
+            'event_id' => \App\Models\Event::class,
+        ];
+
+        $links = [];
+        $name = null;
+
+        foreach ($models as $field => $model) {
+            $id = (int) $request->input($field);
+            if (!$id) {
+                continue;
+            }
+
+            $record = $model::whereHas(
+                'location',
+                fn ($q) => $q->where('company_id', $template->company_id)
+            )->find($id);
+
+            if ($record) {
+                $links[$field] = $record->id;
+                $name = $name ?? $record->name;
+            }
+        }
+
+        if ($name !== null) {
+            $links['manual_activity_name'] = $name;
+        }
+
+        return $links;
+    }
+
     private function validateSubmission(Request $request, WaiverTemplate $template): array
     {
         $rules = [
@@ -474,6 +585,9 @@ class WaiverPublicController extends Controller
             'adult_last_name' => 'required|string|max:255',
             'adult_email' => 'required|email|max:255',
             'adult_phone' => 'required|string|max:30',
+            'waiver_profile_id' => 'nullable|integer',
+            'selected_dependent_ids' => 'nullable|array|max:' . max(1, (int) $template->max_minors),
+            'selected_dependent_ids.*' => 'integer',
             'adult_dob' => 'required|date|before_or_equal:' . now()->subYears(self::ADULT_AGE)->toDateString(),
             'relationship' => 'nullable|string|max:100',
             'typed_legal_name' => 'required|string|max:255',

@@ -12,6 +12,8 @@ class WaiverMinor extends Model
 
     protected $fillable = [
         'waiver_id',
+        'waiver_profile_dependent_id',
+        'was_new_this_visit',
         'first_name',
         'last_name',
         'date_of_birth',
@@ -20,6 +22,7 @@ class WaiverMinor extends Model
 
     protected $casts = [
         'date_of_birth' => 'date',
+        'was_new_this_visit' => 'boolean',
     ];
 
     public function waiver(): BelongsTo

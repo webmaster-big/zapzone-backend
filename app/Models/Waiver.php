@@ -23,7 +23,10 @@ class Waiver extends Model
         'waiver_template_id',
         'waiver_template_version_id',
         'customer_id',
+        'waiver_profile_id',
         'booking_id',
+        'package_id',
+        'attraction_id',
         'event_id',
         'attraction_purchase_id',
         'bulk_invite_id',
@@ -130,6 +133,11 @@ class Waiver extends Model
         return $token;
     }
 
+    public function profile(): BelongsTo
+    {
+        return $this->belongsTo(WaiverProfile::class, 'waiver_profile_id');
+    }
+
     public function company(): BelongsTo
     {
         return $this->belongsTo(Company::class);
@@ -158,6 +166,16 @@ class Waiver extends Model
     public function booking(): BelongsTo
     {
         return $this->belongsTo(Booking::class);
+    }
+
+    public function package(): BelongsTo
+    {
+        return $this->belongsTo(Package::class);
+    }
+
+    public function attraction(): BelongsTo
+    {
+        return $this->belongsTo(Attraction::class);
     }
 
     public function event(): BelongsTo

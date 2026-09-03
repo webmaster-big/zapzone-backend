@@ -5,8 +5,12 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Models\Waiver;
+use App\Models\WaiverAdEvent;
+use App\Models\WaiverAdSend;
 use App\Models\WaiverBulkInvite;
 use App\Models\WaiverDeletionLog;
+use App\Models\WaiverTemplateAd;
+use App\Support\DateRange;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -26,6 +30,7 @@ class WaiverReportController extends Controller
             'by-source' => $this->groupedCount($request, 'source'),
             'marketing-consent' => $this->marketingConsent($request),
             'deleted' => $this->deleted($request),
+            'ad-performance' => $this->adPerformance($request),
             default => null,
         };
 
@@ -178,5 +183,70 @@ class WaiverReportController extends Controller
         } elseif ($request->filled('date')) {
             $query->whereDate('selected_date', $request->date('date'));
         }
+    }
+
+    private function adPerformance(Request $request): array
+    {
+        $start = $request->input('start_date');
+        $end = $request->input('end_date');
+
+        $displaysQuery = WaiverAdEvent::query()->where('event', 'displayed');
+        $this->applyAuthScope($displaysQuery, $request);
+        DateRange::apply($displaysQuery, 'created_at', $start, $end);
+        $displays = $displaysQuery
+            ->selectRaw('waiver_template_ad_id, COUNT(*) as total')
+            ->groupBy('waiver_template_ad_id')
+            ->pluck('total', 'waiver_template_ad_id');
+
+        $sendsQuery = WaiverAdSend::query();
+        $this->applyAuthScope($sendsQuery, $request);
+        DateRange::apply($sendsQuery, 'created_at', $start, $end);
+        $sends = $sendsQuery
+            ->selectRaw("waiver_template_ad_id, channel, COUNT(*) as requested, SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END) as delivered")
+            ->groupBy('waiver_template_ad_id', 'channel')
+            ->get()
+            ->groupBy('waiver_template_ad_id');
+
+        $adIds = $displays->keys()->merge($sends->keys())->unique()->values();
+        $ads = WaiverTemplateAd::with('template:id,title')->whereIn('id', $adIds)->get()->keyBy('id');
+
+        $rows = $adIds->map(function ($adId) use ($displays, $sends, $ads) {
+            $ad = $ads->get($adId);
+            $adSends = $sends->get($adId, collect());
+            $requests = (int) $adSends->sum('requested');
+            $displayCount = (int) ($displays[$adId] ?? 0);
+
+            return [
+                'ad_id' => (int) $adId,
+                'ad_name' => $ad?->name ?: ('Ad #' . $adId),
+                'image_path' => $ad?->image_path,
+                'template' => $ad?->template?->title,
+                'is_fallback' => (bool) ($ad?->is_fallback),
+                'displays' => $displayCount,
+                'learn_more_requests' => $requests,
+                'sent_by_email' => (int) $adSends->firstWhere('channel', 'email')?->delivered,
+                'sent_by_text' => (int) $adSends->firstWhere('channel', 'sms')?->delivered,
+                'request_rate' => $displayCount > 0 ? round($requests / $displayCount, 4) : 0,
+            ];
+        })->sortByDesc('displays')->values()->all();
+
+        $requestLogQuery = WaiverAdSend::query()->with('ad:id,name');
+        $this->applyAuthScope($requestLogQuery, $request);
+        DateRange::apply($requestLogQuery, 'created_at', $start, $end);
+        $recentRequests = $requestLogQuery
+            ->orderByDesc('created_at')
+            ->limit(200)
+            ->get()
+            ->map(fn (WaiverAdSend $send) => [
+                'ad_name' => $send->ad?->name ?: ('Ad #' . $send->waiver_template_ad_id),
+                'channel' => $send->channel,
+                'status' => $send->status,
+                'requested_at' => $send->created_at?->toIso8601String(),
+            ])->all();
+
+        return [
+            'ads' => $rows,
+            'recent_requests' => $recentRequests,
+        ];
     }
 }

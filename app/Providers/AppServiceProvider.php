@@ -58,6 +58,7 @@ class AppServiceProvider extends ServiceProvider
         $this->registerCacheInvalidation();
         $this->registerPhotoRateLimiters();
         $this->registerCheckoutConcernRateLimiters();
+        $this->registerWaiverAdRateLimiters();
         $this->registerCustomFieldRateLimiter();
     }
 
@@ -114,6 +115,19 @@ class AppServiceProvider extends ServiceProvider
         // Staff testing a channel. Each real send costs money, so keep the pace sensible.
         RateLimiter::for('photo-test-message', fn (Request $request) => Limit::perMinute(6)
             ->by('photo:test:' . ($this->photoRequestUserId($request) ?? $request->ip())));
+    }
+
+    private function registerWaiverAdRateLimiters(): void
+    {
+        RateLimiter::for('waiver-returning-lookup', fn (Request $request) => [
+            Limit::perMinute(10)->by('waiver-lookup:ip:' . $request->ip()),
+            Limit::perHour(120)->by('waiver-lookup:tpl:' . ($request->route('templateId') ?? 'na') . ':' . $request->ip()),
+        ]);
+
+        RateLimiter::for('waiver-ad-learn-more', fn (Request $request) => [
+            Limit::perMinute(6)->by('waiver-ad:ip:' . $request->ip()),
+            Limit::perHour(30)->by('waiver-ad:waiver:' . (is_scalar($id = $request->input('waiver_id')) && $id !== '' ? $id : $request->ip())),
+        ]);
     }
 
     private function registerCheckoutConcernRateLimiters(): void

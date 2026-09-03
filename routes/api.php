@@ -62,9 +62,11 @@ use App\Http\Controllers\Api\MobileVersionController;
 use App\Http\Controllers\Api\StreamController;
 use App\Http\Controllers\Api\StripeController;
 use App\Http\Controllers\Api\UserController;
+use App\Http\Controllers\Api\WaiverAdController;
 use App\Http\Controllers\Api\WaiverBulkInviteController;
 use App\Http\Controllers\Api\WaiverController;
 use App\Http\Controllers\Api\WaiverPublicController;
+use App\Http\Controllers\Api\WaiverProfileController;
 use App\Http\Controllers\Api\WaiverReportController;
 use App\Http\Controllers\Api\WaiverSettingController;
 use App\Http\Controllers\Api\WaiverTemplateController;
@@ -81,6 +83,8 @@ Route::get('waivers/status/{token}',          [WaiverPublicController::class, 's
 Route::post('waivers/access/{token}/submit',  [WaiverPublicController::class, 'submit'])->middleware('throttle:30,1');
 Route::get('waivers/kiosk/{templateId}',      [WaiverPublicController::class, 'kioskShow'])->whereNumber('templateId');
 Route::post('waivers/kiosk/{templateId}/submit', [WaiverPublicController::class, 'kioskSubmit'])->middleware('throttle:60,1')->whereNumber('templateId');
+Route::post('waivers/ads/learn-more', [WaiverAdController::class, 'learnMore'])->middleware('throttle:waiver-ad-learn-more');
+Route::post('waivers/kiosk/{templateId}/lookup', [WaiverPublicController::class, 'kioskLookup'])->middleware('throttle:waiver-returning-lookup')->whereNumber('templateId');
 // Bulk / chaperone (manage-token addressed, no auth)
 Route::get('waivers/bulk/{manageToken}',             [WaiverPublicController::class, 'bulkShow']);
 Route::post('waivers/bulk/{manageToken}/recipients', [WaiverPublicController::class, 'bulkAddRecipients'])->middleware('throttle:30,1');
@@ -753,7 +757,25 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('waivers/deletion-log',      [WaiverController::class, 'deletionLog']);
     Route::get('waivers/export',            [WaiverController::class, 'export']);
     Route::get('waivers/for',               [WaiverController::class, 'entityWaivers']);
-    Route::get('waivers/reports/{type}',    [WaiverReportController::class, 'report']);
+    Route::get('waivers/reports/{type}',    [WaiverReportController::class, 'report'])->middleware('staff');
+
+    Route::middleware('staff')->group(function () {
+        Route::get('waiver-templates/{templateId}/ads',              [WaiverAdController::class, 'index'])->whereNumber('templateId');
+        Route::post('waiver-templates/{templateId}/ads',             [WaiverAdController::class, 'store'])->whereNumber('templateId');
+        Route::put('waiver-templates/{templateId}/ads/reorder',      [WaiverAdController::class, 'reorder'])->whereNumber('templateId');
+        Route::patch('waiver-templates/{templateId}/ad-settings',    [WaiverAdController::class, 'updateSettings'])->whereNumber('templateId');
+        Route::post('waiver-ads/{waiverAd}',                         [WaiverAdController::class, 'update'])->whereNumber('waiverAd');
+        Route::delete('waiver-ads/{waiverAd}',                       [WaiverAdController::class, 'destroy'])->whereNumber('waiverAd');
+    });
+
+    Route::middleware('staff:company_admin|admin|location_manager')->group(function () {
+        Route::get('waiver-profiles',                                  [WaiverProfileController::class, 'index']);
+        Route::get('waiver-profiles/{waiverProfile}',                  [WaiverProfileController::class, 'show'])->whereNumber('waiverProfile');
+        Route::patch('waiver-profiles/{waiverProfile}',                [WaiverProfileController::class, 'update'])->whereNumber('waiverProfile');
+        Route::post('waiver-profiles/{waiverProfile}/dependents',      [WaiverProfileController::class, 'storeDependent'])->whereNumber('waiverProfile');
+        Route::patch('waiver-profile-dependents/{dependent}',          [WaiverProfileController::class, 'updateDependent'])->whereNumber('dependent');
+        Route::delete('waiver-profile-dependents/{dependent}',         [WaiverProfileController::class, 'destroyDependent'])->whereNumber('dependent');
+    });
     Route::post('waivers/assign',           [WaiverController::class, 'assign']);
     Route::post('waivers/kiosk-session',    [WaiverController::class, 'kioskSession']);
     Route::post('waivers/check-in-all',     [WaiverController::class, 'checkInAll']);

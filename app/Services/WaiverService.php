@@ -297,6 +297,8 @@ class WaiverService
             $waiver->minors()->delete();
             foreach (($data['minors'] ?? []) as $minor) {
                 $waiver->minors()->create([
+                    'waiver_profile_dependent_id' => $minor['waiver_profile_dependent_id'] ?? null,
+                    'was_new_this_visit' => (bool) ($minor['was_new_this_visit'] ?? false),
                     'first_name' => $minor['first_name'] ?? '',
                     'last_name' => $minor['last_name'] ?? '',
                     'date_of_birth' => $minor['date_of_birth'] ?? null,
@@ -318,9 +320,10 @@ class WaiverService
         });
 
         $this->recordCustomerDetails($completed);
+        app(WaiverProfileService::class)->syncFromWaiver($completed);
         $this->generateAndStoreSignedPdf($completed);
 
-        return $completed;
+        return $completed->refresh();
     }
 
     /**
