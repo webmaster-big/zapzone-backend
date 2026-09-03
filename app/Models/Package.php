@@ -116,7 +116,13 @@ class Package extends Model
 
     public function scopeByCategory($query, $category)
     {
-        return $query->where('category', $category);
+        $values = \App\Support\VenueCategory::matchValues($category);
+
+        if (empty($values)) {
+            return $query;
+        }
+
+        return $query->whereIn(\Illuminate\Support\Facades\DB::raw('LOWER(category)'), $values);
     }
 
     public function scopeByPackageType($query, $packageType)

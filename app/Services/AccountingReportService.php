@@ -2,6 +2,8 @@
 
 namespace App\Services;
 
+use App\Support\VenueCategory;
+
 use App\Models\Location;
 use App\Models\Payment;
 use App\Support\DateRange;
@@ -267,7 +269,9 @@ class AccountingReportService
         }
 
         if (!empty($filters['category_filter'])) {
-            $query->whereRaw("COALESCE(NULLIF(packages.display_label, ''), packages.category) = ?", [$filters['category_filter']]);
+            $wanted = VenueCategory::matchValues($filters['category_filter']);
+            $placeholders = implode(',', array_fill(0, count($wanted), '?'));
+            $query->whereRaw("LOWER(COALESCE(NULLIF(packages.display_label, ''), packages.category)) IN ({$placeholders})", $wanted);
         }
 
         $bookings = $query->select(
@@ -286,12 +290,13 @@ class AccountingReportService
 
         $grouped = [];
         foreach ($bookings as $booking) {
-            $key = ($booking->sub_category ?? 'Uncategorized') . '|||' . ($booking->package_name ?? 'Unknown Package');
+            $subCategory = VenueCategory::normalize($booking->sub_category) ?: 'Uncategorized';
+            $key = $subCategory . '|||' . ($booking->package_name ?? 'Unknown Package');
 
             if (!isset($grouped[$key])) {
                 $grouped[$key] = [
                     'name' => $booking->package_name ?? 'Unknown Package',
-                    'sub_category' => $booking->sub_category ?? 'Uncategorized',
+                    'sub_category' => $subCategory,
                     'totals' => $this->initializeTotals(),
                 ];
             }
@@ -324,7 +329,10 @@ class AccountingReportService
         }
 
         if (!empty($filters['category_filter'])) {
-            $query->where('attractions.category', $filters['category_filter']);
+            $query->whereIn(
+                DB::raw('LOWER(attractions.category)'),
+                VenueCategory::matchValues($filters['category_filter'])
+            );
         }
 
         $purchases = $query->select(
@@ -344,12 +352,13 @@ class AccountingReportService
 
         $grouped = [];
         foreach ($purchases as $purchase) {
-            $key = ($purchase->sub_category ?? 'Uncategorized') . '|||' . ($purchase->attraction_name ?? 'Unknown Attraction');
+            $subCategory = VenueCategory::normalize($purchase->sub_category) ?: 'Uncategorized';
+            $key = $subCategory . '|||' . ($purchase->attraction_name ?? 'Unknown Attraction');
 
             if (!isset($grouped[$key])) {
                 $grouped[$key] = [
                     'name' => $purchase->attraction_name ?? 'Unknown Attraction',
-                    'sub_category' => $purchase->sub_category ?? 'Uncategorized',
+                    'sub_category' => $subCategory,
                     'totals' => $this->initializeTotals(),
                 ];
             }

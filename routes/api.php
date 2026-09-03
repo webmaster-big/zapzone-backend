@@ -400,7 +400,14 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('customers/{customer}/statistics', [CustomerController::class, 'statistics']);
     Route::patch('customers/{customer}/update-last-visit', [CustomerController::class, 'updateLastVisit']);
 
-    Route::apiResource('categories', CategoryController::class);
+    Route::get('categories', [CategoryController::class, 'index']);
+    Route::middleware('staff:company_admin|admin|location_manager')->group(function () {
+        Route::post('categories', [CategoryController::class, 'store']);
+        Route::get('categories/{category}', [CategoryController::class, 'show']);
+        Route::put('categories/{category}', [CategoryController::class, 'update']);
+        Route::patch('categories/{category}', [CategoryController::class, 'update']);
+        Route::delete('categories/{category}', [CategoryController::class, 'destroy']);
+    });
 
     // Lightweight and mobile-optimized packages list
     Route::get('mobile/packages', [MobilePackageController::class, 'index']);
