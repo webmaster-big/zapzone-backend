@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Support\VenueCategory;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Models\Booking;
 use App\Models\AttractionPurchase;
@@ -327,7 +328,7 @@ class MetricsController extends Controller
             $attrTotal = $attrRows->sum('cnt');
             $attrByCategory = [];
             foreach ($attrRows as $row) {
-                $category = $row->category ?? 'Other';
+                $category = VenueCategory::normalize($row->category) ?: 'Other';
                 if (!isset($attrByCategory[$category])) {
                     $attrByCategory[$category] = ['count' => 0, 'items' => []];
                 }

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Support\VenueCategory;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Models\Booking;
 use App\Models\AttractionPurchase;
@@ -559,7 +560,7 @@ class AnalyticsController extends Controller
             return [
                 'id' => $package->id,
                 'name' => $package->name,
-                'category' => $package->category,
+                'category' => VenueCategory::normalize($package->category),
                 'bookings' => (int) $stats->bookings_count,
                 'revenue' => round((float) $stats->total_revenue, 2),
                 'participants' => (int) $stats->total_participants,
@@ -611,7 +612,7 @@ class AnalyticsController extends Controller
             return [
                 'id' => $attraction->id,
                 'name' => $attraction->name,
-                'category' => $attraction->category,
+                'category' => VenueCategory::normalize($attraction->category),
                 'sessions' => $sessions,
                 'tickets_sold' => $ticketsSold,
                 'revenue' => $revenue,
@@ -1007,7 +1008,7 @@ class AnalyticsController extends Controller
             if (!$booking->package) {
                 return 'Other';
             }
-            return $booking->package->category ?? 'Other';
+            return VenueCategory::normalize($booking->package->category) ?: 'Other';
         });
 
         $total = $bookings->count();
