@@ -12,10 +12,13 @@ use App\Services\WaiverAdService;
 use App\Support\DataUriImage;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use App\Http\Traits\GuardsWrites;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
 class WaiverAdController extends Controller
 {
+    use GuardsWrites;
     use ScopesByAuthUser;
 
     public function index(Request $request, int $templateId): JsonResponse
@@ -49,6 +52,11 @@ class WaiverAdController extends Controller
     }
 
     public function store(Request $request, int $templateId): JsonResponse
+    {
+        return $this->guardWrite('waiver ad upload', ['template_id' => $templateId], fn () => $this->storeAd($request, $templateId));
+    }
+
+    private function storeAd(Request $request, int $templateId): JsonResponse
     {
         $template = WaiverTemplate::find($templateId);
         if (!$template) {
@@ -120,6 +128,11 @@ class WaiverAdController extends Controller
     }
 
     public function update(Request $request, WaiverTemplateAd $waiverAd): JsonResponse
+    {
+        return $this->guardWrite('waiver ad update', ['ad_id' => $waiverAd->id], fn () => $this->updateAd($request, $waiverAd));
+    }
+
+    private function updateAd(Request $request, WaiverTemplateAd $waiverAd): JsonResponse
     {
         if (!$this->authorizeRecordScope($waiverAd) || ($denied = $this->guardCompanyWideAd($request, $waiverAd))) {
             return $denied ?? response()->json(['success' => false, 'message' => 'Forbidden.'], 403);
@@ -214,6 +227,11 @@ class WaiverAdController extends Controller
 
     public function destroy(Request $request, WaiverTemplateAd $waiverAd): JsonResponse
     {
+        return $this->guardWrite('waiver ad delete', ['ad_id' => $waiverAd->id], fn () => $this->destroyAd($request, $waiverAd));
+    }
+
+    private function destroyAd(Request $request, WaiverTemplateAd $waiverAd): JsonResponse
+    {
         if (!$this->authorizeRecordScope($waiverAd) || ($denied = $this->guardCompanyWideAd($request, $waiverAd))) {
             return $denied ?? response()->json(['success' => false, 'message' => 'Forbidden.'], 403);
         }
@@ -239,6 +257,11 @@ class WaiverAdController extends Controller
     }
 
     public function reorder(Request $request, int $templateId): JsonResponse
+    {
+        return $this->guardWrite('waiver ad reorder', ['template_id' => $templateId], fn () => $this->reorderAds($request, $templateId));
+    }
+
+    private function reorderAds(Request $request, int $templateId): JsonResponse
     {
         $template = WaiverTemplate::find($templateId);
         if (!$template) {
@@ -270,6 +293,11 @@ class WaiverAdController extends Controller
 
     public function updateSettings(Request $request, int $templateId): JsonResponse
     {
+        return $this->guardWrite('waiver ad settings update', ['template_id' => $templateId], fn () => $this->updateAdSettings($request, $templateId));
+    }
+
+    private function updateAdSettings(Request $request, int $templateId): JsonResponse
+    {
         $template = WaiverTemplate::find($templateId);
         if (!$template) {
             return response()->json(['success' => false, 'message' => 'Template not found.'], 404);
@@ -292,7 +320,19 @@ class WaiverAdController extends Controller
         }
 
         if ($changes) {
+            $before = $template->only(array_keys($changes));
             $template->update($changes);
+
+            ActivityLog::log(
+                'waiver_ad_settings_updated',
+                'waivers',
+                sprintf('Changed the post-waiver ad settings on "%s"', $template->title),
+                $this->resolveAuthUser($request)?->id,
+                $template->location_id,
+                'waiver_template',
+                $template->id,
+                ['before' => $before, 'after' => $changes]
+            );
         }
 
         return response()->json([
@@ -340,7 +380,22 @@ class WaiverAdController extends Controller
             return response()->json(['success' => false, 'message' => 'This request could not be matched to a completed waiver.'], 404);
         }
 
-        $result = app(WaiverAdService::class)->learnMore($waiver, $ad, $validated['channel']);
+        try {
+            $result = app(WaiverAdService::class)->learnMore($waiver, $ad, $validated['channel']);
+        } catch (\Throwable $e) {
+            Log::error('Waiver ad Learn More could not be processed', [
+                'waiver_id' => $waiver->id,
+                'ad_id' => $ad->id,
+                'channel' => $validated['channel'],
+                'exception' => $e::class,
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'We could not send that just now. Please try again.',
+            ], 503);
+        }
 
         return response()->json([
             'success' => $result['ok'],

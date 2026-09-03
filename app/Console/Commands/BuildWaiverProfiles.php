@@ -10,6 +10,7 @@ use App\Services\SmsService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class BuildWaiverProfiles extends Command
 {
@@ -25,6 +26,7 @@ class BuildWaiverProfiles extends Command
     protected int $dependentsSeeded = 0;
     protected int $conflictsFlagged = 0;
     protected int $waiversSkipped = 0;
+    protected int $groupsFailed = 0;
 
     public function handle(): int
     {
@@ -55,7 +57,22 @@ class BuildWaiverProfiles extends Command
             ['Dependents seeded', $this->dependentsSeeded],
             ['Conflicts flagged', $this->conflictsFlagged],
             ['Waivers skipped (unusable phone)', $this->waiversSkipped],
+            ['Phone groups failed', $this->groupsFailed],
         ]);
+
+        Log::info('Waiver profile backfill finished', [
+            'profiles_created' => $this->profilesCreated,
+            'waivers_linked' => $this->waiversLinked,
+            'dependents_seeded' => $this->dependentsSeeded,
+            'conflicts_flagged' => $this->conflictsFlagged,
+            'waivers_skipped' => $this->waiversSkipped,
+            'groups_failed' => $this->groupsFailed,
+            'dry_run' => $dryRun,
+        ]);
+
+        if ($this->groupsFailed > 0) {
+            return self::FAILURE;
+        }
 
         return self::SUCCESS;
     }
@@ -100,7 +117,19 @@ class BuildWaiverProfiles extends Command
                     continue;
                 }
 
-                DB::transaction(fn () => $this->processGroup($companyId, (string) $digits, $ids, false));
+                try {
+                    DB::transaction(fn () => $this->processGroup($companyId, (string) $digits, $ids, false));
+                } catch (\Throwable $e) {
+                    $this->groupsFailed++;
+                    $this->warn(sprintf('  skipped a phone group after an error: %s', $e->getMessage()));
+                    Log::error('Waiver profile backfill failed for a phone group', [
+                        'company_id' => $companyId,
+                        'phone_last4' => substr((string) $digits, -4),
+                        'waiver_ids' => $ids,
+                        'exception' => $e::class,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
             }
         }
     }

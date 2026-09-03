@@ -7,6 +7,8 @@ use App\Models\Waiver;
 use App\Models\WaiverProfile;
 use App\Models\WaiverProfileDependent;
 use Illuminate\Support\Collection;
+use Illuminate\Contracts\Cache\LockTimeoutException;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -30,34 +32,50 @@ class WaiverProfileService
             return ['status' => self::STATUS_NOT_FOUND];
         }
 
-        $matches = WaiverProfile::with(['activeDependents' => fn ($q) => $q->orderBy('first_name')])
+        try {
+            $matches = $this->profilesFor($companyId, $digits);
+
+            if ($matches->count() > 1) {
+                return ['status' => self::STATUS_NEEDS_STAFF];
+            }
+
+            $profile = $matches->first();
+            $source = self::SOURCE_PROFILE;
+
+            if (!$profile) {
+                [$profile, $source] = $this->promoteFromHistory($companyId, $digits, $phone);
+            }
+
+            if (!$profile) {
+                return $source === self::SOURCE_SHARED_PHONE
+                    ? ['status' => self::STATUS_NEEDS_STAFF]
+                    : ['status' => self::STATUS_NOT_FOUND];
+            }
+
+            if ($profile->needs_staff_review) {
+                return ['status' => self::STATUS_NEEDS_STAFF];
+            }
+
+            return ['status' => self::STATUS_FOUND, 'profile' => $profile, 'source' => $source];
+        } catch (\Throwable $e) {
+            Log::error('Waiver returning lookup failed', [
+                'company_id' => $companyId,
+                'phone_last4' => substr($digits, -4),
+                'exception' => $e::class,
+                'error' => $e->getMessage(),
+            ]);
+
+            return ['status' => self::STATUS_NOT_FOUND, 'degraded' => true];
+        }
+    }
+
+    protected function profilesFor(int $companyId, string $digits): Collection
+    {
+        return WaiverProfile::with(['activeDependents' => fn ($q) => $q->orderBy('first_name')])
             ->where('company_id', $companyId)
             ->where('phone_digits', $digits)
             ->orderBy('id')
             ->get();
-
-        if ($matches->count() > 1) {
-            return ['status' => self::STATUS_NEEDS_STAFF];
-        }
-
-        $profile = $matches->first();
-        $source = self::SOURCE_PROFILE;
-
-        if (!$profile) {
-            [$profile, $source] = $this->promoteFromHistory($companyId, $digits, $phone);
-        }
-
-        if (!$profile) {
-            return $source === self::SOURCE_SHARED_PHONE
-                ? ['status' => self::STATUS_NEEDS_STAFF]
-                : ['status' => self::STATUS_NOT_FOUND];
-        }
-
-        if ($profile->needs_staff_review) {
-            return ['status' => self::STATUS_NEEDS_STAFF];
-        }
-
-        return ['status' => self::STATUS_FOUND, 'profile' => $profile, 'source' => $source];
     }
 
     private static function normalisedPhoneSql(string $column): string
@@ -71,6 +89,38 @@ class WaiverProfileService
     }
 
     protected function promoteFromHistory(int $companyId, string $digits, ?string $phone): array
+    {
+        $lock = Cache::lock('waiver-profile-promote:' . $companyId . ':' . $digits, 15);
+
+        try {
+            $lock->block(3);
+        } catch (LockTimeoutException) {
+            Log::warning('Waiver profile promotion is already in flight for this number', [
+                'company_id' => $companyId,
+                'phone_last4' => substr($digits, -4),
+            ]);
+
+            return [null, self::SOURCE_PROFILE];
+        }
+
+        try {
+            $existing = $this->profilesFor($companyId, $digits);
+
+            if ($existing->count() > 1) {
+                return [null, self::SOURCE_SHARED_PHONE];
+            }
+
+            if ($existing->isNotEmpty()) {
+                return [$existing->first(), self::SOURCE_PROFILE];
+            }
+
+            return $this->promoteWithinLock($companyId, $digits, $phone);
+        } finally {
+            $lock->release();
+        }
+    }
+
+    protected function promoteWithinLock(int $companyId, string $digits, ?string $phone): array
     {
         $waivers = Waiver::with('minors')
             ->where('company_id', $companyId)
@@ -91,6 +141,7 @@ class WaiverProfileService
         }
 
         $contacts = Contact::where('company_id', $companyId)
+            ->where(fn ($q) => $q->where('status', 'active')->orWhereNull('status'))
             ->whereNotNull('phone')
             ->whereRaw(sprintf('RIGHT(%s, ?) = ?', self::normalisedPhoneSql('phone')), [strlen($digits), $digits])
             ->orderByDesc('id')
@@ -143,6 +194,13 @@ class WaiverProfileService
 
             $this->stampVisit($profile, $latest);
 
+            Log::info('Waiver profile promoted from waiver history', [
+                'profile_id' => $profile->id,
+                'company_id' => $companyId,
+                'waivers_linked' => $waivers->count(),
+                'dependents' => $profile->dependents()->count(),
+            ]);
+
             return $profile->fresh(['activeDependents']);
         });
     }
@@ -158,7 +216,7 @@ class WaiverProfileService
 
         $raw = $contact->phone ?: $phone;
 
-        return WaiverProfile::create([
+        $profile = WaiverProfile::create([
             'company_id' => $companyId,
             'last_location_id' => $contact->location_id,
             'phone_digits' => $digits,
@@ -168,7 +226,15 @@ class WaiverProfileService
             'last_name' => $last,
             'email' => $contact->email,
             'date_of_birth' => $contact->date_of_birth,
-        ])->fresh(['activeDependents']);
+        ]);
+
+        Log::info('Waiver profile promoted from a contact', [
+            'profile_id' => $profile->id,
+            'company_id' => $companyId,
+            'contact_id' => $contact->id,
+        ]);
+
+        return $profile->fresh(['activeDependents']);
     }
 
     public function presentForKiosk(WaiverProfile $profile): array
@@ -256,12 +322,50 @@ class WaiverProfileService
                 }
             }
 
+            $lock = Cache::lock('waiver-profile-promote:' . $waiver->company_id . ':' . $digits, 15);
+
+            try {
+                $lock->block(3);
+            } catch (LockTimeoutException) {
+                Log::warning('Waiver profile sync skipped; another write holds this number', [
+                    'waiver_id' => $waiver->id,
+                    'company_id' => $waiver->company_id,
+                ]);
+
+                return null;
+            }
+
+            try {
+                return $this->syncWithinLock($waiver, $digits);
+            } finally {
+                $lock->release();
+            }
+        } catch (\Throwable $e) {
+            Log::warning('Waiver profile sync failed', [
+                'waiver_id' => $waiver->id,
+                'exception' => $e::class,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+    }
+
+    protected function syncWithinLock(Waiver $waiver, string $digits): ?WaiverProfile
+    {
+        try {
             $matches = WaiverProfile::where('company_id', $waiver->company_id)
                 ->where('phone_digits', $digits)
                 ->orderBy('id')
                 ->get();
 
             if ($matches->count() > 1) {
+                Log::warning('Waiver profile sync skipped; this number answers to more than one record', [
+                    'waiver_id' => $waiver->id,
+                    'company_id' => $waiver->company_id,
+                    'profile_ids' => $matches->pluck('id')->all(),
+                ]);
+
                 return null;
             }
 

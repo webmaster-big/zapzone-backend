@@ -228,11 +228,25 @@ class WaiverPublicController extends Controller
             $data['adult_email'] = $profile->email ?: ($data['adult_email'] ?? null);
             $data['adult_phone'] = $profile->phone_raw ?: ($data['adult_phone'] ?? null);
             $data['adult_dob'] = $profile->date_of_birth?->toDateString() ?: ($data['adult_dob'] ?? null);
-            $data['minors'] = $profiles->resolveMinorsForSubmission(
-                $profile,
-                $data['selected_dependent_ids'] ?? [],
-                $data['minors'] ?? []
-            );
+            try {
+                $data['minors'] = $profiles->resolveMinorsForSubmission(
+                    $profile,
+                    $data['selected_dependent_ids'] ?? [],
+                    $data['minors'] ?? []
+                );
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::error('Returning-customer dependents could not be resolved', [
+                    'waiver_profile_id' => $profile->id,
+                    'company_id' => $template->company_id,
+                    'exception' => $e::class,
+                    'error' => $e->getMessage(),
+                ]);
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'We could not confirm who is participating today. Please ask the front desk for help.',
+                ], 422);
+            }
 
             $cap = max(1, (int) $template->max_minors);
             if (count($data['minors']) > $cap) {
@@ -296,7 +310,23 @@ class WaiverPublicController extends Controller
         ]);
 
         $profiles = app(\App\Services\WaiverProfileService::class);
-        $result = $profiles->lookup($template->company_id, $validated['phone']);
+
+        try {
+            $result = $profiles->lookup($template->company_id, $validated['phone']);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Returning-customer lookup errored out', [
+                'waiver_template_id' => $template->id,
+                'company_id' => $template->company_id,
+                'ip' => $request->ip(),
+                'exception' => $e::class,
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'We could not check that number right now. Please try again or continue as a new customer.',
+            ], 503);
+        }
 
         $payload = ['status' => $result['status']];
         if ($result['status'] === \App\Services\WaiverProfileService::STATUS_FOUND) {

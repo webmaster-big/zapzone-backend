@@ -12,9 +12,11 @@ use App\Models\WaiverProfileDependent;
 use App\Services\SmsService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use App\Http\Traits\GuardsWrites;
 
 class WaiverProfileController extends Controller
 {
+    use GuardsWrites;
     use ScopesByAuthUser;
 
     public function index(Request $request): JsonResponse
@@ -117,6 +119,11 @@ class WaiverProfileController extends Controller
 
     public function update(Request $request, WaiverProfile $waiverProfile): JsonResponse
     {
+        return $this->guardWrite('waiver profile update', ['waiver_profile_id' => $waiverProfile->id], fn () => $this->updateProfile($request, $waiverProfile));
+    }
+
+    private function updateProfile(Request $request, WaiverProfile $waiverProfile): JsonResponse
+    {
         if ($denied = $this->guardProfileRole($request)) {
             return $denied;
         }
@@ -205,6 +212,11 @@ class WaiverProfileController extends Controller
 
     public function storeDependent(Request $request, WaiverProfile $waiverProfile): JsonResponse
     {
+        return $this->guardWrite('waiver profile dependent create', ['waiver_profile_id' => $waiverProfile->id], fn () => $this->createDependent($request, $waiverProfile));
+    }
+
+    private function createDependent(Request $request, WaiverProfile $waiverProfile): JsonResponse
+    {
         if ($denied = $this->guardProfileRole($request)) {
             return $denied;
         }
@@ -260,6 +272,11 @@ class WaiverProfileController extends Controller
     }
 
     public function updateDependent(Request $request, WaiverProfileDependent $dependent): JsonResponse
+    {
+        return $this->guardWrite('waiver profile dependent update', ['dependent_id' => $dependent->id], fn () => $this->changeDependent($request, $dependent));
+    }
+
+    private function changeDependent(Request $request, WaiverProfileDependent $dependent): JsonResponse
     {
         if ($denied = $this->guardProfileRole($request)) {
             return $denied;
@@ -325,6 +342,11 @@ class WaiverProfileController extends Controller
     }
 
     public function destroyDependent(Request $request, WaiverProfileDependent $dependent): JsonResponse
+    {
+        return $this->guardWrite('waiver profile dependent retire', ['dependent_id' => $dependent->id], fn () => $this->retireDependent($request, $dependent));
+    }
+
+    private function retireDependent(Request $request, WaiverProfileDependent $dependent): JsonResponse
     {
         if ($denied = $this->guardProfileRole($request)) {
             return $denied;
