@@ -686,6 +686,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('event-purchases/{id}/restore', [EventPurchaseController::class, 'restore']);
 
     Route::prefix('google-calendar')->group(function () {
+        Route::get('/connections', [GoogleCalendarController::class, 'connections']);
         Route::get('/status', [GoogleCalendarController::class, 'status']);
         Route::get('/auth-url', [GoogleCalendarController::class, 'getAuthUrl']);
         Route::post('/disconnect', [GoogleCalendarController::class, 'disconnect']);

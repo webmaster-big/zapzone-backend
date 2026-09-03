@@ -68,6 +68,41 @@ class GoogleCalendarController extends Controller
         ]);
     }
 
+    public function connections(Request $request): JsonResponse
+    {
+        $authUser = $this->resolveAuthUser($request);
+
+        $query = GoogleCalendarSetting::with('location:id,name,city,state')
+            ->whereNotNull('location_id')
+            ->whereHas('location', function ($q) use ($authUser) {
+                if ($authUser?->company_id) {
+                    $q->where('company_id', $authUser->company_id);
+                }
+            });
+
+        if (in_array((string) $authUser?->role, ['location_manager', 'attendant'], true) && $authUser?->location_id) {
+            $query->where('location_id', $authUser->location_id);
+        }
+
+        $connections = $query->get()->map(fn (GoogleCalendarSetting $setting) => [
+            'id' => $setting->id,
+            'location_id' => $setting->location_id,
+            'google_account_email' => $setting->google_account_email,
+            'calendar_id' => $setting->calendar_id,
+            'is_connected' => (bool) $setting->is_connected,
+            'last_synced_at' => $setting->last_synced_at?->toIso8601String(),
+            'sync_from_date' => $setting->sync_from_date?->toDateString(),
+            'location' => [
+                'id' => $setting->location?->id,
+                'name' => $setting->location?->name,
+                'city' => $setting->location?->city,
+                'state' => $setting->location?->state,
+            ],
+        ])->sortBy(fn ($row) => (string) $row['location']['name'])->values();
+
+        return response()->json(['success' => true, 'data' => $connections]);
+    }
+
     public function getAuthUrl(Request $request): JsonResponse
     {
         $request->validate([
