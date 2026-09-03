@@ -83,12 +83,12 @@ class Promo extends Model
 
     public function isExpired(): bool
     {
-        return $this->end_date < now()->toDateString();
+        return $this->end_date !== null && $this->end_date->startOfDay()->lt(now()->startOfDay());
     }
 
     public function hasStarted(): bool
     {
-        return $this->start_date <= now()->toDateString();
+        return $this->start_date === null || $this->start_date->startOfDay()->lte(now()->startOfDay());
     }
 
     public function isValid(): bool

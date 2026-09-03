@@ -139,7 +139,8 @@ class MembershipController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        $query = Membership::with(['customer:id,first_name,last_name,email,phone', 'plan:id,name,tier,price,billing_cycle', 'homeLocation:id,name']);
+        $query = Membership::with(['customer:id,first_name,last_name,email,phone', 'plan:id,name,tier,price,billing_cycle', 'homeLocation:id,name'])
+            ->withMax(['visits as last_visit_at' => fn ($q) => $q->whereIn('result', ['allowed', 'override'])], 'visited_at');
 
         $this->applyMembershipScope($request, $query);
         $this->applyMembershipFilters($request, $query);
@@ -650,6 +651,7 @@ class MembershipController extends Controller
             'benefitRedemptions' => fn($q) => $q->whereNull('reversed_at')->latest()->limit(50),
             'benefitRedemptions.benefit:id,label,benefit_type',
         ])
+        ->withMax(['visits as last_visit_at' => fn ($q) => $q->whereIn('result', ['allowed', 'override'])], 'visited_at')
         ->where('customer_id', $customer->id)
         ->latest()
         ->first();
@@ -717,6 +719,7 @@ class MembershipController extends Controller
             'plan.location:id,name',
             'homeLocation:id,name',
         ])
+        ->withMax(['visits as last_visit_at' => fn ($q) => $q->whereIn('result', ['allowed', 'override'])], 'visited_at')
         ->where('customer_id', $customer->id)
         ->latest()
         ->get()

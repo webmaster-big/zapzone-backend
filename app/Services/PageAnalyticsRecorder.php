@@ -271,10 +271,10 @@ class PageAnalyticsRecorder
         $ua = strtolower($ua);
         return match (true) {
             str_contains($ua, 'windows')                              => 'Windows',
-            str_contains($ua, 'mac os'), str_contains($ua, 'macintosh') => 'macOS',
-            str_contains($ua, 'android')                              => 'Android',
             str_contains($ua, 'iphone'), str_contains($ua, 'ipad'),
-            str_contains($ua, 'ios')                                  => 'iOS',
+            str_contains($ua, 'ipod'), str_contains($ua, 'ios')       => 'iOS',
+            str_contains($ua, 'android')                              => 'Android',
+            str_contains($ua, 'mac os'), str_contains($ua, 'macintosh') => 'macOS',
             str_contains($ua, 'linux')                                => 'Linux',
             default => null,
         };
