@@ -18,9 +18,21 @@ class WaiverReportController extends Controller
 {
     use ScopesByAuthUser;
 
+    private const REQUEST_LOG_LIMIT = 500;
+
     /** Dispatch the MVP waiver reports. Read-only; scoped to the auth user. */
     public function report(Request $request, string $type): JsonResponse
     {
+        if ($type === 'ad-performance') {
+            $role = (string) ($this->resolveAuthUser($request)?->role ?? '');
+            if (!in_array($role, ['company_admin', 'admin', 'location_manager'], true)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Ad reporting is available to location managers and administrators.',
+                ], 403);
+            }
+        }
+
         $data = match ($type) {
             'completed-by-date' => $this->completedByDate($request),
             'missing' => $this->missing($request),
@@ -233,9 +245,10 @@ class WaiverReportController extends Controller
         $requestLogQuery = WaiverAdSend::query()->with('ad:id,name');
         $this->applyAuthScope($requestLogQuery, $request);
         DateRange::apply($requestLogQuery, 'created_at', $start, $end);
+        $requestLogTotal = (clone $requestLogQuery)->count();
         $recentRequests = $requestLogQuery
             ->orderByDesc('created_at')
-            ->limit(200)
+            ->limit(self::REQUEST_LOG_LIMIT)
             ->get()
             ->map(fn (WaiverAdSend $send) => [
                 'ad_name' => $send->ad?->name ?: ('Ad #' . $send->waiver_template_ad_id),
@@ -247,6 +260,8 @@ class WaiverReportController extends Controller
         return [
             'ads' => $rows,
             'recent_requests' => $recentRequests,
+            'recent_requests_total' => $requestLogTotal,
+            'recent_requests_limit' => self::REQUEST_LOG_LIMIT,
         ];
     }
 }

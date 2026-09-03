@@ -301,6 +301,7 @@ class WaiverPublicController extends Controller
         $payload = ['status' => $result['status']];
         if ($result['status'] === \App\Services\WaiverProfileService::STATUS_FOUND) {
             $payload['profile'] = $profiles->presentForKiosk($result['profile']);
+            $payload['source'] = $result['source'] ?? null;
         }
 
         return response()->json(['success' => true, 'data' => $payload]);

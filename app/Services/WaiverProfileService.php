@@ -2,10 +2,12 @@
 
 namespace App\Services;
 
+use App\Models\Contact;
 use App\Models\Waiver;
 use App\Models\WaiverProfile;
 use App\Models\WaiverProfileDependent;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class WaiverProfileService
@@ -13,6 +15,13 @@ class WaiverProfileService
     public const STATUS_FOUND = 'found';
     public const STATUS_NOT_FOUND = 'not_found';
     public const STATUS_NEEDS_STAFF = 'needs_staff';
+
+    public const SOURCE_PROFILE = 'profile';
+    public const SOURCE_WAIVER_HISTORY = 'waiver_history';
+    public const SOURCE_CONTACT = 'contact';
+    public const SOURCE_SHARED_PHONE = 'shared_phone';
+
+    private const DEPENDENT_MAX_AGE = 18;
 
     public function lookup(int $companyId, ?string $phone): array
     {
@@ -27,20 +36,139 @@ class WaiverProfileService
             ->orderBy('id')
             ->get();
 
-        if ($matches->isEmpty()) {
-            return ['status' => self::STATUS_NOT_FOUND];
-        }
-
         if ($matches->count() > 1) {
             return ['status' => self::STATUS_NEEDS_STAFF];
         }
 
         $profile = $matches->first();
+        $source = self::SOURCE_PROFILE;
+
+        if (!$profile) {
+            [$profile, $source] = $this->promoteFromHistory($companyId, $digits, $phone);
+        }
+
+        if (!$profile) {
+            return $source === self::SOURCE_SHARED_PHONE
+                ? ['status' => self::STATUS_NEEDS_STAFF]
+                : ['status' => self::STATUS_NOT_FOUND];
+        }
+
         if ($profile->needs_staff_review) {
             return ['status' => self::STATUS_NEEDS_STAFF];
         }
 
-        return ['status' => self::STATUS_FOUND, 'profile' => $profile];
+        return ['status' => self::STATUS_FOUND, 'profile' => $profile, 'source' => $source];
+    }
+
+    private static function normalisedPhoneSql(string $column): string
+    {
+        $expr = "COALESCE({$column}, '')";
+        foreach ([' ', '(', ')', '-', '.', '+'] as $strip) {
+            $expr = "REPLACE({$expr}, '{$strip}', '')";
+        }
+
+        return $expr;
+    }
+
+    protected function promoteFromHistory(int $companyId, string $digits, ?string $phone): array
+    {
+        $waivers = Waiver::with('minors')
+            ->where('company_id', $companyId)
+            ->where('status', Waiver::STATUS_COMPLETED)
+            ->whereNull('waiver_profile_id')
+            ->whereNotNull('adult_phone')
+            ->whereRaw(sprintf('RIGHT(%s, ?) = ?', self::normalisedPhoneSql('adult_phone')), [strlen($digits), $digits])
+            ->orderBy('submitted_at')
+            ->orderBy('id')
+            ->get();
+
+        if ($waivers->isNotEmpty()) {
+            $promoted = $this->profileFromWaiverHistory($companyId, $digits, $waivers);
+
+            return $promoted
+                ? [$promoted, self::SOURCE_WAIVER_HISTORY]
+                : [null, self::SOURCE_SHARED_PHONE];
+        }
+
+        $contacts = Contact::where('company_id', $companyId)
+            ->whereNotNull('phone')
+            ->whereRaw(sprintf('RIGHT(%s, ?) = ?', self::normalisedPhoneSql('phone')), [strlen($digits), $digits])
+            ->orderByDesc('id')
+            ->get();
+
+        if ($contacts->isEmpty()) {
+            return [null, self::SOURCE_PROFILE];
+        }
+
+        $distinctNames = $contacts
+            ->map(fn (Contact $c) => mb_strtolower(trim((string) $c->first_name)) . '|' . mb_strtolower(trim((string) $c->last_name)))
+            ->unique();
+
+        if ($distinctNames->count() > 1) {
+            return [null, self::SOURCE_SHARED_PHONE];
+        }
+
+        return [$this->profileFromContact($companyId, $digits, $contacts->first(), $phone), self::SOURCE_CONTACT];
+    }
+
+    protected function profileFromWaiverHistory(int $companyId, string $digits, Collection $waivers): ?WaiverProfile
+    {
+        $latest = $waivers->last();
+
+        $distinctNames = $waivers
+            ->map(fn (Waiver $w) => mb_strtolower(trim((string) $w->adult_first_name)) . '|' . mb_strtolower(trim((string) $w->adult_last_name)))
+            ->unique();
+
+        if ($distinctNames->count() > 1) {
+            return null;
+        }
+
+        return DB::transaction(function () use ($companyId, $digits, $waivers, $latest) {
+            $profile = WaiverProfile::create([
+                'company_id' => $companyId,
+                'last_location_id' => $latest->location_id,
+                'phone_digits' => $digits,
+                'phone_e164' => SmsService::toE164($latest->adult_phone),
+                'phone_raw' => $latest->adult_phone,
+                'first_name' => (string) $latest->adult_first_name,
+                'last_name' => (string) $latest->adult_last_name,
+                'email' => $latest->adult_email,
+                'date_of_birth' => $latest->adult_dob,
+            ]);
+
+            foreach ($waivers as $waiver) {
+                $waiver->forceFill(['waiver_profile_id' => $profile->id])->saveQuietly();
+                $this->seedDependentsFromWaiver($profile, $waiver);
+            }
+
+            $this->stampVisit($profile, $latest);
+
+            return $profile->fresh(['activeDependents']);
+        });
+    }
+
+    protected function profileFromContact(int $companyId, string $digits, Contact $contact, ?string $phone): ?WaiverProfile
+    {
+        $first = trim((string) $contact->first_name);
+        $last = trim((string) $contact->last_name);
+
+        if ($first === '' || $last === '') {
+            return null;
+        }
+
+        $raw = $contact->phone ?: $phone;
+
+        return WaiverProfile::create([
+            'company_id' => $companyId,
+            'last_location_id' => $contact->location_id,
+            'phone_digits' => $digits,
+            'phone_e164' => SmsService::toE164($raw),
+            'phone_raw' => $raw,
+            'first_name' => $first,
+            'last_name' => $last,
+            'email' => $contact->email,
+            'date_of_birth' => $contact->date_of_birth,
+        ])->fresh(['activeDependents']);
     }
 
     public function presentForKiosk(WaiverProfile $profile): array
@@ -200,6 +328,11 @@ class WaiverProfileService
                 continue;
             }
             $dob = $minor->date_of_birth?->toDateString();
+
+            if ($minor->date_of_birth && $minor->date_of_birth->age >= self::DEPENDENT_MAX_AGE) {
+                continue;
+            }
+
             $existing = $profile->dependents->first(fn (WaiverProfileDependent $d) => $d->matches($minor->first_name, $minor->last_name, $dob));
 
             $dependent = $existing ?: $profile->dependents()->create([

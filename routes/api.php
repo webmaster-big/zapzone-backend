@@ -759,7 +759,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('waivers/for',               [WaiverController::class, 'entityWaivers']);
     Route::get('waivers/reports/{type}',    [WaiverReportController::class, 'report'])->middleware('staff');
 
-    Route::middleware('staff')->group(function () {
+    Route::middleware('staff:company_admin|admin|location_manager')->group(function () {
         Route::get('waiver-templates/{templateId}/ads',              [WaiverAdController::class, 'index'])->whereNumber('templateId');
         Route::post('waiver-templates/{templateId}/ads',             [WaiverAdController::class, 'store'])->whereNumber('templateId');
         Route::put('waiver-templates/{templateId}/ads/reorder',      [WaiverAdController::class, 'reorder'])->whereNumber('templateId');
