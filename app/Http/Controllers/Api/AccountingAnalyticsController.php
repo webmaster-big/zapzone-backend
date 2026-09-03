@@ -271,6 +271,7 @@ class AccountingAnalyticsController extends Controller
             'start_date' => 'required|date',
             'end_date' => 'nullable|date|after_or_equal:start_date',
             'view_mode' => ['nullable', Rule::in(['booked_on', 'booked_for'])],
+            'category_filter' => 'nullable|string',
             'format' => ['required', Rule::in(['json', 'csv'])],
         ]);
 
@@ -287,7 +288,9 @@ class AccountingAnalyticsController extends Controller
             return $scope;
         }
 
-        $reportData = $this->reportService->buildReportData($scope['ids'], $startDate, $endDate, $viewMode);
+        $reportData = $this->reportService->buildReportData($scope['ids'], $startDate, $endDate, $viewMode, [
+            'category_filter' => $request->get('category_filter'),
+        ]);
 
         if ($format === 'json') {
             return response()->json([
