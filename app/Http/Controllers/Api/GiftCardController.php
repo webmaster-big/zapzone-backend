@@ -480,24 +480,55 @@ class GiftCardController extends Controller
             $transactionId = $result['transaction_id'];
         }
 
-        $card->update([
-            'status' => 'active',
-            'purchased_at' => now(),
-        ]);
+        try {
+            $card->update([
+                'status' => 'active',
+                'purchased_at' => now(),
+            ]);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::critical('Gift card was paid for but could not be activated', [
+                'gift_card_id' => $card->id,
+                'code' => $card->code,
+                'amount' => $amount,
+                'transaction_id' => $transactionId,
+                'method' => $method,
+                'error' => $e->getMessage(),
+            ]);
+            $lock->release();
 
-        $payment = Payment::create([
-            'payable_id' => $card->id,
-            'payable_type' => Payment::TYPE_GIFT_CARD,
-            'customer_id' => $validated['customer_id'] ?? null,
-            'transaction_id' => $transactionId,
-            'amount' => $amount,
-            'currency' => 'USD',
-            'method' => $method,
-            'status' => 'completed',
-            'paid_at' => now(),
-            'location_id' => $location->id,
-            'notes' => 'Gift card ' . $card->code,
-        ]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Your payment went through but we could not finish issuing the card. Please contact us with reference ' . $card->code . ' and we will sort it out right away.',
+                'data' => ['reference' => $card->code, 'transaction_id' => $transactionId],
+            ], 500);
+        }
+
+        $payment = null;
+
+        try {
+            $payment = Payment::create([
+                'payable_id' => $card->id,
+                'payable_type' => Payment::TYPE_GIFT_CARD,
+                'customer_id' => $customerId,
+                'transaction_id' => $transactionId,
+                'amount' => $amount,
+                'currency' => 'USD',
+                'method' => $method,
+                'status' => 'completed',
+                'paid_at' => now(),
+                'location_id' => $location->id,
+                'notes' => 'Gift card ' . $card->code,
+            ]);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::critical('Gift card issued but the payment row failed to write', [
+                'gift_card_id' => $card->id,
+                'code' => $card->code,
+                'amount' => $amount,
+                'transaction_id' => $transactionId,
+                'method' => $method,
+                'error' => $e->getMessage(),
+            ]);
+        }
 
         if ($customerId) {
             $card->customers()->syncWithoutDetaching([
@@ -549,7 +580,7 @@ class GiftCardController extends Controller
                     'code' => $card->code,
                     'amount' => $amount,
                     'method' => $method,
-                    'payment_id' => $payment->id,
+                    'payment_id' => $payment?->id,
                 ],
             ]);
         } catch (\Throwable $e) {
@@ -577,7 +608,7 @@ class GiftCardController extends Controller
             $location->id,
             'gift_card',
             $card->id,
-            ['amount' => $amount, 'payment_id' => $payment->id, 'method' => $method]
+            ['amount' => $amount, 'payment_id' => $payment?->id, 'method' => $method]
         );
 
         return response()->json([
