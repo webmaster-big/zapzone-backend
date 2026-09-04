@@ -124,7 +124,7 @@ class GiftCardController extends Controller
     {
         $validated = $request->validate([
             'code' => 'sometimes|string|unique:gift_cards',
-            'type' => ['required', Rule::in(['fixed', 'percentage'])],
+            'type' => ['required', Rule::in(['fixed'])],
             'initial_value' => 'required|numeric|min:0',
             'max_usage' => 'integer|min:1',
             'description' => 'nullable|string',
@@ -206,7 +206,7 @@ class GiftCardController extends Controller
     {
         $validated = $request->validate([
             'code' => 'sometimes|string|unique:gift_cards,code,' . $giftCard->id,
-            'type' => ['sometimes', Rule::in(['fixed', 'percentage'])],
+            'type' => ['sometimes', Rule::in(['fixed'])],
             'initial_value' => 'sometimes|numeric|min:0',
             'balance' => 'sometimes|numeric|min:0',
             'max_usage' => 'sometimes|integer|min:1',

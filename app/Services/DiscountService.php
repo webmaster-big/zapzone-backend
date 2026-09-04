@@ -11,6 +11,7 @@ use App\Models\EventPurchase;
 use App\Models\GiftCard;
 use App\Models\Promo;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 
@@ -68,6 +69,13 @@ class DiscountService
 
         if (!$giftCard) {
             return $this->fail('Gift card not found');
+        }
+
+        if ($giftCard->type === 'percentage') {
+            return $this->fail(
+                'This gift card is a percentage card, which is not supported. Use a promo code for a percentage discount.',
+                ['gift_card' => $giftCard]
+            );
         }
 
         if (!$giftCard->isValid()) {
@@ -203,19 +211,38 @@ class DiscountService
 
     public function redeemGiftCard(GiftCard $giftCard, float $amount, ?int $customerId = null, ?Request $request = null, array $extra = []): float
     {
-        $amount = round(min($amount, (float) $giftCard->balance), 2);
+        $locked = DB::transaction(function () use ($giftCard, $amount) {
+            $row = GiftCard::whereKey($giftCard->getKey())->lockForUpdate()->first();
 
-        if ($amount <= 0) {
+            if (!$row || $row->type === 'percentage') {
+                return null;
+            }
+
+            $take = round(min($amount, (float) $row->balance), 2);
+
+            if ($take <= 0) {
+                return null;
+            }
+
+            $previous = (float) $row->balance;
+            $remaining = round($previous - $take, 2);
+
+            $row->update([
+                'balance' => $remaining,
+                'status' => $remaining <= 0 ? 'redeemed' : 'active',
+            ]);
+
+            return ['amount' => $take, 'previous' => $previous, 'remaining' => $remaining];
+        });
+
+        if (!$locked) {
             return 0.0;
         }
 
-        $previousBalance = (float) $giftCard->balance;
-        $newBalance = round($previousBalance - $amount, 2);
-
-        $giftCard->update([
-            'balance' => $newBalance,
-            'status' => $newBalance <= 0 ? 'redeemed' : 'active',
-        ]);
+        $amount = $locked['amount'];
+        $previousBalance = $locked['previous'];
+        $newBalance = $locked['remaining'];
+        $giftCard->forceFill(['balance' => $newBalance, 'status' => $newBalance <= 0 ? 'redeemed' : 'active'])->syncOriginal();
 
         if ($customerId) {
             CustomerGiftCard::create([
@@ -245,18 +272,18 @@ class DiscountService
             ]);
         }
 
-        $currentUser = auth()->user();
+        $currentUser = auth()->user() instanceof \App\Models\User ? auth()->user() : null;
         ActivityLog::log(
             action: 'Gift Card Redeemed',
             category: 'update',
             description: "Gift card {$giftCard->code} redeemed for $" . number_format($amount, 2),
-            userId: auth()->id(),
+            userId: $currentUser?->id,
             locationId: $giftCard->location_id,
             entityType: 'gift_card',
             entityId: $giftCard->id,
             metadata: [
                 'redeemed_by' => [
-                    'user_id' => auth()->id(),
+                    'user_id' => $currentUser?->id,
                     'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
                     'email' => $currentUser?->email,
                 ],
@@ -287,6 +314,62 @@ class DiscountService
         );
 
         return $amount;
+    }
+
+    public function refundGiftCard(GiftCard $giftCard, float $amount, string $reason, ?Request $request = null): float
+    {
+        $credited = DB::transaction(function () use ($giftCard, $amount) {
+            $row = GiftCard::whereKey($giftCard->getKey())->lockForUpdate()->first();
+
+            if (!$row) {
+                return null;
+            }
+
+            $give = round(min($amount, max(0, (float) $row->initial_value - (float) $row->balance)), 2);
+
+            if ($give <= 0) {
+                return null;
+            }
+
+            $previous = (float) $row->balance;
+            $restored = round($previous + $give, 2);
+
+            $row->update([
+                'balance' => $restored,
+                'status' => $row->status === 'redeemed' ? 'active' : $row->status,
+            ]);
+
+            return ['amount' => $give, 'previous' => $previous, 'restored' => $restored];
+        });
+
+        if (!$credited) {
+            return 0.0;
+        }
+
+        $giftCard->forceFill([
+            'balance' => $credited['restored'],
+            'status' => $giftCard->status === 'redeemed' ? 'active' : $giftCard->status,
+        ])->syncOriginal();
+
+        $currentUser = auth()->user() instanceof \App\Models\User ? auth()->user() : null;
+        ActivityLog::log(
+            action: 'Gift Card Refunded',
+            category: 'update',
+            description: "Gift card {$giftCard->code} credited back $" . number_format($credited['amount'], 2) . " ({$reason})",
+            userId: $currentUser?->id,
+            locationId: $giftCard->location_id,
+            entityType: 'gift_card',
+            entityId: $giftCard->id,
+            metadata: [
+                'reason' => $reason,
+                'amount_refunded' => $credited['amount'],
+                'previous_balance' => $credited['previous'],
+                'restored_balance' => $credited['restored'],
+                'refunded_at' => now()->toIso8601String(),
+            ]
+        );
+
+        return $credited['amount'];
     }
 
     protected function isEligible($code, array $context): bool
