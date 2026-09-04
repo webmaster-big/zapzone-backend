@@ -498,10 +498,16 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('global-notes/package/{packageId}', [GlobalNoteController::class, 'getForPackage']);
     Route::patch('global-notes/{globalNote}/toggle-status', [GlobalNoteController::class, 'toggleStatus']);
 
-    Route::apiResource('gift-cards', GiftCardController::class);
-    Route::post('gift-cards/{giftCard}/redeem', [GiftCardController::class, 'redeem']);
-    Route::patch('gift-cards/{giftCard}/deactivate', [GiftCardController::class, 'deactivate']);
-    Route::patch('gift-cards/{giftCard}/reactivate', [GiftCardController::class, 'reactivate']);
+    Route::get('gift-cards', [GiftCardController::class, 'index']);
+    Route::get('gift-cards/{gift_card}', [GiftCardController::class, 'show'])->whereNumber('gift_card');
+    Route::middleware('staff')->group(function () {
+        Route::post('gift-cards', [GiftCardController::class, 'store']);
+        Route::match(['put', 'patch'], 'gift-cards/{gift_card}', [GiftCardController::class, 'update'])->whereNumber('gift_card');
+        Route::delete('gift-cards/{gift_card}', [GiftCardController::class, 'destroy'])->whereNumber('gift_card');
+        Route::post('gift-cards/{giftCard}/redeem', [GiftCardController::class, 'redeem'])->whereNumber('giftCard');
+        Route::patch('gift-cards/{giftCard}/deactivate', [GiftCardController::class, 'deactivate'])->whereNumber('giftCard');
+        Route::patch('gift-cards/{giftCard}/reactivate', [GiftCardController::class, 'reactivate'])->whereNumber('giftCard');
+    });
 
     Route::get('promos/valid', [PromoController::class, 'getValid']);
     Route::post('promos/generate-bulk', [PromoController::class, 'generateBulk']);

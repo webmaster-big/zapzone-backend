@@ -47,6 +47,17 @@ class GiftCardController extends Controller
                     }
                 });
             }
+        } else {
+            $customer = $request->user();
+
+            if (!$customer instanceof \App\Models\Customer) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Gift cards are only visible to staff and to the customer who owns them.',
+                ], 403);
+            }
+
+            $query->whereHas('customers', fn ($q) => $q->where('customers.id', $customer->id));
         }
 
         if ($request->has('location_id')) {
@@ -168,8 +179,21 @@ class GiftCardController extends Controller
         ], 201);
     }
 
-    public function show(GiftCard $giftCard): JsonResponse
+    public function show(Request $request, GiftCard $giftCard): JsonResponse
     {
+        if (!$this->resolveAuthUser($request)) {
+            $customer = $request->user();
+            $owns = $customer instanceof \App\Models\Customer
+                && $giftCard->customers()->where('customers.id', $customer->id)->exists();
+
+            if (!$owns) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'That gift card is not on your account.',
+                ], 403);
+            }
+        }
+
         $giftCard->load(['creator', 'customers', 'location']);
 
         return response()->json([
