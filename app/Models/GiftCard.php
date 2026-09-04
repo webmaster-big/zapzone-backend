@@ -13,6 +13,12 @@ class GiftCard extends Model
     use HasFactory, HasTargeting;
 
     protected $fillable = [
+        'purchased_by_customer_id',
+        'purchaser_name',
+        'purchaser_email',
+        'purchaser_phone',
+        'purchased_at',
+        'purchase_amount',
         'code',
         'type',
         'initial_value',

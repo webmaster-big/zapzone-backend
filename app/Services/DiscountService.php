@@ -214,7 +214,7 @@ class DiscountService
         $locked = DB::transaction(function () use ($giftCard, $amount) {
             $row = GiftCard::whereKey($giftCard->getKey())->lockForUpdate()->first();
 
-            if (!$row || $row->type === 'percentage') {
+            if (!$row || $row->type === 'percentage' || !$row->isValid()) {
                 return null;
             }
 

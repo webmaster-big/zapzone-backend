@@ -8,6 +8,7 @@ use App\Http\Traits\ScopesByAuthUser;
 use App\Models\GiftCard;
 use App\Models\ActivityLog;
 use App\Models\Location;
+use App\Models\Payment;
 use App\Services\DiscountService;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
@@ -328,6 +329,310 @@ class GiftCardController extends Controller
             'success' => true,
             'message' => 'Gift card deleted successfully',
         ]);
+    }
+
+    public function purchase(Request $request, \App\Services\AuthorizeNetCharger $charger): JsonResponse
+    {
+        $validated = $request->validate([
+            'location_id' => ['required', 'integer', 'exists:locations,id'],
+            'amount' => ['required', 'numeric'],
+            'payment_method' => ['required', Rule::in(['authorize.net', 'cash', 'in-store'])],
+            'purchaser_name' => ['required', 'string', 'max:255'],
+            'purchaser_email' => ['required', 'email', 'max:255'],
+            'purchaser_phone' => ['nullable', 'string', 'max:40'],
+            'customer_id' => ['nullable', 'integer', 'exists:customers,id'],
+            'opaque_data.dataDescriptor' => ['required_if:payment_method,authorize.net', 'string', 'max:255'],
+            'opaque_data.dataValue' => ['required_if:payment_method,authorize.net', 'string'],
+        ]);
+
+        $principal = $request->user() ?: \Illuminate\Support\Facades\Auth::guard('sanctum')->user();
+        $staff = $principal instanceof \App\Models\User ? $principal : null;
+        $method = $validated['payment_method'];
+
+        if ($method !== 'authorize.net' && !$staff) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only staff can record a cash or in-store gift card sale.',
+            ], 403);
+        }
+
+        $customerId = $validated['customer_id'] ?? null;
+
+        if ($customerId && !$staff) {
+            $customerId = ($principal instanceof \App\Models\Customer && (int) $principal->id === (int) $customerId)
+                ? $customerId
+                : null;
+        }
+
+        $amount = $this->resolvePurchaseAmount((float) $validated['amount']);
+
+        if ($amount === null) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Choose one of the offered amounts, or a custom amount between $'
+                    . number_format((float) config('gift_cards.min_custom'), 2) . ' and $'
+                    . number_format((float) config('gift_cards.max_custom'), 2) . '.',
+            ], 422);
+        }
+
+        $location = \App\Models\Location::find($validated['location_id']);
+
+        if ($staff && in_array((string) $staff->role, ['location_manager', 'attendant'], true)
+            && $staff->location_id && (int) $staff->location_id !== (int) $location->id) {
+            return response()->json([
+                'success' => false,
+                'message' => 'You can only sell gift cards for your own location.',
+            ], 403);
+        }
+
+        $fingerprint = 'gc-buy:' . sha1(implode('|', [
+            $method,
+            (string) $amount,
+            (string) $location->id,
+            mb_strtolower($validated['purchaser_email']),
+            (string) ($staff?->id ?? 'guest'),
+        ]));
+
+        if ($existingId = \Illuminate\Support\Facades\Cache::get($fingerprint)) {
+            $existing = GiftCard::find($existingId);
+
+            if ($existing) {
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Gift card already purchased.',
+                    'data' => $this->purchasePayload($existing, $location, null, $validated['purchaser_email']),
+                    'duplicate' => true,
+                ], 200);
+            }
+        }
+
+        $lock = \Illuminate\Support\Facades\Cache::lock($fingerprint . ':lock', 30);
+
+        if (!$lock->get()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'That purchase is already being processed. Please wait a moment.',
+            ], 409);
+        }
+
+        $card = GiftCard::create([
+            'code' => $this->generateUniqueCode(),
+            'type' => 'fixed',
+            'initial_value' => $amount,
+            'balance' => $amount,
+            'status' => 'inactive',
+            'max_usage' => 1,
+            'description' => 'Purchased gift card',
+            'location_id' => $location->id,
+            'created_by' => $staff?->id,
+            'purchased_by_customer_id' => $customerId,
+            'purchaser_name' => $validated['purchaser_name'],
+            'purchaser_email' => $validated['purchaser_email'],
+            'purchaser_phone' => $validated['purchaser_phone'] ?? null,
+            'purchase_amount' => $amount,
+            'deleted' => false,
+        ]);
+
+        $transactionId = 'GC-' . strtoupper(Str::random(10));
+
+        if ($method === 'authorize.net') {
+            $account = \App\Models\AuthorizeNetAccount::where('location_id', $location->id)
+                ->where('is_active', true)
+                ->first();
+
+            if (!$account) {
+                $card->forceDelete();
+                $lock->release();
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Card payments are not set up for this location yet.',
+                ], 422);
+            }
+
+            [$first, $last] = $this->splitName($validated['purchaser_name']);
+
+            $result = $charger->charge(
+                $account,
+                $amount,
+                $request->input('opaque_data', []),
+                [
+                    'first_name' => $first,
+                    'last_name' => $last,
+                    'email' => $validated['purchaser_email'],
+                    'phone' => $validated['purchaser_phone'] ?? null,
+                ],
+                'GC' . $card->id,
+                'GC' . $card->id,
+                'Zap Zone gift card'
+            );
+
+            if (!$result['success']) {
+                $card->forceDelete();
+                $lock->release();
+
+                return response()->json([
+                    'success' => false,
+                    'message' => $result['error'] ?? 'Payment declined.',
+                ], 402);
+            }
+
+            $transactionId = $result['transaction_id'];
+        }
+
+        $card->update([
+            'status' => 'active',
+            'purchased_at' => now(),
+        ]);
+
+        $payment = Payment::create([
+            'payable_id' => $card->id,
+            'payable_type' => Payment::TYPE_GIFT_CARD,
+            'customer_id' => $validated['customer_id'] ?? null,
+            'transaction_id' => $transactionId,
+            'amount' => $amount,
+            'currency' => 'USD',
+            'method' => $method,
+            'status' => 'completed',
+            'paid_at' => now(),
+            'location_id' => $location->id,
+            'notes' => 'Gift card ' . $card->code,
+        ]);
+
+        if ($customerId) {
+            $card->customers()->syncWithoutDetaching([
+                $customerId => ['amount' => 0, 'redeemed' => false],
+            ]);
+        }
+
+        \Illuminate\Support\Facades\Cache::put($fingerprint, $card->id, now()->addMinutes(2));
+        $lock->release();
+
+        if ($customerId) {
+            try {
+                \App\Models\CustomerNotification::create([
+                    'customer_id' => $customerId,
+                    'location_id' => $location->id,
+                    'type' => 'gift_card',
+                    'priority' => 'medium',
+                    'title' => 'Gift Card Purchased',
+                    'message' => 'Your $' . number_format($amount, 2) . ' gift card is ready. Code: ' . $card->code,
+                    'status' => 'unread',
+                    'action_url' => '/customer/gift-cards',
+                    'action_text' => 'View Gift Cards',
+                    'metadata' => [
+                        'gift_card_id' => $card->id,
+                        'gift_card_code' => $card->code,
+                        'amount' => $amount,
+                    ],
+                ]);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('Gift card customer notification failed', [
+                    'gift_card_id' => $card->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        try {
+            \App\Models\Notification::create([
+                'location_id' => $location->id,
+                'type' => 'gift_card',
+                'priority' => 'low',
+                'title' => 'Gift card sold',
+                'message' => sprintf('A $%s gift card (%s) was sold at %s.', number_format($amount, 2), $card->code, $location->name),
+                'status' => 'unread',
+                'action_url' => '/packages/gift-cards',
+                'action_text' => 'View Gift Cards',
+                'metadata' => [
+                    'gift_card_id' => $card->id,
+                    'code' => $card->code,
+                    'amount' => $amount,
+                    'method' => $method,
+                    'payment_id' => $payment->id,
+                ],
+            ]);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('Gift card staff notification failed', [
+                'gift_card_id' => $card->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        try {
+            \Illuminate\Support\Facades\Mail::to($validated['purchaser_email'])
+                ->send(new \App\Mail\GiftCardIssued($card->fresh(), $location));
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('Gift card issued but the email failed', [
+                'gift_card_id' => $card->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        ActivityLog::log(
+            'gift_card_purchased',
+            'create',
+            sprintf('Gift card %s sold for $%s (%s)', $card->code, number_format($amount, 2), $method),
+            $staff?->id,
+            $location->id,
+            'gift_card',
+            $card->id,
+            ['amount' => $amount, 'payment_id' => $payment->id, 'method' => $method]
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Gift card purchased.',
+            'data' => $this->purchasePayload($card->fresh(), $location, $transactionId, $validated['purchaser_email']),
+        ], 201);
+    }
+
+    protected function purchasePayload(GiftCard $card, Location $location, ?string $transactionId, string $email): array
+    {
+        return [
+            'id' => $card->id,
+            'code' => $card->code,
+            'balance' => (float) $card->balance,
+            'initial_value' => (float) $card->initial_value,
+            'location' => $location->name,
+            'expiry_date' => $card->expiry_date?->toDateString(),
+            'transaction_id' => $transactionId,
+            'emailed_to' => $email,
+        ];
+    }
+
+    protected function resolvePurchaseAmount(float $requested): ?float
+    {
+        $amount = round($requested, 2);
+        $offered = array_map('floatval', (array) config('gift_cards.denominations', []));
+
+        if (in_array($amount, $offered, true)) {
+            return $amount;
+        }
+
+        $min = (float) config('gift_cards.min_custom', 10);
+        $max = (float) config('gift_cards.max_custom', 500);
+
+        return $amount >= $min && $amount <= $max ? $amount : null;
+    }
+
+    protected function splitName(string $full): array
+    {
+        $parts = preg_split('/\s+/', trim($full)) ?: [];
+        $first = array_shift($parts) ?? '';
+
+        return [$first, implode(' ', $parts)];
+    }
+
+    protected function generateUniqueCode(): string
+    {
+        $prefix = (string) config('gift_cards.code_prefix', 'GC');
+
+        do {
+            $code = $prefix . strtoupper(Str::random(8));
+        } while (GiftCard::where('code', $code)->exists());
+
+        return $code;
     }
 
     public function validateByCode(Request $request, DiscountService $discounts): JsonResponse

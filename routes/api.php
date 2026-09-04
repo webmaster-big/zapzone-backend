@@ -288,6 +288,7 @@ Route::get('fee-supports/for-entity', [FeeSupportController::class, 'getForEntit
 
 Route::post('promos/validate-code', [PromoController::class, 'validateByCode']); // include
 Route::post('gift-cards/validate-code', [GiftCardController::class, 'validateByCode']); // include
+Route::post('gift-cards/purchase', [GiftCardController::class, 'purchase'])->middleware('throttle:gift-card-purchase');
 
 Route::get('google-calendar/callback', [GoogleCalendarController::class, 'handleCallback']);
 

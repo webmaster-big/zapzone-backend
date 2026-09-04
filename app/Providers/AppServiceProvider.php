@@ -21,6 +21,7 @@ class AppServiceProvider extends ServiceProvider
             'attraction_purchase' => \App\Models\AttractionPurchase::class,
             'event_purchase' => \App\Models\EventPurchase::class,
             'ticket_order' => \App\Models\TicketOrder::class,
+            'gift_card' => \App\Models\GiftCard::class,
         ]);
 
         \App\Models\Company::created(function (\App\Models\Company $company) {
@@ -59,6 +60,7 @@ class AppServiceProvider extends ServiceProvider
         $this->registerPhotoRateLimiters();
         $this->registerCheckoutConcernRateLimiters();
         $this->registerWaiverAdRateLimiters();
+        $this->registerGiftCardRateLimiter();
         $this->registerCustomFieldRateLimiter();
     }
 
@@ -115,6 +117,14 @@ class AppServiceProvider extends ServiceProvider
         // Staff testing a channel. Each real send costs money, so keep the pace sensible.
         RateLimiter::for('photo-test-message', fn (Request $request) => Limit::perMinute(6)
             ->by('photo:test:' . ($this->photoRequestUserId($request) ?? $request->ip())));
+    }
+
+    private function registerGiftCardRateLimiter(): void
+    {
+        RateLimiter::for('gift-card-purchase', fn (Request $request) => [
+            Limit::perMinute(5)->by('gc-buy:ip:' . $request->ip()),
+            Limit::perHour(20)->by('gc-buy:hr:' . $request->ip()),
+        ]);
     }
 
     private function registerWaiverAdRateLimiters(): void

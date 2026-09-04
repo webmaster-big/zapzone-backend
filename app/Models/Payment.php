@@ -16,6 +16,7 @@ class Payment extends Model
     public const TYPE_ATTRACTION_PURCHASE = 'attraction_purchase';
     public const TYPE_EVENT_PURCHASE = 'event_purchase';
     public const TYPE_TICKET_ORDER = 'ticket_order';
+    public const TYPE_GIFT_CARD = 'gift_card';
 
     protected $fillable = [
         'payable_id',
