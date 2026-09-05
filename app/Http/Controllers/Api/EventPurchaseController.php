@@ -30,6 +30,7 @@ use Illuminate\Validation\Rule;
 
 class EventPurchaseController extends Controller
 {
+    use \App\Http\Traits\ReversesGiftCards;
     use ScopesByAuthUser;
     use RecordsPageAnalytics;
 
@@ -233,6 +234,7 @@ class EventPurchaseController extends Controller
 
             if (array_key_exists('total_amount', $validated) && $validated['total_amount'] !== null) {
                 $expectation = app(CheckoutPricer::class)->forEventPurchase($validated, $event, $checkoutMembership);
+                $serverExpectedTotal = (float) $expectation['expected_total'];
                 $rejection = app(CheckoutTotalGuard::class)->check($expectation, (float) $validated['total_amount'], $checkoutActor, [
                     'purchase_type' => 'event_purchase',
                     'event_id' => $event->id,
@@ -261,7 +263,10 @@ class EventPurchaseController extends Controller
                 $duplicateQuery->where('guest_email', $validated['guest_email'] ?? null);
             }
 
-            $existingPending = $duplicateQuery->first();
+            $requestCarriesCode = !empty($validated['gift_card_code']) || !empty($validated['gift_card_id'])
+                || !empty($validated['promo_code']) || !empty($validated['promo_id']);
+
+            $existingPending = $requestCarriesCode ? null : $duplicateQuery->first();
             if ($existingPending) {
                 $existingPending->load(['event', 'customer', 'location:id,name', 'addOns']);
                 Log::info('Duplicate event purchase prevented (existing pending found)', [
@@ -287,7 +292,8 @@ class EventPurchaseController extends Controller
             $customFieldAnswers = $validated['custom_fields'] ?? null;
             unset($validated['add_ons'], $validated['send_email'], $validated['sms_consent'], $validated['custom_fields']);
 
-            $purchase = DB::transaction(function () use (&$validated, $discounts, $request, $customFieldAnswers, $rules, $isStaff, $addOnLines) {
+            $serverExpectedTotal = $serverExpectedTotal ?? null;
+            $purchase = DB::transaction(function () use (&$validated, $discounts, $request, $customFieldAnswers, $rules, $isStaff, $addOnLines, $serverExpectedTotal) {
                 $capEvent = Event::where('id', $validated['event_id'])->lockForUpdate()->first();
 
                 if ($capEvent && $capEvent->max_tickets_per_slot !== null) {
@@ -301,6 +307,14 @@ class EventPurchaseController extends Controller
                         );
                     }
                 }
+
+                if (!$isStaff) {
+                    $validated['gift_card_id'] = null;
+                }
+
+                $giftCardRedeemed = 0.0;
+                $appliedGiftCardId = null;
+                $serverDiscountApplied = 0.0;
 
                 $hasCode = !empty($validated['promo_id']) || !empty($validated['gift_card_id'])
                     || !empty($validated['promo_code']) || !empty($validated['gift_card_code']);
@@ -319,6 +333,9 @@ class EventPurchaseController extends Controller
                     ], $request);
 
                     if ($discountResult['discount_amount'] > 0) {
+                        $giftCardRedeemed = round((float) ($discountResult['gift_card_discount'] ?? 0), 2);
+                        $appliedGiftCardId = $discountResult['gift_card_id'] ?? null;
+                        $serverDiscountApplied = round((float) $discountResult['discount_amount'], 2);
                         $validated['total_amount'] = max(0, round(((float) ($validated['total_amount'] ?? 0)) - $discountResult['discount_amount'], 2));
                         $validated['discount_amount'] = round(((float) ($validated['discount_amount'] ?? 0)) + $discountResult['discount_amount'], 2);
                         $validated['applied_discounts'] = array_merge($validated['applied_discounts'] ?? [], $discountResult['applied_discounts']);
@@ -333,6 +350,26 @@ class EventPurchaseController extends Controller
                 } else {
                     $validated['status'] = 'pending';
                     $validated['payment_status'] = 'pending';
+                }
+
+                if ($giftCardRedeemed <= 0) {
+                    $validated['gift_card_id'] = null;
+                }
+
+                if (($validated['payment_method'] ?? null) === 'authorize.net'
+                    && round((float) ($validated['total_amount'] ?? 0), 2) <= 0
+                    && $giftCardRedeemed > 0
+                    && $serverExpectedTotal !== null
+                    && $serverDiscountApplied >= $serverExpectedTotal - (float) config('checkout.total_tolerance', 0.05)) {
+                    $validated['status'] = 'confirmed';
+                    $validated['payment_status'] = 'paid';
+                }
+
+                if (($validated['payment_method'] ?? null) === 'authorize.net'
+                    && round((float) ($validated['total_amount'] ?? 0), 2) <= 0
+                    && $giftCardRedeemed > 0
+                    && ($validated['status'] ?? null) !== 'confirmed') {
+                    throw new \RuntimeException('The price of this order has changed. Please refresh the page and try again.');
                 }
 
                 if (!empty($validated['applied_discounts'])) {
@@ -352,6 +389,10 @@ class EventPurchaseController extends Controller
                 $rules->assertQuantities($addOnLines, null, $isStaff, 'event_purchase.store');
 
                 $created = EventPurchase::create($validated);
+
+                if ($giftCardRedeemed > 0 && $appliedGiftCardId) {
+                    $discounts->recordRedemptionForPayable((int) $appliedGiftCardId, $giftCardRedeemed, \App\Models\Payment::TYPE_EVENT_PURCHASE, (int) $created->id);
+                }
 
                 foreach ($addOnLines as $line) {
                     $created->addOns()->attach($line['id'], [
@@ -803,6 +844,8 @@ class EventPurchaseController extends Controller
             $purchaseId = $eventPurchase->id;
             $locationId = $eventPurchase->event->location_id ?? null;
 
+            $this->reverseGiftCardFor($eventPurchase, \App\Models\Payment::TYPE_EVENT_PURCHASE, 'purchase_deleted');
+
             $deleted = $eventPurchase->delete();
 
             $verify = EventPurchase::withTrashed()->find($purchaseId);
@@ -877,6 +920,11 @@ class EventPurchaseController extends Controller
         ]);
 
         if (!$wasCancelled) {
+            app(MembershipBenefitService::class)->reverseForRedeemable($eventPurchase, 'purchase_cancelled');
+            $this->reverseGiftCardFor($eventPurchase, \App\Models\Payment::TYPE_EVENT_PURCHASE, 'purchase_cancelled');
+        }
+
+        if (!$wasCancelled) {
             try {
                 app(EmailNotificationService::class)
                     ->triggerEventNotification($eventPurchase, EmailNotification::TRIGGER_EVENT_CANCELLED);
@@ -928,6 +976,10 @@ class EventPurchaseController extends Controller
         $originalStatus = $eventPurchase->status;
 
         if ($originalStatus === 'cancelled' && $validated['status'] !== 'cancelled') {
+            if ($this->giftCardWasReversedFor(\App\Models\Payment::TYPE_EVENT_PURCHASE, (int) $eventPurchase->id)) {
+                return response()->json(['success' => false, 'message' => 'This record was cancelled and its gift card refunded. It cannot be reactivated - create a new one so the gift card is redeemed again.'], 422);
+            }
+
             try {
                 app(\App\Services\SlotCapacityGuard::class)->assertEventPurchaseFits($eventPurchase, 'event_purchase.updateStatus');
             } catch (\RuntimeException $e) {
@@ -939,6 +991,7 @@ class EventPurchaseController extends Controller
 
         if ($validated['status'] === 'cancelled') {
             app(MembershipBenefitService::class)->reverseForRedeemable($eventPurchase, 'purchase_cancelled');
+            $this->reverseGiftCardFor($eventPurchase, \App\Models\Payment::TYPE_EVENT_PURCHASE, 'purchase_cancelled');
         }
 
         try {
@@ -1093,6 +1146,8 @@ class EventPurchaseController extends Controller
             $purchaseId = $eventPurchase->id;
             $locationId = $eventPurchase->event->location_id ?? null;
 
+            $this->reverseGiftCardFor($eventPurchase, \App\Models\Payment::TYPE_EVENT_PURCHASE, 'payment_error_cleanup');
+
             $eventPurchase->forceDelete();
 
             ActivityLog::log(
@@ -1209,6 +1264,13 @@ class EventPurchaseController extends Controller
 
     public function restore(int $id): JsonResponse
     {
+        if ($this->giftCardWasReversedFor(\App\Models\Payment::TYPE_EVENT_PURCHASE, (int) $id)) {
+            return response()->json([
+                'success' => false,
+                'message' => "This record's gift card was already refunded when it was cancelled. Restore is blocked - rebook it instead so the card is charged again.",
+            ], 422);
+        }
+
         $purchase = EventPurchase::onlyTrashed()->findOrFail($id);
 
         if ($purchase->status !== 'cancelled') {

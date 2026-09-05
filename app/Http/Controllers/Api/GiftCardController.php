@@ -18,6 +18,7 @@ use App\Support\CatalogRules;
 
 class GiftCardController extends Controller
 {
+    private const CODE_BODY_LENGTH = 12;
     use ScopesByAuthUser;
     use RecordsPageAnalytics;
 
@@ -25,7 +26,7 @@ class GiftCardController extends Controller
     {
         $query = GiftCard::with(['creator', 'customers', 'location']);
 
-        $authUser = $this->resolveAuthUser($request);
+        $authUser = $request->user() instanceof \App\Models\User ? $request->user() : null;
         if ($authUser) {
             if (in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
                 $locationId = $authUser->location_id;
@@ -143,13 +144,6 @@ class GiftCardController extends Controller
             'event_ids.*' => 'integer|exists:events,id',
         ]);
 
-        if ($validated['type'] === 'percentage' && (float) $validated['initial_value'] > 100) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Percentage gift cards cannot exceed 100%',
-            ], 422);
-        }
-
         foreach (['location_ids', 'package_ids', 'attraction_ids', 'event_ids'] as $field) {
             if (array_key_exists($field, $validated)) {
                 $validated[$field] = GiftCard::normalizeIds($validated[$field]);
@@ -163,9 +157,7 @@ class GiftCardController extends Controller
         }
 
         if (!isset($validated['code'])) {
-            do {
-                $validated['code'] = 'GC' . strtoupper(Str::random(8));
-            } while (GiftCard::where('code', $validated['code'])->exists());
+            $validated['code'] = $this->generateUniqueCode();
         }
 
         $validated['balance'] = $validated['initial_value'];
@@ -182,7 +174,7 @@ class GiftCardController extends Controller
 
     public function show(Request $request, GiftCard $giftCard): JsonResponse
     {
-        if (!$this->resolveAuthUser($request)) {
+        if (!($request->user() instanceof \App\Models\User)) {
             $customer = $request->user();
             $owns = $customer instanceof \App\Models\Customer
                 && $giftCard->customers()->where('customers.id', $customer->id)->exists();
@@ -328,6 +320,68 @@ class GiftCardController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Gift card deleted successfully',
+        ]);
+    }
+
+    public function claim(Request $request): JsonResponse
+    {
+        $customer = $request->user();
+
+        if (!$customer instanceof \App\Models\Customer) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only a signed-in customer can add a gift card to their account.',
+            ], 403);
+        }
+
+        $validated = $request->validate([
+            'code' => 'required|string|max:64',
+        ]);
+
+        $code = strtoupper(trim($validated['code']));
+        $refused = response()->json([
+            'success' => false,
+            'message' => 'That code could not be added. Check it and try again, or ask the front desk.',
+        ], 422);
+
+        $card = GiftCard::byCode($code)->first();
+
+        if (!$card || $card->type === 'percentage' || !$card->isValid()) {
+            \Illuminate\Support\Facades\Log::info('Gift card claim refused', [
+                'customer_id' => $customer->id,
+                'code_prefix' => mb_substr($code, 0, 4),
+                'found' => (bool) $card,
+                'ip' => $request->ip(),
+            ]);
+
+            return $refused;
+        }
+
+        $lock = \Illuminate\Support\Facades\Cache::lock('gc-claim:' . $customer->id . ':' . $card->id, 10);
+
+        if (!$lock->get()) {
+            return $refused;
+        }
+
+        try {
+            $alreadyLinked = $card->customers()->where('customers.id', $customer->id)->exists();
+
+            if (!$alreadyLinked) {
+                $card->customers()->attach($customer->id, ['amount' => 0, 'redeemed' => false]);
+            }
+        } finally {
+            $lock->release();
+        }
+
+        \Illuminate\Support\Facades\Log::info('Gift card claimed to a customer account', [
+            'gift_card_id' => $card->id,
+            'customer_id' => $customer->id,
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Gift card added to your account.',
+            'data' => $this->publicGiftCardView($card),
         ]);
     }
 
@@ -660,10 +714,35 @@ class GiftCardController extends Controller
         $prefix = (string) config('gift_cards.code_prefix', 'GC');
 
         do {
-            $code = $prefix . strtoupper(Str::random(8));
+            $code = $prefix . self::randomCodeBody();
         } while (GiftCard::where('code', $code)->exists());
 
         return $code;
+    }
+
+    public static function randomCodeBody(): string
+    {
+        $alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+        $max = strlen($alphabet) - 1;
+        $body = '';
+
+        for ($i = 0; $i < self::CODE_BODY_LENGTH; $i++) {
+            $body .= $alphabet[random_int(0, $max)];
+        }
+
+        return $body;
+    }
+
+    protected function publicGiftCardView(GiftCard $card): array
+    {
+        return [
+            'id' => $card->id,
+            'code' => $card->code,
+            'type' => $card->type,
+            'balance' => (float) $card->balance,
+            'status' => $card->status,
+            'expiry_date' => $card->expiry_date?->toDateString(),
+        ];
     }
 
     public function validateByCode(Request $request, DiscountService $discounts): JsonResponse
@@ -685,7 +764,9 @@ class GiftCardController extends Controller
                 'message' => $result['reason'],
                 'data' => [
                     'is_valid' => false,
-                    'gift_card' => $result['gift_card'] ?? null,
+                    'gift_card' => isset($result['gift_card'])
+                        ? $this->publicGiftCardView($result['gift_card'])
+                        : null,
                 ],
             ]);
         }
@@ -696,7 +777,7 @@ class GiftCardController extends Controller
             'success' => true,
             'data' => [
                 'is_valid' => true,
-                'gift_card' => $giftCard,
+                'gift_card' => $this->publicGiftCardView($giftCard),
                 'balance' => $result['balance'],
                 'discount_amount' => $result['discount_amount'],
                 'eligible_subtotal' => $result['eligible_subtotal'],

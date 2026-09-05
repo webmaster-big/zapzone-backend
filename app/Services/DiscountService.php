@@ -316,6 +316,110 @@ class DiscountService
         return $amount;
     }
 
+    public function recordRedemptionForPayable(int $giftCardId, float $amount, string $payableType, int $payableId): void
+    {
+        if ($giftCardId <= 0 || $amount <= 0 || $payableId <= 0) {
+            return;
+        }
+
+        DB::table('gift_card_redemptions')->insertOrIgnore([
+            'gift_card_id' => $giftCardId,
+            'payable_type' => $payableType,
+            'payable_id' => $payableId,
+            'amount' => round($amount, 2),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+
+    public static function payableWasConsumed(object $payable): bool
+    {
+        if (!empty($payable->checked_in_at ?? null)) {
+            return true;
+        }
+
+        $status = (string) ($payable->status ?? '');
+
+        return in_array($status, ['checked-in', 'completed'], true);
+    }
+
+    public function reverseGiftCardForPayable(object $payable, string $payableType, string $reason): float
+    {
+        if (self::payableWasConsumed($payable)) {
+            \Illuminate\Support\Facades\Log::info('Gift card reversal refused; the purchase was already used', [
+                'payable_type' => $payableType,
+                'payable_id' => $payable->id,
+                'status' => $payable->status ?? null,
+                'reason' => $reason,
+            ]);
+
+            return 0.0;
+        }
+
+        $recorded = DB::table('gift_card_redemptions')
+            ->where('payable_type', $payableType)
+            ->where('payable_id', $payable->id)
+            ->first();
+
+        if (!$recorded) {
+            return 0.0;
+        }
+
+        $giftCardId = (int) $recorded->gift_card_id;
+        $amount = round((float) $recorded->amount, 2);
+
+        if ($giftCardId <= 0 || $amount <= 0) {
+            return 0.0;
+        }
+
+        $giftCard = GiftCard::find($giftCardId);
+
+        if (!$giftCard) {
+            \Illuminate\Support\Facades\Log::warning('Gift card reversal skipped; the card no longer exists', [
+                'gift_card_id' => $giftCardId,
+                'payable_type' => $payableType,
+                'payable_id' => $payable->id,
+            ]);
+
+            return 0.0;
+        }
+
+        return DB::transaction(function () use ($giftCard, $amount, $payableType, $payable, $reason) {
+            $claimed = DB::table('gift_card_reversals')->insertOrIgnore([
+                'gift_card_id' => $giftCard->id,
+                'payable_type' => $payableType,
+                'payable_id' => $payable->id,
+                'amount' => $amount,
+                'credited' => 0,
+                'reason' => mb_substr($reason, 0, 100),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            if ($claimed === 0) {
+                return 0.0;
+            }
+
+            $credited = $this->refundGiftCard($giftCard, $amount, $reason);
+
+            DB::table('gift_card_reversals')
+                ->where('payable_type', $payableType)
+                ->where('payable_id', $payable->id)
+                ->update(['credited' => $credited, 'updated_at' => now()]);
+
+            \Illuminate\Support\Facades\Log::info('Gift card balance restored for a reversed purchase', [
+                'gift_card_id' => $giftCard->id,
+                'payable_type' => $payableType,
+                'payable_id' => $payable->id,
+                'amount' => $amount,
+                'credited' => $credited,
+                'reason' => $reason,
+            ]);
+
+            return $credited;
+        });
+    }
+
     public function refundGiftCard(GiftCard $giftCard, float $amount, string $reason, ?Request $request = null): float
     {
         $credited = DB::transaction(function () use ($giftCard, $amount) {

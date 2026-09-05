@@ -11,6 +11,7 @@ use App\Models\Attraction;
 use App\Models\DayOff;
 use App\Mail\AttractionPurchaseReceipt;
 use App\Services\GmailApiService;
+use App\Models\EmailNotification;
 use App\Services\EmailNotificationService;
 use App\Services\PurchaseCompletionService;
 use App\Models\ActivityLog;
@@ -33,6 +34,7 @@ use Carbon\Carbon;
 
 class AttractionPurchaseController extends Controller
 {
+    use \App\Http\Traits\ReversesGiftCards;
     use ScopesByAuthUser;
     use RecordsPageAnalytics;
 
@@ -315,7 +317,10 @@ class AttractionPurchaseController extends Controller
             $duplicateQuery->where('guest_email', $validated['guest_email'] ?? null);
         }
 
-        $existingPending = $duplicateQuery->first();
+        $requestCarriesCode = !empty($validated['gift_card_code']) || !empty($validated['gift_card_id'])
+            || !empty($validated['promo_code']) || !empty($validated['promo_id']);
+
+        $existingPending = $requestCarriesCode ? null : $duplicateQuery->first();
         if ($existingPending) {
             $existingPending->load(['attraction', 'customer', 'createdBy', 'addOns']);
             Log::info('Duplicate attraction purchase prevented (existing pending found)', [
@@ -360,6 +365,7 @@ class AttractionPurchaseController extends Controller
 
         if ($attractionModel) {
             $expectation = app(CheckoutPricer::class)->forAttractionPurchase($validated, $attractionModel, $checkoutMembership);
+            $serverExpectedTotal = (float) $expectation['expected_total'];
             $rejection = app(CheckoutTotalGuard::class)->check($expectation, (float) $validated['total_amount'], $checkoutActor, [
                 'purchase_type' => 'attraction_purchase',
                 'attraction_id' => $attractionModel->id,
@@ -392,7 +398,8 @@ class AttractionPurchaseController extends Controller
         }
 
         try {
-            $purchase = DB::transaction(function () use (&$validated, $discounts, $request, $attractionLocationId, $customFieldAnswers, $rules, $isStaff, $addOnLines) {
+            $serverExpectedTotal = $serverExpectedTotal ?? null;
+            $purchase = DB::transaction(function () use (&$validated, $discounts, $request, $attractionLocationId, $customFieldAnswers, $rules, $isStaff, $addOnLines, $serverExpectedTotal) {
             $capAttraction = \App\Models\Attraction::where('id', $validated['attraction_id'])->lockForUpdate()->first();
 
             if ($capAttraction && $capAttraction->max_tickets_per_slot !== null
@@ -416,6 +423,14 @@ class AttractionPurchaseController extends Controller
 
             $rules->assertQuantities($addOnLines, null, $isStaff, 'attraction_purchase.store');
 
+            if (!$isStaff) {
+                $validated['gift_card_id'] = null;
+            }
+
+            $giftCardRedeemed = 0.0;
+            $appliedGiftCardId = null;
+            $serverDiscountApplied = 0.0;
+
             $hasCode = !empty($validated['promo_id']) || !empty($validated['gift_card_id'])
                 || !empty($validated['promo_code']) || !empty($validated['gift_card_code']);
 
@@ -433,6 +448,9 @@ class AttractionPurchaseController extends Controller
                 ], $request);
 
                 if ($discountResult['discount_amount'] > 0) {
+                    $giftCardRedeemed = round((float) ($discountResult['gift_card_discount'] ?? 0), 2);
+                    $appliedGiftCardId = $discountResult['gift_card_id'] ?? null;
+                    $serverDiscountApplied = round((float) $discountResult['discount_amount'], 2);
                     $validated['total_amount'] = max(0, round(((float) ($validated['total_amount'] ?? 0)) - $discountResult['discount_amount'], 2));
                     $validated['discount_amount'] = round(((float) ($validated['discount_amount'] ?? 0)) + $discountResult['discount_amount'], 2);
                     $validated['applied_discounts'] = array_merge($validated['applied_discounts'] ?? [], $discountResult['applied_discounts']);
@@ -450,7 +468,44 @@ class AttractionPurchaseController extends Controller
                 }
             }
 
+            if ($giftCardRedeemed <= 0) {
+                $validated['gift_card_id'] = null;
+            }
+
+            if (($validated['payment_method'] ?? null) === 'authorize.net'
+                && round((float) ($validated['total_amount'] ?? 0), 2) <= 0
+                && $giftCardRedeemed > 0
+                && $serverExpectedTotal !== null
+                && $serverDiscountApplied >= $serverExpectedTotal - (float) config('checkout.total_tolerance', 0.05)) {
+                $validated['status'] = AttractionPurchase::STATUS_CONFIRMED;
+            }
+
+            if (($validated['payment_method'] ?? null) === 'authorize.net'
+                && round((float) ($validated['total_amount'] ?? 0), 2) <= 0
+                && $giftCardRedeemed > 0
+                && ($validated['status'] ?? null) !== AttractionPurchase::STATUS_CONFIRMED) {
+                throw new \RuntimeException('The price of this order has changed. Please refresh the page and try again.');
+            }
+
             $created = AttractionPurchase::create($validated);
+
+            if ($giftCardRedeemed > 0 && $appliedGiftCardId) {
+                $discounts->recordRedemptionForPayable((int) $appliedGiftCardId, $giftCardRedeemed, \App\Models\Payment::TYPE_ATTRACTION_PURCHASE, (int) $created->id);
+            }
+
+            if ($created->status === AttractionPurchase::STATUS_CONFIRMED
+                && $created->payment_method === 'authorize.net'
+                && $giftCardRedeemed > 0) {
+                try {
+                    app(EmailNotificationService::class)
+                        ->triggerPurchaseNotification($created, EmailNotification::TRIGGER_PURCHASE_CONFIRMED);
+                } catch (\Exception $e) {
+                    Log::warning('Failed to send confirmation for a gift-card-covered purchase', [
+                        'purchase_id' => $created->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
 
             foreach ($addOnLines as $line) {
                 AttractionPurchaseAddOn::create([
@@ -913,6 +968,8 @@ class AttractionPurchaseController extends Controller
             $purchaseId = $attractionPurchase->id;
             $locationId = $attractionPurchase->attraction->location_id ?? null;
 
+            $this->reverseGiftCardFor($attractionPurchase, \App\Models\Payment::TYPE_ATTRACTION_PURCHASE, 'purchase_deleted');
+
             $deleted = $attractionPurchase->delete();
 
             $verify = AttractionPurchase::withTrashed()->find($purchaseId);
@@ -999,6 +1056,10 @@ class AttractionPurchaseController extends Controller
         $inactive = [AttractionPurchase::STATUS_CANCELLED, AttractionPurchase::STATUS_REFUNDED];
 
         if (isset($validated['status']) && in_array($previousStatus, $inactive, true) && !in_array($validated['status'], $inactive, true)) {
+            if ($this->giftCardWasReversedFor(\App\Models\Payment::TYPE_ATTRACTION_PURCHASE, (int) $attractionPurchase->id)) {
+                return response()->json(['success' => false, 'message' => 'This record was cancelled and its gift card refunded. It cannot be reactivated - create a new one so the gift card is redeemed again.'], 422);
+            }
+
             try {
                 app(\App\Services\SlotCapacityGuard::class)->assertAttractionPurchaseFits($attractionPurchase, 'attraction_purchase.updateStatus');
             } catch (\RuntimeException $e) {
@@ -1007,6 +1068,13 @@ class AttractionPurchaseController extends Controller
         }
 
         $attractionPurchase->update($validated);
+
+        if (isset($validated['status'])
+            && in_array($validated['status'], $inactive, true)
+            && !in_array($previousStatus, $inactive, true)) {
+            app(MembershipBenefitService::class)->reverseForRedeemable($attractionPurchase, 'purchase_cancelled');
+            $this->reverseGiftCardFor($attractionPurchase, \App\Models\Payment::TYPE_ATTRACTION_PURCHASE, 'purchase_' . $validated['status']);
+        }
 
         return response()->json([
             'success' => true,
@@ -1083,6 +1151,7 @@ class AttractionPurchaseController extends Controller
         $attractionPurchase->load(['attraction', 'customer', 'createdBy', 'addOns']);
 
         app(MembershipBenefitService::class)->reverseForRedeemable($attractionPurchase, 'purchase_cancelled');
+        $this->reverseGiftCardFor($attractionPurchase, \App\Models\Payment::TYPE_ATTRACTION_PURCHASE, 'purchase_cancelled');
 
         $this->recordConversion(
             'purchase_cancelled',
@@ -1398,6 +1467,7 @@ public function checkIn(Request $request, int $id): JsonResponse
             if ($purchase->attraction && $purchase->attraction->location_id) {
                 $locationIds[] = $purchase->attraction->location_id;
             }
+            $this->reverseGiftCardFor($purchase, \App\Models\Payment::TYPE_ATTRACTION_PURCHASE, 'purchase_deleted');
             $purchase->delete();
             $deletedCount++;
         }
@@ -1517,6 +1587,13 @@ public function checkIn(Request $request, int $id): JsonResponse
 
     public function restore(int $id): JsonResponse
     {
+        if ($this->giftCardWasReversedFor(\App\Models\Payment::TYPE_ATTRACTION_PURCHASE, (int) $id)) {
+            return response()->json([
+                'success' => false,
+                'message' => "This record's gift card was already refunded when it was cancelled. Restore is blocked - rebook it instead so the card is charged again.",
+            ], 422);
+        }
+
         $purchase = AttractionPurchase::onlyTrashed()->findOrFail($id);
 
         $purchase->restore();
@@ -1565,6 +1642,8 @@ public function checkIn(Request $request, int $id): JsonResponse
         $attractionName = $purchase->attraction->name ?? 'Unknown';
         $purchaseId = $purchase->id;
         $locationId = $purchase->attraction->location_id ?? null;
+
+        $this->reverseGiftCardFor($purchase, \App\Models\Payment::TYPE_ATTRACTION_PURCHASE, 'purchase_deleted');
 
         $purchase->forceDelete();
 
@@ -1665,6 +1744,8 @@ public function checkIn(Request $request, int $id): JsonResponse
             $attractionName = $attractionPurchase->attraction->name ?? 'Unknown';
             $purchaseId = $attractionPurchase->id;
             $locationId = $attractionPurchase->attraction->location_id ?? null;
+
+            $this->reverseGiftCardFor($attractionPurchase, \App\Models\Payment::TYPE_ATTRACTION_PURCHASE, 'payment_error_cleanup');
 
             $attractionPurchase->forceDelete();
 

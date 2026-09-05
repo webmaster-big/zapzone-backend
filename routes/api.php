@@ -227,7 +227,7 @@ Route::post('customers', [CustomerController::class, 'store']); // include
 
 Route::get('customers/bookings', [BookingController::class, 'customerBookings']); //include
 
-Route::post('payments/charge', [PaymentController::class, 'charge']); // include
+Route::post('payments/charge', [PaymentController::class, 'charge'])->middleware('throttle:payment-charge'); // include
 
 Route::post('bookings', [BookingController::class, 'store']); // include
 Route::post('bookings/{booking}/qrcode', [BookingController::class, 'storeQrCode']); // include
@@ -286,8 +286,8 @@ Route::post('special-pricings/check-date', [SpecialPricingController::class, 'ch
 Route::get('special-pricings/upcoming-dates', [SpecialPricingController::class, 'getUpcomingDates']); // include
 Route::get('fee-supports/for-entity', [FeeSupportController::class, 'getForEntity']); // include
 
-Route::post('promos/validate-code', [PromoController::class, 'validateByCode']); // include
-Route::post('gift-cards/validate-code', [GiftCardController::class, 'validateByCode']); // include
+Route::post('promos/validate-code', [PromoController::class, 'validateByCode'])->middleware('throttle:discount-code-validate'); // include
+Route::post('gift-cards/validate-code', [GiftCardController::class, 'validateByCode'])->middleware('throttle:discount-code-validate'); // include
 Route::post('gift-cards/purchase', [GiftCardController::class, 'purchase'])->middleware('throttle:gift-card-purchase');
 
 Route::get('google-calendar/callback', [GoogleCalendarController::class, 'handleCallback']);
@@ -465,7 +465,6 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('attraction-purchases/{id}/check-in', [AttractionPurchaseController::class, 'checkIn']);
     Route::post('attraction-purchases/bulk-delete', [AttractionPurchaseController::class, 'bulkDelete']);
     Route::post('attraction-purchases/{id}/restore', [AttractionPurchaseController::class, 'restore']);
-    Route::delete('attraction-purchases/{id}/force-delete', [AttractionPurchaseController::class, 'forceDelete']);
 
     Route::apiResource('rooms', RoomController::class);
     Route::get('rooms/location/{locationId}', [RoomController::class, 'getByLocation']);
@@ -501,6 +500,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::get('gift-cards', [GiftCardController::class, 'index']);
     Route::get('gift-cards/{gift_card}', [GiftCardController::class, 'show'])->whereNumber('gift_card');
+    Route::post('gift-cards/claim', [GiftCardController::class, 'claim'])->middleware('throttle:gift-card-claim');
     Route::middleware('staff')->group(function () {
         Route::post('gift-cards', [GiftCardController::class, 'store']);
         Route::match(['put', 'patch'], 'gift-cards/{gift_card}', [GiftCardController::class, 'update'])->whereNumber('gift_card');
@@ -549,7 +549,6 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('bookings/{id}/internal-notes', [BookingController::class, 'updateInternalNotes']);
     Route::post('bookings/bulk-delete', [BookingController::class, 'bulkDelete']);
     Route::post('bookings/{id}/restore', [BookingController::class, 'restore']);
-    Route::delete('bookings/{id}/force-delete', [BookingController::class, 'forceDelete']);
     Route::get('bookings/{booking}/summary', [BookingController::class, 'summary']);
     Route::get('bookings/{booking}/summary/view', [BookingController::class, 'summaryView']);
 

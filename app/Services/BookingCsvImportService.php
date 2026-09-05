@@ -102,7 +102,7 @@ class BookingCsvImportService
         return $rows;
     }
 
-    public function processRows(array $rows, int $locationId, ?int $createdBy = null): array
+    public function processRows(array $rows, int $locationId, ?int $createdBy = null, bool $skipDuplicates = true): array
     {
         $imported = 0;
         $skipped = 0;
@@ -111,7 +111,7 @@ class BookingCsvImportService
 
         foreach ($rows as $index => $row) {
             try {
-                $result = $this->processRow($row, $index, $locationId, $createdBy);
+                $result = $this->processRow($row, $index, $locationId, $createdBy, $skipDuplicates);
 
                 if ($result === null) {
                     $skipped++;
@@ -137,7 +137,7 @@ class BookingCsvImportService
         ];
     }
 
-    protected function processRow(array $row, int $index, int $locationId, ?int $createdBy): ?Booking
+    protected function processRow(array $row, int $index, int $locationId, ?int $createdBy, bool $skipDuplicates = true): ?Booking
     {
 
 
@@ -244,16 +244,18 @@ class BookingCsvImportService
         $guestOfHonorAge = is_numeric($guestOfHonorAge) ? (int) $guestOfHonorAge : null;
 
         $externalId = trim((string) ($row['ID'] ?? $row['id'] ?? ''));
-        $duplicateQuery = Booking::where('booking_date', $bookingDate)
-            ->where('booking_time', $bookingTime)
-            ->where('location_id', $locationId);
-        if (!empty($customerEmail)) {
-            $duplicateQuery->where('guest_email', $customerEmail);
-        } elseif (!empty($customerName)) {
-            $duplicateQuery->where('guest_name', $customerName);
-        }
-        if ($duplicateQuery->exists()) {
-            return null; // Skip duplicate
+        if ($skipDuplicates) {
+            $duplicateQuery = Booking::where('booking_date', $bookingDate)
+                ->where('booking_time', $bookingTime)
+                ->where('location_id', $locationId);
+            if (!empty($customerEmail)) {
+                $duplicateQuery->where('guest_email', $customerEmail);
+            } elseif (!empty($customerName)) {
+                $duplicateQuery->where('guest_name', $customerName);
+            }
+            if ($duplicateQuery->exists()) {
+                return null; // Skip duplicate
+            }
         }
 
         do {
@@ -261,6 +263,10 @@ class BookingCsvImportService
         } while (Booking::where('reference_number', $referenceNumber)->exists());
 
         $internalNotesParts = [];
+
+        if (!empty($externalId)) {
+            $internalNotesParts[] = "Bookly ID: {$externalId}";
+        }
 
         if (!$package && !empty($packageName)) {
             $internalNotesParts[] = "Package not found: {$serviceRaw}";

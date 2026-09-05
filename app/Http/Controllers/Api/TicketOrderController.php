@@ -23,6 +23,7 @@ use Throwable;
 
 class TicketOrderController extends Controller
 {
+    use \App\Http\Traits\ReversesGiftCards;
     use \App\Http\Traits\ScopesByAuthUser;
 
     public function __construct(private TicketOrderService $orders)
@@ -72,6 +73,7 @@ class TicketOrderController extends Controller
             'guest_zip' => 'nullable|string|max:20',
             'guest_country' => 'nullable|string|max:100',
             'payment_method' => ['nullable', Rule::in(['card', 'in-store', 'paylater', 'authorize.net'])],
+            'gift_card_code' => 'nullable|string|max:64',
             'sms_consent' => 'nullable|boolean',
             'custom_fields' => 'nullable|array|max:50',
             'custom_fields.*.id' => 'required_with:custom_fields|integer|min:1',
@@ -121,6 +123,7 @@ class TicketOrderController extends Controller
                 'guest_zip' => $validated['guest_zip'] ?? null,
                 'guest_country' => $validated['guest_country'] ?? null,
                 'payment_method' => $method,
+                'gift_card_code' => $validated['gift_card_code'] ?? null,
                 'notes' => $validated['notes'] ?? null,
             ]);
 
@@ -324,7 +327,9 @@ class TicketOrderController extends Controller
             return response()->json(['success' => true, 'message' => 'Already gone.']);
         }
 
-        if ((float) $order->amount_paid > 0 || $order->status === TicketOrder::STATUS_CHECKED_IN) {
+        if ((float) $order->amount_paid > 0
+            || $order->status === TicketOrder::STATUS_CHECKED_IN
+            || $order->status === TicketOrder::STATUS_CONFIRMED) {
             return response()->json([
                 'success' => false,
                 'message' => 'That order has taken payment and cannot be rolled back.',
@@ -350,6 +355,8 @@ class TicketOrderController extends Controller
         }
 
         DB::transaction(function () use ($order) {
+            $this->reverseGiftCardFor($order, Payment::TYPE_TICKET_ORDER, 'checkout_rollback');
+
             $attractionLineIds = $order->attractionPurchases->pluck('id')->all();
 
             if ($attractionLineIds !== []) {
@@ -576,6 +583,8 @@ class TicketOrderController extends Controller
             'total_amount' => (float) $order->total_amount,
             'amount_paid' => (float) $order->amount_paid,
             'remaining_balance' => $order->remaining_balance,
+            'gift_card_id' => $order->gift_card_id,
+            'applied_discounts' => $order->applied_discounts ?? [],
             'payment_method' => $order->payment_method,
             'transaction_id' => $order->transaction_id,
             'notes' => $order->notes,

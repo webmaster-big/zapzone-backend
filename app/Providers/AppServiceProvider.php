@@ -129,9 +129,33 @@ class AppServiceProvider extends ServiceProvider
 
     private function registerWaiverAdRateLimiters(): void
     {
+        RateLimiter::for('gift-card-claim', fn (Request $request) => [
+            Limit::perMinute(6)->by('gc-claim:ip:' . $request->ip()),
+            Limit::perHour(20)->by('gc-claim:hr:' . $request->ip()),
+            Limit::perHour(15)->by('gc-claim:cust:' . ($request->user()?->id ?? $request->ip())),
+        ]);
+
+        RateLimiter::for('payment-charge', function (Request $request) {
+            $who = $request->user('sanctum')?->getKey();
+            $key = $who ? 'u:' . $who : 'ip:' . $request->ip();
+
+            return [Limit::perMinute(60)->by('pay-charge:' . $key)];
+        });
+
+        RateLimiter::for('discount-code-validate', function (Request $request) {
+            $who = $request->user('sanctum')?->getKey();
+            $key = $who ? 'u:' . $who : 'ip:' . $request->ip();
+
+            return [
+                Limit::perMinute(10)->by('code-validate:m:' . $key),
+                Limit::perHour(120)->by('code-validate:h:' . $key),
+                Limit::perDay(400)->by('code-validate:d:' . $key),
+            ];
+        });
+
         RateLimiter::for('waiver-returning-lookup', fn (Request $request) => [
             Limit::perMinute(10)->by('waiver-lookup:ip:' . $request->ip()),
-            Limit::perHour(120)->by('waiver-lookup:tpl:' . ($request->route('templateId') ?? 'na') . ':' . $request->ip()),
+            Limit::perHour(120)->by('waiver-lookup:hour:' . $request->ip()),
         ]);
 
         RateLimiter::for('waiver-ad-learn-more', fn (Request $request) => [

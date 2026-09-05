@@ -6,4 +6,5 @@ return [
     'total_tolerance' => (float) env('CHECKOUT_TOTAL_TOLERANCE', 0.05),
     'log_channel' => env('CHECKOUT_LOG_CHANNEL'),
     'membership_hardening' => env('CHECKOUT_MEMBERSHIP_HARDENING', 'log'),
+    'enforce_charge_within_due' => (bool) env('CHECKOUT_ENFORCE_CHARGE_WITHIN_DUE', false),
 ];

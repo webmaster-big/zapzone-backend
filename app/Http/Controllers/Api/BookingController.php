@@ -41,6 +41,7 @@ use Barryvdh\DomPDF\Facade\Pdf;
 
 class BookingController extends Controller
 {
+    use \App\Http\Traits\ReversesGiftCards;
     use ScopesByAuthUser;
     use RecordsPageAnalytics;
     use GeneratesAvailableTimeSlots;
@@ -409,7 +410,10 @@ class BookingController extends Controller
             $duplicateQuery->where('guest_email', $validated['guest_email'] ?? null);
         }
 
-        $existingPending = $duplicateQuery->first();
+        $requestCarriesCode = !empty($validated['gift_card_code']) || !empty($validated['gift_card_id'])
+            || !empty($validated['promo_code']) || !empty($validated['promo_id']);
+
+        $existingPending = $requestCarriesCode ? null : $duplicateQuery->first();
         if ($existingPending) {
             $existingPending->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
             Log::info('Duplicate booking prevented (existing pending found)', [
@@ -460,6 +464,7 @@ class BookingController extends Controller
 
         if (!empty($validated['package_id']) && isset($bookedPackage) && $bookedPackage) {
             $expectation = app(CheckoutPricer::class)->forBooking($validated, $bookedPackage, $checkoutMembership);
+            $serverExpectedTotal = (float) $expectation['expected_total'];
             $rejection = app(CheckoutTotalGuard::class)->check($expectation, (float) $validated['total_amount'], $checkoutActor, [
                 'purchase_type' => 'booking',
                 'package_id' => $bookedPackage->id,
@@ -497,7 +502,8 @@ class BookingController extends Controller
         }
 
         try {
-            $booking = DB::transaction(function () use (&$validated, $discountItems, $request, $discounts, $customFieldAnswers, $rules, $isStaff, $addOnLines, $attractionLines) {
+            $serverExpectedTotal = $serverExpectedTotal ?? null;
+            $booking = DB::transaction(function () use (&$validated, $discountItems, $request, $discounts, $customFieldAnswers, $rules, $isStaff, $addOnLines, $attractionLines, $serverExpectedTotal) {
             $capPackage = null;
 
             if (!empty($validated['package_id'])) {
@@ -525,6 +531,14 @@ class BookingController extends Controller
 
             $rules->assertQuantities($addOnLines, $capPackage?->id, $isStaff, 'booking.store');
 
+            if (!$isStaff) {
+                $validated['gift_card_id'] = null;
+            }
+
+            $giftCardRedeemed = 0.0;
+            $appliedGiftCardId = null;
+            $serverDiscountApplied = 0.0;
+
             $hasCode = !empty($validated['promo_id']) || !empty($validated['gift_card_id'])
                 || !empty($validated['promo_code']) || !empty($validated['gift_card_code']);
 
@@ -542,6 +556,9 @@ class BookingController extends Controller
                 ], $request);
 
                 if ($discountResult['discount_amount'] > 0) {
+                    $giftCardRedeemed = round((float) ($discountResult['gift_card_discount'] ?? 0), 2);
+                    $appliedGiftCardId = $discountResult['gift_card_id'] ?? null;
+                    $serverDiscountApplied = round((float) $discountResult['discount_amount'], 2);
                     $validated['total_amount'] = max(0, round(((float) ($validated['total_amount'] ?? 0)) - $discountResult['discount_amount'], 2));
                     $validated['discount_amount'] = round(((float) ($validated['discount_amount'] ?? 0)) + $discountResult['discount_amount'], 2);
                     $validated['applied_discounts'] = array_merge($validated['applied_discounts'] ?? [], $discountResult['applied_discounts']);
@@ -558,6 +575,26 @@ class BookingController extends Controller
                 $validated['payment_status'] = 'pending';
             }
 
+            if ($giftCardRedeemed <= 0) {
+                $validated['gift_card_id'] = null;
+            }
+
+            if (($validated['payment_method'] ?? null) === 'authorize.net'
+                && round((float) ($validated['total_amount'] ?? 0), 2) <= 0
+                && $giftCardRedeemed > 0
+                && $serverExpectedTotal !== null
+                && $serverDiscountApplied >= $serverExpectedTotal - (float) config('checkout.total_tolerance', 0.05)) {
+                $validated['status'] = 'confirmed';
+                $validated['payment_status'] = 'paid';
+            }
+
+            if (($validated['payment_method'] ?? null) === 'authorize.net'
+                && round((float) ($validated['total_amount'] ?? 0), 2) <= 0
+                && $giftCardRedeemed > 0
+                && ($validated['status'] ?? null) !== 'confirmed') {
+                throw new \RuntimeException('The price of this order has changed. Please refresh the page and try again.');
+            }
+
             if (!empty($validated['applied_discounts'])) {
                 $membershipDiscount = collect($validated['applied_discounts'])
                     ->filter(fn($d) => str_starts_with($d['discount_name'] ?? '', 'Member Savings'))
@@ -568,6 +605,10 @@ class BookingController extends Controller
             }
 
             $created = Booking::create($validated);
+
+            if ($giftCardRedeemed > 0 && $appliedGiftCardId) {
+                $discounts->recordRedemptionForPayable((int) $appliedGiftCardId, $giftCardRedeemed, \App\Models\Payment::TYPE_BOOKING, (int) $created->id);
+            }
 
             foreach ($attractionLines as $line) {
                 BookingAttraction::create([
@@ -1439,6 +1480,9 @@ class BookingController extends Controller
             'status' => 'cancelled',
         ]);
 
+        app(MembershipBenefitService::class)->reverseForRedeemable($booking, 'booking_cancelled');
+        $this->reverseGiftCardFor($booking, \App\Models\Payment::TYPE_BOOKING, 'booking_cancelled');
+
         try {
             $gcalService = new GoogleCalendarService($booking->location_id);
             if ($gcalService->isConnected() && $booking->google_calendar_event_id) {
@@ -1745,6 +1789,11 @@ class BookingController extends Controller
         $previousStatus = $booking->status;
         $notificationData = null;
 
+        if ($previousStatus === 'cancelled' && $validated['status'] !== 'cancelled'
+            && $this->giftCardWasReversedFor(\App\Models\Payment::TYPE_BOOKING, (int) $booking->id)) {
+            return response()->json(['success' => false, 'message' => 'This record was cancelled and its gift card refunded. It cannot be reactivated - create a new one so the gift card is redeemed again.'], 422);
+        }
+
         if ($previousStatus === 'cancelled' && $validated['status'] !== 'cancelled') {
             try {
                 app(\App\Services\SlotCapacityGuard::class)->assertBookingFits($booking, 'booking.updateStatus');
@@ -1791,6 +1840,7 @@ class BookingController extends Controller
                     'status' => 'cancelled',
                 ]);
                 app(MembershipBenefitService::class)->reverseForRedeemable($booking, 'booking_cancelled');
+                $this->reverseGiftCardFor($booking, \App\Models\Payment::TYPE_BOOKING, 'booking_cancelled');
                 $notificationData = [
                     'title' => 'Booking Cancelled',
                     'message' => "Your booking {$booking->reference_number} has been cancelled.",
@@ -2027,6 +2077,7 @@ class BookingController extends Controller
                 Log::warning('Google Calendar event removal failed on bulk delete', ['booking_id' => $booking->id, 'error' => $e->getMessage()]);
             }
 
+            $this->reverseGiftCardFor($booking, \App\Models\Payment::TYPE_BOOKING, 'booking_deleted');
             $booking->delete();
             $deletedCount++;
         }
@@ -2144,6 +2195,8 @@ class BookingController extends Controller
             $refNumber = $booking->reference_number;
             $locationId = $booking->location_id;
             $bookingId = $booking->id;
+
+            $this->reverseGiftCardFor($booking, \App\Models\Payment::TYPE_BOOKING, 'booking_deleted');
 
             $deleted = $booking->delete();
 
@@ -2667,6 +2720,13 @@ class BookingController extends Controller
 
     public function restore(int $id): JsonResponse
     {
+        if ($this->giftCardWasReversedFor(\App\Models\Payment::TYPE_BOOKING, (int) $id)) {
+            return response()->json([
+                'success' => false,
+                'message' => "This record's gift card was already refunded when it was cancelled. Restore is blocked - rebook it instead so the card is charged again.",
+            ], 422);
+        }
+
         $booking = Booking::onlyTrashed()->findOrFail($id);
 
         if ($booking->status !== 'cancelled') {
@@ -2738,6 +2798,8 @@ class BookingController extends Controller
                 'error' => $e->getMessage(),
             ]);
         }
+
+        $this->reverseGiftCardFor($booking, \App\Models\Payment::TYPE_BOOKING, 'booking_deleted');
 
         $booking->forceDelete();
 
@@ -2852,6 +2914,18 @@ class BookingController extends Controller
                 ], 403);
             }
 
+            try {
+                $gcalService = new GoogleCalendarService($booking->location_id);
+                if ($gcalService->isConnected() && $booking->google_calendar_event_id) {
+                    $gcalService->deleteEvent($booking);
+                }
+            } catch (\Exception $e) {
+                Log::warning('Google Calendar event removal failed on force delete', [
+                    'booking_id' => $booking->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
             $referenceNumber = $booking->reference_number;
             $bookingId = $booking->id;
             $locationId = $booking->location_id;
@@ -2867,6 +2941,8 @@ class BookingController extends Controller
                     'error' => $e->getMessage(),
                 ]);
             }
+
+            $this->reverseGiftCardFor($booking, \App\Models\Payment::TYPE_BOOKING, 'payment_error_cleanup');
 
             $booking->forceDelete();
 
@@ -2914,6 +2990,7 @@ class BookingController extends Controller
 
         $locationId = (int) $request->location_id;
         $createdBy = auth()->id();
+        $skipDuplicates = $request->boolean('skip_duplicates', true);
 
         try {
             $service = new \App\Services\BookingCsvImportService();
@@ -2934,7 +3011,7 @@ class BookingController extends Controller
             \Illuminate\Support\Facades\DB::beginTransaction();
 
             try {
-                $result = $service->processRows($rows, $locationId, $createdBy);
+                $result = $service->processRows($rows, $locationId, $createdBy, $skipDuplicates);
 
                 \Illuminate\Support\Facades\DB::commit();
             } catch (\Exception $e) {

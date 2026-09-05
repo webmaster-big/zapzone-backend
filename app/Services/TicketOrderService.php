@@ -35,11 +35,15 @@ class TicketOrderService
             throw new RuntimeException('That location could not be found.');
         }
 
-        return DB::transaction(function () use ($priced, $location, $context) {
+        $order = DB::transaction(function () use ($priced, $location, $context) {
             $this->pricer->assertSlotCapacity($priced['lines'], true);
 
+                $reference = TicketOrder::generateReference();
+            $giftCardApplied = $this->applyGiftCardToPricing($priced, $location, $context, $reference);
+            $giftCardId = $giftCardApplied['id'] ?? null;
+
             $order = TicketOrder::create([
-                'reference_number' => TicketOrder::generateReference(),
+                'reference_number' => $reference,
                 'company_id' => $location->company_id,
                 'location_id' => $location->id,
                 'customer_id' => $context['customer_id'] ?? null,
@@ -60,6 +64,7 @@ class TicketOrderService
                 'discount_amount' => $priced['discount_amount'],
                 'fee_total' => $priced['fee_total'],
                 'total_amount' => $priced['total_amount'],
+                'gift_card_id' => $giftCardId,
                 'amount_paid' => 0,
                 'applied_fees' => $this->collectFees($priced['lines']),
                 'applied_discounts' => $this->collectDiscounts($priced['lines']),
@@ -75,10 +80,130 @@ class TicketOrderService
                     : $this->writeEventLine($order, $line);
             }
 
+            if ($giftCardApplied) {
+                app(DiscountService::class)->recordRedemptionForPayable(
+                    (int) $giftCardApplied['id'],
+                    (float) $giftCardApplied['amount'],
+                    \App\Models\Payment::TYPE_TICKET_ORDER,
+                    (int) $order->id
+                );
+            }
+
             $this->assertLinesMatchOrder($order->fresh());
 
             return $order->fresh(['attractionPurchases', 'eventPurchases']);
         });
+
+        return $this->finalizeIfNothingDue($order);
+    }
+
+    public function finalizeIfNothingDue(TicketOrder $order): TicketOrder
+    {
+        if ($order->status === TicketOrder::STATUS_PENDING
+            && TicketOrderAllocator::toCents((float) $order->total_amount) === 0
+            && TicketOrderAllocator::toCents((float) $order->amount_paid) === 0
+            && (float) $order->discount_amount > 0) {
+            return $this->applyPayment($order, 0.0);
+        }
+
+        return $order;
+    }
+
+    private function applyGiftCardToPricing(array &$priced, Location $location, array $context, string $reference): ?array
+    {
+        $code = trim((string) ($context['gift_card_code'] ?? ''));
+
+        if ($code === '') {
+            return null;
+        }
+
+        $items = [];
+        foreach ($priced['lines'] as $line) {
+            $items[] = [
+                'type' => $line['type'] === TicketOrderPricer::TYPE_ATTRACTION ? 'attraction' : 'event',
+                'id' => (int) $line['entity_id'],
+            ];
+        }
+
+        $card = \App\Models\GiftCard::byCode($code)->first();
+        $eligibleIndexes = array_keys($priced['lines']);
+
+        if ($card && !$card->isItemWide()) {
+            $eligibleIndexes = [];
+            foreach ($priced['lines'] as $index => $line) {
+                $type = $line['type'] === TicketOrderPricer::TYPE_ATTRACTION ? 'attraction' : 'event';
+                if ($card->appliesToItem($type, (int) $line['entity_id'])) {
+                    $eligibleIndexes[] = $index;
+                }
+            }
+        }
+
+        $eligibleSubtotal = 0.0;
+        foreach ($eligibleIndexes as $index) {
+            $eligibleSubtotal += (float) $priced['lines'][$index]['total_amount'];
+        }
+        $eligibleSubtotal = round($eligibleSubtotal, 2);
+
+        $result = app(DiscountService::class)->applyToCheckout([
+            'gift_card_code' => $code,
+            'subtotal' => $eligibleSubtotal,
+            'location_id' => $location->id,
+            'items' => $items,
+            'customer_id' => $context['customer_id'] ?? null,
+            'tracking_prefix' => 'srv:ticket_order:' . $reference,
+        ]);
+
+        $discount = round((float) ($result['gift_card_discount'] ?? 0), 2);
+        $giftCardId = $result['gift_card_id'] ?? null;
+
+        if ($discount <= 0 || !$giftCardId) {
+            $why = implode(' ', array_filter(array_map(
+                fn ($e) => is_string($e) ? $e : ($e['message'] ?? ''),
+                (array) ($result['errors'] ?? [])
+            )));
+
+            throw new RuntimeException($why !== ''
+                ? $why
+                : 'That gift card could not be applied to this order.');
+        }
+
+        $entryTemplate = null;
+        foreach ((array) ($result['applied_discounts'] ?? []) as $entry) {
+            if (is_array($entry) && ($entry['source'] ?? null) === 'gift_card') {
+                $entryTemplate = $entry;
+                break;
+            }
+        }
+
+        $weights = [];
+        foreach ($eligibleIndexes as $index) {
+            $weights[$index] = TicketOrderAllocator::toCents((float) $priced['lines'][$index]['total_amount']);
+        }
+
+        $shares = TicketOrderAllocator::allocate(TicketOrderAllocator::toCents($discount), $weights);
+
+        foreach ($priced['lines'] as $index => $line) {
+            $share = TicketOrderAllocator::toAmount($shares[$index] ?? 0);
+
+            if ($share <= 0) {
+                continue;
+            }
+
+            $priced['lines'][$index]['total_amount'] = round((float) $line['total_amount'] - $share, 2);
+            $priced['lines'][$index]['discount_amount'] = round((float) ($line['discount_amount'] ?? 0) + $share, 2);
+
+            $entry = $entryTemplate ?? ['source' => 'gift_card', 'gift_card_id' => $giftCardId];
+            $entry['discount_amount'] = $share;
+            $priced['lines'][$index]['applied_discounts'] = array_merge(
+                (array) ($line['applied_discounts'] ?? []),
+                [$entry]
+            );
+        }
+
+        $priced['discount_amount'] = round((float) $priced['discount_amount'] + $discount, 2);
+        $priced['total_amount'] = round((float) $priced['total_amount'] - $discount, 2);
+
+        return ['id' => (int) $giftCardId, 'amount' => $discount];
     }
 
     private function writeAttractionLine(TicketOrder $order, array $line): AttractionPurchase
@@ -337,6 +462,18 @@ class TicketOrderService
 
             $order->save();
 
+            if (in_array($order->status, [TicketOrder::STATUS_CANCELLED, TicketOrder::STATUS_REFUNDED], true)) {
+                try {
+                    app(DiscountService::class)->reverseGiftCardForPayable($order, \App\Models\Payment::TYPE_TICKET_ORDER, 'order_' . $mode);
+                } catch (\Throwable $e) {
+                    Log::critical('Gift card reversal FAILED on order refund and needs manual recovery', [
+                        'ticket_order_id' => $order->id,
+                        'gift_card_id' => $order->gift_card_id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+
             return $order->fresh(['attractionPurchases', 'eventPurchases']);
         });
     }
@@ -370,6 +507,16 @@ class TicketOrderService
             $order->status = TicketOrder::STATUS_CANCELLED;
             $order->cancelled_at = $order->cancelled_at ?? now();
             $order->save();
+
+            try {
+                app(DiscountService::class)->reverseGiftCardForPayable($order, \App\Models\Payment::TYPE_TICKET_ORDER, 'order_cancelled');
+            } catch (\Throwable $e) {
+                Log::critical('Gift card reversal FAILED on order cancel and needs manual recovery', [
+                    'ticket_order_id' => $order->id,
+                    'gift_card_id' => $order->gift_card_id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
 
             return $order->fresh(['attractionPurchases', 'eventPurchases']);
         });

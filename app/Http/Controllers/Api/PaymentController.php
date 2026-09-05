@@ -44,6 +44,7 @@ use net\authorize\api\constants\ANetEnvironment;
 
 class PaymentController extends Controller
 {
+    use \App\Http\Traits\ReversesGiftCards;
     use ScopesByAuthUser;
     use RecordsPageAnalytics;
 
@@ -1105,6 +1106,7 @@ class PaymentController extends Controller
                     }
 
                     if ($isCancelled && $payable) {
+                        $this->reverseGiftCardFor($payable, $payment->payable_type, 'payment_refunded');
                         try {
                             app(\App\Services\MembershipBenefitService::class)
                                 ->reverseForRedeemable($payable, 'payment_refunded');
@@ -1276,6 +1278,7 @@ class PaymentController extends Controller
                             }
 
                             if ($payable) {
+                                $this->reverseGiftCardFor($payable, $payment->payable_type, 'payment_voided');
                                 try {
                                     app(\App\Services\MembershipBenefitService::class)
                                         ->reverseForRedeemable($payable, 'payment_voided');
@@ -1610,6 +1613,21 @@ class PaymentController extends Controller
             }
         }
 
+        if ($isCancelled && $payable) {
+            $this->reverseGiftCardFor($payable->fresh() ?? $payable, $payment->payable_type, 'manual_refund_cancelled');
+
+            try {
+                app(\App\Services\MembershipBenefitService::class)
+                    ->reverseForRedeemable($payable, 'manual_refund_cancelled');
+            } catch (\Throwable $e) {
+                Log::warning('Failed to reverse membership redemptions on manual refund', [
+                    'payable_type' => $payment->payable_type,
+                    'payable_id'   => $payment->payable_id,
+                    'error'        => $e->getMessage(),
+                ]);
+            }
+        }
+
         try {
             $emailService = app(EmailNotificationService::class);
             $emailService->triggerPaymentNotification($refundPayment, EmailNotification::TRIGGER_PAYMENT_REFUNDED);
@@ -1856,6 +1874,7 @@ class PaymentController extends Controller
                     }
 
                     if ($payable) {
+                        $this->reverseGiftCardFor($payable, $payment->payable_type, 'payment_voided');
                         try {
                             app(\App\Services\MembershipBenefitService::class)
                                 ->reverseForRedeemable($payable, 'payment_voided');
@@ -2008,6 +2027,54 @@ class PaymentController extends Controller
                         'success' => false,
                         'message' => "This purchase is part of order {$chargeOrderRef}. Charge the order instead so every ticket settles together.",
                     ], 422);
+                }
+
+                $duePayable = match ($request->payable_type) {
+                    Payment::TYPE_BOOKING => Booking::find($request->payable_id),
+                    Payment::TYPE_ATTRACTION_PURCHASE => AttractionPurchase::find($request->payable_id),
+                    Payment::TYPE_EVENT_PURCHASE => EventPurchase::find($request->payable_id),
+                    Payment::TYPE_TICKET_ORDER => TicketOrder::find($request->payable_id),
+                    default => null,
+                };
+
+                if ($duePayable) {
+                    $deadStatuses = ['cancelled', 'refunded'];
+
+                    if (in_array((string) $duePayable->status, $deadStatuses, true)
+                        || ($duePayable->deleted_at ?? null) !== null) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => 'This purchase was cancelled or refunded and can no longer be paid. Please start a new one.',
+                        ], 422);
+                    }
+
+                    $settled = (float) Payment::where('payable_type', $request->payable_type)
+                        ->where('payable_id', $request->payable_id)
+                        ->where('status', 'completed')
+                        ->sum('amount');
+                    $due = round((float) $duePayable->total_amount - $settled, 2);
+                    $tolerance = (float) config('checkout.total_tolerance', 0.05);
+
+                    if ((float) $request->amount > $due + $tolerance) {
+                        Log::warning('CHARGE_EXCEEDS_DUE: charge amount is more than the payable still owes', [
+                            'payable_type' => $request->payable_type,
+                            'payable_id' => $request->payable_id,
+                            'charge_amount' => (float) $request->amount,
+                            'total_amount' => (float) $duePayable->total_amount,
+                            'amount_paid' => (float) $duePayable->amount_paid,
+                            'settled_payments' => $settled,
+                            'due' => $due,
+                            'gift_card_id' => $duePayable->gift_card_id ?? null,
+                            'ip' => $request->ip(),
+                        ]);
+
+                        if (config('checkout.enforce_charge_within_due')) {
+                            return response()->json([
+                                'success' => false,
+                                'message' => 'That charge is more than this purchase still owes. Please refresh and try again.',
+                            ], 422);
+                        }
+                    }
                 }
 
                 $existingPayment = Payment::where('payable_id', $request->payable_id)
@@ -2854,6 +2921,8 @@ class PaymentController extends Controller
                         ->where('status', 'completed')
                         ->exists()
                 ) {
+                    $this->reverseGiftCardFor($order, Payment::TYPE_TICKET_ORDER, 'payment_error_cleanup');
+
                     foreach ($order->lines() as $line) {
                         $line['model']->forceDelete();
                     }
@@ -2876,6 +2945,7 @@ class PaymentController extends Controller
                 : $payable->status === 'pending';
 
             if ($isPending) {
+                $this->reverseGiftCardFor($payable, $payableType, 'payment_error_cleanup');
                 $payable->forceDelete();
                 Log::info('Force deleted pending entity after payment failure', [
                     'payable_type' => $payableType,
