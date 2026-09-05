@@ -188,14 +188,14 @@ class BookingCsvImportService
         $parsed = $this->parseServiceAndAddons($serviceRaw);
         $packageName = $parsed['package_name'];
 
-        $package = Package::where('name', $packageName)->first();
+        $package = Package::where('location_id', $locationId)->where('name', $packageName)->first();
         if (!$package) {
-            $package = Package::where('name', 'LIKE', '%' . $packageName . '%')->first();
+            $package = Package::where('location_id', $locationId)->where('name', 'LIKE', '%' . $packageName . '%')->first();
         }
         if (!$package && !empty($packageName)) {
             $basePackageName = trim(explode('|', $packageName)[0]);
             if ($basePackageName !== $packageName) {
-                $package = Package::where('name', 'LIKE', '%' . $basePackageName . '%')->first();
+                $package = Package::where('location_id', $locationId)->where('name', 'LIKE', '%' . $basePackageName . '%')->first();
             }
         }
 
@@ -345,6 +345,11 @@ class BookingCsvImportService
             'cancelled_at' => $cancelledAt,
         ]);
 
+        if ($createdDate) {
+            $booking->created_at = $createdDate;
+            $booking->save();
+        }
+
         if ($room && $package) {
             PackageTimeSlot::create([
                 'package_id' => $package->id,
@@ -397,7 +402,7 @@ class BookingCsvImportService
         if (is_numeric($value) && !is_string($value)) {
             try {
                 $unixTimestamp = ((float) $value - 25569) * 86400;
-                return Carbon::createFromTimestamp((int) $unixTimestamp);
+                return Carbon::createFromTimestamp((int) $unixTimestamp, 'UTC');
             } catch (\Exception $e) {
                 return null;
             }
@@ -408,7 +413,7 @@ class BookingCsvImportService
         if (is_numeric($value) && strpos($value, '/') === false && strpos($value, '-') === false) {
             try {
                 $unixTimestamp = ((float) $value - 25569) * 86400;
-                return Carbon::createFromTimestamp((int) $unixTimestamp);
+                return Carbon::createFromTimestamp((int) $unixTimestamp, 'UTC');
             } catch (\Exception $e) {
             }
         }
@@ -461,7 +466,7 @@ class BookingCsvImportService
                 if (empty($part)) continue;
 
                 $quantity = 1;
-                if (preg_match('/^(\d+)\s*[×x]\s*(.+)$/i', $part, $qMatch)) {
+                if (preg_match('/^(\d+)\s*[×x]\s*(.+)$/iu', $part, $qMatch)) {
                     $quantity = (int) $qMatch[1];
                     $part = trim($qMatch[2]);
                 }
@@ -498,14 +503,18 @@ class BookingCsvImportService
             }
 
             if (!$addon) {
-                $addon = \App\Models\AddOn::whereRaw('LOWER(name) = ?', [Str::lower($addonName)])->first();
+                $addon = \App\Models\AddOn::where(function ($q) use ($booking) {
+                    $q->where('location_id', $booking->location_id)->orWhereNull('location_id');
+                })->whereRaw('LOWER(name) = ?', [Str::lower($addonName)])->first();
                 if ($addon) {
                     $matchType = 'exact';
                 }
             }
 
             if (!$addon) {
-                $addon = \App\Models\AddOn::where('name', 'LIKE', '%' . $addonName . '%')->first();
+                $addon = \App\Models\AddOn::where(function ($q) use ($booking) {
+                    $q->where('location_id', $booking->location_id)->orWhereNull('location_id');
+                })->where('name', 'LIKE', '%' . $addonName . '%')->first();
                 if ($addon) {
                     $matchType = 'fuzzy';
                 }
@@ -551,28 +560,32 @@ class BookingCsvImportService
             return $result;
         }
 
-        if (preg_match('/\$?([\d,.]+)\s+of\s+\$?([\d,.]+)\s*(.*)/i', $payment, $matches)) {
+        if (stripos($payment, 'Authorize') !== false) {
+            $result['payment_method'] = 'authorize.net';
+        } elseif (stripos($payment, 'Stripe') !== false) {
+            $result['payment_method'] = 'card';
+        } elseif (stripos($payment, 'PayPal') !== false) {
+            $result['payment_method'] = 'card';
+        } elseif (stripos($payment, 'cash') !== false) {
+            $result['payment_method'] = 'in-store';
+        } else {
+            $result['payment_method'] = 'paylater';
+        }
+
+        if (stripos($payment, 'Completed') !== false) {
+            $result['payment_status_raw'] = 'completed';
+        } elseif (stripos($payment, 'Pending') !== false) {
+            $result['payment_status_raw'] = 'pending';
+        }
+
+        if (preg_match('/\$?([\d,.]+)\s+of\s+\$?([\d,.]+)/i', $payment, $matches)) {
             $result['amount_paid'] = (float) str_replace(',', '', $matches[1]);
             $result['total_amount'] = (float) str_replace(',', '', $matches[2]);
-
-            $remainder = trim($matches[3]);
-
-            if (stripos($remainder, 'Authorize') !== false) {
-                $result['payment_method'] = 'authorize.net';
-            } elseif (stripos($remainder, 'Stripe') !== false) {
-                $result['payment_method'] = 'card';
-            } elseif (stripos($remainder, 'PayPal') !== false) {
-                $result['payment_method'] = 'card';
-            } elseif (stripos($remainder, 'cash') !== false) {
-                $result['payment_method'] = 'in-store';
-            } else {
-                $result['payment_method'] = 'paylater';
-            }
-
-            if (stripos($remainder, 'Completed') !== false) {
-                $result['payment_status_raw'] = 'completed';
-            } elseif (stripos($remainder, 'Pending') !== false) {
-                $result['payment_status_raw'] = 'pending';
+        } elseif (preg_match('/\$?(\d[\d,]*(?:\.\d{1,2})?)/', $payment, $matches)) {
+            $amount = (float) str_replace(',', '', $matches[1]);
+            $result['total_amount'] = $amount;
+            if ($result['payment_status_raw'] === 'completed') {
+                $result['amount_paid'] = $amount;
             }
         }
 
