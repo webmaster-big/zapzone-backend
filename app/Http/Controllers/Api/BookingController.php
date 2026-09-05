@@ -136,6 +136,18 @@ class BookingController extends Controller
                 $query->byDate($request->booking_date);
             }
 
+            if ($request->filled('date_from') && $request->filled('date_to')) {
+                $from = Carbon::parse($request->date_from)->toDateString();
+                $to = Carbon::parse($request->date_to)->toDateString();
+                if ($from <= $to) {
+                    $query->whereBetween('booking_date', [$from, $to]);
+                }
+            } elseif ($request->filled('date_from')) {
+                $query->where('booking_date', '>=', Carbon::parse($request->date_from)->toDateString());
+            } elseif ($request->filled('date_to')) {
+                $query->where('booking_date', '<=', Carbon::parse($request->date_to)->toDateString());
+            }
+
             if ($request->has('search')) {
                 $this->applyBookingSearch($query, (string) $request->search);
             }
