@@ -131,83 +131,11 @@ Route::post('analytics/identify', [\App\Http\Controllers\Api\VisitorTrackingCont
     ->middleware('throttle:analytics-identify');
 
 Route::get('authorize-net/public-key/{locationId}', [AuthorizeNetAccountController::class, 'getPublicKey']); // include
-Route::get('authorize-net/accounts/all', [AuthorizeNetAccountController::class, 'allAccounts']);
+Route::get('authorize-net/accounts/all', [AuthorizeNetAccountController::class, 'allAccounts'])->middleware('auth:sanctum');
 Route::post('authorize-net/test-connection', [AuthorizeNetAccountController::class, 'testConnection'])->middleware('auth:sanctum');
 Route::post('authorize-net/test-connection/{locationId}', [AuthorizeNetAccountController::class, 'testConnectionForLocation'])->middleware('auth:sanctum');
 
-Route::get('authorize-net/debug/{locationId}', function ($locationId) {
-    $account = \App\Models\AuthorizeNetAccount::where('location_id', $locationId)->first();
-    if (!$account) {
-        return response()->json(['error' => 'No account found']);
-    }
-    try {
-        $apiLoginId = $account->api_login_id;
-        $transactionKey = $account->transaction_key;
-        $publicKey = $account->public_client_key;
-        return response()->json([
-            'environment' => $account->environment,
-            'api_login_id' => $apiLoginId,
-            'api_login_id_length' => strlen($apiLoginId),
-            'transaction_key_length' => strlen($transactionKey),
-            'public_client_key_preview' => $publicKey ? substr($publicKey, 0, 20) . '...' : 'NOT SET',
-            'public_client_key_length' => strlen($publicKey ?? ''),
-            'is_active' => $account->is_active,
-            'connected_at' => $account->connected_at,
-        ]);
-    } catch (\Exception $e) {
-        return response()->json(['error' => $e->getMessage()]);
-    }
-});
 
-Route::get('authorize-net/debug-test/{locationId}', function ($locationId) {
-    $account = \App\Models\AuthorizeNetAccount::where('location_id', $locationId)->first();
-    if (!$account) {
-        return response()->json(['error' => 'No account found']);
-    }
-    try {
-        $apiLoginId = trim($account->api_login_id);
-        $transactionKey = trim($account->transaction_key);
-
-        $merchantAuthentication = new \net\authorize\api\contract\v1\MerchantAuthenticationType();
-        $merchantAuthentication->setName($apiLoginId);
-        $merchantAuthentication->setTransactionKey($transactionKey);
-
-        $apiRequest = new \net\authorize\api\contract\v1\GetMerchantDetailsRequest();
-        $apiRequest->setMerchantAuthentication($merchantAuthentication);
-
-        $environment = $account->environment === 'production'
-            ? \net\authorize\api\constants\ANetEnvironment::PRODUCTION
-            : \net\authorize\api\constants\ANetEnvironment::SANDBOX;
-
-        $controller = new \net\authorize\api\controller\GetMerchantDetailsController($apiRequest);
-        $response = $controller->executeWithApiResponse($environment);
-
-        if ($response !== null && $response->getMessages()->getResultCode() === "Ok") {
-            return response()->json([
-                'success' => true,
-                'message' => 'Credentials are VALID',
-                'merchant_name' => $response->getMerchantName(),
-                'gateway_id' => $response->getGatewayId(),
-                'environment' => $account->environment,
-            ]);
-        } else {
-            $errors = [];
-            if ($response !== null && $response->getMessages()->getMessage()) {
-                foreach ($response->getMessages()->getMessage() as $msg) {
-                    $errors[] = ['code' => $msg->getCode(), 'text' => $msg->getText()];
-                }
-            }
-            return response()->json([
-                'success' => false,
-                'message' => 'Authentication FAILED',
-                'errors' => $errors,
-                'environment' => $account->environment,
-            ]);
-        }
-    } catch (\Exception $e) {
-        return response()->json(['error' => $e->getMessage()]);
-    }
-});
 
 Route::get('/packages/grouped-by-name', [PackageController::class, 'packagesGroupedByName']); // include
 Route::get('/packages/{id}', [PackageController::class, 'show']); // include
@@ -592,7 +520,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('account', [AuthorizeNetAccountController::class, 'show']);
         Route::post('account', [AuthorizeNetAccountController::class, 'store']);
         Route::put('account', [AuthorizeNetAccountController::class, 'update']);
-        Route::delete('account', [AuthorizeNetAccountController::class, 'destroy']);
+        Route::delete('account/{locationId?}', [AuthorizeNetAccountController::class, 'destroy']);
     });
 
     Route::prefix('email-templates')->group(function () {

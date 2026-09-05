@@ -281,17 +281,39 @@ class AuthorizeNetAccountController extends Controller
         }
     }
 
-    public function destroy(Request $request)
+    public function destroy(Request $request, $locationId = null)
     {
         $user = $request->user();
 
-        if (!$user->location_id) {
+        $targetLocationId = $user->location_id;
+
+        if ($locationId !== null) {
+            if ($user->role !== 'company_admin') {
+                return response()->json([
+                    'message' => 'Only a company admin can disconnect another location'
+                ], 403);
+            }
+
+            $location = \App\Models\Location::where('id', $locationId)
+                ->where('company_id', $user->company_id)
+                ->first();
+
+            if (!$location) {
+                return response()->json([
+                    'message' => 'Location not found in your company'
+                ], 404);
+            }
+
+            $targetLocationId = $location->id;
+        }
+
+        if (!$targetLocationId) {
             return response()->json([
                 'message' => 'No location assigned to your account'
             ], 403);
         }
 
-        $account = AuthorizeNetAccount::where('location_id', $user->location_id)->first();
+        $account = AuthorizeNetAccount::where('location_id', $targetLocationId)->first();
 
         if (!$account) {
             return response()->json([
