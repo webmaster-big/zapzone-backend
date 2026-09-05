@@ -16,6 +16,7 @@ use Illuminate\Http\Request;
 class WaiverPublicController extends Controller
 {
     private const ADULT_AGE = 18;
+    private const LOOKUP_TOKEN_TTL_MINUTES = 30;
 
     public function __construct(private WaiverService $waivers)
     {
@@ -212,7 +213,19 @@ class WaiverPublicController extends Controller
 
         $profiles = app(\App\Services\WaiverProfileService::class);
         $profile = null;
-        if (!empty($data['waiver_profile_id']) && config('waivers.returning_enabled')) {
+        if (!empty($data['waiver_profile_id'])) {
+            if (!config('waivers.returning_enabled')) {
+                \Illuminate\Support\Facades\Log::warning('Returning-customer submit arrived while the feature is disabled', [
+                    'waiver_template_id' => $template->id,
+                    'company_id' => $template->company_id,
+                ]);
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Saved records are not available right now. Please continue as a new customer.',
+                ], 409);
+            }
+
             $profile = \App\Models\WaiverProfile::where('id', $data['waiver_profile_id'])
                 ->where('company_id', $template->company_id)
                 ->first();
@@ -223,17 +236,94 @@ class WaiverPublicController extends Controller
                 return response()->json(['success' => false, 'message' => 'Please see the front desk to continue.'], 409);
             }
 
+            if (!$this->lookupTokenMatches($data['lookup_token'] ?? null, $template, $profile->id)) {
+                \Illuminate\Support\Facades\Log::warning('Returning-customer submit rejected; no valid lookup token', [
+                    'waiver_profile_id' => $profile->id,
+                    'waiver_template_id' => $template->id,
+                    'company_id' => $template->company_id,
+                    'ip' => $request->ip(),
+                ]);
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Your session timed out. Please look up your number again.',
+                ], 419);
+            }
+
+            if (!$this->signedNameCarriesSurname($data['typed_legal_name'] ?? null, $profile->last_name)) {
+                \Illuminate\Support\Facades\Log::warning('Returning-customer submit rejected; signature name does not match the saved record', [
+                    'waiver_profile_id' => $profile->id,
+                    'company_id' => $template->company_id,
+                    'ip' => $request->ip(),
+                ]);
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'The name you signed does not match the name on this record. Please ask the front desk for help.',
+                ], 422);
+            }
+
             $data['adult_first_name'] = $profile->first_name;
             $data['adult_last_name'] = $profile->last_name;
             $data['adult_email'] = $profile->email ?: ($data['adult_email'] ?? null);
             $data['adult_phone'] = $profile->phone_raw ?: ($data['adult_phone'] ?? null);
-            $data['adult_dob'] = $profile->date_of_birth?->toDateString() ?: ($data['adult_dob'] ?? null);
+            $savedDob = $profile->date_of_birth?->toDateString();
+            if ($savedDob && substr((string) ($data['adult_dob'] ?? ''), 0, 10) !== $savedDob) {
+                \Illuminate\Support\Facades\Log::warning('Returning-customer submit rejected; date of birth does not match the saved record', [
+                    'waiver_profile_id' => $profile->id,
+                    'company_id' => $template->company_id,
+                    'ip' => $request->ip(),
+                ]);
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'The date of birth you entered does not match this record. Please ask the front desk for help.',
+                ], 422);
+            }
+
+            $data['adult_dob'] = $savedDob ?: ($data['adult_dob'] ?? null);
+
+            if (!$data['adult_dob'] || \Illuminate\Support\Carbon::parse($data['adult_dob'])->age < self::ADULT_AGE) {
+                \Illuminate\Support\Facades\Log::warning('Returning-customer submit rejected; saved signer is not an adult', [
+                    'waiver_profile_id' => $profile->id,
+                    'company_id' => $template->company_id,
+                ]);
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Please see the front desk to continue.',
+                ], 422);
+            }
+            $cap = max(1, (int) $template->max_minors);
+
             try {
-                $data['minors'] = $profiles->resolveMinorsForSubmission(
-                    $profile,
-                    $data['selected_dependent_ids'] ?? [],
-                    $data['minors'] ?? []
+                $data['minors'] = \Illuminate\Support\Facades\DB::transaction(
+                    function () use ($profiles, $profile, $data, $cap) {
+                        $minors = $profiles->resolveMinorsForSubmission(
+                            $profile,
+                            $data['selected_dependent_ids'] ?? [],
+                            $data['minors'] ?? []
+                        );
+
+                        if (count($minors) > $cap) {
+                            throw new \App\Support\WaiverMinorCapExceeded($cap);
+                        }
+
+                        return $minors;
+                    }
                 );
+            } catch (\App\Support\WaiverMinorCapExceeded $e) {
+                \Illuminate\Support\Facades\Log::info('Returning-customer submit rejected; over the dependent cap', [
+                    'waiver_profile_id' => $profile->id,
+                    'company_id' => $template->company_id,
+                    'cap' => $e->cap,
+                ]);
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This waiver covers up to ' . $e->cap . ' dependent' . ($e->cap === 1 ? '' : 's')
+                        . ' per signer. Please ask the front desk for help.',
+                ], 422);
             } catch (\Throwable $e) {
                 \Illuminate\Support\Facades\Log::error('Returning-customer dependents could not be resolved', [
                     'waiver_profile_id' => $profile->id,
@@ -247,17 +337,8 @@ class WaiverPublicController extends Controller
                     'message' => 'We could not confirm who is participating today. Please ask the front desk for help.',
                 ], 422);
             }
-
-            $cap = max(1, (int) $template->max_minors);
-            if (count($data['minors']) > $cap) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'This waiver covers up to ' . $cap . ' dependent' . ($cap === 1 ? '' : 's')
-                        . ' per signer. Please ask the front desk for help.',
-                ], 422);
-            }
         }
-        unset($data['waiver_profile_id'], $data['selected_dependent_ids']);
+        unset($data['waiver_profile_id'], $data['selected_dependent_ids'], $data['lookup_token']);
 
         $waiver = Waiver::create(array_merge([
             'company_id' => $template->company_id,
@@ -294,6 +375,37 @@ class WaiverPublicController extends Controller
         ], 201);
     }
 
+    private function lookupTokenKey(string $token): string
+    {
+        return 'waiver-lookup-token:' . hash('sha256', $token);
+    }
+
+    private function issueLookupToken(WaiverTemplate $template, \App\Models\WaiverProfile $profile): string
+    {
+        $token = bin2hex(random_bytes(32));
+
+        \Illuminate\Support\Facades\Cache::put(
+            $this->lookupTokenKey($token),
+            ['profile_id' => $profile->id, 'template_id' => $template->id],
+            now()->addMinutes(self::LOOKUP_TOKEN_TTL_MINUTES)
+        );
+
+        return $token;
+    }
+
+    private function lookupTokenMatches(?string $token, WaiverTemplate $template, int $profileId): bool
+    {
+        if (!filled($token)) {
+            return false;
+        }
+
+        $stored = \Illuminate\Support\Facades\Cache::get($this->lookupTokenKey($token));
+
+        return is_array($stored)
+            && (int) ($stored['profile_id'] ?? 0) === $profileId
+            && (int) ($stored['template_id'] ?? 0) === $template->id;
+    }
+
     public function kioskLookup(Request $request, int $templateId): JsonResponse
     {
         if (!config('waivers.returning_enabled')) {
@@ -307,12 +419,13 @@ class WaiverPublicController extends Controller
 
         $validated = $request->validate([
             'phone' => ['required', 'string', 'max:30'],
+            'last_name' => ['required', 'string', 'max:255'],
         ]);
 
         $profiles = app(\App\Services\WaiverProfileService::class);
 
         try {
-            $result = $profiles->lookup($template->company_id, $validated['phone']);
+            $result = $profiles->lookup($template->company_id, $validated['phone'], $validated['last_name']);
         } catch (\Throwable $e) {
             \Illuminate\Support\Facades\Log::error('Returning-customer lookup errored out', [
                 'waiver_template_id' => $template->id,
@@ -328,10 +441,18 @@ class WaiverPublicController extends Controller
             ], 503);
         }
 
+        if (!empty($result['degraded'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'We could not check that number right now. Please try again or continue as a new customer.',
+            ], 503);
+        }
+
         $payload = ['status' => $result['status']];
         if ($result['status'] === \App\Services\WaiverProfileService::STATUS_FOUND) {
             $payload['profile'] = $profiles->presentForKiosk($result['profile']);
             $payload['source'] = $result['source'] ?? null;
+            $payload['lookup_token'] = $this->issueLookupToken($template, $result['profile']);
         }
 
         return response()->json(['success' => true, 'data' => $payload]);
@@ -609,6 +730,17 @@ class WaiverPublicController extends Controller
         return $links;
     }
 
+    private function signedNameCarriesSurname(?string $fullName, ?string $surname): bool
+    {
+        foreach (preg_split('/\s+/', trim((string) $fullName), -1, PREG_SPLIT_NO_EMPTY) ?: [] as $token) {
+            if (\App\Services\WaiverProfileService::nameMatches($surname, $token)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function validateSubmission(Request $request, WaiverTemplate $template): array
     {
         $rules = [
@@ -617,6 +749,7 @@ class WaiverPublicController extends Controller
             'adult_email' => 'required|email|max:255',
             'adult_phone' => 'required|string|max:30',
             'waiver_profile_id' => 'nullable|integer',
+            'lookup_token' => 'nullable|string|max:128',
             'selected_dependent_ids' => 'nullable|array|max:' . max(1, (int) $template->max_minors),
             'selected_dependent_ids.*' => 'integer',
             'adult_dob' => 'required|date|before_or_equal:' . now()->subYears(self::ADULT_AGE)->toDateString(),

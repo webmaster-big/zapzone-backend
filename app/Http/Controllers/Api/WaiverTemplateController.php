@@ -275,6 +275,9 @@ class WaiverTemplateController extends Controller
                 ],
                 'body' => $version->body_text,
                 'status' => $waiverTemplate->status,
+                'settings' => [
+                    'returning_enabled' => (bool) config('waivers.returning_enabled'),
+                ],
             ],
         ]);
     }

@@ -6,6 +6,7 @@ use App\Models\Contact;
 use App\Models\Waiver;
 use App\Models\WaiverProfile;
 use App\Models\WaiverProfileDependent;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Support\Facades\Cache;
@@ -25,10 +26,14 @@ class WaiverProfileService
 
     private const DEPENDENT_MAX_AGE = 18;
 
-    public function lookup(int $companyId, ?string $phone): array
+    public function lookup(int $companyId, ?string $phone, ?string $lastName = null): array
     {
         $digits = WaiverProfile::digitsFor($phone);
         if (!$digits) {
+            return ['status' => self::STATUS_NOT_FOUND];
+        }
+
+        if (!filled($lastName)) {
             return ['status' => self::STATUS_NOT_FOUND];
         }
 
@@ -52,6 +57,15 @@ class WaiverProfileService
                     : ['status' => self::STATUS_NOT_FOUND];
             }
 
+            if (!self::nameMatches($profile->last_name, $lastName)) {
+                Log::info('Waiver returning lookup refused; surname does not match the saved record', [
+                    'company_id' => $companyId,
+                    'phone_last4' => substr($digits, -4),
+                ]);
+
+                return ['status' => self::STATUS_NOT_FOUND];
+            }
+
             if ($profile->needs_staff_review) {
                 return ['status' => self::STATUS_NEEDS_STAFF];
             }
@@ -67,6 +81,16 @@ class WaiverProfileService
 
             return ['status' => self::STATUS_NOT_FOUND, 'degraded' => true];
         }
+    }
+
+    public static function nameMatches(?string $stored, ?string $supplied): bool
+    {
+        $norm = static fn (?string $v) => preg_replace('/[^a-z]/', '', mb_strtolower(trim((string) $v)));
+
+        $a = $norm($stored);
+        $b = $norm($supplied);
+
+        return $a !== '' && $a === $b;
     }
 
     protected function profilesFor(int $companyId, string $digits): Collection
@@ -93,7 +117,7 @@ class WaiverProfileService
         $lock = Cache::lock('waiver-profile-promote:' . $companyId . ':' . $digits, 15);
 
         try {
-            $lock->block(3);
+            $lock->block(1);
         } catch (LockTimeoutException) {
             Log::warning('Waiver profile promotion is already in flight for this number', [
                 'company_id' => $companyId,
@@ -243,24 +267,55 @@ class WaiverProfileService
             'id' => $profile->id,
             'first_name' => $profile->first_name,
             'last_name' => $profile->last_name,
-            'email' => $profile->email,
-            'phone' => $profile->phone_raw ?: $profile->phone_e164,
-            'date_of_birth' => $profile->date_of_birth?->toDateString(),
-            'dependents' => $profile->activeDependents->map(fn (WaiverProfileDependent $d) => [
-                'id' => $d->id,
-                'first_name' => $d->first_name,
-                'last_name' => $d->last_name,
-                'age' => $d->date_of_birth?->age,
-                'relationship' => $d->relationship,
-            ])->values()->all(),
+            'email' => self::maskEmail($profile->email),
+            'has_email' => filled($profile->email),
+            'phone' => self::maskPhone($profile->phone_raw ?: $profile->phone_e164),
+            'age' => $profile->date_of_birth?->age,
+            'dependents' => $profile->activeDependents
+                ->reject(fn (WaiverProfileDependent $d) => self::isAdultDependent($d))
+                ->map(fn (WaiverProfileDependent $d) => [
+                    'id' => $d->id,
+                    'first_name' => $d->first_name,
+                    'last_name' => $d->last_name,
+                    'age' => $d->date_of_birth?->age,
+                    'relationship' => $d->relationship,
+                ])->values()->all(),
         ];
+    }
+
+    public static function isAdultDependent(WaiverProfileDependent $dependent): bool
+    {
+        return $dependent->date_of_birth !== null
+            && $dependent->date_of_birth->age >= self::DEPENDENT_MAX_AGE;
+    }
+
+    public static function maskEmail(?string $email): ?string
+    {
+        if (!filled($email) || !str_contains((string) $email, '@')) {
+            return null;
+        }
+
+        [$user, $domain] = explode('@', (string) $email, 2);
+        $keep = mb_substr($user, 0, 1);
+
+        return $keep . str_repeat('*', max(3, mb_strlen($user) - 1)) . '@' . $domain;
+    }
+
+    public static function maskPhone(?string $phone): ?string
+    {
+        $digits = preg_replace('/\D/', '', (string) $phone);
+
+        return strlen((string) $digits) >= 4
+            ? '(***) ***-' . substr((string) $digits, -4)
+            : null;
     }
 
     public function resolveMinorsForSubmission(WaiverProfile $profile, array $selectedIds, array $newMinors): array
     {
         $selected = $profile->activeDependents()
             ->whereIn('id', array_filter(array_map('intval', $selectedIds)))
-            ->get();
+            ->get()
+            ->reject(fn (WaiverProfileDependent $d) => self::isAdultDependent($d));
 
         $rows = $selected->map(fn (WaiverProfileDependent $d) => [
             'waiver_profile_dependent_id' => $d->id,
@@ -271,6 +326,8 @@ class WaiverProfileService
             'was_new_this_visit' => false,
         ])->all();
 
+        $norm = fn (?string $v) => mb_strtolower(trim((string) $v));
+
         foreach ($newMinors as $minor) {
             $first = trim((string) ($minor['first_name'] ?? ''));
             $last = trim((string) ($minor['last_name'] ?? ''));
@@ -279,7 +336,31 @@ class WaiverProfileService
             }
             $dob = $minor['date_of_birth'] ?? null;
 
+            if ($dob !== null && $this->ageFrom($dob) >= self::DEPENDENT_MAX_AGE) {
+                continue;
+            }
+
+            $alreadyListed = false;
+            foreach ($rows as $row) {
+                if ($norm($row['first_name']) === $norm($first) && $norm($row['last_name']) === $norm($last)) {
+                    $alreadyListed = true;
+                    break;
+                }
+            }
+            if ($alreadyListed) {
+                continue;
+            }
+
             $existing = $profile->dependents->first(fn (WaiverProfileDependent $d) => $d->matches($first, $last, $dob));
+
+            if ($existing && !$existing->is_active) {
+                $existing->update(['is_active' => true]);
+                Log::info('Retired waiver dependent reactivated by the signer', [
+                    'waiver_profile_id' => $profile->id,
+                    'dependent_id' => $existing->id,
+                ]);
+            }
+
             $dependent = $existing ?: $profile->dependents()->create([
                 'first_name' => $first,
                 'last_name' => $last,
@@ -301,9 +382,26 @@ class WaiverProfileService
         return $rows;
     }
 
+    protected function ageFrom(?string $dob): int
+    {
+        if (!filled($dob)) {
+            return 0;
+        }
+
+        try {
+            return Carbon::parse($dob)->age;
+        } catch (\Throwable) {
+            return 0;
+        }
+    }
+
     public function syncFromWaiver(Waiver $waiver): ?WaiverProfile
     {
         try {
+            if (!config('waivers.returning_enabled')) {
+                return null;
+            }
+
             if ($waiver->status !== Waiver::STATUS_COMPLETED || !$waiver->company_id) {
                 return null;
             }
@@ -325,7 +423,7 @@ class WaiverProfileService
             $lock = Cache::lock('waiver-profile-promote:' . $waiver->company_id . ':' . $digits, 15);
 
             try {
-                $lock->block(3);
+                $lock->block(1);
             } catch (LockTimeoutException) {
                 Log::warning('Waiver profile sync skipped; another write holds this number', [
                     'waiver_id' => $waiver->id,
@@ -385,6 +483,14 @@ class WaiverProfileService
                 ]);
             } elseif ($this->isDifferentPerson($profile, $waiver)) {
                 $profile->update(['needs_staff_review' => true]);
+
+                Log::warning('Waiver profile left untouched; a different signer used this number', [
+                    'waiver_id' => $waiver->id,
+                    'waiver_profile_id' => $profile->id,
+                    'company_id' => $waiver->company_id,
+                ]);
+
+                return null;
             }
 
             if (!$waiver->waiver_profile_id) {

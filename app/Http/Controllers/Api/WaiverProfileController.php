@@ -165,7 +165,7 @@ class WaiverProfileController extends Controller
             if (!$digits) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'That phone number is not usable as a lookup key. Enter at least 7 digits.',
+                    'message' => 'That phone number is not usable as a lookup key. Enter a full 10-digit number.',
                 ], 422);
             }
 

@@ -73,6 +73,6 @@ class WaiverProfile extends Model
             $digits = substr($digits, 1);
         }
 
-        return strlen($digits) >= 7 ? $digits : null;
+        return strlen($digits) === 10 ? $digits : null;
     }
 }

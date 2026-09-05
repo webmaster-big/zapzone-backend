@@ -25,6 +25,7 @@ class BuildWaiverProfiles extends Command
     protected int $waiversLinked = 0;
     protected int $dependentsSeeded = 0;
     protected int $conflictsFlagged = 0;
+    protected int $groupsRefused = 0;
     protected int $waiversSkipped = 0;
     protected int $groupsFailed = 0;
 
@@ -56,6 +57,7 @@ class BuildWaiverProfiles extends Command
             ['Waivers linked', $this->waiversLinked],
             ['Dependents seeded', $this->dependentsSeeded],
             ['Conflicts flagged', $this->conflictsFlagged],
+            ['Groups refused (more than one signer on the number)', $this->groupsRefused],
             ['Waivers skipped (unusable phone)', $this->waiversSkipped],
             ['Phone groups failed', $this->groupsFailed],
         ]);
@@ -65,6 +67,7 @@ class BuildWaiverProfiles extends Command
             'waivers_linked' => $this->waiversLinked,
             'dependents_seeded' => $this->dependentsSeeded,
             'conflicts_flagged' => $this->conflictsFlagged,
+            'groups_refused' => $this->groupsRefused,
             'waivers_skipped' => $this->waiversSkipped,
             'groups_failed' => $this->groupsFailed,
             'dry_run' => $dryRun,
@@ -175,7 +178,17 @@ class BuildWaiverProfiles extends Command
         }
 
         $latest = $waivers->last();
-        $conflicted = $this->hasDifferentNames($waivers);
+
+        if ($this->hasDifferentNames($waivers)) {
+            $this->groupsRefused++;
+            $this->line(sprintf(
+                '  refused %s: more than one signer has used this number (%d waivers left unlinked)',
+                '***-' . substr($digits, -4),
+                $waivers->count()
+            ));
+
+            return;
+        }
 
         $existing = WaiverProfile::where('company_id', $companyId)
             ->where('phone_digits', $digits)
@@ -183,7 +196,7 @@ class BuildWaiverProfiles extends Command
             ->get();
 
         $profile = $existing->first();
-        $needsReview = $conflicted || $existing->count() > 1;
+        $needsReview = $existing->count() > 1;
 
         if ($dryRun) {
             if (!$profile) {
