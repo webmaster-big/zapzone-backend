@@ -29,6 +29,7 @@ class CleanupAbandonedCardCheckouts extends Command
 
         $bookings = Booking::where('status', 'pending')
             ->where('payment_method', 'authorize.net')
+            ->whereNull('created_by')
             ->where(fn ($q) => $q->where('payment_status', 'pending')->orWhereNull('payment_status'))
             ->where(fn ($q) => $q->where('amount_paid', 0)->orWhereNull('amount_paid'))
             ->where('created_at', '<', $cutoff)
@@ -64,13 +65,14 @@ class CleanupAbandonedCardCheckouts extends Command
         }
 
         $purchaseSets = [
-            ['model' => AttractionPurchase::class, 'type' => Payment::TYPE_ATTRACTION_PURCHASE, 'label' => 'attraction purchase'],
-            ['model' => EventPurchase::class, 'type' => Payment::TYPE_EVENT_PURCHASE, 'label' => 'event purchase'],
+            ['model' => AttractionPurchase::class, 'type' => Payment::TYPE_ATTRACTION_PURCHASE, 'label' => 'attraction purchase', 'has_created_by' => true],
+            ['model' => EventPurchase::class, 'type' => Payment::TYPE_EVENT_PURCHASE, 'label' => 'event purchase', 'has_created_by' => false],
         ];
 
         foreach ($purchaseSets as $set) {
             $purchases = $set['model']::where('status', 'pending')
                 ->where('payment_method', 'authorize.net')
+                ->when($set['has_created_by'], fn ($q) => $q->whereNull('created_by'))
                 ->whereNull('ticket_order_id')
                 ->where(fn ($q) => $q->where('amount_paid', 0)->orWhereNull('amount_paid'))
                 ->where('created_at', '<', $cutoff)
