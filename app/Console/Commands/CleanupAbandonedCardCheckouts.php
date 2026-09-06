@@ -16,9 +16,9 @@ class CleanupAbandonedCardCheckouts extends Command
 {
     use ReversesGiftCards;
 
-    protected $signature = 'checkouts:cleanup-abandoned {--minutes=60} {--dry-run}';
+    protected $signature = 'checkouts:cleanup-abandoned {--minutes=60} {--grace-days=7} {--dry-run}';
 
-    protected $description = 'Silently delete card-payment bookings and purchases whose charge never completed, so failed checkouts leave no trace';
+    protected $description = 'Silently delete card checkouts whose charge never completed, and cancel unpaid pay-later bookings whose visit day has long passed';
 
     public function handle(): int
     {
@@ -99,8 +99,40 @@ class CleanupAbandonedCardCheckouts extends Command
             }
         }
 
+        $graceDays = max(1, (int) $this->option('grace-days'));
+        $staleCutoff = now()->subDays($graceDays)->toDateString();
+        $expired = 0;
+
+        $staleBookings = Booking::where('status', 'pending')
+            ->whereIn('payment_method', ['paylater', 'in-store'])
+            ->where(fn ($q) => $q->where('amount_paid', 0)->orWhereNull('amount_paid'))
+            ->whereNull('checked_in_at')
+            ->where('booking_date', '<', $staleCutoff)
+            ->get();
+
+        foreach ($staleBookings as $booking) {
+            if ($this->hasCompletedPayment(Payment::TYPE_BOOKING, $booking->id)) {
+                continue;
+            }
+
+            if ($dryRun) {
+                $this->line("would cancel unpaid pay-later booking {$booking->reference_number} (visit day {$booking->booking_date?->format('Y-m-d')})");
+                $expired++;
+                continue;
+            }
+
+            $this->reverseGiftCardFor($booking, Payment::TYPE_BOOKING, 'stale_paylater_expired');
+            $booking->update([
+                'status' => 'cancelled',
+                'cancelled_at' => now(),
+            ]);
+            $this->logRemoval('stale pay-later booking', $booking->id, $booking->reference_number, $booking->location_id, $booking->created_at?->toIso8601String());
+            $expired++;
+        }
+
         $verb = $dryRun ? 'would remove' : 'removed';
-        $this->info("Abandoned card checkouts: {$verb} {$removed}");
+        $expireVerb = $dryRun ? 'would cancel' : 'cancelled';
+        $this->info("Abandoned card checkouts: {$verb} {$removed}; stale pay-later bookings: {$expireVerb} {$expired}");
 
         return self::SUCCESS;
     }
