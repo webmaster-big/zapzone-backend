@@ -9,4 +9,15 @@ return [
     'capacity' => env('BOOKING_RULES_CAPACITY', 'log'),
     'package_required' => env('BOOKING_RULES_PACKAGE_REQUIRED', 'log'),
     'csv_participants' => env('BOOKING_RULES_CSV_PARTICIPANTS', 'log'),
+
+    /*
+     * Whether a booking change must carry a typed reason.
+     *   'all'           - DEFAULT. Required for every employee-made booking change, per the
+     *                     requirement. Customers and unauthenticated callers are never prompted
+     *                     (see CapturesChangeReason::actorIsStaff).
+     *   'guest_visible' - narrower fallback: only changes a guest would notice (date, time, room,
+     *                     package, participants, price, status, cancellation, location move).
+     *   'off'           - never required; reasons are still stored when supplied.
+     */
+    'change_reason' => env('BOOKING_RULES_CHANGE_REASON', 'all'),
 ];

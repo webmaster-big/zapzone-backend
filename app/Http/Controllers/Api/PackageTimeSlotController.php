@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Traits\CapturesChangeReason;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Models\ActivityLog;
 use App\Models\PackageTimeSlot;
@@ -14,6 +15,7 @@ use Illuminate\Support\Facades\Log;
 
 class PackageTimeSlotController extends Controller
 {
+    use CapturesChangeReason;
     use GeneratesAvailableTimeSlots;
     use ScopesByAuthUser;
 
@@ -183,8 +185,45 @@ class PackageTimeSlotController extends Controller
             }
         }
 
+        // Capture the original slot before writing - this row defines when the booking occupies
+        // its room, so a change here is a reschedule and belongs in the booking's history.
+        $tracked = ['booked_date', 'time_slot_start', 'duration', 'duration_unit', 'status', 'notes'];
+        $changes = [];
+        foreach ($tracked as $field) {
+            if (! array_key_exists($field, $validated)) {
+                continue;
+            }
+            $before = $packageTimeSlot->getOriginal($field);
+            $before = $before instanceof \DateTimeInterface ? $before->format('Y-m-d') : $before;
+            if ((string) $before !== (string) $validated[$field]) {
+                $changes[$field] = ['from' => $before, 'to' => $validated[$field]];
+            }
+        }
+
+        $changeReason = $this->resolveChangeReason($request, self::CHANGE_GUEST_VISIBLE);
+
         $packageTimeSlot->update($validated);
         $packageTimeSlot->load(['package', 'room', 'booking', 'customer']);
+
+        if ($changes !== [] && $packageTimeSlot->booking_id) {
+            ActivityLog::log(
+                action: 'Booking Slot Rescheduled',
+                category: 'update',
+                description: "Time slot updated for booking #{$packageTimeSlot->booking_id}. Changed: "
+                    . implode(', ', array_keys($changes)),
+                userId: auth()->id(),
+                locationId: $packageTimeSlot->booking?->location_id,
+                entityType: 'booking',
+                entityId: $packageTimeSlot->booking_id,
+                metadata: [
+                    'package_time_slot_id' => $packageTimeSlot->id,
+                    'reference_number' => $packageTimeSlot->booking?->reference_number,
+                    'changes' => $changes,
+                    'updated_fields' => array_keys($changes),
+                ],
+                reason: $changeReason
+            );
+        }
 
         return response()->json([
             'success' => true,

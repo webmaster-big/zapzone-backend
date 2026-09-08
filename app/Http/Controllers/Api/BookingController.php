@@ -14,6 +14,7 @@ use App\Services\EmailNotificationService;
 use App\Services\GmailApiService;
 use App\Services\GoogleCalendarService;
 use App\Models\ActivityLog;
+use App\Http\Traits\CapturesChangeReason;
 use App\Models\EmailNotification;
 use App\Models\Booking;
 use App\Models\BookingAttraction;
@@ -43,8 +44,35 @@ class BookingController extends Controller
 {
     use \App\Http\Traits\ReversesGiftCards;
     use ScopesByAuthUser;
+    use CapturesChangeReason;
     use RecordsPageAnalytics;
     use GeneratesAvailableTimeSlots;
+
+    /**
+     * Free-text staff/guest notes are recorded as "changed", never as their content.
+     *
+     * activity_logs is append-only by design, so anything written there can never be redacted.
+     * Internal notes are staff-private commentary about a guest, so copying the text into a
+     * permanent, undeletable log creates a retention problem and a second place the note lives.
+     */
+    public const REDACTED_CHANGE_FIELDS = ['internal_notes', 'notes', 'special_requests'];
+
+    private static function redactedChange($oldValue, $newValue): array
+    {
+        $describe = static function ($value): string {
+            if ($value === null || $value === '') {
+                return 'empty';
+            }
+
+            return mb_strlen((string) $value) . ' characters';
+        };
+
+        return [
+            'from' => $describe($oldValue),
+            'to' => $describe($newValue),
+            'redacted' => true,
+        ];
+    }
 
     private function applyBookingSearch($query, string $search): void
     {
@@ -79,6 +107,20 @@ class BookingController extends Controller
 
                 if (ctype_digit($term)) {
                     $q->orWhere('id', (int) $term);
+                }
+
+                // Phones are stored inconsistently ("+1 313-919-8233", "13139198233",
+                // "2483107892"), so a raw LIKE only matches when the caller happens to type
+                // the same punctuation. Compare digits-to-digits whenever the term has enough
+                // digits to be a phone fragment.
+                $termDigits = preg_replace('/\D+/', '', $term);
+                if (strlen($termDigits) >= 4) {
+                    $digitsLike = '%' . $termDigits . '%';
+                    $strip = fn (string $col) => "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE($col, ''), ' ', ''), '-', ''), '(', ''), ')', ''), '+', '')";
+                    $q->orWhereRaw($strip('guest_phone') . ' LIKE ?', [$digitsLike])
+                      ->orWhereHas('customer', function ($c) use ($digitsLike, $strip) {
+                          $c->whereRaw($strip('phone') . ' LIKE ?', [$digitsLike]);
+                      });
                 }
             });
         }
@@ -1211,6 +1253,11 @@ class BookingController extends Controller
             }
         }
 
+        // Resolve the reason BEFORE the transaction. Resolving it afterwards meant a staff caller
+        // who omitted it got a 422 with the booking already committed and NOTHING logged - worse
+        // than logging without a reason. cancel() and updateLocation() already resolve up front.
+        $changeReason = $this->resolveChangeReason($request, self::CHANGE_GUEST_VISIBLE);
+
         $slotFieldsTouched = array_intersect_key($validated, array_flip(['participants', 'booking_date', 'booking_time', 'package_id'])) !== []
             || (isset($validated['status']) && $booking->status === 'cancelled' && $validated['status'] !== 'cancelled');
         $targetPackageId = array_key_exists('package_id', $validated) ? $validated['package_id'] : $booking->package_id;
@@ -1387,10 +1434,9 @@ class BookingController extends Controller
             }
             $oldValue = $originalValues[$field] ?? null;
             if ($oldValue !== $newValue) {
-                $changes[$field] = [
-                    'from' => $oldValue,
-                    'to' => $newValue,
-                ];
+                $changes[$field] = in_array($field, self::REDACTED_CHANGE_FIELDS, true)
+                    ? self::redactedChange($oldValue, $newValue)
+                    : ['from' => $oldValue, 'to' => $newValue];
             }
         }
 
@@ -1452,7 +1498,8 @@ class BookingController extends Controller
                 'amount_paid' => $booking->amount_paid,
                 'status' => $booking->status,
                 'payment_status' => $booking->payment_status,
-            ]
+            ],
+            reason: $changeReason,
         );
 
         try {
@@ -1474,7 +1521,7 @@ class BookingController extends Controller
         ]);
     }
 
-    public function cancel(Booking $booking): JsonResponse
+    public function cancel(Request $request, Booking $booking): JsonResponse
     {
         if (in_array($booking->status, ['completed', 'cancelled'])) {
             return response()->json([
@@ -1482,6 +1529,16 @@ class BookingController extends Controller
                 'message' => 'Cannot cancel a ' . $booking->status . ' booking',
             ], 400);
         }
+
+        $changeReason = $this->resolveChangeReason($request, self::CHANGE_GUEST_VISIBLE);
+
+        // Snapshot before mutating - cancelling voids the slot and reverses gift-card value, so
+        // the original state has to be captured for the audit trail.
+        $previousStatus = $booking->status;
+        $previousPaymentStatus = $booking->payment_status;
+        $customerName = $booking->customer
+            ? trim("{$booking->customer->first_name} {$booking->customer->last_name}")
+            : $booking->guest_name;
 
         $booking->update([
             'status' => 'cancelled',
@@ -1524,6 +1581,34 @@ class BookingController extends Controller
             ['tracking_id' => 'srv:booking:'.$booking->id.':cancelled']
         );
 
+        ActivityLog::log(
+            action: 'Booking Cancelled',
+            category: 'update',
+            description: "Booking {$booking->reference_number} cancelled for {$customerName}",
+            userId: $this->resolveAuthUser($request)?->id,
+            locationId: $booking->location_id,
+            entityType: 'booking',
+            entityId: $booking->id,
+            metadata: [
+                'reference_number' => $booking->reference_number,
+                'customer_name' => $customerName,
+                'customer_id' => $booking->customer_id,
+                'changes' => [
+                    'status' => ['from' => $previousStatus, 'to' => 'cancelled'],
+                    'cancelled_at' => ['from' => null, 'to' => $booking->cancelled_at?->toIso8601String()],
+                ],
+                'updated_fields' => ['status', 'cancelled_at'],
+                'booking_date' => $booking->booking_date,
+                'booking_time' => $booking->booking_time,
+                'total_amount' => $booking->total_amount,
+                'amount_paid' => $booking->amount_paid,
+                'payment_status' => $previousPaymentStatus,
+                'time_slots_cancelled' => true,
+                'gift_card_reversed' => true,
+            ],
+            reason: $changeReason
+        );
+
         return response()->json([
             'success' => true,
             'message' => 'Booking cancelled successfully',
@@ -1538,6 +1623,8 @@ class BookingController extends Controller
         $validated = $request->validate([
             'reference_number' => 'required|string|exists:bookings,reference_number',
         ]);
+
+        $changeReason = $this->resolveChangeReason($request, self::CHANGE_INTERNAL);
 
         $authUser = $this->resolveAuthUser($request);
         $booking = Booking::where('reference_number', $validated['reference_number'])->first();
@@ -1590,8 +1677,9 @@ class BookingController extends Controller
                     'id' => $booking->package->id,
                     'name' => $booking->package->name,
                 ] : null,
-            ]
-        );
+            ],
+                reason: $changeReason
+            );
 
         try {
             $gcalService = new GoogleCalendarService($booking->location_id);
@@ -1618,6 +1706,9 @@ class BookingController extends Controller
             ], 400);
         }
 
+        $changeReason = $this->resolveChangeReason(request(), self::CHANGE_GUEST_VISIBLE);
+        $previousStatus = $booking->status;
+
         $booking->update([
             'status' => 'completed',
             'completed_at' => now(),
@@ -1636,6 +1727,25 @@ class BookingController extends Controller
             Log::warning('Google Calendar sync failed on complete', ['booking_id' => $booking->id, 'error' => $e->getMessage()]);
         }
 
+        ActivityLog::log(
+            action: 'Booking Completed',
+            category: 'update',
+            description: "Booking {$booking->reference_number} marked completed",
+            userId: auth()->id(),
+            locationId: $booking->location_id,
+            entityType: 'booking',
+            entityId: $booking->id,
+            metadata: [
+                'reference_number' => $booking->reference_number,
+                'changes' => [
+                    'status' => ['from' => $previousStatus, 'to' => 'completed'],
+                    'completed_at' => ['from' => null, 'to' => $booking->completed_at?->toIso8601String()],
+                ],
+                'updated_fields' => ['status', 'completed_at'],
+            ],
+            reason: $changeReason
+        );
+
         return response()->json([
             'success' => true,
             'message' => 'Booking completed successfully',
@@ -1650,6 +1760,8 @@ class BookingController extends Controller
             'room_id' => ['sometimes', 'nullable', 'integer', 'exists:rooms,id'],
             'force' => ['sometimes', 'boolean'],
         ]);
+
+        $changeReason = $this->resolveChangeReason($request, self::CHANGE_GUEST_VISIBLE);
 
         if (!$this->authorizeRecordScope($booking)) {
             return response()->json([
@@ -1779,7 +1891,8 @@ class BookingController extends Controller
                 'room_id' => $roomId,
                 'forced' => $request->boolean('force') && !empty($conflicts),
                 'conflicts' => $conflicts,
-            ]
+            ],
+            $changeReason
         );
 
         $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
@@ -1798,6 +1911,7 @@ class BookingController extends Controller
             'status' => ['required', Rule::in(['pending', 'confirmed', 'checked-in', 'completed', 'cancelled'])],
         ]);
 
+        $changeReason = $this->resolveChangeReason($request, self::CHANGE_GUEST_VISIBLE);
         $previousStatus = $booking->status;
         $notificationData = null;
 
@@ -1951,7 +2065,8 @@ class BookingController extends Controller
                 'booking_time' => $booking->booking_time,
                 'total_amount' => $booking->total_amount,
                 'amount_paid' => $booking->amount_paid,
-            ]
+            ],
+            reason: $changeReason,
         );
 
         return response()->json([
@@ -1966,6 +2081,8 @@ class BookingController extends Controller
         $validated = $request->validate([
             'payment_status' => ['required', Rule::in(['paid', 'partial'])],
         ]);
+
+        $changeReason = $this->resolveChangeReason($request, self::CHANGE_INTERNAL);
 
         $previousStatus = $booking->payment_status;
 
@@ -2015,8 +2132,9 @@ class BookingController extends Controller
                 'total_amount' => $booking->total_amount,
                 'amount_paid' => $booking->amount_paid,
                 'booking_date' => $booking->booking_date,
-            ]
-        );
+            ],
+                reason: $changeReason
+            );
 
         return response()->json([
             'success' => true,
@@ -2042,6 +2160,72 @@ class BookingController extends Controller
         return response()->json([
             'success' => true,
             'data' => $bookings,
+        ]);
+    }
+
+    /**
+     * The immutable change history for one booking: who changed what, when, and why.
+     * Read-only by construction - activity_logs is append-only.
+     */
+    public function changeLogs(Request $request, $id): JsonResponse
+    {
+        $booking = Booking::withTrashed()->find($id);
+
+        if (! $booking) {
+            return response()->json(['success' => false, 'message' => 'Booking not found'], 404);
+        }
+
+        if (! $this->authorizeRecordScope($booking)) {
+            return response()->json(['success' => false, 'message' => 'Forbidden'], 403);
+        }
+
+        $logs = ActivityLog::with('user:id,first_name,last_name,email,role')
+            ->where('entity_type', 'booking')
+            ->where('entity_id', $booking->id)
+            ->orderByDesc('created_at')
+            ->orderByDesc('id')
+            ->paginate(min((int) $request->get('per_page', 50), 200));
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'logs' => $logs->getCollection()->map(fn (ActivityLog $log) => [
+                    'id' => $log->id,
+                    'action' => $log->action,
+                    'category' => $log->category,
+                    'description' => $log->description,
+                    'reason' => $log->reason,
+                    'employee_name' => $log->employee_name,
+                    'employee_role' => $log->actor_role ?? $log->user?->role,
+                    'changed_at' => $log->created_at?->toIso8601String(),
+                    'changes' => $log->metadata['changes'] ?? null,
+                    'changed_fields' => $log->metadata['updated_fields'] ?? null,
+                    'ip_address' => $log->ip_address,
+                ])->values(),
+                'pagination' => [
+                    'current_page' => $logs->currentPage(),
+                    'last_page' => $logs->lastPage(),
+                    'per_page' => $logs->perPage(),
+                    'total' => $logs->total(),
+                ],
+            ],
+        ]);
+    }
+
+    /**
+     * The reason presets offered to staff, plus whether a reason is currently mandatory, so the
+     * UI does not have to hardcode the policy.
+     */
+    public function changeReasonOptions(): JsonResponse
+    {
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'presets' => self::REASON_PRESETS,
+                'policy' => $this->reasonPolicy(),
+                'required_for_guest_visible' => $this->reasonIsRequired(self::CHANGE_GUEST_VISIBLE),
+                'required_for_internal' => $this->reasonIsRequired(self::CHANGE_INTERNAL),
+            ],
         ]);
     }
 
@@ -2073,6 +2257,8 @@ class BookingController extends Controller
             'ids.*' => 'required|integer|exists:bookings,id',
         ]);
 
+        $changeReason = $this->resolveChangeReason($request, self::CHANGE_GUEST_VISIBLE);
+
         $bookings = Booking::whereIn('id', $validated['ids'])->get();
         $deletedCount = 0;
         $locationIds = [];
@@ -2101,8 +2287,9 @@ class BookingController extends Controller
             userId: auth()->id(),
             locationId: $locationIds[0] ?? null,
             entityType: 'booking',
-            metadata: ['deleted_count' => $deletedCount, 'ids' => $validated['ids']]
-        );
+            metadata: ['deleted_count' => $deletedCount, 'ids' => $validated['ids']],
+                reason: $changeReason
+            );
 
         return response()->json([
             'success' => true,
@@ -2119,6 +2306,8 @@ class BookingController extends Controller
             'internal_notes' => 'nullable|string',
         ]);
 
+        $changeReason = $this->resolveChangeReason($request, self::CHANGE_INTERNAL);
+
         $booking->internal_notes = $validated['internal_notes'] ?? null;
         $booking->save();
 
@@ -2130,8 +2319,9 @@ class BookingController extends Controller
             locationId: $booking->location_id,
             entityType: 'booking',
             entityId: $booking->id,
-            metadata: ['reference_number' => $booking->reference_number]
-        );
+            metadata: ['reference_number' => $booking->reference_number],
+                reason: $changeReason
+            );
 
         return response()->json([
             'success' => true,
@@ -2172,6 +2362,7 @@ class BookingController extends Controller
     {
         Log::info('Booking delete request received', ['id' => $id, 'ip' => request()->ip()]);
 
+        // Deleting a booking is the least reversible change staff can make, so it records why.
         try {
             $booking = Booking::find($id);
 
@@ -2182,6 +2373,11 @@ class BookingController extends Controller
                     'message' => 'Booking not found',
                 ], 404);
             }
+
+            // The unauthenticated checkout-rollback route also reaches this method;
+            // reasonIsRequired() skips the requirement when there is no authenticated employee,
+            // so rollback still works.
+            $changeReason = $this->resolveChangeReason(request(), self::CHANGE_GUEST_VISIBLE);
 
             $deletedBy = null;
             $user = null;
@@ -2234,7 +2430,8 @@ class BookingController extends Controller
                 locationId: $locationId,
                 entityType: 'booking',
                 entityId: $bookingId,
-                metadata: ['reference_number' => $refNumber]
+                metadata: ['reference_number' => $refNumber],
+                reason: $changeReason
             );
 
             Log::info('Booking deleted successfully', ['id' => $bookingId, 'reference_number' => $refNumber]);
@@ -2741,6 +2938,8 @@ class BookingController extends Controller
 
         $booking = Booking::onlyTrashed()->findOrFail($id);
 
+        $changeReason = $this->resolveChangeReason(request(), self::CHANGE_GUEST_VISIBLE);
+
         if ($booking->status !== 'cancelled') {
             try {
                 app(\App\Services\SlotCapacityGuard::class)->assertBookingFits($booking, 'booking.restore');
@@ -2781,8 +2980,9 @@ class BookingController extends Controller
                 ],
                 'restored_at' => now()->toIso8601String(),
                 'reference_number' => $booking->reference_number,
-            ]
-        );
+            ],
+                reason: $changeReason
+            );
 
         return response()->json([
             'success' => true,
@@ -2794,6 +2994,8 @@ class BookingController extends Controller
     public function forceDelete(int $id): JsonResponse
     {
         $booking = Booking::onlyTrashed()->findOrFail($id);
+
+        $changeReason = $this->resolveChangeReason(request(), self::CHANGE_GUEST_VISIBLE);
 
         $referenceNumber = $booking->reference_number;
         $bookingId = $booking->id;
@@ -2832,8 +3034,9 @@ class BookingController extends Controller
                 ],
                 'deleted_at' => now()->toIso8601String(),
                 'reference_number' => $referenceNumber,
-            ]
-        );
+            ],
+                reason: $changeReason
+            );
 
         return response()->json([
             'success' => true,
@@ -2847,6 +3050,8 @@ class BookingController extends Controller
             'ids' => 'required|array|min:1',
             'ids.*' => 'required|integer',
         ]);
+
+        $changeReason = $this->resolveChangeReason($request, self::CHANGE_GUEST_VISIBLE);
 
         $bookings = Booking::onlyTrashed()->whereIn('id', $validated['ids'])->get();
         $restoredCount = 0;
@@ -2895,8 +3100,9 @@ class BookingController extends Controller
                 'restored_at' => now()->toIso8601String(),
                 'restored_count' => $restoredCount,
                 'booking_ids' => $validated['ids'],
-            ]
-        );
+            ],
+                reason: $changeReason
+            );
 
         return response()->json([
             'success' => true,

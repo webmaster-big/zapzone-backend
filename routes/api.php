@@ -178,7 +178,10 @@ Route::get('storefront/locations', [LocationController::class, 'storefront']);
 
 Route::post('users', [UserController::class, 'store'])->middleware('throttle:10,1');
 
-Route::apiResource('package-time-slots', PackageTimeSlotController::class); // include
+// Reads and store() stay public: the storefront checkout flow needs them. update() and
+// destroy() reschedule/void a booking's slot, so they moved into the staff group below - no
+// frontend caller uses those two verbs.
+Route::apiResource('package-time-slots', PackageTimeSlotController::class)->only(['index', 'store', 'show']); // include
 Route::get('package-time-slots/available-slots/{packageId}/{date}', [PackageTimeSlotController::class, 'getAvailableSlotsAuto']); // include
 
 Route::get('stream/bookings', [StreamController::class, 'bookingNotifications']); 
@@ -430,6 +433,30 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('gift-cards/{gift_card}', [GiftCardController::class, 'show'])->whereNumber('gift_card');
     Route::post('gift-cards/claim', [GiftCardController::class, 'claim'])->middleware('throttle:gift-card-claim');
     Route::middleware('staff')->group(function () {
+        // Booking change log: staff-only. A customer token passes auth:sanctum (see EnsureStaff),
+        // so these must not sit on bare auth:sanctum.
+        // Venue-only booking changes (see the note on the bookings apiResource below).
+        Route::post('bookings/bulk-restore', [BookingController::class, 'bulkRestore']);
+        Route::post('bookings/bulk-import-csv', [BookingController::class, 'bulkImportCsv']);
+        Route::post('bookings/check-in', [BookingController::class, 'checkIn']);
+        Route::patch('bookings/{booking}/complete', [BookingController::class, 'complete']);
+        Route::patch('bookings/{booking}/status', [BookingController::class, 'updateStatus']);
+        Route::patch('bookings/{booking}/location', [BookingController::class, 'updateLocation']);
+        Route::patch('bookings/{booking}/payment-status', [BookingController::class, 'updatePaymentStatus']);
+        Route::patch('bookings/{id}/internal-notes', [BookingController::class, 'updateInternalNotes']);
+        Route::post('bookings/bulk-delete', [BookingController::class, 'bulkDelete']);
+        Route::post('bookings/{id}/restore', [BookingController::class, 'restore']);
+        Route::match(['put', 'patch'], 'bookings/{booking}', [BookingController::class, 'update'])->whereNumber('booking');
+        Route::patch('bookings/{booking}/cancel', [BookingController::class, 'cancel'])->whereNumber('booking');
+
+        Route::get('bookings/change-reason-options', [BookingController::class, 'changeReasonOptions']);
+        Route::get('bookings/{id}/change-logs', [BookingController::class, 'changeLogs'])->whereNumber('id');
+
+        // Rescheduling a booking's slot is a staff action; reads and store() stay public for checkout.
+        Route::put('package-time-slots/{package_time_slot}', [PackageTimeSlotController::class, 'update'])->whereNumber('package_time_slot');
+        Route::patch('package-time-slots/{package_time_slot}', [PackageTimeSlotController::class, 'update'])->whereNumber('package_time_slot');
+        Route::delete('package-time-slots/{package_time_slot}', [PackageTimeSlotController::class, 'destroy'])->whereNumber('package_time_slot');
+
         Route::post('gift-cards', [GiftCardController::class, 'store']);
         Route::match(['put', 'patch'], 'gift-cards/{gift_card}', [GiftCardController::class, 'update'])->whereNumber('gift_card');
         Route::delete('gift-cards/{gift_card}', [GiftCardController::class, 'destroy'])->whereNumber('gift_card');
@@ -449,6 +476,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('promos/{promo}/apply', [PromoController::class, 'apply']);
     Route::patch('promos/{promo}/toggle-status', [PromoController::class, 'toggleStatus']);
 
+    // Immutable booking change history (read-only; activity_logs is append-only).
     Route::get('bookings/export', [BookingController::class, 'exportIndex']);
 
     Route::get('bookings/details-report', [BookingController::class, 'bookingDetailsReport']);
@@ -458,25 +486,18 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('bookings/summaries/week/{week?}', [BookingController::class, 'summariesWeek']);
 
     Route::get('bookings/trashed', [BookingController::class, 'trashed']);
-    Route::post('bookings/bulk-restore', [BookingController::class, 'bulkRestore']);
-    Route::post('bookings/bulk-import-csv', [BookingController::class, 'bulkImportCsv']);
     Route::get('bookings/location-date', [BookingController::class, 'getByLocationAndDate']);
     Route::get('bookings/search', [BookingController::class, 'search']);
 
-    Route::apiResource('bookings', BookingController::class)->except(['store', 'destroy']);
-    Route::patch('bookings/{booking}/cancel', [BookingController::class, 'cancel']);
-    Route::post('bookings/check-in', [BookingController::class, 'checkIn']);
-    Route::patch('bookings/{booking}/complete', [BookingController::class, 'complete']);
-    Route::patch('bookings/{booking}/status', [BookingController::class, 'updateStatus']);
-    Route::patch('bookings/{booking}/location', [BookingController::class, 'updateLocation']);
+    // Customers legitimately read their own bookings, so index/show stay on auth:sanctum.
+    // Changing or cancelling a booking is a VENUE action - a guest who wants either contacts the
+    // venue and a manager makes the change - so those verbs are staff-only. This also keeps the
+    // required-reason prompt off the customer side entirely.
+    Route::apiResource('bookings', BookingController::class)->only(['index', 'show']);
     Route::post('bookings/{booking}/location-change-requests', [LocationChangeRequestController::class, 'store']);
     Route::get('location-change-requests', [LocationChangeRequestController::class, 'index']);
     Route::patch('location-change-requests/{locationChangeRequest}/approve', [LocationChangeRequestController::class, 'approve']);
     Route::patch('location-change-requests/{locationChangeRequest}/reject', [LocationChangeRequestController::class, 'reject']);
-    Route::patch('bookings/{booking}/payment-status', [BookingController::class, 'updatePaymentStatus']);
-    Route::patch('bookings/{id}/internal-notes', [BookingController::class, 'updateInternalNotes']);
-    Route::post('bookings/bulk-delete', [BookingController::class, 'bulkDelete']);
-    Route::post('bookings/{id}/restore', [BookingController::class, 'restore']);
     Route::get('bookings/{booking}/summary', [BookingController::class, 'summary']);
     Route::get('bookings/{booking}/summary/view', [BookingController::class, 'summaryView']);
 

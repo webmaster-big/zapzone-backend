@@ -90,7 +90,6 @@ class ActivityLogController extends Controller
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'user_id' => 'nullable|exists:users,id',
             'location_id' => 'nullable|exists:locations,id',
             'action' => 'required|string|max:255',
             'category' => ['required', Rule::in(['create', 'update', 'delete', 'view', 'login', 'logout', 'export', 'import', 'other'])],
@@ -100,7 +99,18 @@ class ActivityLogController extends Controller
             'ip_address' => 'nullable|ip',
             'user_agent' => 'nullable|string',
             'metadata' => 'nullable|array',
+            'reason' => 'nullable|string|max:1000',
         ]);
+
+        // Authorship is never taken from the request. A client-supplied user_id previously let
+        // any authenticated caller write a log attributed to another employee, which defeats the
+        // point of an audit trail.
+        $actor = auth()->user();
+        $validated['user_id'] = $actor?->getKey();
+        if ($actor) {
+            $validated['actor_name'] = ActivityLog::describeActor($actor);
+            $validated['actor_role'] = $actor->role;
+        }
 
         if (!isset($validated['ip_address'])) {
             $validated['ip_address'] = $request->ip();
