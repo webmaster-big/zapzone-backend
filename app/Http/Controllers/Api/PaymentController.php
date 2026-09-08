@@ -2038,6 +2038,28 @@ class PaymentController extends Controller
                 };
 
                 if ($duePayable) {
+                    $payableLocationId = $request->payable_type === Payment::TYPE_ATTRACTION_PURCHASE
+                        ? $duePayable->attraction?->location_id
+                        : $duePayable->location_id;
+
+                    if ($payableLocationId !== null && (int) $payableLocationId !== (int) $request->location_id) {
+                        Log::warning('GATEWAY_LOCATION_MISMATCH: charge location does not match the payable location', [
+                            'payable_type' => $request->payable_type,
+                            'payable_id' => $request->payable_id,
+                            'request_location_id' => (int) $request->location_id,
+                            'payable_location_id' => (int) $payableLocationId,
+                            'amount' => (float) $request->amount,
+                            'ip' => $request->ip(),
+                        ]);
+
+                        if (config('checkout.enforce_gateway_location')) {
+                            return response()->json([
+                                'success' => false,
+                                'message' => 'This purchase belongs to a different location. Please refresh and try again.',
+                            ], 422);
+                        }
+                    }
+
                     $deadStatuses = ['cancelled', 'refunded'];
 
                     if (in_array((string) $duePayable->status, $deadStatuses, true)
