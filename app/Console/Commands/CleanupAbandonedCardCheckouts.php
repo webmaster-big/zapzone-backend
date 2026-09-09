@@ -132,11 +132,51 @@ class CleanupAbandonedCardCheckouts extends Command
             $expired++;
         }
 
+        $purged = $this->purgeTrashed($graceDays, $dryRun);
+
         $verb = $dryRun ? 'would remove' : 'removed';
         $expireVerb = $dryRun ? 'would cancel' : 'cancelled';
-        $this->info("Abandoned card checkouts: {$verb} {$removed}; stale pay-later bookings: {$expireVerb} {$expired}");
+        $purgeVerb = $dryRun ? 'would purge' : 'purged';
+        $this->info("Abandoned card checkouts: {$verb} {$removed}; stale pay-later bookings: {$expireVerb} {$expired}; trashed rows: {$purgeVerb} {$purged}");
 
         return self::SUCCESS;
+    }
+
+    private function purgeTrashed(int $graceDays, bool $dryRun): int
+    {
+        $cutoff = now()->subDays($graceDays);
+        $purged = 0;
+
+        $sets = [
+            ['model' => Booking::class, 'type' => Payment::TYPE_BOOKING, 'label' => 'booking'],
+            ['model' => AttractionPurchase::class, 'type' => Payment::TYPE_ATTRACTION_PURCHASE, 'label' => 'attraction purchase'],
+            ['model' => EventPurchase::class, 'type' => Payment::TYPE_EVENT_PURCHASE, 'label' => 'event purchase'],
+        ];
+
+        foreach ($sets as $set) {
+            $rows = $set['model']::onlyTrashed()
+                ->where('deleted_at', '<', $cutoff)
+                ->get();
+
+            foreach ($rows as $row) {
+                if ($this->hasCompletedPayment($set['type'], $row->id)) {
+                    continue;
+                }
+
+                if ($dryRun) {
+                    $this->line("would purge trashed {$set['label']} {$row->id} (deleted {$row->deleted_at})");
+                    $purged++;
+                    continue;
+                }
+
+                $this->reverseGiftCardFor($row, $set['type'], 'trashed_purged');
+                $row->forceDelete();
+                $this->logRemoval("trashed {$set['label']}", $row->id, $row->reference_number ?? (string) $row->id, $row->location_id ?? null, $row->deleted_at?->toIso8601String());
+                $purged++;
+            }
+        }
+
+        return $purged;
     }
 
     private function hasCompletedPayment(string $payableType, int $payableId): bool
