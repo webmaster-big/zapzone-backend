@@ -291,7 +291,7 @@ class Package extends Model
             return (int) $this->max_tickets_per_slot;
         }
 
-        if ($this->pricing_type === 'per_person' && $this->max_participants !== null) {
+        if ($this->pricing_type === 'per_person' && $this->max_participants !== null && !$this->usesRooms()) {
             return (int) $this->max_participants;
         }
 
