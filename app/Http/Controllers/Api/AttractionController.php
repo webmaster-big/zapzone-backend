@@ -227,6 +227,13 @@ class AttractionController extends Controller
             return $denied;
         }
 
+        if (! empty($validated['location_id'])) {
+            $location = $this->scopedLocation($request, $validated['location_id']);
+            if ($location instanceof JsonResponse) {
+                return $location;
+            }
+        }
+
         $validated['pricing_type'] = $validated['pricing_type'] ?? 'per_person';
 
         $uploadedImages = [];
@@ -300,6 +307,10 @@ class AttractionController extends Controller
 
     public function update(Request $request, Attraction $attraction): JsonResponse
     {
+        if ($denied = $this->denyForeignRecord($attraction, 'attraction')) {
+            return $denied;
+        }
+
         if ($request->has('duration') && $request->duration === '') {
             $request->merge(['duration' => null]);
         }
@@ -331,6 +342,13 @@ class AttractionController extends Controller
 
         if ($denied = $this->rejectSameClockAvailability($validated['availability'] ?? null, ['attraction_id' => $attraction->id, 'user_id' => auth()->id()])) {
             return $denied;
+        }
+
+        if (! empty($validated['location_id']) && (int) $validated['location_id'] !== (int) $attraction->location_id) {
+            $location = $this->scopedLocation($request, $validated['location_id']);
+            if ($location instanceof JsonResponse) {
+                return $location;
+            }
         }
 
         $validated['pricing_type'] = $validated['pricing_type'] ?? 'per_person';
@@ -410,6 +428,10 @@ class AttractionController extends Controller
     {
         $attraction = Attraction::findOrFail($id);
 
+        if ($denied = $this->denyForeignRecord($attraction, 'attraction')) {
+            return $denied;
+        }
+
         $deletedBy = User::findOrFail(auth()->id());
 
         if ($attraction->image && is_array($attraction->image)) {
@@ -458,6 +480,10 @@ class AttractionController extends Controller
 
     public function getByLocation(int $locationId): JsonResponse
     {
+        if ($denied = $this->guardLocationAccess(request(), $locationId)) {
+            return $denied;
+        }
+
         $attractions = Attraction::with(['packages', 'addOns'])
             ->byLocation($locationId)
             ->active()
@@ -488,6 +514,10 @@ class AttractionController extends Controller
 
     public function toggleStatus(Attraction $attraction): JsonResponse
     {
+        if ($denied = $this->denyForeignRecord($attraction, 'attraction')) {
+            return $denied;
+        }
+
         $attraction->update(['is_active' => !$attraction->is_active]);
 
         return response()->json([
@@ -499,6 +529,10 @@ class AttractionController extends Controller
 
     public function activate(Attraction $attraction): JsonResponse
     {
+        if ($denied = $this->denyForeignRecord($attraction, 'attraction')) {
+            return $denied;
+        }
+
         if ($attraction->is_active) {
             return response()->json([
                 'success' => false,
@@ -518,6 +552,10 @@ class AttractionController extends Controller
 
     public function deactivate(Attraction $attraction): JsonResponse
     {
+        if ($denied = $this->denyForeignRecord($attraction, 'attraction')) {
+            return $denied;
+        }
+
         if (!$attraction->is_active) {
             return response()->json([
                 'success' => false,
@@ -605,6 +643,16 @@ class AttractionController extends Controller
                 'attractions.*.maxTicketsPerSlot.min' => 'Max tickets per time slot must be at least 1',
                 'attractions.*.maxTicketsPerSlot.max' => 'Max tickets per time slot must not exceed 10000',
             ]);
+
+            foreach ($validated['attractions'] as $row) {
+                $rowLocation = $row['location_id'] ?? $row['locationId'] ?? null;
+                if (! empty($rowLocation)) {
+                    $location = $this->scopedLocation($request, $rowLocation);
+                    if ($location instanceof JsonResponse) {
+                        return $location;
+                    }
+                }
+            }
 
             $importedAttractions = [];
             $errors = [];
@@ -753,6 +801,10 @@ class AttractionController extends Controller
         $locationIds = [];
 
         foreach ($attractions as $attraction) {
+            if (! $this->authorizeRecordScope($attraction)) {
+                continue;
+            }
+
             if ($attraction->image && is_array($attraction->image)) {
                 foreach ($attraction->image as $imagePath) {
                     if (file_exists(storage_path('app/public/' . $imagePath))) {
@@ -802,7 +854,15 @@ class AttractionController extends Controller
             'items.*.display_order' => 'required|integer|min:0',
         ]);
 
+        $reorderable = Attraction::whereIn('id', array_column($validated['items'], 'id'))->get()
+            ->filter(fn ($attraction) => $this->authorizeRecordScope($attraction))
+            ->keyBy('id');
+
         foreach ($validated['items'] as $item) {
+            if (! $reorderable->has($item['id'])) {
+                continue;
+            }
+
             Attraction::where('id', $item['id'])
                 ->update(['display_order' => $item['display_order']]);
         }

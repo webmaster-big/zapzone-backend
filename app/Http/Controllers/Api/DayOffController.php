@@ -120,6 +120,11 @@ class DayOffController extends Controller
             'event_ids.*' => 'integer|exists:events,id',
         ]);
 
+        $location = $this->scopedLocation($request, $validated['location_id']);
+        if ($location instanceof JsonResponse) {
+            return $location;
+        }
+
         $validated['package_ids'] = !empty($validated['package_ids']) ? array_map('intval', $validated['package_ids']) : null;
         $validated['room_ids'] = !empty($validated['room_ids']) ? array_map('intval', $validated['room_ids']) : null;
         $validated['attraction_ids'] = !empty($validated['attraction_ids']) ? array_map('intval', $validated['attraction_ids']) : null;
@@ -251,6 +256,10 @@ class DayOffController extends Controller
 
     public function show(DayOff $dayOff): JsonResponse
     {
+        if ($denied = $this->denyForeignRecord($dayOff, 'closure')) {
+            return $denied;
+        }
+
         $dayOff->load('location');
 
         return response()->json([
@@ -261,6 +270,10 @@ class DayOffController extends Controller
 
     public function update(Request $request, DayOff $dayOff): JsonResponse
     {
+        if ($denied = $this->denyForeignRecord($dayOff, 'closure')) {
+            return $denied;
+        }
+
         $validated = $request->validate([
             'location_id' => 'sometimes|exists:locations,id',
             'date' => 'sometimes|date',
@@ -277,6 +290,13 @@ class DayOffController extends Controller
             'event_ids' => 'nullable|array',
             'event_ids.*' => 'integer|exists:events,id',
         ]);
+
+        if (! empty($validated['location_id']) && (int) $validated['location_id'] !== (int) $dayOff->location_id) {
+            $location = $this->scopedLocation($request, $validated['location_id']);
+            if ($location instanceof JsonResponse) {
+                return $location;
+            }
+        }
 
         if (array_key_exists('package_ids', $validated)) {
             $validated['package_ids'] = !empty($validated['package_ids']) ? array_map('intval', $validated['package_ids']) : null;
@@ -331,6 +351,10 @@ class DayOffController extends Controller
 
     public function destroy(DayOff $dayOff): JsonResponse
     {
+        if ($denied = $this->denyForeignRecord($dayOff, 'closure')) {
+            return $denied;
+        }
+
         $dayOffDate = $dayOff->date->format('Y-m-d');
         $dayOffId = $dayOff->id;
         $locationId = $dayOff->location_id;
@@ -369,6 +393,10 @@ class DayOffController extends Controller
 
     public function getByLocation(int $locationId): JsonResponse
     {
+        if ($denied = $this->guardLocationAccess(request(), $locationId)) {
+            return $denied;
+        }
+
         $dayOffs = DayOff::byLocation($locationId)
             ->where(function ($q) {
                 $q->where('date', '>=', now()->toDateString())
@@ -445,7 +473,7 @@ class DayOffController extends Controller
 
         foreach ($ids as $id) {
             $dayOff = DayOff::find($id);
-            if ($dayOff) {
+            if ($dayOff && $this->authorizeRecordScope($dayOff)) {
                 $dayOffDate = $dayOff->date->format('Y-m-d');
                 $locationId = $dayOff->location_id;
 

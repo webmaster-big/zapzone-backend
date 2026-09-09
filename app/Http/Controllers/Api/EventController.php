@@ -66,6 +66,11 @@ class EventController extends Controller
                 'time_end.different' => 'Start and end time cannot be the same. For an event that runs past midnight, enter the next-day end time instead.',
             ]);
 
+            $location = $this->scopedLocation($request, $validated['location_id']);
+            if ($location instanceof JsonResponse) {
+                return $location;
+            }
+
             $window = \App\Support\CatalogRules::windowMinutes($validated['time_start'] ?? null, $validated['time_end'] ?? null);
             $interval = (int) ($validated['interval_minutes'] ?? 0);
 
@@ -115,6 +120,10 @@ class EventController extends Controller
 
     public function update(Request $request, Event $event): JsonResponse
     {
+        if ($denied = $this->denyForeignRecord($event, 'event')) {
+            return $denied;
+        }
+
         try {
             $validated = $request->validate([
                 'location_id' => 'sometimes|exists:locations,id',
@@ -140,6 +149,13 @@ class EventController extends Controller
             ], [
                 'time_end.different' => 'Start and end time cannot be the same. For an event that runs past midnight, enter the next-day end time instead.',
             ]);
+
+            if (! empty($validated['location_id']) && (int) $validated['location_id'] !== (int) $event->location_id) {
+                $location = $this->scopedLocation($request, $validated['location_id']);
+                if ($location instanceof JsonResponse) {
+                    return $location;
+                }
+            }
 
             $timeStart = array_key_exists('time_start', $validated) ? $validated['time_start'] : $event->time_start;
             $timeEnd = array_key_exists('time_end', $validated) ? $validated['time_end'] : $event->time_end;
@@ -196,6 +212,10 @@ class EventController extends Controller
 
     public function destroy(Event $event): JsonResponse
     {
+        if ($denied = $this->denyForeignRecord($event, 'event')) {
+            return $denied;
+        }
+
         try {
             $event->delete();
             return response()->json(['message' => 'Event deleted successfully']);
@@ -206,6 +226,10 @@ class EventController extends Controller
 
     public function toggleStatus(Event $event): JsonResponse
     {
+        if ($denied = $this->denyForeignRecord($event, 'event')) {
+            return $denied;
+        }
+
         $event->update(['is_active' => !$event->is_active]);
         return response()->json($event);
     }

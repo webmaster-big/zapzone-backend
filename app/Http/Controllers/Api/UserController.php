@@ -35,9 +35,11 @@ class UserController extends Controller
         if ($authUser) {
             if ($authUser->role === 'company_admin') {
                 $query->byCompany($authUser->company_id);
-            } elseif ($authUser->role === 'location_manager') {
+            } elseif (in_array($authUser->role, ['location_manager', 'attendant'], true)) {
                 $query->byCompany($authUser->company_id)
                       ->byLocation($authUser->location_id);
+            } elseif ($authUser->company_id) {
+                $query->byCompany($authUser->company_id);
             }
         }
 
@@ -136,7 +138,7 @@ class UserController extends Controller
         $staff = $this->resolveStaffUser($request);
 
         if ($staff) {
-            if ((bool) config('registration.require_token') && ($denied = $this->guardStaffCreate($staff, $validated))) {
+            if ($denied = $this->guardStaffCreate($staff, $validated)) {
                 return $denied;
             }
         } elseif ($tokenValue === null) {
@@ -218,6 +220,111 @@ class UserController extends Controller
         return $user instanceof User && in_array((string) $user->role, EnsureStaff::ROLES, true) ? $user : null;
     }
 
+    private function guardUserAdministration(Request $request, User $target): ?JsonResponse
+    {
+        $actor = $this->resolveStaffUser($request);
+
+        if (!$actor) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This area is for staff accounts only.',
+            ], 403);
+        }
+
+        if ($actor->company_id && $target->company_id
+            && (int) $actor->company_id !== (int) $target->company_id) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Forbidden: that account belongs to another company',
+            ], 403);
+        }
+
+        if ((int) $actor->id === (int) $target->id) {
+            return null;
+        }
+
+        if (!in_array($actor->role, ['company_admin', 'location_manager'], true)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Forbidden: only company admins or location managers may manage other staff accounts',
+            ], 403);
+        }
+
+        if ($actor->role === 'location_manager') {
+            if ($target->role === 'company_admin') {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Forbidden: a location manager cannot manage a company admin account',
+                ], 403);
+            }
+
+            if ($actor->location_id && (int) $target->location_id !== (int) $actor->location_id) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "Forbidden: that account belongs to another location",
+                ], 403);
+            }
+        }
+
+        return null;
+    }
+
+    private function guardPrivilegedUserFields(Request $request, User $target, array $validated): ?JsonResponse
+    {
+        $actor = $this->resolveStaffUser($request);
+
+        if (!$actor) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This area is for staff accounts only.',
+            ], 403);
+        }
+
+        $changing = [];
+        foreach (['role', 'company_id', 'location_id', 'status'] as $field) {
+            if (array_key_exists($field, $validated)
+                && (string) ($validated[$field] ?? '') !== (string) ($target->{$field} ?? '')) {
+                $changing[] = $field;
+            }
+        }
+
+        if ($changing === []) {
+            return null;
+        }
+
+        $deny = fn (string $message) => response()->json(['success' => false, 'message' => $message], 403);
+
+        if (in_array('company_id', $changing, true)
+            && $actor->company_id
+            && (int) ($validated['company_id'] ?? 0) !== (int) $actor->company_id) {
+            return $deny('Forbidden: an account cannot be moved to another company');
+        }
+
+        if ($actor->role === 'company_admin') {
+            return null;
+        }
+
+        if ($actor->role !== 'location_manager') {
+            return $deny('Forbidden: only company admins or location managers may change an account\'s role, company, location or status');
+        }
+
+        if ((int) $actor->id === (int) $target->id) {
+            return $deny('Forbidden: you cannot change your own role, location or status');
+        }
+
+        if (in_array('role', $changing, true) && ($validated['role'] ?? null) === 'company_admin') {
+            return $deny('Forbidden: a location manager cannot grant company admin access');
+        }
+
+        if (in_array('location_id', $changing, true)
+            && $actor->location_id
+            && (int) ($validated['location_id'] ?? 0) !== (int) $actor->location_id) {
+            return $deny('Forbidden: an account cannot be moved to another location');
+        }
+
+        return null;
+    }
+
     private function guardStaffCreate(User $staff, array &$validated): ?JsonResponse
     {
         if (!in_array($staff->role, ['company_admin', 'location_manager'], true)) {
@@ -256,7 +363,6 @@ class UserController extends Controller
 
     private function denyUninvitedRegistration(Request $request): ?JsonResponse
     {
-        $enforce = (bool) config('registration.require_token');
 
         Log::warning('Public user registration without invitation token', [
             'email' => $request->input('email'),
@@ -264,12 +370,8 @@ class UserController extends Controller
             'company_id' => $request->input('company_id'),
             'location_id' => $request->input('location_id'),
             'ip' => $request->ip(),
-            'enforced' => $enforce,
+            'enforced' => true,
         ]);
-
-        if (!$enforce) {
-            return null;
-        }
 
         return response()->json([
             'success' => false,
@@ -280,7 +382,6 @@ class UserController extends Controller
 
     private function resolveInvitation(string $tokenValue, array $validated): ?ShareableToken
     {
-        $enforce = (bool) config('registration.require_token');
         $token = ShareableToken::where('token', $tokenValue)->lockForUpdate()->first();
 
         $problem = match (true) {
@@ -300,20 +401,14 @@ class UserController extends Controller
             'email' => $validated['email'],
             'token_id' => $token?->id,
             'problem' => $problem,
-            'enforced' => $enforce,
+            'enforced' => true,
         ]);
 
-        if ($enforce) {
-            throw ValidationException::withMessages(['registration_token' => [$problem]]);
-        }
-
-        return null;
+        throw ValidationException::withMessages(['registration_token' => [$problem]]);
     }
 
     private function applyInvitation(ShareableToken $token, array $validated): array
     {
-        $enforce = (bool) config('registration.require_token');
-
         $forced = [
             'role' => $token->role,
             'company_id' => $token->company_id ?? ($validated['company_id'] ?? null),
@@ -337,11 +432,9 @@ class UserController extends Controller
                     'token_id' => $token->id,
                     'location_id' => $forced['location_id'],
                     'company_id' => $forced['company_id'],
-                    'enforced' => $enforce,
+                    'enforced' => true,
                 ]);
-                if ($enforce) {
-                    throw ValidationException::withMessages(['location_id' => ['The selected location does not belong to the invited company.']]);
-                }
+                throw ValidationException::withMessages(['location_id' => ['The selected location does not belong to the invited company.']]);
             }
         }
 
@@ -396,6 +489,10 @@ class UserController extends Controller
 
     public function show(User $user): JsonResponse
     {
+        if ($denied = $this->guardUserAdministration(request(), $user)) {
+            return $denied;
+        }
+
         $user->load(['company', 'location']);
 
         return response()->json([
@@ -406,6 +503,10 @@ class UserController extends Controller
 
     public function update(Request $request, User $user): JsonResponse
     {
+        if ($denied = $this->guardUserAdministration($request, $user)) {
+            return $denied;
+        }
+
         $validated = $request->validate([
             'company_id' => 'sometimes|nullable|exists:companies,id',
             'location_id' => 'sometimes|nullable|exists:locations,id',
@@ -424,6 +525,10 @@ class UserController extends Controller
             'hire_date' => 'sometimes|nullable|date',
             'status' => ['sometimes', Rule::in(['active', 'inactive'])],
         ]);
+
+        if ($denied = $this->guardPrivilegedUserFields($request, $user, $validated)) {
+            return $denied;
+        }
 
         if (isset($validated['password'])) {
             $validated['password'] = Hash::make($validated['password']);
@@ -478,6 +583,10 @@ class UserController extends Controller
 
     public function updateProfilePath(Request $request, User $user): JsonResponse
     {
+        if ($denied = $this->guardUserAdministration($request, $user)) {
+            return $denied;
+        }
+
         $validated = $request->validate([
             'profile_path' => 'required|string|max:27262976',
         ]);
@@ -503,6 +612,10 @@ class UserController extends Controller
 
     public function updateEmail(Request $request, User $user): JsonResponse
     {
+        if ($denied = $this->guardUserAdministration($request, $user)) {
+            return $denied;
+        }
+
         $validated = $request->validate([
             'new_email' => 'required|email|unique:users,email,' . $user->id,
             'password' => 'required|string',
@@ -527,6 +640,10 @@ class UserController extends Controller
 
     public function updatePassword(Request $request, User $user): JsonResponse
     {
+        if ($denied = $this->guardUserAdministration($request, $user)) {
+            return $denied;
+        }
+
         $validated = $request->validate([
             'current_password' => 'required|string',
             'new_password' => 'required|string|min:8|confirmed',
@@ -552,6 +669,18 @@ class UserController extends Controller
     public function destroy($id): JsonResponse
     {
         $user = User::findOrFail($id);
+
+        if ($denied = $this->guardUserAdministration(request(), $user)) {
+            return $denied;
+        }
+
+        if ((int) request()->user()?->id === (int) $user->id) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Forbidden: you cannot delete your own account',
+            ], 403);
+        }
+
         $deletedBy = User::findOrFail(auth()->id());
 
         $userName = $user->first_name . ' ' . $user->last_name;
@@ -661,6 +790,17 @@ class UserController extends Controller
 
     public function toggleStatus(User $user): JsonResponse
     {
+        if ($denied = $this->guardUserAdministration(request(), $user)) {
+            return $denied;
+        }
+
+        if ((int) request()->user()?->id === (int) $user->id) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Forbidden: you cannot deactivate your own account',
+            ], 403);
+        }
+
         $newStatus = $user->status === 'active' ? 'inactive' : 'active';
         $user->update(['status' => $newStatus]);
 
@@ -673,6 +813,13 @@ class UserController extends Controller
 
     public function updateLastLogin(User $user): JsonResponse
     {
+        if ((int) request()->user()?->id !== (int) $user->id) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Forbidden: only your own last login can be recorded',
+            ], 403);
+        }
+
         $user->update(['last_login' => now()]);
 
         return response()->json([
@@ -700,12 +847,25 @@ class UserController extends Controller
 
         $users = User::whereIn('id', $idsToDelete)->get();
         $deletedCount = 0;
+        $skippedCount = 0;
         $locationIds = [];
 
         foreach ($users as $user) {
+            if ($this->guardUserAdministration($request, $user)) {
+                $skippedCount++;
+                continue;
+            }
+
             $locationIds[] = $user->location_id;
             $user->delete();
             $deletedCount++;
+        }
+
+        if ($deletedCount === 0) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Forbidden: none of those accounts are yours to delete',
+            ], 403);
         }
 
         $currentUser = auth()->user();
@@ -731,8 +891,10 @@ class UserController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => "{$deletedCount} users deleted successfully",
-            'data' => ['deleted_count' => $deletedCount],
+            'message' => $skippedCount > 0
+                ? "{$deletedCount} users deleted successfully; {$skippedCount} skipped because they are outside your access"
+                : "{$deletedCount} users deleted successfully",
+            'data' => ['deleted_count' => $deletedCount, 'skipped_count' => $skippedCount],
         ]);
     }
 

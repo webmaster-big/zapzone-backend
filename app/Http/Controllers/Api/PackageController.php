@@ -192,9 +192,54 @@ class PackageController extends Controller
         return array_values($groupedPackages);
     }
 
+
+    private function assertRelationsMatchLocation(int $locationId, array $validated): ?JsonResponse
+    {
+        $checks = [
+            'room_ids' => [\App\Models\Room::class, 'space'],
+            'addon_ids' => [\App\Models\AddOn::class, 'add-on'],
+            'attraction_ids' => [\App\Models\Attraction::class, 'attraction'],
+        ];
+
+        foreach ($checks as $key => [$model, $label]) {
+            $ids = array_filter((array) ($validated[$key] ?? []));
+
+            if ($ids === []) {
+                continue;
+            }
+
+            $foreign = $model::whereIn('id', $ids)
+                ->where(function ($q) use ($locationId) {
+                    $q->where('location_id', '<>', $locationId)->orWhereNull('location_id');
+                })
+                ->when($model === \App\Models\AddOn::class, fn ($q) => $q->whereNotNull('location_id'))
+                ->pluck('name')
+                ->all();
+
+            if ($foreign !== []) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "These {$label}s belong to a different location: " . implode(', ', $foreign),
+                    'errors' => [$key => ["Choose {$label}s from this package's location."]],
+                ], 422);
+            }
+        }
+
+        return null;
+    }
+
     public function store(StorePackageRequest $request): JsonResponse
     {
         $validated = $request->validated();
+
+        $location = $this->scopedLocation($request, $validated['location_id']);
+        if ($location instanceof JsonResponse) {
+            return $location;
+        }
+
+        if ($denied = $this->assertRelationsMatchLocation((int) $location->id, $validated)) {
+            return $denied;
+        }
 
         try {
             $validated['image'] = $this->normalizeImages($validated['image'] ?? null);
@@ -284,6 +329,19 @@ class PackageController extends Controller
         $package = Package::with(['location', 'attractions', 'addOns', 'rooms', 'availabilitySchedules'])->findOrFail($package);
 
         $validated = $request->validated();
+
+        $targetLocationId = (int) ($validated['location_id'] ?? $package->location_id);
+
+        foreach (array_unique([(int) $package->location_id, $targetLocationId]) as $locationId) {
+            $location = $this->scopedLocation($request, $locationId);
+            if ($location instanceof JsonResponse) {
+                return $location;
+            }
+        }
+
+        if ($denied = $this->assertRelationsMatchLocation($targetLocationId, $validated)) {
+            return $denied;
+        }
 
         if (array_key_exists('image', $validated)) {
             try {

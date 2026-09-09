@@ -102,6 +102,11 @@ class RoomController extends Controller
             'booking_interval' => 'nullable|integer|min:0',
         ]);
 
+        $location = $this->scopedLocation($request, $validated['location_id']);
+        if ($location instanceof JsonResponse) {
+            return $location;
+        }
+
         $room = Room::create($validated);
         $room->load(['location', 'packages']);
 
@@ -114,6 +119,10 @@ class RoomController extends Controller
 
     public function show(Room $room): JsonResponse
     {
+        if ($denied = $this->denyForeignRecord($room, 'space')) {
+            return $denied;
+        }
+
         $room->load(['location', 'packages']);
 
         return response()->json([
@@ -124,6 +133,10 @@ class RoomController extends Controller
 
     public function update(Request $request, Room $room): JsonResponse
     {
+        if ($denied = $this->denyForeignRecord($room, 'space')) {
+            return $denied;
+        }
+
         $validated = $request->validate([
             'location_id' => 'sometimes|exists:locations,id',
             'name' => 'sometimes|string|max:255',
@@ -134,6 +147,13 @@ class RoomController extends Controller
             'area_group' => 'nullable|string|max:255',
             'booking_interval' => 'nullable|integer|min:0',
         ]);
+
+        if (array_key_exists('location_id', $validated) && (int) $validated['location_id'] !== (int) $room->location_id) {
+            $location = $this->scopedLocation($request, $validated['location_id']);
+            if ($location instanceof JsonResponse) {
+                return $location;
+            }
+        }
 
         $room->update($validated);
         $room->load(['location', 'packages']);
@@ -151,8 +171,27 @@ class RoomController extends Controller
             'booking_interval' => 'required|integer|min:0',
         ]);
 
-        $updatedCount = Room::where('area_group', $areaGroup)
-            ->update(['booking_interval' => $validated['booking_interval']]);
+        $query = Room::where('area_group', $areaGroup);
+
+        $this->applyAuthScope($query, $request);
+
+        if ($request->filled('location_id')) {
+            $location = $this->scopedLocation($request, $request->input('location_id'));
+            if ($location instanceof JsonResponse) {
+                return $location;
+            }
+            $query->where('location_id', $location->id);
+        } else {
+            $authUser = $this->resolveAuthUser($request);
+            if ($authUser && $authUser->company_id) {
+                $query->whereIn(
+                    'location_id',
+                    \App\Models\Location::where('company_id', $authUser->company_id)->pluck('id')
+                );
+            }
+        }
+
+        $updatedCount = $query->update(['booking_interval' => $validated['booking_interval']]);
 
         return response()->json([
             'success' => true,
@@ -163,6 +202,10 @@ class RoomController extends Controller
 
     public function destroy(Room $room): JsonResponse
     {
+        if ($denied = $this->denyForeignRecord($room, 'space')) {
+            return $denied;
+        }
+
         $roomName = $room->name;
         $roomId = $room->id;
         $locationId = $room->location_id;
@@ -201,6 +244,10 @@ class RoomController extends Controller
 
     public function getByLocation(int $locationId): JsonResponse
     {
+        if ($denied = $this->guardLocationAccess(request(), $locationId)) {
+            return $denied;
+        }
+
         $rooms = Room::with(['packages'])
             ->byLocation($locationId)
             ->available()
@@ -215,6 +262,10 @@ class RoomController extends Controller
 
     public function toggleAvailability(Room $room): JsonResponse
     {
+        if ($denied = $this->denyForeignRecord($room, 'space')) {
+            return $denied;
+        }
+
         $room->update(['is_available' => !$room->is_available]);
 
         return response()->json([
@@ -257,7 +308,7 @@ class RoomController extends Controller
 
         foreach ($ids as $id) {
             $room = Room::find($id);
-            if ($room) {
+            if ($room && $this->authorizeRecordScope($room)) {
                 $roomName = $room->name;
                 $locationId = $room->location_id;
 

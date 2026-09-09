@@ -83,6 +83,25 @@ trait ScopesByAuthUser
         return true;
     }
 
+    protected function denyForeignRecord($record, string $what = 'record')
+    {
+        if (! $this->authorizeRecordScope($record)) {
+            return response()->json([
+                'success' => false,
+                'message' => "Forbidden: that {$what} belongs to another location",
+            ], 403);
+        }
+
+        if ($record && isset($record->location_id) && ! isset($record->company_id)) {
+            $location = \App\Models\Location::find($record->location_id);
+            if ($location && ($denied = $this->guardCompanyAccess(null, $location->company_id))) {
+                return $denied;
+            }
+        }
+
+        return null;
+    }
+
     protected function guardLocationAccess(?Request $request, $locationId)
     {
         $authUser = $this->resolveAuthUser($request);

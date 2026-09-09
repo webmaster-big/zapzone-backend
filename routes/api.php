@@ -301,36 +301,40 @@ Route::middleware('auth:sanctum')->group(function () {
         ->whereNumber('id');
     Route::get('page-analytics/sessions/{sessionId}', [PageAnalyticsController::class, 'session']);
 
-    Route::apiResource('companies', CompanyController::class);
-    Route::get('companies/{company}/statistics', [CompanyController::class, 'statistics']);
-    Route::patch('companies/{company}/logo', [CompanyController::class, 'updateLogo']);
+    Route::apiResource('companies', CompanyController::class)->only(['index', 'show'])->middleware('staff');
+    Route::apiResource('companies', CompanyController::class)->only(['store', 'update', 'destroy'])->middleware('staff:company_admin|admin|location_manager');
+    Route::get('companies/{company}/statistics', [CompanyController::class, 'statistics'])->middleware('staff');
+    Route::patch('companies/{company}/logo', [CompanyController::class, 'updateLogo'])->middleware('staff:company_admin|admin|location_manager');
 
-    Route::post('locations', [LocationController::class, 'store']);
-    Route::apiResource('locations', LocationController::class)->only(['show', 'update', 'destroy']);
-    Route::get('locations/company/{companyId}', [LocationController::class, 'getByCompany']);
-    Route::patch('locations/{location}/toggle-status', [LocationController::class, 'toggleStatus']);
-    Route::get('locations/{location}/statistics', [LocationController::class, 'statistics']);
+    Route::post('locations', [LocationController::class, 'store'])->middleware('staff:company_admin|admin|location_manager');
+    Route::apiResource('locations', LocationController::class)->only(['show'])->middleware('staff');
+    Route::apiResource('locations', LocationController::class)->only(['update', 'destroy'])->middleware('staff:company_admin|admin|location_manager');
+    Route::get('locations/company/{companyId}', [LocationController::class, 'getByCompany'])->middleware('staff');
+    Route::patch('locations/{location}/toggle-status', [LocationController::class, 'toggleStatus'])->middleware('staff:company_admin|admin|location_manager');
+    Route::get('locations/{location}/statistics', [LocationController::class, 'statistics'])->middleware('staff');
 
-    Route::apiResource('users', UserController::class)->except(['store']);
-    Route::post('users/staff', [UserController::class, 'createWithCredentials']);
-    Route::post('users/{user}/resend-credentials', [UserController::class, 'resendCredentials']);
-    Route::get('users/company/{companyId}', [UserController::class, 'getByCompany']);
-    Route::get('users/location/{locationId}', [UserController::class, 'getByLocation']);
-    Route::get('users/role/{role}', [UserController::class, 'getByRole']);
-    Route::patch('users/{user}/toggle-status', [UserController::class, 'toggleStatus']);
-    Route::patch('users/{user}/update-last-login', [UserController::class, 'updateLastLogin']);
-    Route::patch('users/{user}/update-email', [UserController::class, 'updateEmail']);
-    Route::patch('users/{user}/update-password', [UserController::class, 'updatePassword']);
-    Route::patch('users/{user}/update-profile-path', [UserController::class, 'updateProfilePath']);
-    Route::post('users/bulk-delete', [UserController::class, 'bulkDelete']);
+    Route::middleware('staff')->group(function () {
+        Route::apiResource('users', UserController::class)->except(['store']);
+        Route::post('users/staff', [UserController::class, 'createWithCredentials']);
+        Route::post('users/{user}/resend-credentials', [UserController::class, 'resendCredentials']);
+        Route::get('users/company/{companyId}', [UserController::class, 'getByCompany']);
+        Route::get('users/location/{locationId}', [UserController::class, 'getByLocation']);
+        Route::get('users/role/{role}', [UserController::class, 'getByRole']);
+        Route::patch('users/{user}/toggle-status', [UserController::class, 'toggleStatus']);
+        Route::patch('users/{user}/update-last-login', [UserController::class, 'updateLastLogin']);
+        Route::patch('users/{user}/update-email', [UserController::class, 'updateEmail']);
+        Route::patch('users/{user}/update-password', [UserController::class, 'updatePassword']);
+        Route::patch('users/{user}/update-profile-path', [UserController::class, 'updateProfilePath']);
+        Route::post('users/bulk-delete', [UserController::class, 'bulkDelete']);
+    });
 
-    Route::get('customers/list/{user}', [CustomerController::class, 'fetchCustomerList']);
-    Route::get('customers/analytics', [CustomerController::class, 'analytics']);
-    Route::post('customers/analytics/export', [CustomerController::class, 'exportAnalytics']);
-    Route::apiResource('customers', CustomerController::class)->except(['store']);
-    Route::patch('customers/{customer}/toggle-status', [CustomerController::class, 'toggleStatus']);
-    Route::get('customers/{customer}/statistics', [CustomerController::class, 'statistics']);
-    Route::patch('customers/{customer}/update-last-visit', [CustomerController::class, 'updateLastVisit']);
+    Route::get('customers/list/{user}', [CustomerController::class, 'fetchCustomerList'])->middleware('staff');
+    Route::get('customers/analytics', [CustomerController::class, 'analytics'])->middleware('staff');
+    Route::post('customers/analytics/export', [CustomerController::class, 'exportAnalytics'])->middleware('staff');
+    Route::apiResource('customers', CustomerController::class)->except(['store'])->middleware('staff');
+    Route::patch('customers/{customer}/toggle-status', [CustomerController::class, 'toggleStatus'])->middleware('staff');
+    Route::get('customers/{customer}/statistics', [CustomerController::class, 'statistics'])->middleware('staff');
+    Route::patch('customers/{customer}/update-last-visit', [CustomerController::class, 'updateLastVisit'])->middleware('staff');
 
     Route::get('categories', [CategoryController::class, 'index']);
     Route::middleware('staff:company_admin|admin|location_manager')->group(function () {
@@ -345,42 +349,46 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('mobile/packages', [MobilePackageController::class, 'index']);
 
     // Mobile app version management (Web Admin)
-    Route::get('mobile/versions', [MobileVersionController::class, 'adminIndex']);
-    Route::put('mobile/version/{mobileAppVersion}', [MobileVersionController::class, 'update']);
+    Route::get('mobile/versions', [MobileVersionController::class, 'adminIndex'])->middleware('staff:company_admin|admin|location_manager');
+    Route::put('mobile/version/{mobileAppVersion}', [MobileVersionController::class, 'update'])->middleware('staff:company_admin|admin|location_manager');
 
     // Expo push token registration for the staff mobile app
     Route::post('mobile/push-devices', [MobilePushDeviceController::class, 'store']);
     Route::delete('mobile/push-devices', [MobilePushDeviceController::class, 'destroy']);
 
-    Route::post('packages/room/create', [PackageController::class, 'storePackageRoom']);
-    Route::patch('packages/bulk-update-min-notice', [PackageController::class, 'bulkUpdateMinBookingNotice']);
-    Route::apiResource('packages', PackageController::class);
-    Route::post('packages/{id}/restore', [PackageController::class, 'restore']);
-    Route::delete('packages/{id}/force', [PackageController::class, 'forceDelete']);
-    Route::delete('packages/addons/{packageId}', [PackageController::class, 'deletePackageAddOns']);
-    Route::post('packages/bulk-import', [PackageController::class, 'bulkImport']);
-    Route::get('packages/category/{category}', [PackageController::class, 'getByCategory']);
-    Route::patch('packages/{package}/toggle-status', [PackageController::class, 'toggleIsActiveStatus']);
-    Route::post('packages/reorder', [PackageController::class, 'reorder']);
-    Route::post('packages/{package}/attractions/attach', [PackageController::class, 'attachAttractions']);
-    Route::post('packages/{package}/attractions/detach', [PackageController::class, 'detachAttractions']);
-    Route::post('packages/{package}/addons/attach', [PackageController::class, 'attachAddOns']);
-    Route::post('packages/{package}/addons/detach', [PackageController::class, 'detachAddOns']);
+    Route::post('packages/room/create', [PackageController::class, 'storePackageRoom'])->middleware('staff');
+    Route::patch('packages/bulk-update-min-notice', [PackageController::class, 'bulkUpdateMinBookingNotice'])->middleware('staff');
+    Route::apiResource('packages', PackageController::class)->middleware('staff');
+    Route::post('packages/{id}/restore', [PackageController::class, 'restore'])->middleware('staff');
+    Route::delete('packages/{id}/force', [PackageController::class, 'forceDelete'])->middleware('staff');
+    Route::delete('packages/addons/{packageId}', [PackageController::class, 'deletePackageAddOns'])->middleware('staff');
+    Route::post('packages/bulk-import', [PackageController::class, 'bulkImport'])->middleware('staff');
+    Route::get('packages/category/{category}', [PackageController::class, 'getByCategory'])->middleware('staff');
+    Route::patch('packages/{package}/toggle-status', [PackageController::class, 'toggleIsActiveStatus'])->middleware('staff');
+    Route::post('packages/reorder', [PackageController::class, 'reorder'])->middleware('staff');
+    Route::post('packages/{package}/attractions/attach', [PackageController::class, 'attachAttractions'])->middleware('staff');
+    Route::post('packages/{package}/attractions/detach', [PackageController::class, 'detachAttractions'])->middleware('staff');
+    Route::post('packages/{package}/addons/attach', [PackageController::class, 'attachAddOns'])->middleware('staff');
+    Route::post('packages/{package}/addons/detach', [PackageController::class, 'detachAddOns'])->middleware('staff');
 
-    Route::get('packages/{package}/availability-schedules', [PackageController::class, 'getAvailabilitySchedules']);
-    Route::post('packages/{package}/availability-schedules', [PackageController::class, 'storeAvailabilitySchedule']);
-    Route::put('packages/{package}/availability-schedules', [PackageController::class, 'updateAvailabilitySchedules']);
-    Route::delete('packages/{package}/availability-schedules/{scheduleId}', [PackageController::class, 'deleteAvailabilitySchedule']);
+    Route::get('packages/{package}/availability-schedules', [PackageController::class, 'getAvailabilitySchedules'])->middleware('staff');
+    Route::post('packages/{package}/availability-schedules', [PackageController::class, 'storeAvailabilitySchedule'])->middleware('staff');
+    Route::put('packages/{package}/availability-schedules', [PackageController::class, 'updateAvailabilitySchedules'])->middleware('staff');
+    Route::delete('packages/{package}/availability-schedules/{scheduleId}', [PackageController::class, 'deleteAvailabilitySchedule'])->middleware('staff');
 
-    Route::post('attractions/bulk-import', [AttractionController::class, 'bulkImport']);
     Route::get('attractions/category/{category}', [AttractionController::class, 'getByCategory']);
-    Route::apiResource('attractions', AttractionController::class)->except(['show']);
-    Route::patch('attractions/{attraction}/toggle-status', [AttractionController::class, 'toggleStatus']);
-    Route::patch('attractions/{attraction}/activate', [AttractionController::class, 'activate']);
-    Route::patch('attractions/{attraction}/deactivate', [AttractionController::class, 'deactivate']);
+    Route::apiResource('attractions', AttractionController::class)->only(['index']);
     Route::get('attractions/{attraction}/statistics', [AttractionController::class, 'statistics']);
-    Route::post('attractions/bulk-delete', [AttractionController::class, 'bulkDelete']);
-    Route::post('attractions/reorder', [AttractionController::class, 'reorder']);
+
+    Route::middleware('staff')->group(function () {
+        Route::post('attractions/bulk-import', [AttractionController::class, 'bulkImport']);
+        Route::apiResource('attractions', AttractionController::class)->only(['store', 'update', 'destroy']);
+        Route::patch('attractions/{attraction}/toggle-status', [AttractionController::class, 'toggleStatus']);
+        Route::patch('attractions/{attraction}/activate', [AttractionController::class, 'activate']);
+        Route::patch('attractions/{attraction}/deactivate', [AttractionController::class, 'deactivate']);
+        Route::post('attractions/bulk-delete', [AttractionController::class, 'bulkDelete']);
+        Route::post('attractions/reorder', [AttractionController::class, 'reorder']);
+    });
 
     Route::get('attraction-purchases/trashed', [AttractionPurchaseController::class, 'trashed']);
     Route::get('attraction-purchases/statistics', [AttractionPurchaseController::class, 'statistics']);
@@ -397,37 +405,49 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('attraction-purchases/bulk-delete', [AttractionPurchaseController::class, 'bulkDelete']);
     Route::post('attraction-purchases/{id}/restore', [AttractionPurchaseController::class, 'restore']);
 
-    Route::apiResource('rooms', RoomController::class);
+    Route::apiResource('rooms', RoomController::class)->only(['index', 'show']);
     Route::get('rooms/location/{locationId}', [RoomController::class, 'getByLocation']);
-    Route::patch('rooms/{room}/toggle-availability', [RoomController::class, 'toggleAvailability']);
     Route::get('rooms/available', [RoomController::class, 'getAvailableRooms']);
-    Route::patch('rooms/area-group/{areaGroup}/update-booking-interval', [RoomController::class, 'updateBookingIntervalByAreaGroup']);
-    Route::post('rooms/bulk-delete', [RoomController::class, 'bulkDelete']);
 
-    Route::apiResource('day-offs', DayOffController::class);
+    Route::middleware('staff')->group(function () {
+        Route::apiResource('rooms', RoomController::class)->only(['store', 'update', 'destroy']);
+        Route::patch('rooms/{room}/toggle-availability', [RoomController::class, 'toggleAvailability']);
+        Route::patch('rooms/area-group/{areaGroup}/update-booking-interval', [RoomController::class, 'updateBookingIntervalByAreaGroup']);
+        Route::post('rooms/bulk-delete', [RoomController::class, 'bulkDelete']);
+    });
+
+    Route::apiResource('day-offs', DayOffController::class)->only(['index', 'show']);
     Route::post('day-offs/check-date', [DayOffController::class, 'checkDate']);
-    Route::post('day-offs/bulk-delete', [DayOffController::class, 'bulkDelete']);
 
-    Route::get('special-pricings/location/{locationId}', [SpecialPricingController::class, 'getByLocation']);
-    Route::patch('special-pricings/{specialPricing}/toggle-status', [SpecialPricingController::class, 'toggleStatus']);
-    Route::post('special-pricings/bulk-delete', [SpecialPricingController::class, 'bulkDelete']);
-    Route::apiResource('special-pricings', SpecialPricingController::class);
+    Route::middleware('staff')->group(function () {
+        Route::apiResource('day-offs', DayOffController::class)->only(['store', 'update', 'destroy']);
+        Route::post('day-offs/bulk-delete', [DayOffController::class, 'bulkDelete']);
+    });
 
-    Route::get('fee-supports/location/{locationId}', [FeeSupportController::class, 'getByLocation']);
-    Route::patch('fee-supports/{feeSupport}/toggle-status', [FeeSupportController::class, 'toggleStatus']);
-    Route::post('fee-supports/bulk-delete', [FeeSupportController::class, 'bulkDelete']);
-    Route::apiResource('fee-supports', FeeSupportController::class);
+    Route::get('special-pricings/location/{locationId}', [SpecialPricingController::class, 'getByLocation'])->middleware('staff');
+    Route::patch('special-pricings/{specialPricing}/toggle-status', [SpecialPricingController::class, 'toggleStatus'])->middleware('staff');
+    Route::post('special-pricings/bulk-delete', [SpecialPricingController::class, 'bulkDelete'])->middleware('staff');
+    Route::apiResource('special-pricings', SpecialPricingController::class)->middleware('staff');
 
-    Route::apiResource('addons', AddOnController::class);
+    Route::get('fee-supports/location/{locationId}', [FeeSupportController::class, 'getByLocation'])->middleware('staff');
+    Route::patch('fee-supports/{feeSupport}/toggle-status', [FeeSupportController::class, 'toggleStatus'])->middleware('staff');
+    Route::post('fee-supports/bulk-delete', [FeeSupportController::class, 'bulkDelete'])->middleware('staff');
+    Route::apiResource('fee-supports', FeeSupportController::class)->middleware('staff');
+
+    Route::apiResource('addons', AddOnController::class)->only(['index', 'show']);
     Route::get('addons/location/{locationId}', [AddOnController::class, 'getByLocation']);
-    Route::patch('addons/{addOn}/toggle-status', [AddOnController::class, 'toggleStatus']);
     Route::get('addons/popular', [AddOnController::class, 'getPopular']);
-    Route::post('addons/bulk-delete', [AddOnController::class, 'bulkDelete']);
-    Route::post('addons/bulk-import', [AddOnController::class, 'bulkImport']);
 
-    Route::apiResource('global-notes', GlobalNoteController::class);
+    Route::middleware('staff')->group(function () {
+        Route::apiResource('addons', AddOnController::class)->only(['store', 'update', 'destroy']);
+        Route::patch('addons/{addOn}/toggle-status', [AddOnController::class, 'toggleStatus']);
+        Route::post('addons/bulk-delete', [AddOnController::class, 'bulkDelete']);
+        Route::post('addons/bulk-import', [AddOnController::class, 'bulkImport']);
+    });
+
+    Route::apiResource('global-notes', GlobalNoteController::class)->middleware('staff');
     Route::get('global-notes/package/{packageId}', [GlobalNoteController::class, 'getForPackage']);
-    Route::patch('global-notes/{globalNote}/toggle-status', [GlobalNoteController::class, 'toggleStatus']);
+    Route::patch('global-notes/{globalNote}/toggle-status', [GlobalNoteController::class, 'toggleStatus'])->middleware('staff');
 
     Route::get('gift-cards', [GiftCardController::class, 'index']);
     Route::get('gift-cards/{gift_card}', [GiftCardController::class, 'show'])->whereNumber('gift_card');
@@ -465,16 +485,16 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('gift-cards/{giftCard}/reactivate', [GiftCardController::class, 'reactivate'])->whereNumber('giftCard');
     });
 
-    Route::get('promos/valid', [PromoController::class, 'getValid']);
-    Route::post('promos/generate-bulk', [PromoController::class, 'generateBulk']);
-    Route::get('promos/batches', [PromoController::class, 'listBatches']);
-    Route::get('promos/batches/{batchId}', [PromoController::class, 'showBatch']);
-    Route::get('promos/batches/{batchId}/export-csv', [PromoController::class, 'exportBatchCsv']);
-    Route::patch('promos/batches/{batchId}/deactivate', [PromoController::class, 'deactivateBatch']);
-    Route::delete('promos/batches/{batchId}', [PromoController::class, 'destroyBatch']);
-    Route::apiResource('promos', PromoController::class);
-    Route::post('promos/{promo}/apply', [PromoController::class, 'apply']);
-    Route::patch('promos/{promo}/toggle-status', [PromoController::class, 'toggleStatus']);
+    Route::get('promos/valid', [PromoController::class, 'getValid'])->middleware('staff');
+    Route::post('promos/generate-bulk', [PromoController::class, 'generateBulk'])->middleware('staff');
+    Route::get('promos/batches', [PromoController::class, 'listBatches'])->middleware('staff');
+    Route::get('promos/batches/{batchId}', [PromoController::class, 'showBatch'])->middleware('staff');
+    Route::get('promos/batches/{batchId}/export-csv', [PromoController::class, 'exportBatchCsv'])->middleware('staff');
+    Route::patch('promos/batches/{batchId}/deactivate', [PromoController::class, 'deactivateBatch'])->middleware('staff');
+    Route::delete('promos/batches/{batchId}', [PromoController::class, 'destroyBatch'])->middleware('staff');
+    Route::apiResource('promos', PromoController::class)->middleware('staff');
+    Route::post('promos/{promo}/apply', [PromoController::class, 'apply'])->middleware('staff');
+    Route::patch('promos/{promo}/toggle-status', [PromoController::class, 'toggleStatus'])->middleware('staff');
 
     // Immutable booking change history (read-only; activity_logs is append-only).
     Route::get('bookings/export', [BookingController::class, 'exportIndex']);
@@ -512,15 +532,15 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('payments/package-invoices/export', [PaymentController::class, 'packageInvoicesExport']);
     Route::get('payments/invoices/day/{date}', [PaymentController::class, 'invoicesDay']);
     Route::get('payments/invoices/week/{week?}', [PaymentController::class, 'invoicesWeek']);
-    Route::post('payments/invoices/bulk', [PaymentController::class, 'invoicesBulk']);
+    Route::post('payments/invoices/bulk', [PaymentController::class, 'invoicesBulk'])->middleware('staff');
 
     Route::get('payments/trashed', [PaymentController::class, 'trashed']);
-    Route::apiResource('payments', PaymentController::class)->except(['update']);
-    Route::patch('payments/{payment}/refund', [PaymentController::class, 'refund']);
-    Route::patch('payments/{payment}/manual-refund', [PaymentController::class, 'manualRefund']);
-    Route::patch('payments/{payment}/void', [PaymentController::class, 'voidTransaction']);
-    Route::patch('payments/{payment}/restore', [PaymentController::class, 'restore']);
-    Route::delete('payments/{payment}/force-delete', [PaymentController::class, 'forceDelete']);
+    Route::apiResource('payments', PaymentController::class)->except(['update'])->middleware('staff');
+    Route::patch('payments/{payment}/refund', [PaymentController::class, 'refund'])->middleware('staff');
+    Route::patch('payments/{payment}/manual-refund', [PaymentController::class, 'manualRefund'])->middleware('staff');
+    Route::patch('payments/{payment}/void', [PaymentController::class, 'voidTransaction'])->middleware('staff');
+    Route::patch('payments/{payment}/restore', [PaymentController::class, 'restore'])->middleware('staff:company_admin|admin|location_manager');
+    Route::delete('payments/{payment}/force-delete', [PaymentController::class, 'forceDelete'])->middleware('staff:company_admin|admin|location_manager');
     Route::get('payments/{payment}/invoice', [PaymentController::class, 'invoice']);
     Route::get('payments/{payment}/invoice/view', [PaymentController::class, 'invoiceView']);
 
@@ -538,10 +558,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('customer-notifications/unread-count/{customerId}', [CustomerNotificationController::class, 'getUnreadCount']);
 
     Route::prefix('authorize-net')->group(function () {
-        Route::get('account', [AuthorizeNetAccountController::class, 'show']);
-        Route::post('account', [AuthorizeNetAccountController::class, 'store']);
-        Route::put('account', [AuthorizeNetAccountController::class, 'update']);
-        Route::delete('account/{locationId?}', [AuthorizeNetAccountController::class, 'destroy']);
+        Route::get('account', [AuthorizeNetAccountController::class, 'show'])->middleware('staff');
+        Route::post('account', [AuthorizeNetAccountController::class, 'store'])->middleware('staff:company_admin|admin|location_manager');
+        Route::put('account', [AuthorizeNetAccountController::class, 'update'])->middleware('staff:company_admin|admin|location_manager');
+        Route::delete('account/{locationId?}', [AuthorizeNetAccountController::class, 'destroy'])->middleware('staff:company_admin|admin|location_manager');
     });
 
     Route::prefix('email-templates')->group(function () {
@@ -630,8 +650,10 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/{smsNotification}/logs', [SmsNotificationController::class, 'logs']);
     });
 
-    Route::apiResource('events', EventController::class)->except(['index', 'show']);
-    Route::patch('events/{event}/toggle-status', [EventController::class, 'toggleStatus']);
+    Route::middleware('staff')->group(function () {
+        Route::apiResource('events', EventController::class)->except(['index', 'show']);
+        Route::patch('events/{event}/toggle-status', [EventController::class, 'toggleStatus']);
+    });
 
     Route::get('event-purchases/trashed', [EventPurchaseController::class, 'trashed']);
     Route::post('event-purchases/bulk-restore', [EventPurchaseController::class, 'bulkRestore']);
@@ -660,42 +682,43 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::post('memberships/benefits/quote', [MembershipController::class, 'quote']);
 
-    Route::get('membership-plans/export', [MembershipPlanController::class, 'export']);
-    Route::apiResource('membership-plans', MembershipPlanController::class);
-    Route::patch('membership-plans/{membershipPlan}/toggle-status', [MembershipPlanController::class, 'toggleStatus']);
+    Route::get('membership-plans/export', [MembershipPlanController::class, 'export'])->middleware('staff');
+    Route::apiResource('membership-plans', MembershipPlanController::class)->only(['index', 'show'])->middleware('staff');
+    Route::apiResource('membership-plans', MembershipPlanController::class)->only(['store', 'update', 'destroy'])->middleware('staff:company_admin|admin|location_manager');
+    Route::patch('membership-plans/{membershipPlan}/toggle-status', [MembershipPlanController::class, 'toggleStatus'])->middleware('staff:company_admin|admin|location_manager');
 
-    Route::get('membership-plans/{membershipPlan}/benefits',                 [MembershipPlanBenefitController::class, 'index']);
-    Route::post('membership-plans/{membershipPlan}/benefits',                [MembershipPlanBenefitController::class, 'store']);
-    Route::put('membership-plans/{membershipPlan}/benefits/{benefit}',       [MembershipPlanBenefitController::class, 'update']);
-    Route::delete('membership-plans/{membershipPlan}/benefits/{benefit}',    [MembershipPlanBenefitController::class, 'destroy']);
+    Route::get('membership-plans/{membershipPlan}/benefits',                 [MembershipPlanBenefitController::class, 'index'])->middleware('staff');
+    Route::post('membership-plans/{membershipPlan}/benefits',                [MembershipPlanBenefitController::class, 'store'])->middleware('staff:company_admin|admin|location_manager');
+    Route::put('membership-plans/{membershipPlan}/benefits/{benefit}',       [MembershipPlanBenefitController::class, 'update'])->middleware('staff:company_admin|admin|location_manager');
+    Route::delete('membership-plans/{membershipPlan}/benefits/{benefit}',    [MembershipPlanBenefitController::class, 'destroy'])->middleware('staff:company_admin|admin|location_manager');
 
-    Route::get('membership-reports/summary', [MembershipReportController::class, 'summary']);
+    Route::get('membership-reports/summary', [MembershipReportController::class, 'summary'])->middleware('staff');
 
-    Route::post('memberships/scan', [MembershipCheckInController::class, 'scan']);
+    Route::post('memberships/scan', [MembershipCheckInController::class, 'scan'])->middleware('staff');
 
-    Route::get('memberships/export',           [MembershipController::class, 'export']);
-    Route::get('memberships',                  [MembershipController::class, 'index']);
-    Route::post('memberships',                 [MembershipController::class, 'store']);
-    Route::get('memberships/{membership}',     [MembershipController::class, 'show']);
+    Route::get('memberships/export',           [MembershipController::class, 'export'])->middleware('staff');
+    Route::get('memberships',                  [MembershipController::class, 'index'])->middleware('staff');
+    Route::post('memberships',                 [MembershipController::class, 'store'])->middleware('staff');
+    Route::get('memberships/{membership}',     [MembershipController::class, 'show'])->middleware('staff');
 
-    Route::patch('memberships/{membership}/status',         [MembershipController::class, 'updateStatus']);
+    Route::patch('memberships/{membership}/status',         [MembershipController::class, 'updateStatus'])->middleware('staff');
     Route::patch('memberships/{membership}/freeze',         [MembershipController::class, 'freeze']);
-    Route::patch('memberships/{membership}/unfreeze',       [MembershipController::class, 'unfreeze']);
+    Route::patch('memberships/{membership}/unfreeze',       [MembershipController::class, 'unfreeze'])->middleware('staff');
     Route::patch('memberships/{membership}/cancel',         [MembershipController::class, 'cancel']);
-    Route::patch('memberships/{membership}/extend',         [MembershipController::class, 'extend']);
-    Route::delete('memberships/{membership}',               [MembershipController::class, 'destroy']);
+    Route::patch('memberships/{membership}/extend',         [MembershipController::class, 'extend'])->middleware('staff');
+    Route::delete('memberships/{membership}',               [MembershipController::class, 'destroy'])->middleware('staff:company_admin|admin|location_manager');
     Route::patch('memberships/{membership}/change-plan',    [MembershipController::class, 'changePlan']);
     Route::post('memberships/{membership}/upgrade-plan',    [MembershipController::class, 'upgradePlan']);
     Route::patch('memberships/{membership}/payment-method', [MembershipController::class, 'updatePaymentMethod']);
     Route::post('memberships/{membership}/retry-payment',   [MembershipController::class, 'retryPayment']);
     Route::get('memberships/{membership}/payments',         [MembershipController::class, 'payments']);
-    Route::post('memberships/{membership}/payments/{membershipPayment}/refund', [MembershipController::class, 'refundMembershipPayment']);
-    Route::post('memberships/{membership}/payments/{membershipPayment}/void',   [MembershipController::class, 'voidMembershipPayment']);
-    Route::post('memberships/{membership}/photo',           [MembershipController::class, 'uploadPhoto']);
-    Route::post('memberships/{membership}/notes',           [MembershipController::class, 'addNote']);
-    Route::get('memberships/{membership}/eligibility',      [MembershipController::class, 'eligibility']);
-    Route::post('memberships/{membership}/check-in',        [MembershipCheckInController::class, 'checkIn']);
-    Route::post('memberships/{membership}/redeem-pass',     [MembershipCheckInController::class, 'redeemPassCheckIn']);
+    Route::post('memberships/{membership}/payments/{membershipPayment}/refund', [MembershipController::class, 'refundMembershipPayment'])->middleware('staff:company_admin|admin|location_manager');
+    Route::post('memberships/{membership}/payments/{membershipPayment}/void',   [MembershipController::class, 'voidMembershipPayment'])->middleware('staff:company_admin|admin|location_manager');
+    Route::post('memberships/{membership}/photo',           [MembershipController::class, 'uploadPhoto'])->middleware('staff');
+    Route::post('memberships/{membership}/notes',           [MembershipController::class, 'addNote'])->middleware('staff');
+    Route::get('memberships/{membership}/eligibility',      [MembershipController::class, 'eligibility'])->middleware('staff');
+    Route::post('memberships/{membership}/check-in',        [MembershipCheckInController::class, 'checkIn'])->middleware('staff');
+    Route::post('memberships/{membership}/redeem-pass',     [MembershipCheckInController::class, 'redeemPassCheckIn'])->middleware('staff');
 
     // --- Waivers (staff/admin) ---
     // Waiver templates (builder)

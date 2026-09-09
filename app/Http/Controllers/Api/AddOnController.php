@@ -110,6 +110,13 @@ class AddOnController extends Controller
             return $denied;
         }
 
+        if (! empty($validated['location_id'])) {
+            $location = $this->scopedLocation($request, $validated['location_id']);
+            if ($location instanceof JsonResponse) {
+                return $location;
+            }
+        }
+
         if (isset($validated['image']) && !empty($validated['image'])) {
             try {
                 $validated['image'] = $this->handleImageUpload($validated['image']);
@@ -137,6 +144,10 @@ class AddOnController extends Controller
 
     public function show(AddOn $addOn): JsonResponse
     {
+        if ($denied = $this->denyForeignRecord($addOn, 'add-on')) {
+            return $denied;
+        }
+
         $addOn->load(['location', 'packages', 'bookings']);
 
         return response()->json([
@@ -148,6 +159,10 @@ class AddOnController extends Controller
     public function update(Request $request, $id): JsonResponse
     {
         $addOn = AddOn::findOrFail($id);
+
+        if ($denied = $this->denyForeignRecord($addOn, 'add-on')) {
+            return $denied;
+        }
 
         $originalName = $addOn->name;
 
@@ -169,6 +184,13 @@ class AddOnController extends Controller
 
         if ($denied = $this->rejectQuantityConflicts($validated, $addOn)) {
             return $denied;
+        }
+
+        if (! empty($validated['location_id']) && (int) $validated['location_id'] !== (int) $addOn->location_id) {
+            $location = $this->scopedLocation($request, $validated['location_id']);
+            if ($location instanceof JsonResponse) {
+                return $location;
+            }
         }
 
         Log::info('Update request received', [
@@ -244,6 +266,10 @@ class AddOnController extends Controller
     {
         $addOn = AddOn::findOrFail($id);
 
+        if ($denied = $this->denyForeignRecord($addOn, 'add-on')) {
+            return $denied;
+        }
+
         $deletedBy = User::findOrFail(auth()->id());
 
         if ($addOn->image && file_exists(storage_path('app/public/' . $addOn->image))) {
@@ -287,6 +313,10 @@ class AddOnController extends Controller
 
     public function getByLocation(int $locationId): JsonResponse
     {
+        if ($denied = $this->guardLocationAccess(request(), $locationId)) {
+            return $denied;
+        }
+
         $addOns = AddOn::with(['packages'])
             ->byLocation($locationId)
             ->active()
@@ -301,6 +331,10 @@ class AddOnController extends Controller
 
     public function toggleStatus(AddOn $addOn): JsonResponse
     {
+        if ($denied = $this->denyForeignRecord($addOn, 'add-on')) {
+            return $denied;
+        }
+
         $addOn->update(['is_active' => !$addOn->is_active]);
 
         return response()->json([
@@ -352,6 +386,10 @@ class AddOnController extends Controller
         $locationIds = [];
 
         foreach ($addOns as $addOn) {
+            if (! $this->authorizeRecordScope($addOn)) {
+                continue;
+            }
+
             if ($addOn->image && file_exists(storage_path('app/public/' . $addOn->image))) {
                 unlink(storage_path('app/public/' . $addOn->image));
             }
@@ -410,6 +448,16 @@ class AddOnController extends Controller
             'add_ons.*.max_quantity' => 'nullable|integer|min:1',
             'add_ons.*.maxQuantity' => 'nullable|integer|min:1',
         ]);
+
+        foreach ($validated['add_ons'] as $row) {
+            $rowLocation = $row['location_id'] ?? $row['locationId'] ?? null;
+            if (! empty($rowLocation)) {
+                $location = $this->scopedLocation($request, $rowLocation);
+                if ($location instanceof JsonResponse) {
+                    return $location;
+                }
+            }
+        }
 
         $importedAddOns = [];
         $errors = [];
