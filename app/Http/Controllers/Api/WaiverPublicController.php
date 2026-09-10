@@ -124,7 +124,12 @@ class WaiverPublicController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Waiver completed. Thank you!',
-            'data' => ['id' => $completed->id, 'status' => $completed->status, 'ad' => $ad],
+            'data' => [
+                'id' => $completed->id,
+                'reference_number' => $completed->reference_number,
+                'status' => $completed->status,
+                'ad' => $ad,
+            ],
         ]);
     }
 
@@ -371,7 +376,11 @@ class WaiverPublicController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Waiver completed.',
-            'data' => ['id' => $completed->id, 'ad' => $ad],
+            'data' => [
+                'id' => $completed->id,
+                'reference_number' => $completed->reference_number,
+                'ad' => $ad,
+            ],
         ], 201);
     }
 

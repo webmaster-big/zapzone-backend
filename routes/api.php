@@ -64,6 +64,7 @@ use App\Http\Controllers\Api\StripeController;
 use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\WaiverAdController;
 use App\Http\Controllers\Api\WaiverBulkInviteController;
+use App\Http\Controllers\Api\DashboardSettingController;
 use App\Http\Controllers\Api\WaiverController;
 use App\Http\Controllers\Api\WaiverPublicController;
 use App\Http\Controllers\Api\WaiverProfileController;
@@ -655,6 +656,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('events/{event}/toggle-status', [EventController::class, 'toggleStatus']);
     });
 
+    Route::get('event-purchases/verify/{reference}', [EventPurchaseController::class, 'verifyByReference'])
+        ->middleware(['staff', 'throttle:60,1']);
     Route::get('event-purchases/trashed', [EventPurchaseController::class, 'trashed']);
     Route::post('event-purchases/bulk-restore', [EventPurchaseController::class, 'bulkRestore']);
     Route::apiResource('event-purchases', EventPurchaseController::class)->except(['store']);
@@ -765,6 +768,9 @@ Route::middleware('auth:sanctum')->group(function () {
     });
     Route::post('waivers/assign',           [WaiverController::class, 'assign']);
     Route::post('waivers/kiosk-session',    [WaiverController::class, 'kioskSession']);
+    Route::get('dashboard-settings',  [DashboardSettingController::class, 'show'])->middleware('staff');
+    Route::put('dashboard-settings',  [DashboardSettingController::class, 'update'])->middleware('staff');
+    Route::post('waivers/scan',             [WaiverController::class, 'scan'])->middleware(['staff', 'throttle:60,1']);
     Route::post('waivers/check-in-all',     [WaiverController::class, 'checkInAll']);
     Route::post('waivers/{waiver}/check-in',      [WaiverController::class, 'checkIn']);
     Route::post('waivers/{waiver}/undo-check-in', [WaiverController::class, 'undoCheckIn']);

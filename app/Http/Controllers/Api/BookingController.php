@@ -1690,10 +1690,14 @@ class BookingController extends Controller
             Log::warning('Google Calendar sync failed on check-in', ['booking_id' => $booking->id, 'error' => $e->getMessage()]);
         }
 
+        $waiversCheckedIn = app(\App\Services\WaiverCheckInService::class)
+            ->checkInForEntity('booking', $booking->id, $authUser);
+
         return response()->json([
             'success' => true,
             'message' => 'Booking checked in successfully',
             'data' => $booking,
+            'waivers_checked_in' => $waiversCheckedIn,
         ]);
     }
 

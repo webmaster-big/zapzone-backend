@@ -1328,10 +1328,14 @@ public function checkIn(Request $request, int $id): JsonResponse
         $purchase = AttractionPurchase::with(['attraction', 'customer'])
             ->findOrFail($id);
 
-        $authUser = null;
-        if ($request->has('user_id')) {
-            $authUser = User::find($request->user_id);
+        if (!$request->user() instanceof User) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Staff sign-in is required to check in tickets.',
+            ], 403);
         }
+
+        $authUser = $this->resolveAuthUser($request);
 
         if ($purchase->status === AttractionPurchase::STATUS_CHECKED_IN) {
             return response()->json([
@@ -1404,9 +1408,13 @@ public function checkIn(Request $request, int $id): JsonResponse
             ]
         );
 
+        $waiversCheckedIn = app(\App\Services\WaiverCheckInService::class)
+            ->checkInForEntity('attraction_purchase', $purchase->id, $authUser);
+
         return response()->json([
             'success' => true,
             'message' => 'Ticket checked in successfully',
+            'waivers_checked_in' => $waiversCheckedIn,
             'data' => [
                 'id' => $purchase->id,
                 'attraction_id' => $purchase->attraction_id,

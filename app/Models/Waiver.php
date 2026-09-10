@@ -18,6 +18,7 @@ class Waiver extends Model
     public const HEAVY_COLUMNS = ['signature_image'];
 
     protected $fillable = [
+        'reference_number',
         'company_id',
         'location_id',
         'waiver_template_id',
@@ -28,6 +29,7 @@ class Waiver extends Model
         'package_id',
         'attraction_id',
         'event_id',
+        'event_purchase_id',
         'attraction_purchase_id',
         'bulk_invite_id',
         'bulk_invite_recipient_id',
@@ -107,6 +109,8 @@ class Waiver extends Model
     public const MARKETING_WITHDRAWN = 'withdrawn';
 
     public const SOURCE_CHECKOUT = 'checkout';
+    public const REFERENCE_PREFIX = 'WV';
+
     public const SOURCE_CONFIRMATION_EMAIL = 'confirmation_email';
     public const SOURCE_SMS_LINK = 'sms_link';
     public const SOURCE_KIOSK = 'kiosk';
@@ -121,6 +125,9 @@ class Waiver extends Model
             if (empty($waiver->access_token)) {
                 $waiver->access_token = self::generateUniqueToken();
             }
+            if (empty($waiver->reference_number) && self::supportsReferenceNumber()) {
+                $waiver->reference_number = self::generateReference();
+            }
         });
     }
 
@@ -131,6 +138,50 @@ class Waiver extends Model
         } while (self::where('access_token', $token)->exists());
 
         return $token;
+    }
+
+    private static ?bool $supportsReferenceNumber = null;
+
+    public static function supportsReferenceNumber(): bool
+    {
+        if (self::$supportsReferenceNumber === null) {
+            try {
+                self::$supportsReferenceNumber = \Illuminate\Support\Facades\Schema::hasColumn('waivers', 'reference_number');
+            } catch (\Throwable) {
+                self::$supportsReferenceNumber = false;
+            }
+        }
+
+        return self::$supportsReferenceNumber;
+    }
+
+    private static ?bool $supportsEventPurchaseId = null;
+
+    public static function supportsEventPurchaseId(): bool
+    {
+        if (self::$supportsEventPurchaseId === null) {
+            try {
+                self::$supportsEventPurchaseId = \Illuminate\Support\Facades\Schema::hasColumn('waivers', 'event_purchase_id');
+            } catch (\Throwable) {
+                self::$supportsEventPurchaseId = false;
+            }
+        }
+
+        return self::$supportsEventPurchaseId;
+    }
+
+    public static function generateReference(): string
+    {
+        do {
+            $candidate = self::REFERENCE_PREFIX . now()->format('Ymd') . strtoupper(Str::random(6));
+        } while (self::withTrashed()->where('reference_number', $candidate)->exists());
+
+        return $candidate;
+    }
+
+    public function eventPurchase(): BelongsTo
+    {
+        return $this->belongsTo(EventPurchase::class, 'event_purchase_id');
     }
 
     public function profile(): BelongsTo

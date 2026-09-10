@@ -225,6 +225,13 @@ class TicketOrderController extends Controller
 
     public function checkIn(Request $request, TicketOrder $ticketOrder): JsonResponse
     {
+        if (!$request->user() instanceof \App\Models\User) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Staff sign-in is required to check in orders.',
+            ], 403);
+        }
+
         if ($guard = $this->deniesAccess($request, $ticketOrder)) {
             return $guard;
         }
@@ -245,8 +252,9 @@ class TicketOrderController extends Controller
         $only = isset($validated['line_ids']) ? array_map('intval', $validated['line_ids']) : null;
         $checkedIn = 0;
         $skipped = [];
+        $checkedInLines = [];
 
-        DB::transaction(function () use ($ticketOrder, $only, &$checkedIn, &$skipped, $request) {
+        DB::transaction(function () use ($ticketOrder, $only, &$checkedIn, &$skipped, &$checkedInLines, $request) {
             foreach ($ticketOrder->lines() as $line) {
                 $model = $line['model'];
 
@@ -268,13 +276,14 @@ class TicketOrderController extends Controller
 
                 if ($line['type'] === 'attraction') {
                     $model->status = AttractionPurchase::STATUS_CHECKED_IN;
-                    $model->checked_in_by = $request->user()?->id;
+                    $model->checked_in_by = $this->resolveAuthUser($request)?->id;
                 } else {
                     $model->status = 'checked-in';
                 }
 
                 $model->save();
                 $checkedIn++;
+                $checkedInLines[] = ['type' => $line['type'], 'id' => $model->id];
             }
 
             $ticketOrder->refresh();
@@ -292,7 +301,7 @@ class TicketOrderController extends Controller
                 action: 'Order Check-In',
                 category: 'update',
                 description: "Order {$ticketOrder->reference_number}: {$checkedIn} ticket line(s) checked in",
-                userId: $request->user()?->id,
+                userId: $this->resolveAuthUser($request)?->id,
                 locationId: $ticketOrder->location_id,
                 entityType: 'ticket_order',
                 entityId: $ticketOrder->id,
@@ -304,11 +313,23 @@ class TicketOrderController extends Controller
             );
         }
 
+        $waiversCheckedIn = 0;
+        try {
+            $waiversCheckedIn = app(\App\Services\WaiverCheckInService::class)
+                ->checkInForTicketOrderLines($checkedInLines, $this->resolveAuthUser($request));
+        } catch (\Throwable $e) {
+            Log::warning('Waiver cascade failed after order check-in', [
+                'ticket_order_id' => $ticketOrder->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
         return response()->json([
             'success' => true,
             'data' => [
                 'checked_in' => $checkedIn,
                 'skipped' => $skipped,
+                'waivers_checked_in' => $waiversCheckedIn,
                 'order' => $this->present($ticketOrder->fresh(['attractionPurchases.attraction', 'eventPurchases.event'])),
             ],
         ]);

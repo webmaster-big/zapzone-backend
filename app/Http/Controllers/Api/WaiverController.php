@@ -9,6 +9,7 @@ use App\Models\Waiver;
 use App\Models\WaiverDeletionLog;
 use App\Models\WaiverSetting;
 use App\Models\WaiverTemplate;
+use App\Services\WaiverCheckInService;
 use App\Services\WaiverMetricsService;
 use App\Services\WaiverService;
 use Barryvdh\DomPDF\Facade\Pdf;
@@ -22,8 +23,10 @@ class WaiverController extends Controller
 {
     use ScopesByAuthUser;
 
-    public function __construct(private WaiverService $waivers)
-    {
+    public function __construct(
+        private WaiverService $waivers,
+        private WaiverCheckInService $checkIns,
+    ) {
     }
 
     /**
@@ -799,6 +802,72 @@ class WaiverController extends Controller
         }
     }
 
+    /** Staff: resolve a scanned or typed waiver reference to a waiver. Read-only. */
+    public function scan(Request $request): JsonResponse
+    {
+        $authUser = $this->resolveAuthUser($request);
+        if (!$authUser) {
+            return $this->forbidden();
+        }
+
+        $validated = $request->validate([
+            'code' => ['required', 'string', 'max:64'],
+        ]);
+
+        $waiver = $this->checkIns->resolveByReference($validated['code']);
+
+        if (!$waiver || !$this->authorizeRecordScope($waiver)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'No waiver found for that code.',
+            ], 404);
+        }
+
+        $waiver->load(['template:id,title', 'location:id,name', 'minors:id,waiver_id,first_name,last_name,date_of_birth']);
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'id' => $waiver->id,
+                'reference_number' => $waiver->reference_number,
+                'status' => $waiver->status,
+                'is_signed' => $waiver->status === Waiver::STATUS_COMPLETED,
+                'checked_in_at' => $waiver->checked_in_at?->toIso8601String(),
+                'adult_name' => $waiver->adult_full_name,
+                'adult_email' => \App\Services\WaiverProfileService::maskEmail($waiver->adult_email),
+                'adult_phone' => \App\Services\WaiverProfileService::maskPhone($waiver->adult_phone),
+                'selected_date' => optional($waiver->selected_date)->toDateString(),
+                'template_title' => $waiver->template?->title,
+                'location_id' => $waiver->location_id,
+                'location_name' => $waiver->location?->name,
+                'minors_count' => $waiver->minors->count(),
+                'minors' => $waiver->minors->map(fn ($m) => [
+                    'id' => $m->id,
+                    'name' => trim($m->first_name . ' ' . $m->last_name),
+                ])->all(),
+                'linked_to' => $this->describeLink($waiver),
+            ],
+        ]);
+    }
+
+    private function describeLink(Waiver $waiver): ?array
+    {
+        if ($waiver->booking_id) {
+            return ['type' => 'booking', 'id' => $waiver->booking_id];
+        }
+        if ($waiver->attraction_purchase_id) {
+            return ['type' => 'attraction_purchase', 'id' => $waiver->attraction_purchase_id];
+        }
+        if ($waiver->event_purchase_id) {
+            return ['type' => 'event_purchase', 'id' => $waiver->event_purchase_id];
+        }
+        if ($waiver->event_id) {
+            return ['type' => 'event', 'id' => $waiver->event_id];
+        }
+
+        return null;
+    }
+
     /** Staff: mark a completed waiver as checked in at the door. */
     public function checkIn(Request $request, Waiver $waiver): JsonResponse
     {
@@ -888,6 +957,7 @@ class WaiverController extends Controller
 
             $waivers = $query->where('status', Waiver::STATUS_COMPLETED)
                 ->whereNull('checked_in_at')
+                ->orderBy('id')
                 ->limit(200)
                 ->get();
 
@@ -918,30 +988,7 @@ class WaiverController extends Controller
     /** Constrain a waiver query to the waivers connected to an entity. False = unknown type. */
     private function scopeToEntity($query, string $type, int $id): bool
     {
-        switch ($type) {
-            case 'booking':
-                $query->where('booking_id', $id);
-                return true;
-            case 'attraction_purchase':
-                $query->where('attraction_purchase_id', $id);
-                return true;
-            case 'event_purchase':
-                // waivers link to events by event_id + customer + date, not by purchase id
-                $purchase = \App\Models\EventPurchase::find($id);
-                if (!$purchase) {
-                    $query->whereRaw('1 = 0');
-                    return true;
-                }
-                $query->where('event_id', $purchase->event_id)
-                    ->whereDate('selected_date', $purchase->purchase_date)
-                    ->when($purchase->customer_id, fn ($q) => $q->where('customer_id', $purchase->customer_id));
-                return true;
-            case 'customer':
-                $query->where('customer_id', $id);
-                return true;
-            default:
-                return false;
-        }
+        return $this->checkIns->scopeToEntity($query, $type, $id);
     }
 
     // ---- helpers ----
@@ -982,6 +1029,7 @@ class WaiverController extends Controller
                         ->orWhere('adult_last_name', 'like', $like)
                         ->orWhere('adult_email', 'like', $like)
                         ->orWhere('adult_phone', 'like', $like)
+                        ->when(Waiver::supportsReferenceNumber(), fn ($qq) => $qq->orWhere('reference_number', 'like', $like))
                         ->orWhereRaw("CONCAT(COALESCE(adult_first_name, ''), ' ', COALESCE(adult_last_name, '')) LIKE ?", [$like]);
                     if (ctype_digit($term)) {
                         $q->orWhere('id', (int) $term);

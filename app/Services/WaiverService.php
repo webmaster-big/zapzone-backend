@@ -526,11 +526,29 @@ class WaiverService
     /** Create a pending waiver for an event purchase when a template applies. */
     public function ensureForEventPurchase(\App\Models\EventPurchase $purchase): ?Waiver
     {
-        $existing = Waiver::where('event_id', $purchase->event_id)
-            ->where('customer_id', $purchase->customer_id)
+        $linkable = Waiver::supportsEventPurchaseId();
+
+        if ($linkable) {
+            $existing = Waiver::where('event_purchase_id', $purchase->id)->first();
+            if ($existing) {
+                return $existing;
+            }
+        }
+
+        $existing = Waiver::when($linkable, fn ($q) => $q->whereNull('event_purchase_id'))
+            ->where('event_id', $purchase->event_id)
             ->whereDate('selected_date', $purchase->purchase_date)
+            ->when(
+                $purchase->customer_id !== null,
+                fn ($q) => $q->where('customer_id', $purchase->customer_id),
+                fn ($q) => $q->whereRaw('1 = 0'),
+            )
             ->first();
         if ($existing) {
+            if ($linkable) {
+                $existing->update(['event_purchase_id' => $purchase->id]);
+            }
+
             return $existing;
         }
 
@@ -556,6 +574,7 @@ class WaiverService
             'location_id' => $purchase->location_id,
             'customer_id' => $purchase->customer_id,
             'event_id' => $purchase->event_id,
+            ...($linkable ? ['event_purchase_id' => $purchase->id] : []),
             'selected_date' => $purchase->purchase_date,
             'adult_email' => $purchase->customer?->email ?? $purchase->guest_email,
             'adult_phone' => $purchase->customer?->phone ?? $purchase->guest_phone,

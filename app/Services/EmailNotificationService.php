@@ -719,6 +719,7 @@ HTML;
             'customer_phone' => $waiver->adult_phone ?? $customer?->phone ?? '',
 
             'waiver_link' => $waiver->signing_url,
+            'waiver_reference' => $waiver->reference_number ?? '',
             'waiver_status' => ucfirst($waiver->status ?? ''),
             'waiver_date' => $waiver->selected_date?->format('F j, Y') ?? '',
             'waiver_title' => $waiver->template?->title ?? 'Waiver',

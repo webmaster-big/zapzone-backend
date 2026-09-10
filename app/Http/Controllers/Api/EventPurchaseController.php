@@ -1008,7 +1008,67 @@ class EventPurchaseController extends Controller
             ]);
         }
 
+        if ($validated['status'] === 'checked-in' && $originalStatus !== 'checked-in') {
+            try {
+                app(\App\Services\WaiverCheckInService::class)
+                    ->checkInForEntity('event_purchase', (int) $eventPurchase->id, $this->resolveAuthUser($request));
+            } catch (\Throwable $e) {
+                Log::warning('Waiver cascade failed after event purchase check-in', [
+                    'event_purchase_id' => $eventPurchase->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
         return response()->json($eventPurchase->fresh());
+    }
+
+    public function verifyByReference(Request $request, string $reference): JsonResponse
+    {
+        if (!$request->user() instanceof \App\Models\User) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Staff sign-in is required.',
+            ], 403);
+        }
+
+        $purchase = EventPurchase::with(['event:id,name', 'location:id,name'])
+            ->where('reference_number', strtoupper(trim($reference)))
+            ->first();
+
+        if (!$purchase || !$this->authorizeRecordScope($purchase)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'No event ticket found for that code.',
+            ], 404);
+        }
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'id' => $purchase->id,
+                'reference_number' => $purchase->reference_number,
+                'status' => $purchase->status,
+                'checked_in_at' => $purchase->checked_in_at?->toIso8601String(),
+                'guest_name' => $purchase->guest_name,
+                'guest_email' => $purchase->guest_email,
+                'guest_phone' => $purchase->guest_phone,
+                'quantity' => $purchase->quantity,
+                'purchase_date' => optional($purchase->purchase_date)->toDateString(),
+                'purchase_time' => $purchase->purchase_time
+                    ? \Carbon\Carbon::parse($purchase->purchase_time)->format('H:i')
+                    : null,
+                'total_amount' => (float) ($purchase->total_amount ?? 0),
+                'amount_paid' => (float) ($purchase->amount_paid ?? 0),
+                'payment_method' => $purchase->payment_method,
+                'payment_status' => $purchase->payment_status,
+                'notes' => $purchase->notes,
+                'event_name' => $purchase->event?->name,
+                'location_id' => $purchase->location_id,
+                'location_name' => $purchase->location?->name,
+                'ticket_order_id' => $purchase->ticket_order_id,
+            ],
+        ]);
     }
 
     public function customerPurchases(Request $request): JsonResponse
