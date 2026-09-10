@@ -931,6 +931,70 @@ class MembershipController extends Controller
         ]);
     }
 
+    public function gatewayKey(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'plan_id' => 'nullable|integer|exists:membership_plans,id',
+            'membership_id' => 'nullable|integer|exists:memberships,id',
+            'home_location_id' => 'nullable|integer|exists:locations,id',
+        ]);
+
+        $account = null;
+
+        if (!empty($validated['membership_id'])) {
+            $membership = Membership::find($validated['membership_id']);
+
+            if (!$membership) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Membership not found.',
+                ], 404);
+            }
+
+            $customer = $this->resolveCustomer();
+            $authUser = $this->resolveAuthUser($request);
+            $ownsIt = $customer && (int) $customer->id === (int) $membership->customer_id;
+            abort_unless($ownsIt || $authUser, 403);
+
+            $account = $this->resolveAccountForMembership($membership);
+        } elseif (!empty($validated['plan_id'])) {
+            $plan = MembershipPlan::find($validated['plan_id']);
+
+            $account = $plan?->billing_account_id
+                ? AuthorizeNetAccount::where('id', $plan->billing_account_id)->where('is_active', true)->first()
+                : (!empty($validated['home_location_id'])
+                    ? AuthorizeNetAccount::where('location_id', $validated['home_location_id'])->where('is_active', true)->first()
+                    : null);
+        }
+
+        if (!$account) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Card payment is not set up for this membership yet. Please contact us.',
+            ], 404);
+        }
+
+        try {
+            return response()->json([
+                'success' => true,
+                'api_login_id' => $account->api_login_id,
+                'client_key' => $account->public_client_key,
+                'environment' => $account->environment,
+                'account_id' => $account->id,
+            ]);
+        } catch (\Illuminate\Contracts\Encryption\DecryptException $e) {
+            Log::error('Membership gateway key decrypt failed', [
+                'account_id' => $account->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Payment configuration is corrupted. Please reconnect the Authorize.Net account.',
+            ], 500);
+        }
+    }
+
     public function updatePaymentMethod(Request $request, Membership $membership): JsonResponse
     {
         $customer = $this->resolveCustomer();
@@ -946,9 +1010,14 @@ class MembershipController extends Controller
             'opaque_data.dataDescriptor' => 'nullable|string',
             'opaque_data.dataValue'      => 'nullable|string',
         ]);
-        $token = $data['payment_profile_token']
-            ?? (!empty($data['opaque_data']['dataValue']) ? $data['opaque_data']['dataValue'] : null)
-            ?? $membership->payment_profile_token;
+        $token = $data['payment_profile_token'] ?? $membership->payment_profile_token;
+
+        if (empty($data['payment_profile_token']) && !empty($data['opaque_data']['dataValue'])) {
+            Log::info('Membership card update received an Accept.js nonce but no reusable payment profile', [
+                'membership_id' => $membership->id,
+                'note' => 'Card-on-file requires an Authorize.Net customer payment profile (CIM); label updated only.',
+            ]);
+        }
         $membership->payment_method_label  = $data['payment_method_label'];
         $membership->payment_profile_token = $token;
         $membership->save();

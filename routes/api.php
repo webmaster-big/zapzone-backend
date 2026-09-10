@@ -679,6 +679,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('memberships/me',        [MembershipController::class, 'myMembership']);
     Route::get('memberships/mine/all',  [MembershipController::class, 'myMemberships']);
     Route::post('memberships/purchase', [MembershipController::class, 'purchase']);
+    Route::get('memberships/gateway-key', [MembershipController::class, 'gatewayKey']);
 
     Route::post('memberships/benefits/quote', [MembershipController::class, 'quote']);
 
