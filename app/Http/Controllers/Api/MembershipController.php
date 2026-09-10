@@ -10,6 +10,8 @@ use App\Models\MembershipNote;
 use App\Models\MembershipPayment;
 use App\Models\MembershipPlan;
 use App\Models\AuthorizeNetAccount;
+use App\Models\User;
+use App\Services\AuthorizeNetProfileService;
 use App\Services\MembershipService;
 use App\Services\MembershipBenefitService;
 use App\Support\CompanyLocations;
@@ -998,10 +1000,10 @@ class MembershipController extends Controller
     public function updatePaymentMethod(Request $request, Membership $membership): JsonResponse
     {
         $customer = $this->resolveCustomer();
-        $authUser = $this->resolveAuthUser($request);
+        $isStaff = Auth::guard('sanctum')->user() instanceof User;
 
         $ownsIt = $customer && (int) $customer->id === (int) $membership->customer_id;
-        abort_unless($ownsIt || $authUser, 403);
+        abort_unless($ownsIt || $isStaff, 403);
 
         $data = $request->validate([
             'payment_method_label'       => 'required|string|max:120',
@@ -1009,15 +1011,58 @@ class MembershipController extends Controller
             'opaque_data'                => 'nullable|array',
             'opaque_data.dataDescriptor' => 'nullable|string',
             'opaque_data.dataValue'      => 'nullable|string',
+            'billing'                    => 'nullable|array',
+            'billing.first_name'         => 'nullable|string|max:50',
+            'billing.last_name'          => 'nullable|string|max:50',
+            'billing.address'            => 'nullable|string|max:60',
+            'billing.city'               => 'nullable|string|max:40',
+            'billing.state'              => 'nullable|string|max:40',
+            'billing.zip'                => 'nullable|string|max:20',
+            'billing.country'            => 'nullable|string|max:60',
         ]);
+
         $token = $data['payment_profile_token'] ?? $membership->payment_profile_token;
 
         if (empty($data['payment_profile_token']) && !empty($data['opaque_data']['dataValue'])) {
-            Log::info('Membership card update received an Accept.js nonce but no reusable payment profile', [
-                'membership_id' => $membership->id,
-                'note' => 'Card-on-file requires an Authorize.Net customer payment profile (CIM); label updated only.',
-            ]);
+            $account = $this->resolveAccountForMembership($membership);
+
+            if (!$account) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Card payment is not set up for this membership yet. Please contact us.',
+                ], 422);
+            }
+
+            $billing = $data['billing'] ?? [];
+
+            $result = app(AuthorizeNetProfileService::class)->saveCard(
+                $account,
+                $membership->customer_profile_id,
+                $data['opaque_data'],
+                [
+                    'first_name' => $billing['first_name'] ?? ($membership->customer->first_name ?? ''),
+                    'last_name' => $billing['last_name'] ?? ($membership->customer->last_name ?? ''),
+                    'address' => $billing['address'] ?? null,
+                    'city' => $billing['city'] ?? null,
+                    'state' => $billing['state'] ?? null,
+                    'zip' => $billing['zip'] ?? null,
+                    'country' => $billing['country'] ?? null,
+                ],
+                'MB' . $membership->id,
+                $membership->customer->email ?? null
+            );
+
+            if (!$result['success'] || empty($result['payment_profile_id'])) {
+                return response()->json([
+                    'success' => false,
+                    'message' => $result['error'] ?: 'We could not save that card. Please check the details and try again.',
+                ], 422);
+            }
+
+            $membership->customer_profile_id = $result['customer_profile_id'];
+            $token = $result['payment_profile_id'];
         }
+
         $membership->payment_method_label  = $data['payment_method_label'];
         $membership->payment_profile_token = $token;
         $membership->save();
@@ -1027,11 +1072,71 @@ class MembershipController extends Controller
 
     public function retryPayment(Request $request, Membership $membership): JsonResponse
     {
-        $authUser = $this->resolveAuthUser($request);
-        abort_unless($authUser, 403);
+        abort_unless(Auth::guard('sanctum')->user() instanceof User, 403);
 
         $lastFailed = $membership->membershipPayments()->where('status', 'failed')->latest()->first();
         $attempt = ($lastFailed?->retry_attempt ?? 0) + 1;
+
+        if ($membership->customer_profile_id && $membership->payment_profile_token) {
+            if ((float) $membership->billing_amount <= 0) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This membership has no billing amount set, so there is nothing to charge.',
+                ], 422);
+            }
+
+            $recentlyCharged = $membership->membershipPayments()
+                ->where('status', 'succeeded')
+                ->where('amount', $membership->billing_amount)
+                ->where('created_at', '>=', now()->subMinutes(2))
+                ->first();
+
+            if ($recentlyCharged) {
+                Log::info('Duplicate membership retry prevented (time-window check)', [
+                    'membership_id' => $membership->id,
+                    'existing_payment_id' => $recentlyCharged->id,
+                ]);
+
+                return response()->json([
+                    'success' => true,
+                    'message' => 'This membership was already charged a moment ago.',
+                    'data' => $recentlyCharged,
+                ]);
+            }
+
+            $account = $this->resolveAccountForMembership($membership);
+
+            if (!$account) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Card payment is not set up for this membership yet.',
+                ], 422);
+            }
+
+            $result = app(AuthorizeNetProfileService::class)->chargeProfile(
+                $account,
+                $membership->customer_profile_id,
+                $membership->payment_profile_token,
+                (float) $membership->billing_amount,
+                'MB' . $membership->id . '-' . $attempt,
+                'Membership renewal - ' . ($membership->plan->name ?? 'membership')
+            );
+
+            $payment = $this->service->recordPayment($membership, [
+                'amount'         => $membership->billing_amount,
+                'status'         => $result['success'] ? 'succeeded' : 'failed',
+                'retry_attempt'  => $attempt,
+                'transaction_id' => $result['transaction_id'],
+                'description'    => 'Charged saved card (manual retry by staff)',
+                'failure_reason' => $result['success'] ? null : $result['error'],
+            ]);
+
+            return response()->json([
+                'success' => $result['success'],
+                'message' => $result['success'] ? 'Saved card charged.' : $result['error'],
+                'data' => $payment,
+            ], $result['success'] ? 200 : 422);
+        }
 
         $payment = $this->service->recordPayment($membership, [
             'amount'        => $membership->billing_amount,

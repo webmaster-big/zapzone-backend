@@ -24,7 +24,7 @@ class Membership extends Model
         'uses_remaining', 'visits_remaining', 'services_remaining',
         'photo_path', 'photo_taken_at', 'photo_taken_by_user_id',
         'qr_token',
-        'billing_amount', 'payment_method_label', 'payment_profile_token',
+        'billing_amount', 'payment_method_label', 'payment_profile_token', 'customer_profile_id',
         'recurring_billing_authorized', 'recurring_billing_authorized_at',
         'terms_accepted', 'terms_accepted_at',
         'is_comped', 'discount_amount',
