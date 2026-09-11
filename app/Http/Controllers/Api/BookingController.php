@@ -1109,6 +1109,7 @@ class BookingController extends Controller
 
         $emailSent = false;
         $emailError = null;
+        $recipientEmail = null;
 
         if ($sendEmail) {
             $booking->load(['customer', 'package', 'location.company', 'room', 'creator', 'attractions', 'addOns']);
