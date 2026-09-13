@@ -372,9 +372,12 @@
                             <span>${{ number_format($booking->total_amount - ($booking->amount_paid ?? 0), 2) }}</span>
                         </div>
                         @endif
+                        @php($detailBalance = round(((float) $booking->total_amount) - ((float) ($booking->amount_paid ?? 0)), 2))
                         <div class="payment-row total">
                             <span>Status</span>
-                            <span>{{ ucfirst($booking->payment_status) }}</span>
+                            <span style="color: {{ $detailBalance > 0 ? '#dc2626' : '#059669' }};">
+                                {{ $detailBalance > 0 ? (($booking->amount_paid ?? 0) > 0 ? 'Partially Paid' : 'Unpaid') : 'Paid in Full' }}
+                            </span>
                         </div>
                     </div>
                 </div>

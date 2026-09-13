@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Traits\RecordsPageAnalytics;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Models\Payment;
+use App\Services\Payments\PayableLedger;
 use App\Models\TicketOrder;
 use App\Services\TicketOrderService;
 use App\Models\Booking;
@@ -248,42 +249,8 @@ class PaymentController extends Controller
         $payment->load(['customer', 'location']);
 
         if ($payment->payable_id && $payment->payable_type && $payment->status === 'completed') {
-            if ($payment->payable_type === Payment::TYPE_BOOKING) {
-                $payable = Booking::find($payment->payable_id);
-                if ($payable) {
-                    $totalPaid = Payment::where('payable_id', $payable->id)
-                        ->where('payable_type', Payment::TYPE_BOOKING)
-                        ->where('status', 'completed')
-                        ->sum('amount');
-                    $payable->update([
-                        'amount_paid' => $totalPaid,
-                        'payment_status' => $totalPaid >= $payable->total_amount ? 'paid' : 'partial',
-                    ]);
-                }
-            } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE) {
-                $payable = AttractionPurchase::find($payment->payable_id);
-                if ($payable) {
-                    $totalPaid = Payment::where('payable_id', $payable->id)
-                        ->where('payable_type', Payment::TYPE_ATTRACTION_PURCHASE)
-                        ->where('status', 'completed')
-                        ->sum('amount');
-                    $payable->update([
-                        'amount_paid' => $totalPaid,
-                        'status' => $totalPaid >= $payable->total_amount ? AttractionPurchase::STATUS_CONFIRMED : AttractionPurchase::STATUS_PENDING,
-                    ]);
-                }
-            } elseif ($payment->payable_type === Payment::TYPE_EVENT_PURCHASE) {
-                $payable = EventPurchase::find($payment->payable_id);
-                if ($payable) {
-                    $totalPaid = Payment::where('payable_id', $payable->id)
-                        ->where('payable_type', Payment::TYPE_EVENT_PURCHASE)
-                        ->where('status', 'completed')
-                        ->sum('amount');
-                    $payable->update([
-                        'amount_paid' => $totalPaid,
-                        'payment_status' => $totalPaid >= $payable->total_amount ? 'paid' : 'partial',
-                    ]);
-                }
+            if (in_array($payment->payable_type, [Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE, Payment::TYPE_EVENT_PURCHASE], true)) {
+                app(PayableLedger::class)->sync($payment->payable_type, (int) $payment->payable_id);
             } elseif ($payment->payable_type === Payment::TYPE_TICKET_ORDER) {
                 $order = TicketOrder::find($payment->payable_id);
                 if ($order) {
@@ -575,30 +542,8 @@ class PaymentController extends Controller
             ->where('status', 'completed')
             ->sum('amount');
 
-        if ($payableType === Payment::TYPE_BOOKING) {
-            $payable = Booking::find($payableId);
-            if ($payable) {
-                $payable->update([
-                    'amount_paid' => $totalPaid,
-                    'payment_status' => $totalPaid >= $payable->total_amount ? 'paid' : ($totalPaid > 0 ? 'partial' : 'pending'),
-                ]);
-            }
-        } elseif ($payableType === Payment::TYPE_ATTRACTION_PURCHASE) {
-            $payable = AttractionPurchase::find($payableId);
-            if ($payable) {
-                $payable->update([
-                    'amount_paid' => $totalPaid,
-                    'status' => $totalPaid >= $payable->total_amount ? AttractionPurchase::STATUS_CONFIRMED : AttractionPurchase::STATUS_PENDING,
-                ]);
-            }
-        } elseif ($payableType === Payment::TYPE_EVENT_PURCHASE) {
-            $payable = EventPurchase::find($payableId);
-            if ($payable) {
-                $payable->update([
-                    'amount_paid' => $totalPaid,
-                    'payment_status' => $totalPaid >= $payable->total_amount ? 'paid' : ($totalPaid > 0 ? 'partial' : 'pending'),
-                ]);
-            }
+        if (in_array($payableType, [Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE, Payment::TYPE_EVENT_PURCHASE], true)) {
+            app(PayableLedger::class)->sync($payableType, $payableId);
         } elseif ($payableType === Payment::TYPE_TICKET_ORDER) {
             $order = TicketOrder::find($payableId);
 

@@ -258,7 +258,10 @@
                                         <table width="100%" cellpadding="0" cellspacing="0" border="0">
                                             <tr>
                                                 <td style="font-weight: 500; color: #6b7280; width: 140px;">Payment Status:</td>
-                                                <td style="color: #111827; text-transform: capitalize;">{{ $booking->payment_status }}</td>
+                                                @php($staffBalance = round(((float) $booking->total_amount) - ((float) ($booking->amount_paid ?? 0)), 2))
+                                                <td style="font-weight: 600; color: {{ $staffBalance > 0 ? '#dc2626' : '#059669' }};">
+                                                    {{ $staffBalance > 0 ? (($booking->amount_paid ?? 0) > 0 ? 'Partially Paid — $' . number_format($staffBalance, 2) . ' due' : 'Unpaid — $' . number_format($staffBalance, 2) . ' due') : 'Paid in Full' }}
+                                                </td>
                                             </tr>
                                         </table>
                                     </td>

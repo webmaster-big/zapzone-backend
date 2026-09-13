@@ -21,7 +21,7 @@ class CheckoutPricer
     public function forBooking(array $v, Package $package, ?Membership $membership): array
     {
         $participants = max(1, (int) ($v['participants'] ?? 1));
-        $packageLine = $this->packageLine($package, $participants);
+        $packageLine = $this->packageLine($package, $participants, $v['price_snapshot'] ?? null);
 
         $lines = [[
             'type' => 'package',
@@ -39,7 +39,9 @@ class CheckoutPricer
                 continue;
             }
             $qty = max(1, (int) ($row['quantity'] ?? 1));
-            $unit = $this->packageAddOnUnit($addOn, (int) $package->id);
+            $unit = isset($row['frozen_unit_price'])
+                ? (float) $row['frozen_unit_price']
+                : $this->packageAddOnUnit($addOn, (int) $package->id);
             $lines[] = [
                 'type' => 'addon',
                 'id' => (int) $addOn->id,
@@ -58,7 +60,7 @@ class CheckoutPricer
             }
             $qty = max(1, (int) ($row['quantity'] ?? 1));
             $multiplier = $attraction->pricing_type === 'per_person' ? $participants : 1;
-            $unit = (float) $attraction->price;
+            $unit = isset($row['frozen_unit_price']) ? (float) $row['frozen_unit_price'] : (float) $attraction->price;
             $lines[] = [
                 'type' => 'attraction',
                 'id' => (int) $attraction->id,
@@ -70,7 +72,9 @@ class CheckoutPricer
             ];
         }
 
-        return $this->assemble('booking', 'package', (int) $package->id, (int) $package->location_id, $lines,
+        $locationId = (int) ($v['location_id'] ?? $package->location_id);
+
+        return $this->assemble('booking', 'package', (int) $package->id, $locationId, $lines,
             [Carbon::parse($v['booking_date'])->toDateString()], $v, $membership);
     }
 
@@ -206,16 +210,19 @@ class CheckoutPricer
         ];
     }
 
-    private function packageLine(Package $package, int $participants): float
+    private function packageLine(Package $package, int $participants, ?array $snapshot = null): float
     {
-        $price = (float) $package->price;
-        if ($package->pricing_type === 'per_person') {
+        $pricingType = $snapshot['pricing_type'] ?? $package->pricing_type;
+        $price = (float) ($snapshot['price'] ?? $package->price);
+        $perAdditional = (float) ($snapshot['price_per_additional'] ?? $package->price_per_additional ?? 0);
+
+        if ($pricingType === 'per_person') {
             return round($price * $participants, 2);
         }
         $included = max(1, (int) ($package->min_participants ?: 1));
         $extra = max(0, $participants - $included);
 
-        return round($price + $extra * (float) ($package->price_per_additional ?? 0), 2);
+        return round($price + $extra * $perAdditional, 2);
     }
 
     private function packageAddOnUnit(AddOn $addOn, int $packageId): float

@@ -117,9 +117,14 @@ class FeeSupportController extends Controller
             'fee_amount' => 'required|numeric|min:0',
             'fee_calculation_type' => 'required|in:fixed,percentage',
             'fee_application_type' => 'required|in:additive,inclusive',
-            'entity_ids' => 'required|array|min:1',
+            'entity_ids' => ['nullable', 'array', function ($attribute, $value, $fail) use ($request) {
+                if (! $request->boolean('applies_to_all') && empty($value)) {
+                    $fail('Select at least one item, or enable "Apply to all".');
+                }
+            }],
             'entity_ids.*' => 'integer',
             'entity_type' => 'required|in:package,attraction,event,membership',
+            'applies_to_all' => 'boolean',
             'is_active' => 'boolean',
         ]);
 
@@ -176,9 +181,10 @@ class FeeSupportController extends Controller
             'fee_amount' => 'sometimes|numeric|min:0',
             'fee_calculation_type' => 'sometimes|in:fixed,percentage',
             'fee_application_type' => 'sometimes|in:additive,inclusive',
-            'entity_ids' => 'sometimes|array|min:1',
+            'entity_ids' => 'sometimes|array',
             'entity_ids.*' => 'integer',
             'entity_type' => 'sometimes|in:package,attraction,event,membership',
+            'applies_to_all' => 'sometimes|boolean',
             'is_active' => 'sometimes|boolean',
         ]);
 

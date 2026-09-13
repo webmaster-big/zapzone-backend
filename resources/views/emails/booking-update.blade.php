@@ -195,7 +195,7 @@
                             @endif
 
                             <p style="margin: 24px 0 0 0; padding: 0; font-size: 14px; line-height: 1.6; color: #4b5563;">
-                                If you have any questions about your booking, please don't hesitate to contact us@if($booking->location && $booking->location->phone) at <a href="tel:{{ $booking->location->phone }}" style="color: #1e40af; text-decoration: none;">{{ $booking->location->phone }}</a>@endif.
+                                If you have any questions about your booking, please don't hesitate to contact us{{ '' }}@if($booking->location && $booking->location->phone) at <a href="tel:{{ $booking->location->phone }}" style="color: #1e40af; text-decoration: none;">{{ $booking->location->phone }}</a>@endif.
                             </p>
                         </td>
                     </tr>

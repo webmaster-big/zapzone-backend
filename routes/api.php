@@ -467,6 +467,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('bookings/{id}/internal-notes', [BookingController::class, 'updateInternalNotes']);
         Route::post('bookings/bulk-delete', [BookingController::class, 'bulkDelete']);
         Route::post('bookings/{id}/restore', [BookingController::class, 'restore']);
+        Route::post('bookings/{booking}/reprice', [BookingController::class, 'repriceQuote'])->whereNumber('booking');
         Route::match(['put', 'patch'], 'bookings/{booking}', [BookingController::class, 'update'])->whereNumber('booking');
         Route::patch('bookings/{booking}/cancel', [BookingController::class, 'cancel'])->whereNumber('booking');
 

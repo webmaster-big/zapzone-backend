@@ -236,6 +236,19 @@
                                     </td>
                                 </tr>
                                 @endif
+                                @php($bookingBalance = round(((float) $booking->total_amount) - ((float) ($booking->amount_paid ?? 0)), 2))
+                                <tr>
+                                    <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6; border-bottom: 1px solid #e5e7eb;">
+                                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                            <tr>
+                                                <td style="font-weight: 500; color: #6b7280; width: 140px;">{{ $bookingBalance > 0 ? 'Balance Due:' : 'Payment:' }}</td>
+                                                <td style="font-weight: 600; color: {{ $bookingBalance > 0 ? '#dc2626' : '#059669' }};">
+                                                    {{ $bookingBalance > 0 ? '$' . number_format($bookingBalance, 2) : 'Paid in Full' }}
+                                                </td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
                                 @if($booking->notes)
                                 <tr>
                                     <td style="padding: 8px 16px; font-size: 14px; line-height: 1.6;">

@@ -564,7 +564,7 @@
                                         <div class="info-block-value">
                                             <strong>{{ $booking->package->name ?? 'N/A' }}</strong><br>
                                             {{ $booking->room->name ?? 'TBD' }}
-                                            @if($booking->participants) · {{ $booking->participants }} guests@endif
+                                            @if($booking->participants) · {{ $booking->participants }} guests{{ '' }}@endif
                                         </div>
                                     </div>
                                 </div>
@@ -638,7 +638,7 @@
                         <div style="font-size: 7pt; color: #92400e; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 3px;">Guest of Honor</div>
                         <div style="font-size: 14pt; font-weight: bold; color: #92400e; margin-bottom: 2px;">{{ $booking->guest_of_honor_name }}</div>
                         <div style="font-size: 9pt; color: #b45309;">
-                            @if($booking->guest_of_honor_age)Turning {{ $booking->guest_of_honor_age }} years old@endif
+                            @if($booking->guest_of_honor_age)Turning {{ $booking->guest_of_honor_age }} years old{{ '' }}@endif
                             @if($booking->guest_of_honor_gender) • {{ ucfirst($booking->guest_of_honor_gender) }}@endif
                         </div>
                     </div>
@@ -685,14 +685,17 @@
                         <div class="column-right">
                             <div class="section">
                                 <div class="section-title">Payment Information</div>
-                                <div style="background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 4px; padding: 8px 10px;">
+                                @php($summaryBalance = round(((float) $booking->total_amount) - ((float) ($booking->amount_paid ?? 0)), 2))
+                                @php($summarySettled = $summaryBalance <= 0)
+                                @php($summaryInk = $summarySettled ? '#166534' : '#991b1b')
+                                <div style="background: {{ $summarySettled ? '#f0fdf4' : '#fef2f2' }}; border: 1px solid {{ $summarySettled ? '#bbf7d0' : '#fecaca' }}; border-radius: 4px; padding: 8px 10px;">
                                     <div class="info-row">
-                                        <span class="info-label" style="color: #166534;">Status:</span>
-                                        <span class="info-value" style="color: #166534;">{{ ucfirst(str_replace('_', ' ', $booking->payment_status ?? 'N/A')) }}</span>
+                                        <span class="info-label" style="color: {{ $summaryInk }};">Status:</span>
+                                        <span class="info-value" style="color: {{ $summaryInk }};">{{ $summarySettled ? 'Paid in Full' : (($booking->amount_paid ?? 0) > 0 ? 'Partially Paid' : 'Unpaid') }}</span>
                                     </div>
                                     <div class="info-row">
-                                        <span class="info-label" style="color: #166534;">Paid:</span>
-                                        <span class="info-value" style="color: #166534;">${{ number_format($booking->amount_paid ?? 0, 2) }}</span>
+                                        <span class="info-label" style="color: {{ $summaryInk }};">Paid:</span>
+                                        <span class="info-value" style="color: {{ $summaryInk }};">${{ number_format($booking->amount_paid ?? 0, 2) }}</span>
                                     </div>
                                     @if(($booking->total_amount - ($booking->amount_paid ?? 0)) > 0)
                                     <div class="info-row">

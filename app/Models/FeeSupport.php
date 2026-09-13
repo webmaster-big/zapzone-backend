@@ -19,12 +19,14 @@ class FeeSupport extends Model
         'fee_application_type',
         'entity_ids',
         'entity_type',
+        'applies_to_all',
         'is_active',
     ];
 
     protected $casts = [
         'fee_amount' => 'decimal:2',
         'entity_ids' => 'array',
+        'applies_to_all' => 'boolean',
         'is_active' => 'boolean',
     ];
 
@@ -131,8 +133,13 @@ class FeeSupport extends Model
 
     public function appliesToEntity(int $entityId): bool
     {
-        $ids = $this->entity_ids ?? [];
-        return in_array($entityId, $ids);
+        if ($this->applies_to_all) {
+            return true;
+        }
+
+        $ids = array_map('intval', array_filter((array) ($this->entity_ids ?? []), 'is_numeric'));
+
+        return in_array($entityId, $ids, true);
     }
 
     public static function getFeesForEntity(string $entityType, int $entityId, ?int $locationId = null)

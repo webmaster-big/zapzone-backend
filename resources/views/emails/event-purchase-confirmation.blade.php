@@ -262,10 +262,10 @@
                             </table>
 
                             @if($purchase->amount_paid > 0 && $purchase->amount_paid < $purchase->total_amount)
-                            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #fef3c7; border-radius: 6px; border: 1px solid #f59e0b; margin: 0 0 20px 0;">
+                            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #fef2f2; border-radius: 6px; border: 1px solid #dc2626; margin: 0 0 20px 0;">
                                 <tr>
                                     <td style="padding: 12px 20px; text-align: center;">
-                                        <p style="margin: 0; padding: 0; font-size: 14px; color: #92400e; font-weight: 500;">Amount Paid: ${{ number_format($purchase->amount_paid, 2) }} &mdash; Balance Due: ${{ number_format($purchase->total_amount - $purchase->amount_paid, 2) }}</p>
+                                        <p style="margin: 0; padding: 0; font-size: 14px; color: #991b1b; font-weight: 500;">Amount Paid: ${{ number_format($purchase->amount_paid, 2) }} &mdash; Balance Due: ${{ number_format($purchase->total_amount - $purchase->amount_paid, 2) }}</p>
                                     </td>
                                 </tr>
                             </table>

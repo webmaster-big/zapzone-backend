@@ -172,7 +172,7 @@
         }
 
         .payment-partial {
-            color: #ea580c;
+            color: #dc2626;
         }
 
         .payment-pending {
@@ -350,7 +350,8 @@
                     @endif
                 </div>
 
-                <div class="payment-info payment-{{ $booking->payment_status }}">
+                @php($listBalance = round(((float) $booking->total_amount) - ((float) ($booking->amount_paid ?? 0)), 2))
+                <div class="payment-info payment-{{ $listBalance > 0 ? (($booking->amount_paid ?? 0) > 0 ? 'partial' : 'pending') : 'paid' }}">
                     ${{ number_format($booking->amount_paid ?? 0, 2) }} / ${{ number_format($booking->total_amount, 2) }}
                     @if(($booking->total_amount - ($booking->amount_paid ?? 0)) > 0)
                         <span style="color: #dc2626;">

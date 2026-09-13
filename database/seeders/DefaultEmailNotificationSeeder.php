@@ -993,9 +993,21 @@ HTML;
                 </td>
             </tr>
             <tr>
-                <td style="padding: 12px 16px; font-size: 14px;">
+                <td style="padding: 12px 16px; border-bottom: 1px solid #e5e7eb; font-size: 14px;">
                     <strong style="color: #6b7280;">Total:</strong>
                     <span style="color: #111827; font-weight: 600; float: right;">{{booking_total}}</span>
+                </td>
+            </tr>
+            <tr>
+                <td style="padding: 12px 16px; border-bottom: 1px solid #e5e7eb; font-size: 14px;">
+                    <strong style="color: #6b7280;">Amount Paid:</strong>
+                    <span style="color: #111827; float: right;">{{booking_amount_paid}}</span>
+                </td>
+            </tr>
+            <tr>
+                <td style="padding: 12px 16px; font-size: 14px;">
+                    <strong style="color: #6b7280;">Balance Due:</strong>
+                    <span style="color: #dc2626; font-weight: 700; float: right;">{{booking_balance}}</span>
                 </td>
             </tr>
         </table>

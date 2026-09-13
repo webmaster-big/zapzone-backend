@@ -549,9 +549,12 @@
                             <span class="payment-label">Payment Method:</span>
                             <span class="payment-value">{{ ucfirst($booking->payment_method ?? 'N/A') }}</span>
                         </div>
+                        @php($summaryBalance = round(((float) $booking->total_amount) - ((float) ($booking->amount_paid ?? 0)), 2))
                         <div class="payment-row">
                             <span class="payment-label">Payment Status:</span>
-                            <span class="payment-value">{{ ucfirst(str_replace('_', ' ', $booking->payment_status ?? 'N/A')) }}</span>
+                            <span class="payment-value" style="color: {{ $summaryBalance > 0 ? '#dc2626' : '#059669' }};">
+                                {{ $summaryBalance > 0 ? (($booking->amount_paid ?? 0) > 0 ? 'Partially Paid' : 'Unpaid') : 'Paid in Full' }}
+                            </span>
                         </div>
                         @if($booking->discount_amount > 0)
                         <div class="payment-row">

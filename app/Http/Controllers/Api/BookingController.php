@@ -27,6 +27,7 @@ use App\Models\PackageTimeSlot;
 use App\Models\User;
 use App\Models\Membership;
 use App\Services\MembershipBenefitService;
+use App\Services\Checkout\BookingRepricer;
 use App\Services\Checkout\CheckoutPricer;
 use App\Services\Checkout\CheckoutTotalGuard;
 use Carbon\Carbon;
@@ -363,6 +364,9 @@ class BookingController extends Controller
             'applied_fees.*.fee_name' => 'required_with:applied_fees|string|max:255',
             'applied_fees.*.fee_amount' => 'required_with:applied_fees|numeric|min:0',
             'applied_fees.*.fee_application_type' => ['required_with:applied_fees', Rule::in(['additive', 'inclusive'])],
+            'applied_fees.*.fee_label' => 'sometimes|nullable|string|max:64',
+            'applied_fees.*.fee_calculation_type' => ['sometimes', 'nullable', Rule::in(['fixed', 'percentage'])],
+            'applied_fees.*.fee_support_id' => 'sometimes|nullable|integer',
             'applied_discounts' => 'nullable|array',
             'applied_discounts.*.discount_name' => 'required_with:applied_discounts|string|max:255',
             'applied_discounts.*.discount_amount' => 'required_with:applied_discounts|numeric|min:0',
@@ -656,6 +660,12 @@ class BookingController extends Controller
                 if ($membershipDiscount > 0) {
                     $validated['membership_discount'] = $membershipDiscount;
                 }
+            }
+
+            if ($capPackage) {
+                $validated['package_price_at_booking'] = $capPackage->price;
+                $validated['price_per_additional_at_booking'] = $capPackage->price_per_additional;
+                $validated['package_pricing_type_at_booking'] = $capPackage->pricing_type;
             }
 
             $created = Booking::create($validated);
@@ -1174,6 +1184,67 @@ class BookingController extends Controller
         ]);
     }
 
+    private function repriceIntent(array $validated, ?array $addOnLines, ?array $attractionLines): array
+    {
+        $intent = [];
+
+        foreach (['participants', 'package_id', 'booking_date', 'location_id'] as $key) {
+            if (array_key_exists($key, $validated) && $validated[$key] !== null) {
+                $intent[$key] = $validated[$key];
+            }
+        }
+
+        if ($addOnLines !== null) {
+            $intent['additional_addons'] = array_map(fn ($line) => [
+                'addon_id' => $line['id'],
+                'quantity' => $line['quantity'],
+            ], $addOnLines);
+        }
+
+        if ($attractionLines !== null) {
+            $intent['additional_attractions'] = array_map(fn ($line) => [
+                'attraction_id' => $line['id'],
+                'quantity' => $line['quantity'],
+            ], $attractionLines);
+        }
+
+        return $intent;
+    }
+
+    public function repriceQuote(Request $request, Booking $booking): JsonResponse
+    {
+        if (! $this->authorizeRecordScope($booking)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthorized to view this booking',
+            ], 403);
+        }
+
+        $validated = $request->validate([
+            'participants' => 'sometimes|integer|min:1',
+            'package_id' => 'sometimes|nullable|exists:packages,id',
+            'booking_date' => 'sometimes|date',
+            'location_id' => 'sometimes|exists:locations,id',
+            'additional_addons' => 'sometimes|nullable|array',
+            'additional_addons.*.addon_id' => 'required_with:additional_addons|integer|exists:add_ons,id',
+            'additional_addons.*.quantity' => 'required_with:additional_addons|integer|min:1',
+            'additional_attractions' => 'sometimes|nullable|array',
+            'additional_attractions.*.attraction_id' => 'required_with:additional_attractions|integer|exists:attractions,id',
+            'additional_attractions.*.quantity' => 'required_with:additional_attractions|integer|min:1',
+        ]);
+
+        $quote = app(BookingRepricer::class)->quote($booking, $validated);
+
+        if (! $quote) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This booking has no package to price.',
+            ], 422);
+        }
+
+        return response()->json(['success' => true, 'data' => $quote]);
+    }
+
     public function update(Request $request, Booking $booking): JsonResponse
     {
         $data = $request->all();
@@ -1218,14 +1289,17 @@ class BookingController extends Controller
             'applied_fees.*.fee_name' => 'required_with:applied_fees|string|max:255',
             'applied_fees.*.fee_amount' => 'required_with:applied_fees|numeric|min:0',
             'applied_fees.*.fee_application_type' => ['required_with:applied_fees', Rule::in(['additive', 'inclusive'])],
+            'applied_fees.*.fee_label' => 'sometimes|nullable|string|max:64',
+            'applied_fees.*.fee_calculation_type' => ['sometimes', 'nullable', Rule::in(['fixed', 'percentage'])],
+            'applied_fees.*.fee_support_id' => 'sometimes|nullable|integer',
             'applied_discounts' => 'sometimes|nullable|array',
             'applied_discounts.*.discount_name' => 'required_with:applied_discounts|string|max:255',
             'applied_discounts.*.discount_amount' => 'required_with:applied_discounts|numeric|min:0',
             'applied_discounts.*.discount_type' => ['required_with:applied_discounts', Rule::in(['fixed', 'percentage'])],
             'applied_discounts.*.original_price' => 'required_with:applied_discounts|numeric|min:0',
             'applied_discounts.*.special_pricing_id' => 'nullable|integer',
-            'payment_method' => ['sometimes', 'nullable', Rule::in(['card', 'cash', 'paylater', 'authorize.net'])],
-            'payment_status' => ['sometimes', Rule::in(['paid', 'partial', 'pending'])],
+            'payment_method' => ['sometimes', 'nullable', Rule::in(['card', 'in-store', 'paylater', 'authorize.net'])],
+            'payment_status' => ['sometimes', Rule::in(['paid', 'partial', 'pending', 'refunded', 'voided'])],
             'status' => ['sometimes', Rule::in(['pending', 'confirmed', 'checked-in', 'completed', 'cancelled'])],
             'notes' => 'sometimes|nullable|string',
             'internal_notes' => 'sometimes|nullable|string',
@@ -1331,8 +1405,66 @@ class BookingController extends Controller
             }
         }
 
-        if (isset($validated['amount_paid']) && isset($validated['total_amount']) && !isset($validated['payment_status'])) {
-            $validated['payment_status'] = $validated['amount_paid'] >= $validated['total_amount'] ? 'paid' : 'partial';
+        if (array_key_exists('package_id', $validated)
+            && $validated['package_id']
+            && (int) $validated['package_id'] !== (int) $booking->package_id) {
+            $newPackage = \App\Models\Package::find($validated['package_id']);
+            if ($newPackage) {
+                $validated['package_price_at_booking'] = $newPackage->price;
+                $validated['price_per_additional_at_booking'] = $newPackage->price_per_additional;
+                $validated['package_pricing_type_at_booking'] = $newPackage->pricing_type;
+            }
+        }
+
+        $repricer = app(BookingRepricer::class);
+        $repriced = $targetStatus === 'cancelled' ? null : $repricer->reprice($booking, $this->repriceIntent($validated, $addOnLines, $attractionLines));
+
+        if ($repriced) {
+            $clientTotal = isset($validated['total_amount']) ? round((float) $validated['total_amount'], 2) : null;
+            $pricingTouched = (isset($validated['participants']) && (int) $validated['participants'] !== (int) $booking->participants)
+                || (array_key_exists('package_id', $validated) && (int) $validated['package_id'] !== (int) $booking->package_id)
+                || (isset($validated['booking_date']) && Carbon::parse($validated['booking_date'])->toDateString() !== Carbon::parse($booking->booking_date)->toDateString())
+                || $addOnLines !== null
+                || $attractionLines !== null;
+
+            Log::channel(config('checkout.log_channel') ?: config('logging.default'))
+                ->info('checkout.booking_update.reprice', [
+                    'mode' => config('checkout.enforce_server_total_on_update') ? 'enforce' : 'shadow',
+                    'booking_id' => $booking->id,
+                    'reference_number' => $booking->reference_number,
+                    'client_total' => $clientTotal,
+                    'server_total' => $repriced['total_amount'],
+                    'delta' => $clientTotal !== null ? round($clientTotal - $repriced['total_amount'], 2) : null,
+                    'participants_from' => (int) $booking->participants,
+                    'participants_to' => (int) ($validated['participants'] ?? $booking->participants),
+                    'redeemed_credit' => $repriced['redeemed_credit'],
+                    'additive_fees' => $repriced['additive_fees'],
+                    'pricing_touched' => $pricingTouched,
+                    'pricing_consistent' => $repriced['pricing_consistent'],
+                    'applied' => config('checkout.enforce_server_total_on_update') || ($clientTotal === null && $pricingTouched),
+                ]);
+
+            if (config('checkout.enforce_server_total_on_update') || ($clientTotal === null && $pricingTouched)) {
+                $validated['total_amount'] = $repriced['total_amount'];
+                $validated['applied_fees'] = $repriced['applied_fees'];
+                $validated['discount_amount'] = $repriced['discount_amount'];
+                $validated['membership_discount'] = $repriced['membership_discount'];
+                unset($validated['applied_discounts']);
+            }
+        }
+
+        if (in_array($booking->payment_status, ['refunded', 'voided'], true)
+            && isset($validated['payment_status'])
+            && ! in_array($validated['payment_status'], ['refunded', 'voided'], true)) {
+            unset($validated['payment_status']);
+        }
+
+        if (! isset($validated['payment_status'])) {
+            $validated['payment_status'] = $repricer->derive(
+                isset($validated['amount_paid']) ? (float) $validated['amount_paid'] : (float) $booking->amount_paid,
+                isset($validated['total_amount']) ? (float) $validated['total_amount'] : (float) $booking->total_amount,
+                $booking->payment_status
+            );
         }
 
         try {
