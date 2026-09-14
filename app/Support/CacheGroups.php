@@ -14,6 +14,7 @@ class CacheGroups
     public const LOCATIONS = 'locations';
     public const DASHBOARDS = 'dashboards';
     public const CUSTOM_FIELDS = 'custom-fields';
+    public const BRAND = 'brand';
 
     public const TTL_CATALOG = 600;
     public const TTL_DASHBOARD = 300;

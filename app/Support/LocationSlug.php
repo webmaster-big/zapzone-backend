@@ -17,6 +17,8 @@ class LocationSlug
         'book',
         'bookings',
         'browse',
+        'cart',
+        'checkout',
         'company',
         'customer',
         'customers',

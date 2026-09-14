@@ -7,9 +7,11 @@ use App\Http\Traits\ScopesByAuthUser;
 use App\Models\ActivityLog;
 use App\Models\Location;
 use App\Support\CacheGroups;
+use App\Support\DataUriImage;
 use App\Support\LocationSlug;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\Rule;
 
@@ -61,7 +63,7 @@ class LocationController extends Controller
                 // Coordinates arrived in a later migration than the endpoint. Asking for a column
                 // that does not exist yet is a fatal query on MySQL, which would take the whole
                 // storefront down in the window between code deploying and migrations running.
-                foreach (['latitude', 'longitude'] as $optional) {
+                foreach (['latitude', 'longitude', 'logo_path'] as $optional) {
                     if (Schema::hasColumn('locations', $optional)) {
                         $columns[] = $optional;
                     }
@@ -112,9 +114,23 @@ class LocationController extends Controller
             'zip_code' => 'required|string|max:20',
             'phone' => 'required|string|max:20',
             'email' => 'required|email|unique:locations',
+            'logo_path' => 'sometimes|nullable|string|max:28311552',
             'timezone' => 'string|max:50',
             'is_active' => 'boolean',
         ]);
+
+        if (array_key_exists('logo_path', $validated) && $validated['logo_path'] !== null) {
+            try {
+                $validated['logo_path'] = $this->storeLogo($validated['logo_path']);
+            } catch (\Throwable $e) {
+                Log::error('Location logo upload failed', ['error' => $e->getMessage()]);
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Logo upload failed: ' . $e->getMessage(),
+                ], 422);
+            }
+        }
 
         if ($authUser->company_id) {
             if (isset($validated['company_id']) && (int) $validated['company_id'] !== (int) $authUser->company_id) {
@@ -188,11 +204,29 @@ class LocationController extends Controller
             'zip_code' => 'sometimes|string|max:20',
             'phone' => 'sometimes|string|max:20',
             'email' => 'sometimes|email|unique:locations,email,' . $location->id,
+            'logo_path' => 'sometimes|nullable|string|max:28311552',
             'timezone' => 'sometimes|string|max:50',
             'is_active' => 'boolean',
         ]);
 
-        $trackFields = ['name', 'slug', 'address', 'city', 'state', 'zip_code', 'latitude', 'longitude', 'phone', 'email', 'timezone', 'is_active'];
+        if (array_key_exists('logo_path', $validated)) {
+            try {
+                $validated['logo_path'] = $validated['logo_path'] === null
+                    ? null
+                    : $this->storeLogo($validated['logo_path']);
+            } catch (\Throwable $e) {
+                Log::error('Location logo upload failed', ['location_id' => $location->id, 'error' => $e->getMessage()]);
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Logo upload failed: ' . $e->getMessage(),
+                ], 422);
+            }
+
+            $previousLogoPath = $location->logo_path;
+        }
+
+        $trackFields = ['name', 'slug', 'address', 'city', 'state', 'zip_code', 'latitude', 'longitude', 'phone', 'email', 'logo_path', 'timezone', 'is_active'];
         $oldValues = array_intersect_key($location->toArray(), array_flip($trackFields));
 
         // A coordinate typed in by a person is recorded as manual, so the geocoder's own
@@ -214,6 +248,11 @@ class LocationController extends Controller
         }
 
         $location->update($validated);
+
+        if (isset($previousLogoPath)) {
+            $this->discardReplacedLogo($previousLogoPath, $location->logo_path);
+        }
+
         $location->load(['company', 'packages']);
 
         $newValues = array_intersect_key($location->fresh()->toArray(), array_flip($trackFields));
@@ -346,5 +385,96 @@ class LocationController extends Controller
             'success' => true,
             'data' => $stats,
         ]);
+    }
+
+    public function updateLogo(Request $request, Location $location): JsonResponse
+    {
+        if (!$this->authorizeRecordScope($location, locationCol: 'id', companyCol: 'company_id')) {
+            return response()->json(['success' => false, 'message' => 'Forbidden'], 403);
+        }
+
+        $validated = $request->validate([
+            'logo_path' => 'present|nullable|string|max:28311552',
+        ]);
+
+        try {
+            $newLogoPath = $validated['logo_path'] === null
+                ? null
+                : $this->storeLogo($validated['logo_path']);
+        } catch (\Throwable $e) {
+            Log::error('Location logo upload failed', ['location_id' => $location->id, 'error' => $e->getMessage()]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Logo upload failed: ' . $e->getMessage(),
+            ], 422);
+        }
+
+        $previousLogoPath = $location->logo_path;
+        $location->update(['logo_path' => $newLogoPath]);
+        $this->discardReplacedLogo($previousLogoPath, $newLogoPath);
+        $location->load(['company', 'packages']);
+
+        $authUser = $request->user();
+        ActivityLog::log(
+            action: $newLogoPath === null ? 'Location Logo Removed' : 'Location Logo Updated',
+            category: 'configuration',
+            description: $newLogoPath === null
+                ? "Logo for location '{$location->name}' was removed"
+                : "Logo for location '{$location->name}' was updated",
+            userId: auth()->id(),
+            locationId: $location->id,
+            entityType: 'location',
+            entityId: $location->id,
+            metadata: [
+                'updated_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $authUser ? $authUser->first_name . ' ' . $authUser->last_name : null,
+                    'email' => $authUser?->email,
+                ],
+                'updated_at' => now()->toIso8601String(),
+                'previous_logo_path' => $previousLogoPath,
+                'new_logo_path' => $newLogoPath,
+            ]
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => $newLogoPath === null ? 'Location logo removed successfully' : 'Location logo updated successfully',
+            'data' => $location,
+        ]);
+    }
+
+    private function storeLogo(string $image): string
+    {
+        if (DataUriImage::isDataUri($image)) {
+            return DataUriImage::store($image, 'images/location-logos');
+        }
+
+        if (strlen($image) > (int) config('media.max_path_length', 2048)) {
+            throw new \InvalidArgumentException('Logo must be a base64 image data URI or a stored file path');
+        }
+
+        return $image;
+    }
+
+    private function discardReplacedLogo(?string $previous, ?string $current): void
+    {
+        if (!$previous || $previous === $current) {
+            return;
+        }
+
+        if (!str_starts_with($previous, 'images/location-logos/')) {
+            return;
+        }
+
+        if (Location::where('logo_path', $previous)->exists()) {
+            return;
+        }
+
+        $fullPath = storage_path('app/public/' . $previous);
+        if (is_file($fullPath)) {
+            @unlink($fullPath);
+        }
     }
 }

@@ -208,6 +208,7 @@ class AppServiceProvider extends ServiceProvider
         $events = \App\Support\CacheGroups::EVENTS;
         $plans = \App\Support\CacheGroups::MEMBERSHIP_PLANS;
         $locations = \App\Support\CacheGroups::LOCATIONS;
+        $brand = \App\Support\CacheGroups::BRAND;
 
         $map = [
             \App\Models\Package::class => [$packages, $locations, $dashboards],
@@ -217,6 +218,7 @@ class AppServiceProvider extends ServiceProvider
             \App\Models\MembershipPlan::class => [$plans, $dashboards],
             \App\Models\MembershipPlanBenefit::class => [$plans, $dashboards],
             \App\Models\Location::class => [$packages, $attractions, $events, $plans, $locations, $dashboards],
+            \App\Models\Company::class => [$brand],
             \App\Models\SpecialPricing::class => [$packages, $attractions, $events, $dashboards],
             \App\Models\Booking::class => [$dashboards],
             \App\Models\AttractionPurchase::class => [$dashboards],

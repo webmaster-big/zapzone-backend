@@ -176,6 +176,7 @@ Route::delete('attraction-purchases/{id}/force-delete', [AttractionPurchaseContr
 
 Route::get('locations', [LocationController::class, 'index']);
 Route::get('storefront/locations', [LocationController::class, 'storefront']);
+Route::get('storefront/brand', [CompanyController::class, 'storefront']);
 
 Route::post('users', [UserController::class, 'store'])->middleware('throttle:10,1');
 
@@ -312,6 +313,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::apiResource('locations', LocationController::class)->only(['update', 'destroy'])->middleware('staff:company_admin|admin|location_manager');
     Route::get('locations/company/{companyId}', [LocationController::class, 'getByCompany'])->middleware('staff');
     Route::patch('locations/{location}/toggle-status', [LocationController::class, 'toggleStatus'])->middleware('staff:company_admin|admin|location_manager');
+    Route::patch('locations/{location}/logo', [LocationController::class, 'updateLogo'])->middleware('staff:company_admin|admin');
     Route::get('locations/{location}/statistics', [LocationController::class, 'statistics'])->middleware('staff');
 
     Route::middleware('staff')->group(function () {

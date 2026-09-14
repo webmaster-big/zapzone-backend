@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Models\ActivityLog;
 use App\Models\Company;
+use App\Support\CacheGroups;
 use App\Support\DataUriImage;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
@@ -32,11 +33,35 @@ class CompanyController extends Controller
         ]);
     }
 
+    public function storefront(): JsonResponse
+    {
+        $brand = CacheGroups::remember(
+            [CacheGroups::BRAND],
+            'companies:storefront-brand',
+            CacheGroups::TTL_CATALOG,
+            function () {
+                $company = Company::query()
+                    ->orderBy('id')
+                    ->first(['id', 'company_name', 'logo_path']);
+
+                return $company ? [
+                    'name' => $company->company_name,
+                    'logo_path' => $company->logo_path,
+                ] : null;
+            }
+        );
+
+        return response()->json([
+            'success' => true,
+            'data' => $brand,
+        ]);
+    }
+
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
             'company_name' => 'required|string|max:255|unique:companies',
-            'logo_path' => 'nullable|string|max:27262976', // 20MB in base64 is ~27MB
+            'logo_path' => 'nullable|string|max:28311552',
             'email' => 'required|email|unique:companies',
             'website' => 'nullable|url|max:255',
             'phone' => 'required|string|max:20',
@@ -99,7 +124,7 @@ class CompanyController extends Controller
         }
         $validated = $request->validate([
             'company_name' => 'sometimes|string|max:255|unique:companies,company_name,' . $company->id,
-            'logo_path' => 'sometimes|nullable|string|max:27262976',
+            'logo_path' => 'sometimes|nullable|string|max:28311552',
             'email' => 'sometimes|email|unique:companies,email,' . $company->id,
             'website' => 'sometimes|nullable|url|max:255',
             'phone' => 'sometimes|string|max:20',
@@ -210,7 +235,7 @@ class CompanyController extends Controller
     public function updateLogo(Request $request, Company $company): JsonResponse
     {
         $validated = $request->validate([
-            'logo_path' => 'required|string|max:27262976', // 20MB in base64 is ~27MB
+            'logo_path' => 'required|string|max:28311552',
         ]);
 
         try {

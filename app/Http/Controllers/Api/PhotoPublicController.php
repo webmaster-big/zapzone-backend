@@ -433,6 +433,7 @@ class PhotoPublicController extends Controller
                 'mode' => $session->requiresContactBeforeAccess() ? 'contact_required' : 'direct',
                 'access_token' => $session->access_token,
                 'location_name' => $session->location?->name,
+                'location_logo_path' => $session->location?->logo_path,
                 'photo_count' => $session->photos()->ready()->count(),
                 'source' => $session->source,
             ],
@@ -471,6 +472,7 @@ class PhotoPublicController extends Controller
                 'data' => [
                     'state' => 'contact_required',
                     'location_name' => $session->location?->name,
+                    'location_logo_path' => $session->location?->logo_path,
                     'business_name' => $session->location?->company?->name,
                     'photo_count' => $session->photos()->ready()->count(),
                     'expires_at' => $session->access_expires_at?->toIso8601String(),
@@ -607,6 +609,7 @@ class PhotoPublicController extends Controller
         return [
             'state' => 'ready',
             'location_name' => $session->location?->name,
+            'location_logo_path' => $session->location?->logo_path,
             'business_name' => $session->location?->company?->name,
             'source' => $session->source,
             'greeting_name' => $session->kiosk_contact_name
@@ -636,6 +639,7 @@ class PhotoPublicController extends Controller
                 'name' => $location->name,
                 'city' => $location->city,
                 'state' => $location->state,
+                'logo_path' => $location->logo_path,
                 'timezone' => OperatingDay::timezoneFor($location),
             ],
             'business_name' => $location->company?->name ?? 'Zap Zone',
@@ -662,6 +666,7 @@ class PhotoPublicController extends Controller
 
         return [
             'location_name' => $location->name,
+            'location_logo_path' => $location->logo_path,
             'business_name' => $location->company?->name ?? 'Zap Zone',
             'queue_id' => $queue->id,
             'operating_day' => $queue->operating_day?->toDateString(),
