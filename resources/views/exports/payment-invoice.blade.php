@@ -209,6 +209,9 @@
                         <div class="info-content">
                             <div class="info-line">{{ ucfirst($payment->method) }} · {{ $payment->transaction_id }}</div>
                             @if($payment->paid_at)<div class="info-line info-muted">Paid {{ $payment->paid_at->format('M j, Y g:i A') }}</div>@endif
+@if($payment->card_label)
+                            <div class="info-line info-muted">{{ $payment->card_label }}</div>
+@endif
                         </div>
                     </div>
                 </div>
@@ -332,6 +335,9 @@
                         <div class="info-content">
                             <div class="info-line">{{ $payment->transaction_id }}</div>
                             <div class="info-line info-muted">{{ ucfirst($payment->method) }} · {{ $payment->created_at->format('M j, Y') }}</div>
+@if($payment->card_label)
+                            <div class="info-line info-muted">{{ $payment->card_label }}</div>
+@endif
                         </div>
                     </div>
                 </div>
@@ -372,6 +378,9 @@
                         <div class="info-content">
                             <div class="info-line">{{ $payment->transaction_id }}</div>
                             <div class="info-line info-muted">{{ ucfirst($payment->method) }} · {{ $payment->created_at->format('M j, Y') }}</div>
+@if($payment->card_label)
+                            <div class="info-line info-muted">{{ $payment->card_label }}</div>
+@endif
                         </div>
                     </div>
                 </div>
@@ -471,6 +480,9 @@
                         <div class="info-content">
                             <div class="info-line">{{ $payment->transaction_id }}</div>
                             <div class="info-line info-muted">{{ ucfirst($payment->method) }}@if($payment->paid_at) · {{ $payment->paid_at->format('M j, Y') }}@endif</div>
+@if($payment->card_label)
+                            <div class="info-line info-muted">{{ $payment->card_label }}</div>
+@endif
                         </div>
                     </div>
                 </div>

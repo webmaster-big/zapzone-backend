@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Support\CardBrand;
 use App\Models\AuthorizeNetAccount;
 use Illuminate\Support\Facades\Log;
 use net\authorize\api\constants\ANetEnvironment;
@@ -67,6 +68,8 @@ class AuthorizeNetCharger
                     return [
                         'success' => true,
                         'transaction_id' => $tresponse->getTransId(),
+                        'card_last_four' => CardBrand::lastFour($tresponse->getAccountNumber()),
+                        'card_type' => CardBrand::normalize($tresponse->getAccountType()),
                         'error' => null,
                         'environment' => $account->environment,
                     ];
@@ -90,7 +93,7 @@ class AuthorizeNetCharger
                 'error' => $errorMessage,
             ]);
 
-            return ['success' => false, 'transaction_id' => null, 'error' => $errorMessage, 'environment' => $account->environment];
+            return ['success' => false, 'transaction_id' => null, 'card_last_four' => null, 'card_type' => null, 'error' => $errorMessage, 'environment' => $account->environment];
         } catch (\Throwable $e) {
             Log::error('Authorize.Net charge exception', [
                 'ref_id' => $refId,
@@ -99,7 +102,7 @@ class AuthorizeNetCharger
                 'error' => $e->getMessage(),
             ]);
 
-            return ['success' => false, 'transaction_id' => null, 'error' => 'Payment processing error.', 'environment' => $account->environment];
+            return ['success' => false, 'transaction_id' => null, 'card_last_four' => null, 'card_type' => null, 'error' => 'Payment processing error.', 'environment' => $account->environment];
         }
     }
 }

@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\CardBrand;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -25,10 +26,13 @@ class Membership extends Model
         'photo_path', 'photo_taken_at', 'photo_taken_by_user_id',
         'qr_token',
         'billing_amount', 'payment_method_label', 'payment_profile_token', 'customer_profile_id',
+        'card_last_four', 'card_type',
         'recurring_billing_authorized', 'recurring_billing_authorized_at',
         'terms_accepted', 'terms_accepted_at',
         'is_comped', 'discount_amount',
     ];
+
+    protected $appends = ['card_label'];
 
     protected $casts = [
         'started_at' => 'datetime',
@@ -49,6 +53,16 @@ class Membership extends Model
         'billing_amount' => 'decimal:2',
         'discount_amount' => 'decimal:2',
     ];
+
+    public function getCardLabelAttribute(): ?string
+    {
+        return CardBrand::label($this->card_type, $this->card_last_four);
+    }
+
+    public function setPaymentMethodLabelAttribute($value): void
+    {
+        $this->attributes['payment_method_label'] = CardBrand::redactPan($value);
+    }
 
     protected static function booted(): void
     {

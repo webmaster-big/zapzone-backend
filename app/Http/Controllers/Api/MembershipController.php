@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Support\CardBrand;
 use App\Http\Controllers\Controller;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Models\Customer;
@@ -116,7 +117,13 @@ class MembershipController extends Controller
             if ($response && $response->getMessages()->getResultCode() === 'Ok') {
                 $tresponse = $response->getTransactionResponse();
                 if ($tresponse && $tresponse->getMessages()) {
-                    return ['success' => true, 'transaction_id' => $tresponse->getTransId(), 'error' => null];
+                    return [
+                        'success' => true,
+                        'transaction_id' => $tresponse->getTransId(),
+                        'card_last_four' => CardBrand::lastFour($tresponse->getAccountNumber()),
+                        'card_type' => CardBrand::normalize($tresponse->getAccountType()),
+                        'error' => null,
+                    ];
                 }
             }
 
@@ -131,11 +138,33 @@ class MembershipController extends Controller
             }
 
             Log::warning('Membership charge failed', ['ref_id' => $refId, 'error' => $errorMessage]);
-            return ['success' => false, 'transaction_id' => null, 'error' => $errorMessage];
+            return ['success' => false, 'transaction_id' => null, 'card_last_four' => null, 'card_type' => null, 'error' => $errorMessage];
         } catch (\Exception $e) {
             Log::error('Membership charge exception', ['ref_id' => $refId, 'error' => $e->getMessage()]);
-            return ['success' => false, 'transaction_id' => null, 'error' => 'Payment processing error.'];
+            return ['success' => false, 'transaction_id' => null, 'card_last_four' => null, 'card_type' => null, 'error' => 'Payment processing error.'];
         }
+    }
+
+    private function rememberCard(Membership $membership, array $result): void
+    {
+        $lastFour = CardBrand::lastFour($result['card_last_four'] ?? null);
+        $brand = CardBrand::normalize($result['card_type'] ?? null);
+
+        if ($lastFour === null && $brand === null) {
+            return;
+        }
+
+        $changes = [];
+
+        if ($lastFour !== null) {
+            $changes['card_last_four'] = $lastFour;
+        }
+
+        if ($brand !== null) {
+            $changes['card_type'] = $brand;
+        }
+
+        $membership->forceFill($changes)->save();
     }
 
 
@@ -431,6 +460,8 @@ class MembershipController extends Controller
                 return response()->json(['success' => false, 'message' => $result['error']], 402);
             }
 
+            $this->rememberCard($membership, $result);
+
             $this->service->recordPayment($membership, [
                 'amount'         => $chargeAmount,
                 'status'         => 'succeeded',
@@ -614,6 +645,8 @@ class MembershipController extends Controller
             'transaction_id' => $result['transaction_id'],
             'amount'         => $plan->price,
         ]);
+
+        $this->rememberCard($membership, $result);
 
         $this->service->recordPayment($membership, [
             'amount'         => $plan->price,
@@ -1007,6 +1040,8 @@ class MembershipController extends Controller
 
         $data = $request->validate([
             'payment_method_label'       => 'required|string|max:120',
+            'card_last_four'             => 'nullable|string|size:4|regex:/^\d{4}$/',
+            'card_type'                  => 'nullable|string|max:20',
             'payment_profile_token'      => 'nullable|string|max:255',
             'opaque_data'                => 'nullable|array',
             'opaque_data.dataDescriptor' => 'nullable|string',
@@ -1065,6 +1100,14 @@ class MembershipController extends Controller
 
         $membership->payment_method_label  = $data['payment_method_label'];
         $membership->payment_profile_token = $token;
+
+        $savedANewCard = ! empty($data['opaque_data']['dataValue']);
+
+        if (array_key_exists('card_last_four', $data) || array_key_exists('card_type', $data) || $savedANewCard) {
+            $membership->card_last_four = CardBrand::lastFour($data['card_last_four'] ?? null);
+            $membership->card_type = CardBrand::normalize($data['card_type'] ?? null);
+        }
+
         $membership->save();
         $this->service->log($membership, 'payment_method_update', null, ['payment_method_label' => $data['payment_method_label']]);
         return response()->json(['success' => true, 'data' => $membership->fresh()]);
@@ -1121,6 +1164,10 @@ class MembershipController extends Controller
                 'MB' . $membership->id . '-' . $attempt,
                 'Membership renewal - ' . ($membership->plan->name ?? 'membership')
             );
+
+            if ($result['success']) {
+                $this->rememberCard($membership, $result);
+            }
 
             $payment = $this->service->recordPayment($membership, [
                 'amount'         => $membership->billing_amount,
@@ -1521,6 +1568,11 @@ class MembershipController extends Controller
                 if ($response && $response->getMessages()->getResultCode() === 'Ok') {
                     $tresponse = $response->getTransactionResponse();
                     if ($tresponse && $tresponse->getMessages()) {
+                        $this->rememberCard($membership, [
+                            'card_last_four' => $tresponse->getAccountNumber(),
+                            'card_type' => $tresponse->getAccountType(),
+                        ]);
+
                         $this->service->recordPayment($membership, [
                             'amount'         => $proratedDiff,
                             'status'         => 'succeeded',

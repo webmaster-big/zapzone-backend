@@ -167,7 +167,7 @@ class TicketOrderController extends Controller
     {
         $query = TicketOrder::query()
             ->withoutHeavyColumns()
-            ->with(['location', 'customer', 'attractionPurchases.attraction', 'attractionPurchases.addOns', 'eventPurchases.event', 'eventPurchases.addOns']);
+            ->with(['location', 'customer', 'attractionPurchases.attraction', 'attractionPurchases.addOns', 'eventPurchases.event', 'eventPurchases.addOns', 'payments:id,payable_id,payable_type,status,method,card_last_four,card_type,paid_at']);
 
         $this->applyAuthScope($query, $request);
 

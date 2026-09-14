@@ -488,6 +488,8 @@ class GiftCardController extends Controller
         ]);
 
         $transactionId = 'GC-' . strtoupper(Str::random(10));
+        $cardLastFour = null;
+        $cardType = null;
 
         if ($method === 'authorize.net') {
             $account = \App\Models\AuthorizeNetAccount::where('location_id', $location->id)
@@ -532,6 +534,8 @@ class GiftCardController extends Controller
             }
 
             $transactionId = $result['transaction_id'];
+            $cardLastFour = $result['card_last_four'] ?? null;
+            $cardType = $result['card_type'] ?? null;
         }
 
         try {
@@ -571,6 +575,8 @@ class GiftCardController extends Controller
                 'status' => 'completed',
                 'paid_at' => now(),
                 'location_id' => $location->id,
+                'card_last_four' => $cardLastFour,
+                'card_type' => $cardType,
                 'notes' => 'Gift card ' . $card->code,
             ]);
         } catch (\Throwable $e) {

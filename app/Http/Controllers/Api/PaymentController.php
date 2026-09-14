@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Support\CardBrand;
 use App\Http\Controllers\Controller;
 use App\Http\Traits\RecordsPageAnalytics;
 use App\Http\Traits\ScopesByAuthUser;
@@ -780,14 +781,19 @@ class PaymentController extends Controller
                     if ($detailsResponse != null && $detailsResponse->getMessages()->getResultCode() == 'Ok') {
                         $txn = $detailsResponse->getTransaction();
                         if ($txn && $txn->getPayment() && $txn->getPayment()->getCreditCard()) {
-                            $cardNumber = $txn->getPayment()->getCreditCard()->getCardNumber();
-                            $lastFour = substr($cardNumber, -4);
+                            $maskedCard = $txn->getPayment()->getCreditCard();
+                            $lastFour = CardBrand::lastFour($maskedCard->getCardNumber());
+                            $cardType = CardBrand::normalize($maskedCard->getCardType());
 
-                            $payment->update(['card_last_four' => $lastFour]);
+                            $payment->update(array_filter([
+                                'card_last_four' => $lastFour,
+                                'card_type' => $cardType,
+                            ], fn ($v) => $v !== null));
 
                             Log::info('card_last_four retrieved and saved from Authorize.Net', [
                                 'payment_id' => $payment->id,
                                 'card_last_four' => $lastFour,
+                                'card_type' => $cardType,
                             ]);
                         }
                     } else {
@@ -2236,10 +2242,8 @@ class PaymentController extends Controller
                         ], 400);
                     }
 
-                    $cardLastFour = null;
-                    if ($tresponse->getAccountNumber()) {
-                        $cardLastFour = substr($tresponse->getAccountNumber(), -4);
-                    }
+                    $cardLastFour = CardBrand::lastFour($tresponse->getAccountNumber());
+                    $cardType = CardBrand::normalize($tresponse->getAccountType());
 
                     $avsResultCode = $tresponse->getAvsResultCode();
                     $cvvResultCode = $tresponse->getCvvResultCode();
@@ -2315,6 +2319,7 @@ class PaymentController extends Controller
                         'transaction_id' => $transactionId,
                         'payment_id' => $transactionId,
                         'card_last_four' => $cardLastFour,
+                        'card_type' => $cardType,
                         'avs_result_code' => $avsResultCode,
                         'cvv_result_code' => $cvvResultCode,
                         'payable_id' => $request->payable_id,

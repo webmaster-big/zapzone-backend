@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\CardBrand;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -34,10 +35,13 @@ class Payment extends Model
         'refunded_at',
         'payment_id',
         'card_last_four',
+        'card_type',
         'avs_result_code',
         'cvv_result_code',
         'location_id',
     ];
+
+    protected $appends = ['card_label'];
 
     protected $casts = [
         'amount' => 'decimal:2',
@@ -46,6 +50,11 @@ class Payment extends Model
         'terms_accepted' => 'boolean',
     ];
 
+
+    public function getCardLabelAttribute(): ?string
+    {
+        return CardBrand::label($this->card_type, $this->card_last_four);
+    }
 
     public function payable(): MorphTo
     {

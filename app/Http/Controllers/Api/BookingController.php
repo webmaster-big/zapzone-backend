@@ -146,6 +146,7 @@ class BookingController extends Controller
                     'attractions:id,name',  // BelongsToMany - pivot data loaded automatically
                     'addOns:id,name',       // BelongsToMany - pivot data loaded automatically
                     'customFieldResponses:id,respondable_type,respondable_id,label,value',
+                    'payments:id,payable_id,payable_type,status,method,card_last_four,card_type,paid_at',
                 ]);
 
             $this->applyAuthScope($query, $request);
@@ -260,6 +261,7 @@ class BookingController extends Controller
                 'creator:id,first_name,last_name',
                 'attractions:id,name',
                 'addOns:id,name',
+                'payments:id,payable_id,payable_type,status,method,card_last_four,card_type,paid_at',
             ]);
 
         if ($request->has('search')) {

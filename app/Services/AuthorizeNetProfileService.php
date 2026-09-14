@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Support\CardBrand;
 use App\Models\AuthorizeNetAccount;
 use Illuminate\Support\Facades\Log;
 use net\authorize\api\constants\ANetEnvironment;
@@ -144,6 +145,8 @@ class AuthorizeNetProfileService
                     return [
                         'success' => true,
                         'transaction_id' => $tresponse->getTransId(),
+                        'card_last_four' => CardBrand::lastFour($tresponse->getAccountNumber()),
+                        'card_type' => CardBrand::normalize($tresponse->getAccountType()),
                         'error' => null,
                     ];
                 }
@@ -165,7 +168,7 @@ class AuthorizeNetProfileService
                 'error' => $error,
             ]);
 
-            return ['success' => false, 'transaction_id' => null, 'error' => $error];
+            return ['success' => false, 'transaction_id' => null, 'card_last_four' => null, 'card_type' => null, 'error' => $error];
         } catch (\Throwable $e) {
             Log::error('Authorize.Net profile charge exception', [
                 'ref_id' => $refId,
@@ -174,7 +177,7 @@ class AuthorizeNetProfileService
                 'error' => $e->getMessage(),
             ]);
 
-            return ['success' => false, 'transaction_id' => null, 'error' => 'Payment processing error.'];
+            return ['success' => false, 'transaction_id' => null, 'card_last_four' => null, 'card_type' => null, 'error' => 'Payment processing error.'];
         }
     }
 

@@ -372,6 +372,13 @@
                             <span>${{ number_format($booking->total_amount - ($booking->amount_paid ?? 0), 2) }}</span>
                         </div>
                         @endif
+                        @php($detailCard = \App\Support\CardBrand::fromPayments($booking->payments))
+                        @if($detailCard)
+                        <div class="payment-row">
+                            <span>Card Used</span>
+                            <span>{{ $detailCard }}</span>
+                        </div>
+                        @endif
                         @php($detailBalance = round(((float) $booking->total_amount) - ((float) ($booking->amount_paid ?? 0)), 2))
                         <div class="payment-row total">
                             <span>Status</span>
