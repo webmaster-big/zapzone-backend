@@ -152,6 +152,23 @@ class PaymentCardDisplayTest extends TestCase
         $this->assertSame('Card ending in 3424', CardBrand::fromPayments($loaded->payments));
     }
 
+    public function test_a_listed_booking_carries_every_field_the_payment_history_renders(): void
+    {
+        $booking = $this->makeBooking();
+        $this->pay($booking, ['card_type' => 'Visa', 'card_last_four' => '6889', 'notes' => 'Deposit']);
+
+        $listed = Booking::with('payments')->find($booking->id)->toArray();
+        $row = $listed['payments'][0];
+
+        foreach (['amount', 'created_at', 'notes', 'method', 'status', 'card_type', 'card_last_four'] as $field) {
+            $this->assertArrayHasKey($field, $row, "payments.$field must be present or the UI renders NaN/blank");
+        }
+
+        $this->assertNotNull($row['amount']);
+        $this->assertTrue(is_numeric($row['amount']), 'amount must be numeric so $NaN can never render');
+        $this->assertNotNull($row['created_at']);
+    }
+
     public function test_a_membership_label_can_never_hold_a_full_card_number(): void
     {
         $membership = new Membership;

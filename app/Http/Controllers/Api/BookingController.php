@@ -134,8 +134,10 @@ class BookingController extends Controller
                     'id', 'reference_number', 'customer_id', 'package_id', 'location_id', 'room_id',
                     'created_by', 'guest_name', 'guest_email', 'guest_phone', 'booking_date', 'booking_time',
                     'participants', 'duration', 'duration_unit', 'total_amount', 'amount_paid',
-                    'discount_amount', 'applied_fees', 'payment_method', 'payment_status', 'status', 'notes', 'internal_notes',
-                    'guest_of_honor_name', 'guest_of_honor_age', 'created_at', 'updated_at'
+                    'discount_amount', 'applied_fees', 'applied_discounts', 'payment_method', 'payment_status', 'status', 'notes', 'internal_notes',
+                    'special_requests', 'transaction_id',
+                    'guest_address', 'guest_city', 'guest_state', 'guest_zip', 'guest_country',
+                    'guest_of_honor_name', 'guest_of_honor_age', 'guest_of_honor_gender', 'created_at', 'updated_at'
                 ])
                 ->with([
                     'customer:id,first_name,last_name,email,phone',
@@ -143,10 +145,10 @@ class BookingController extends Controller
                     'location:id,name',
                     'room:id,name',
                     'creator:id,first_name,last_name,email',
-                    'attractions:id,name',  // BelongsToMany - pivot data loaded automatically
+                    'attractions:id,name,price',  // BelongsToMany - pivot data loaded automatically
                     'addOns:id,name',       // BelongsToMany - pivot data loaded automatically
                     'customFieldResponses:id,respondable_type,respondable_id,label,value',
-                    'payments:id,payable_id,payable_type,status,method,card_last_four,card_type,paid_at',
+                    'payments:id,payable_id,payable_type,status,method,card_last_four,card_type,amount,currency,paid_at,created_at',
                 ]);
 
             $this->applyAuthScope($query, $request);
@@ -259,9 +261,9 @@ class BookingController extends Controller
                 'location:id,name',
                 'room:id,name',
                 'creator:id,first_name,last_name',
-                'attractions:id,name',
+                'attractions:id,name,price',
                 'addOns:id,name',
-                'payments:id,payable_id,payable_type,status,method,card_last_four,card_type,paid_at',
+                'payments:id,payable_id,payable_type,status,method,card_last_four,card_type,amount,currency,paid_at,created_at',
             ]);
 
         if ($request->has('search')) {
@@ -995,8 +997,9 @@ class BookingController extends Controller
                 'room:id,name',
                 'creator:id,first_name,last_name,email',
                 'checkedInByUser:id,first_name,last_name',
-                'attractions:id,name',  // BelongsToMany - pivot data loaded automatically
+                'attractions:id,name,price',  // BelongsToMany - pivot data loaded automatically
                 'addOns:id,name',       // BelongsToMany - pivot data loaded automatically
+                'payments:id,payable_id,payable_type,status,method,card_last_four,card_type,amount,currency,paid_at,created_at',
             ]);
 
         $this->applyAuthScope($query, $request);
@@ -2374,7 +2377,12 @@ class BookingController extends Controller
             'query' => 'required|string|max:255',
         ]);
 
-        $query = Booking::with(['customer', 'package', 'room']);
+        $query = Booking::with([
+            'customer',
+            'package',
+            'room',
+            'payments:id,payable_id,payable_type,status,method,card_last_four,card_type,amount,currency,paid_at,created_at',
+        ]);
 
         $this->applyBookingSearch($query, $validated['query']);
 

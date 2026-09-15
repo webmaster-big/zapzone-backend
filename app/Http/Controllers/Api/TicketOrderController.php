@@ -167,7 +167,7 @@ class TicketOrderController extends Controller
     {
         $query = TicketOrder::query()
             ->withoutHeavyColumns()
-            ->with(['location', 'customer', 'attractionPurchases.attraction', 'attractionPurchases.addOns', 'eventPurchases.event', 'eventPurchases.addOns', 'payments:id,payable_id,payable_type,status,method,card_last_four,card_type,paid_at']);
+            ->with(['location', 'customer', 'attractionPurchases.attraction', 'attractionPurchases.addOns', 'eventPurchases.event', 'eventPurchases.addOns', 'payments:id,payable_id,payable_type,status,method,card_last_four,card_type,amount,currency,paid_at,created_at']);
 
         $this->applyAuthScope($query, $request);
 
@@ -611,6 +611,19 @@ class TicketOrderController extends Controller
             'notes' => $order->notes,
             'confirmed_at' => $order->confirmed_at?->toIso8601String(),
             'created_at' => $order->created_at?->toIso8601String(),
+            'payments' => $order->relationLoaded('payments')
+                ? $order->payments->map(fn ($payment) => [
+                    'id' => $payment->id,
+                    'status' => $payment->status,
+                    'method' => $payment->method,
+                    'amount' => $payment->amount,
+                    'card_type' => $payment->card_type,
+                    'card_last_four' => $payment->card_last_four,
+                    'card_label' => $payment->card_label,
+                    'paid_at' => $payment->paid_at?->toIso8601String(),
+                    'created_at' => $payment->created_at?->toIso8601String(),
+                ])->values()
+                : [],
             'lines' => $order->lines()->map(function (array $line) {
                 $model = $line['model'];
 

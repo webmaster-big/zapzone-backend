@@ -200,7 +200,12 @@
                         {{ Str::limit($payment->notes ?? 'Payment', 28) }}
                     @endif
                 </td>
-                <td class="center">{{ ucfirst($payment->method) }}</td>
+                <td class="center">
+                    {{ ucfirst($payment->method) }}
+                    @if($payment->card_label)
+                        <div style="font-size: 7px; color: #6b7280;">{{ $payment->card_label }}</div>
+                    @endif
+                </td>
                 <td class="center"><span class="status status-{{ $payment->status }}">{{ $payment->status }}</span></td>
                 <td class="right">${{ number_format($payment->amount, 2) }}</td>
             </tr>

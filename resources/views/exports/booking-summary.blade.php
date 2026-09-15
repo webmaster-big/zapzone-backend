@@ -549,6 +549,13 @@
                             <span class="payment-label">Payment Method:</span>
                             <span class="payment-value">{{ ucfirst($booking->payment_method ?? 'N/A') }}</span>
                         </div>
+                        @php($summaryCard = \App\Support\CardBrand::fromPayments($booking->relationLoaded('payments') ? $booking->payments : collect()))
+                        @if($summaryCard)
+                        <div class="payment-row">
+                            <span class="payment-label">Card:</span>
+                            <span class="payment-value">{{ $summaryCard }}</span>
+                        </div>
+                        @endif
                         @php($summaryBalance = round(((float) $booking->total_amount) - ((float) ($booking->amount_paid ?? 0)), 2))
                         <div class="payment-row">
                             <span class="payment-label">Payment Status:</span>

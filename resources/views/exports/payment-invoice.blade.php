@@ -232,9 +232,19 @@
                             {{ $payable->package->name ?? 'Party Package' }}
                             <div class="item-desc">{{ $payable->booking_date ? $payable->booking_date->format('M j') : '' }}@if($payable->room) · {{ $payable->room->name }}@endif</div>
                         </td>
-                        <td class="right">1</td>
-                        <td class="right">${{ number_format($payable->package->price ?? 0, 2) }}</td>
-                        <td class="right">${{ number_format($payable->package->price ?? 0, 2) }}</td>
+@php
+    $invoiceParticipants = max(1, (int) ($payable->participants ?? 1));
+    $invoiceUnit = (float) ($payable->package_price_at_booking ?? $payable->package?->price ?? 0);
+    $invoicePerExtra = (float) ($payable->price_per_additional_at_booking ?? $payable->package?->price_per_additional ?? 0);
+    $invoicePricing = $payable->package_pricing_type_at_booking ?? $payable->package?->pricing_type ?? 'base';
+    $invoiceIncluded = max(1, (int) ($payable->package?->min_participants ?: 1));
+    $invoiceLineTotal = $invoicePricing === 'per_person'
+        ? $invoiceUnit * $invoiceParticipants
+        : $invoiceUnit + max(0, $invoiceParticipants - $invoiceIncluded) * $invoicePerExtra;
+@endphp
+                        <td class="right">{{ $invoicePricing === 'per_person' ? $invoiceParticipants : 1 }}</td>
+                        <td class="right">${{ number_format($invoicePricing === 'per_person' ? $invoiceUnit : $invoiceLineTotal, 2) }}</td>
+                        <td class="right">${{ number_format($invoiceLineTotal, 2) }}</td>
                     </tr>
                     @if($payable->addOns && $payable->addOns->count() > 0)
                         @foreach($payable->addOns as $addOn)
@@ -402,8 +412,8 @@
                             <div class="item-desc">{{ $payable->purchase_date ? $payable->purchase_date->format('M j, Y') : '' }}</div>
                         </td>
                         <td class="right">{{ $payable->quantity ?? 1 }}</td>
-                        <td class="right">${{ number_format(($payable->total_amount - ($payable->discount_amount ?? 0)) / max($payable->quantity ?? 1, 1), 2) }}</td>
-                        <td class="right">${{ number_format($payable->total_amount - ($payable->discount_amount ?? 0), 2) }}</td>
+                        <td class="right">${{ number_format(($payable->total_amount + ($payable->discount_amount ?? 0)) / max($payable->quantity ?? 1, 1), 2) }}</td>
+                        <td class="right">${{ number_format($payable->total_amount + ($payable->discount_amount ?? 0), 2) }}</td>
                     </tr>
                     @if($payable->addOns && $payable->addOns->count() > 0)
                         @foreach($payable->addOns as $addOn)

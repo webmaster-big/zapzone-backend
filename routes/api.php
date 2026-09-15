@@ -51,6 +51,7 @@ use App\Http\Controllers\Api\PhotoSettingController;
 use App\Http\Controllers\Api\SlideshowQueueController;
 use App\Http\Controllers\Api\PromoController;
 use App\Http\Controllers\Api\RoomController;
+use App\Http\Controllers\Api\ScheduleWindowController;
 use App\Http\Controllers\Api\RsvpController;
 use App\Http\Controllers\Api\SpecialPricingController;
 use App\Http\Controllers\Api\TicketOrderController;
@@ -407,6 +408,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('attraction-purchases/{id}/check-in', [AttractionPurchaseController::class, 'checkIn']);
     Route::post('attraction-purchases/bulk-delete', [AttractionPurchaseController::class, 'bulkDelete']);
     Route::post('attraction-purchases/{id}/restore', [AttractionPurchaseController::class, 'restore']);
+
+    Route::middleware('staff')->group(function () {
+        Route::get('schedule/day-window', [ScheduleWindowController::class, 'dayWindow']);
+    });
 
     Route::apiResource('rooms', RoomController::class)->only(['index', 'show']);
     Route::get('rooms/location/{locationId}', [RoomController::class, 'getByLocation']);

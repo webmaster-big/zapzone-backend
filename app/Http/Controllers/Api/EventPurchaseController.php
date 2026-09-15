@@ -42,7 +42,7 @@ class EventPurchaseController extends Controller
                 'customer:id,first_name,last_name,email,phone',
                 'location:id,name',
                 'addOns:id,name',
-                'payments:id,payable_id,payable_type,status,method,card_last_four,card_type,paid_at',
+                'payments:id,payable_id,payable_type,status,method,card_last_four,card_type,amount,currency,paid_at,created_at',
             ]);
 
             $this->applyAuthScope($query, $request);
@@ -1089,7 +1089,7 @@ class EventPurchaseController extends Controller
                 'customer:id,first_name,last_name,email,phone',
                 'location:id,name',
                 'addOns:id,name',
-                'payments:id,payable_id,payable_type,status,method,card_last_four,card_type,paid_at',
+                'payments:id,payable_id,payable_type,status,method,card_last_four,card_type,amount,currency,paid_at,created_at',
             ]);
 
         if ($request->has('customer_id')) {

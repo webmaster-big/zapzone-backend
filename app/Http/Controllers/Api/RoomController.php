@@ -29,7 +29,7 @@ class RoomController extends Controller
 
             if ($request->has('is_available')) {
                 $query->where('is_available', $request->boolean('is_available'));
-            } else {
+            } elseif (! $request->boolean('include_unavailable')) {
                 $query->available();
             }
 

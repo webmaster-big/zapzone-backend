@@ -41,7 +41,7 @@ class AttractionPurchaseController extends Controller
     public function index(Request $request): JsonResponse
     {
         try {
-            $query = AttractionPurchase::with(['attraction', 'customer', 'createdBy', 'addOns', 'payments:id,payable_id,payable_type,status,method,card_last_four,card_type,paid_at']);
+            $query = AttractionPurchase::with(['attraction', 'customer', 'createdBy', 'addOns', 'payments:id,payable_id,payable_type,status,method,card_last_four,card_type,amount,currency,paid_at,created_at']);
 
             $authUser = $this->resolveAuthUser($request);
             if ($authUser && in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
@@ -186,7 +186,7 @@ class AttractionPurchaseController extends Controller
                 'attraction.location:id,name',
                 'customer:id,first_name,last_name,email,phone',
                 'addOns:id,name',
-                'payments:id,payable_id,payable_type,status,method,card_last_four,card_type,paid_at',
+                'payments:id,payable_id,payable_type,status,method,card_last_four,card_type,amount,currency,paid_at,created_at',
             ]);
 
         if ($request->has('guest_email')) {
