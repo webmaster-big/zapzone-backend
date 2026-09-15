@@ -318,12 +318,19 @@ class BookingController extends Controller
                 $data[$key] = null;
             }
         }
+        if (isset($data['guest_email']) && trim((string) $data['guest_email']) === '') {
+            $data['guest_email'] = null;
+        }
         $request->merge($data);
+
+        $staffCreating = app(\App\Services\AddOnRuleService::class)->isStaff($request->user('sanctum'));
 
         $validated = $request->validate([
             'customer_id' => 'nullable|required_without:guest_name|exists:customers,id',
             'guest_name' => 'nullable|required_without:customer_id|string|max:255',
-            'guest_email' => 'nullable|required_with:guest_name|email|max:255',
+            'guest_email' => $staffCreating
+                ? 'nullable|email|max:255'
+                : 'nullable|required_with:guest_name|email|max:255',
             'guest_phone' => 'nullable|string|max:20',
             'guest_address' => 'nullable|string|max:255',
             'guest_city' => 'nullable|string|max:100',
@@ -466,16 +473,19 @@ class BookingController extends Controller
             ->where('booking_time', $validated['booking_time'])
             ->whereIn('status', ['pending', 'confirmed']);
 
+        $duplicateIdentifiable = true;
         if (!empty($validated['customer_id'])) {
             $duplicateQuery->where('customer_id', $validated['customer_id']);
+        } elseif (!empty($validated['guest_email'])) {
+            $duplicateQuery->where('guest_email', $validated['guest_email']);
         } else {
-            $duplicateQuery->where('guest_email', $validated['guest_email'] ?? null);
+            $duplicateIdentifiable = false;
         }
 
         $requestCarriesCode = !empty($validated['gift_card_code']) || !empty($validated['gift_card_id'])
             || !empty($validated['promo_code']) || !empty($validated['promo_id']);
 
-        $existingPending = $requestCarriesCode ? null : $duplicateQuery->first();
+        $existingPending = ($requestCarriesCode || !$duplicateIdentifiable) ? null : $duplicateQuery->first();
         if ($existingPending) {
             $existingPending->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
             Log::info('Duplicate booking prevented (existing pending found)', [
@@ -1174,7 +1184,7 @@ class BookingController extends Controller
 
     public function show(Request $request, Booking $booking): JsonResponse
     {
-        $booking->load(['customer', 'package', 'location', 'room', 'creator', 'giftCard', 'promo', 'attractions', 'addOns', 'payments', 'customFieldResponses']);
+        $booking->load(['customer', 'package', 'location', 'room', 'creator', 'giftCard', 'promo', 'attractions', 'addOns', 'payments:id,payable_id,payable_type,status,method,card_last_four,card_type,amount,currency,notes,paid_at,created_at', 'customFieldResponses']);
 
         if (!$this->authorizeRecordScope($booking)) {
             return response()->json([
