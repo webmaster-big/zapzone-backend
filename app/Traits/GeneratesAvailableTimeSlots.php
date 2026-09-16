@@ -172,7 +172,11 @@ trait GeneratesAvailableTimeSlots
     {
         $availableSlots = [];
 
-        $this->forgetSlotLookups();
+        // the caller owns the cache lifetime: a request generating several packages for one date
+        // shares these lookups, while the long-lived SSE loop clears them on every tick
+        if ($package->relationLoaded('rooms')) {
+            $this->slotLookupCache['package:' . $package->id] ??= $package;
+        }
 
         $locationId = $package->location_id;
 
@@ -286,11 +290,6 @@ trait GeneratesAvailableTimeSlots
         }
 
         return $availableSlots;
-    }
-
-    private function countAvailableRooms($packageId, $date, $startTime, $duration, $durationUnit)
-    {
-        return count($this->availableRoomIds($packageId, $date, $startTime, $duration, $durationUnit));
     }
 
     /** Every space that could take this slot, so the caller can honour the one a user picked. */

@@ -284,6 +284,8 @@ class PackageTimeSlotController extends Controller
                 $lastHash = '';
 
                 while (true) {
+                    // a live stream must re-read the day, and re-read the clock, on every tick
+                    $this->forgetSlotLookups();
                     $package->refresh();
                     $package->forgetResolvedSchedules();
 

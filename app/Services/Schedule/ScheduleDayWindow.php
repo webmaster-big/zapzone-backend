@@ -122,10 +122,10 @@ class ScheduleDayWindow
                 'location_id' => (int) $package->location_id,
                 'open_minutes' => $startMinutes,
                 'close_minutes' => $endMinutes,
-                'interval_minutes' => $this->packageInterval($package, $schedule),
+                'interval_minutes' => $this->packageInterval($schedule),
                 // the grids need this to tell whether a walk-in would actually fit before the
                 // next booking, rather than only whether this minute is free
-                'duration_minutes' => $this->durationMinutes($package),
+                'duration_minutes' => $this->getDurationInMinutes($package->duration, $package->duration_unit),
                 'start_minutes' => $this->offeredStartMinutes($package, $day),
                 'closed_ranges' => $packageClosedRanges,
                 'room_ids' => $package->rooms->pluck('id')->map(fn ($id) => (int) $id)->values()->all(),
@@ -238,17 +238,6 @@ class ScheduleDayWindow
         ];
     }
 
-    private function durationMinutes($package): int
-    {
-        $duration = (float) $package->duration;
-
-        if ($package->duration_unit === 'hours' || $package->duration_unit === 'hours and minutes') {
-            return (int) round($duration * 60);
-        }
-
-        return (int) round($duration);
-    }
-
     private function offeredStartMinutes($package, string $date): array
     {
         return collect($this->generateAvailableSlotsWithRooms($package, $date))
@@ -262,7 +251,7 @@ class ScheduleDayWindow
             ->all();
     }
 
-    private function packageInterval($package, $schedule): int
+    private function packageInterval($schedule): int
     {
         return max(1, (int) ($schedule->time_slot_interval ?: self::FALLBACK_INTERVAL));
     }
