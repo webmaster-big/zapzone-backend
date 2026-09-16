@@ -25,7 +25,8 @@ class ScheduleDayWindow
         $day = Carbon::parse($date)->toDateString();
 
         $packages = Package::query()
-            ->select(['id', 'location_id', 'name', 'duration', 'duration_unit', 'is_active'])
+            ->select(['id', 'location_id', 'name', 'duration', 'duration_unit', 'is_active',
+                'pricing_type', 'min_participants', 'max_participants', 'max_tickets_per_slot'])
             ->where('is_active', true)
             ->when($locationId !== null, fn ($q) => $q->where('location_id', $locationId))
             ->with([

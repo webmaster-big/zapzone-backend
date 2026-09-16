@@ -733,6 +733,21 @@ class ScheduleDayWindowTest extends TestCase
         $this->assertTrue($this->bookable($room, '17:30'), 'one hour plus a 30 min stagger');
     }
 
+    public function test_the_turnaround_holds_on_both_sides_of_an_existing_booking(): void
+    {
+        $room = $this->spacedRoom('Solo', 30);
+        $package = $this->package('Escape', '12:00', '22:00', [$room], 15);
+        $package->update(['duration' => 60, 'duration_unit' => 'minutes']);
+
+        $this->book($room, $package, '18:00', 60);
+
+        $this->assertFalse(
+            $this->bookable($room, '17:00'),
+            'a booking ending exactly when the next one starts leaves no turnaround'
+        );
+        $this->assertTrue($this->bookable($room, '16:30'), 'a full turnaround before it is fine');
+    }
+
     public function test_a_zero_stagger_lets_the_next_booking_start_when_the_last_ends(): void
     {
         $room = $this->spacedRoom('Back to back', 0);

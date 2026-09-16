@@ -382,9 +382,11 @@ trait GeneratesAvailableTimeSlots
             $existingDurationInMinutes = $this->getDurationInMinutes($slot->duration, $slot->duration_unit);
             $existingEnd = (clone $existingStart)->addMinutes($existingDurationInMinutes);
 
-            $existingEndWithBuffer = (clone $existingEnd)->addMinutes($this->turnaroundMinutes($roomId));
+            $turnaround = $this->turnaroundMinutes($roomId);
+            $existingEndWithBuffer = (clone $existingEnd)->addMinutes($turnaround);
+            $endWithBuffer = (clone $end)->addMinutes($turnaround);
 
-            if ($start->lt($existingEndWithBuffer) && $end->gt($existingStart)) {
+            if ($start->lt($existingEndWithBuffer) && $endWithBuffer->gt($existingStart)) {
                 return true;
             }
         }
