@@ -501,6 +501,36 @@ class BookingController extends Controller
             ], 200);
         }
 
+        if (!empty($validated['room_id'])) {
+            $slotConflicts = [];
+
+            if ($this->checkTimeSlotConflict((int) $validated['room_id'], $bookingDate, $bookingTime, $validated['duration'], $validated['duration_unit'])) {
+                $slotConflicts[] = 'another booking already occupies this space';
+            }
+
+            if ($this->checkBreakTimeConflict((int) $validated['room_id'], $bookingDate, $bookingTime, $validated['duration'], $validated['duration_unit'])) {
+                $slotConflicts[] = 'this time overlaps a scheduled break';
+            }
+
+            if (!empty($slotConflicts)) {
+                if ((string) config('booking_rules.slot_conflict', 'log') === 'enforce') {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'That space is not free then — '.implode(', ', $slotConflicts).'.',
+                    ], 422);
+                }
+
+                Log::warning('Booking store into an occupied slot (log-only)', [
+                    'room_id' => $validated['room_id'],
+                    'package_id' => $validated['package_id'] ?? null,
+                    'booking_date' => $bookingDate,
+                    'booking_time' => $bookingTime,
+                    'conflicts' => $slotConflicts,
+                    'staff' => $isStaff,
+                ]);
+            }
+        }
+
         if (!empty($validated['package_id']) && isset($bookedPackage) && $bookedPackage) {
             $players = (int) $validated['participants'];
             $label = strtolower($bookedPackage->participant_label ?: 'participant');

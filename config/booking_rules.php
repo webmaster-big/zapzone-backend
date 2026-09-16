@@ -9,6 +9,7 @@ return [
     'capacity' => env('BOOKING_RULES_CAPACITY', 'log'),
     'package_required' => env('BOOKING_RULES_PACKAGE_REQUIRED', 'log'),
     'csv_participants' => env('BOOKING_RULES_CSV_PARTICIPANTS', 'log'),
+    'slot_conflict' => env('BOOKING_RULES_SLOT_CONFLICT', 'log'),
 
     /*
      * Whether a booking change must carry a typed reason.
