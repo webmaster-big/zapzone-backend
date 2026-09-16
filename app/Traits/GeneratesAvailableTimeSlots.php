@@ -211,13 +211,17 @@ trait GeneratesAvailableTimeSlots
                 }
             }
 
-            $availableRoom = $this->findAvailableRoom(
+            $freeRoomIds = $this->availableRoomIds(
                 $package->id,
                 $date,
                 $currentTime->format('H:i'),
                 $duration,
                 $durationUnit
             );
+
+            $availableRoom = $freeRoomIds === []
+                ? null
+                : $package->rooms->firstWhere('id', $freeRoomIds[0]);
 
             if ($availableRoom) {
                 $availableSlots[] = [
@@ -227,13 +231,8 @@ trait GeneratesAvailableTimeSlots
                     'duration_unit' => $durationUnit,
                     'room_id' => $availableRoom->id,
                     'room_name' => $availableRoom->name,
-                    'available_rooms_count' => $this->countAvailableRooms(
-                        $package->id,
-                        $date,
-                        $currentTime->format('H:i'),
-                        $duration,
-                        $durationUnit
-                    ),
+                    'available_rooms_count' => count($freeRoomIds),
+                    'available_room_ids' => $freeRoomIds,
                     'total_rooms' => $totalRooms,
                     'remaining_tickets' => $remainingTickets,
                     'min_participants' => $minForDate,
@@ -248,6 +247,7 @@ trait GeneratesAvailableTimeSlots
                     'room_id' => null,
                     'room_name' => null,
                     'available_rooms_count' => 0,
+                    'available_room_ids' => [],
                     'total_rooms' => 0,
                     'remaining_tickets' => $remainingTickets,
                     'min_participants' => $minForDate,
@@ -320,17 +320,23 @@ trait GeneratesAvailableTimeSlots
 
     private function countAvailableRooms($packageId, $date, $startTime, $duration, $durationUnit)
     {
+        return count($this->availableRoomIds($packageId, $date, $startTime, $duration, $durationUnit));
+    }
+
+    /** Every space that could take this slot, so the caller can honour the one a user picked. */
+    private function availableRoomIds($packageId, $date, $startTime, $duration, $durationUnit): array
+    {
         $package = $this->cachedPackageWithRooms($packageId);
 
         if (!$package || $package->rooms->isEmpty()) {
-            return 0;
+            return [];
         }
 
         $durationInMinutes = $this->getDurationInMinutes($duration, $durationUnit);
         $slotStart = Carbon::parse($date . ' ' . $startTime);
         $slotEnd = (clone $slotStart)->addMinutes($durationInMinutes);
 
-        $count = 0;
+        $ids = [];
         foreach ($package->rooms as $room) {
             if (!$room->is_available) {
                 continue;
@@ -371,11 +377,11 @@ trait GeneratesAvailableTimeSlots
             );
 
             if (!$hasBookingConflict && !$hasBreakTimeConflict && !$hasStaggerConflict) {
-                $count++;
+                $ids[] = (int) $room->id;
             }
         }
 
-        return $count;
+        return $ids;
     }
 
     /**
