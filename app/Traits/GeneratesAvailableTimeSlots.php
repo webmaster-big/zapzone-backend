@@ -11,6 +11,101 @@ use Illuminate\Support\Facades\Log;
 
 trait GeneratesAvailableTimeSlots
 {
+    /** findAvailableRoom/countAvailableRooms run per slot; without this they re-query per slot. */
+    private array $slotLookupCache = [];
+
+    private function cachedPackageWithRooms($packageId): ?Package
+    {
+        $key = 'package:' . $packageId;
+
+        if (! array_key_exists($key, $this->slotLookupCache)) {
+            $this->slotLookupCache[$key] = Package::with('rooms')->find($packageId);
+        }
+
+        return $this->slotLookupCache[$key];
+    }
+
+    private function cachedRoom($roomId): ?Room
+    {
+        $key = 'room:' . $roomId;
+
+        if (! array_key_exists($key, $this->slotLookupCache)) {
+            $this->slotLookupCache[$key] = Room::find($roomId);
+        }
+
+        return $this->slotLookupCache[$key];
+    }
+
+    /** Every booked slot for a date, grouped by room — one query per generation pass. */
+    private function bookedSlotsForRoom($roomId, $date)
+    {
+        $key = 'booked:' . $date;
+
+        if (! array_key_exists($key, $this->slotLookupCache)) {
+            $this->slotLookupCache[$key] = PackageTimeSlot::whereDate('booked_date', $date)
+                ->where('status', 'booked')
+                ->get(['id', 'room_id', 'time_slot_start', 'duration', 'duration_unit'])
+                ->groupBy('room_id');
+        }
+
+        return $this->slotLookupCache[$key]->get($roomId, collect());
+    }
+
+    private function roomIdsSharingStagger($room)
+    {
+        $key = 'stagger:' . $room->location_id . ':' . ($room->area_group ?? '-');
+
+        if (! array_key_exists($key, $this->slotLookupCache)) {
+            $this->slotLookupCache[$key] = Room::where('location_id', $room->location_id)
+                ->when($room->area_group, fn ($q) => $q->where(function ($inner) use ($room) {
+                    $inner->where('area_group', $room->area_group)->orWhereNull('area_group');
+                }))
+                ->pluck('id')
+                ->all();
+        }
+
+        return $this->slotLookupCache[$key];
+    }
+
+    /** Every day-off for a location and date — one query instead of one per room per slot. */
+    private function dayOffsFor($locationId, $date)
+    {
+        $key = 'dayoffs:' . $locationId . ':' . $date;
+
+        if (! array_key_exists($key, $this->slotLookupCache)) {
+            $this->slotLookupCache[$key] = DayOff::where('location_id', $locationId)->forDate($date)->get();
+        }
+
+        return $this->slotLookupCache[$key];
+    }
+
+    private function roomBlockedByDayOff($locationId, $roomId, $date, string $slotStart, string $slotEnd): bool
+    {
+        foreach ($this->dayOffsFor($locationId, $date) as $dayOff) {
+            if ($dayOff->appliesToRoom((int) $roomId) && $dayOff->isTimeBlocked($slotStart, $slotEnd)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function packageBlockedByDayOff($locationId, $packageId, $date, string $slotStart, string $slotEnd): bool
+    {
+        foreach ($this->dayOffsFor($locationId, $date) as $dayOff) {
+            if ($dayOff->appliesToPackage((int) $packageId) && $dayOff->isTimeBlocked($slotStart, $slotEnd)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function forgetSlotLookups(): void
+    {
+        $this->slotLookupCache = [];
+    }
+
     private function getDurationInMinutes($duration, $durationUnit): int
     {
         $duration = (float) $duration;
@@ -30,6 +125,8 @@ trait GeneratesAvailableTimeSlots
     private function generateAvailableSlotsWithRooms($package, $date)
     {
         $availableSlots = [];
+
+        $this->forgetSlotLookups();
 
         $locationId = $package->location_id;
 
@@ -61,7 +158,7 @@ trait GeneratesAvailableTimeSlots
             $currentTime = Carbon::parse($date . ' ' . $timeSlot);
             $slotEndTime = (clone $currentTime)->addMinutes($slotDurationInMinutes);
 
-            $isPackageBlocked = DayOff::isTimeSlotBlockedForPackage(
+            $isPackageBlocked = $this->packageBlockedByDayOff(
                 $locationId,
                 $package->id,
                 $date,
@@ -139,7 +236,7 @@ trait GeneratesAvailableTimeSlots
 
     private function findAvailableRoom($packageId, $date, $startTime, $duration, $durationUnit)
     {
-        $package = Package::with('rooms')->find($packageId);
+        $package = $this->cachedPackageWithRooms($packageId);
 
         if (!$package || $package->rooms->isEmpty()) {
             return null;
@@ -154,7 +251,7 @@ trait GeneratesAvailableTimeSlots
                 continue;
             }
 
-            $isRoomBlocked = DayOff::isTimeSlotBlockedForRoom(
+            $isRoomBlocked = $this->roomBlockedByDayOff(
                 $package->location_id,
                 $room->id,
                 $date,
@@ -198,7 +295,7 @@ trait GeneratesAvailableTimeSlots
 
     private function countAvailableRooms($packageId, $date, $startTime, $duration, $durationUnit)
     {
-        $package = Package::with('rooms')->find($packageId);
+        $package = $this->cachedPackageWithRooms($packageId);
 
         if (!$package || $package->rooms->isEmpty()) {
             return 0;
@@ -214,7 +311,7 @@ trait GeneratesAvailableTimeSlots
                 continue;
             }
 
-            $isRoomBlocked = DayOff::isTimeSlotBlockedForRoom(
+            $isRoomBlocked = $this->roomBlockedByDayOff(
                 $package->location_id,
                 $room->id,
                 $date,
@@ -263,7 +360,7 @@ trait GeneratesAvailableTimeSlots
      */
     private function turnaroundMinutes($roomId): int
     {
-        $interval = (int) (Room::find($roomId)?->booking_interval ?? 0);
+        $interval = (int) ($this->cachedRoom($roomId)?->booking_interval ?? 0);
 
         return $interval > 0 ? $interval : $this->cleanupBufferMinutes();
     }
@@ -274,15 +371,8 @@ trait GeneratesAvailableTimeSlots
         $durationInMinutes = $this->getDurationInMinutes($duration, $durationUnit);
         $end = (clone $start)->addMinutes($durationInMinutes);
 
-        $query = PackageTimeSlot::where('room_id', $roomId)
-            ->whereDate('booked_date', $date)
-            ->where('status', 'booked');
-
-        if ($excludeId) {
-            $query->where('id', '!=', $excludeId);
-        }
-
-        $existingSlots = $query->get();
+        $existingSlots = $this->bookedSlotsForRoom($roomId, $date)
+            ->when($excludeId, fn ($rows) => $rows->where('id', '!=', $excludeId));
 
         foreach ($existingSlots as $slot) {
             $existingStart = Carbon::parse($date . ' ' . $slot->time_slot_start);
@@ -301,7 +391,7 @@ trait GeneratesAvailableTimeSlots
 
     private function checkBreakTimeConflict($roomId, $date, $startTime, $duration, $durationUnit)
     {
-        $room = Room::find($roomId);
+        $room = $this->cachedRoom($roomId);
 
         if (!$room || !$room->break_time || empty($room->break_time)) {
             return false;
@@ -347,7 +437,7 @@ trait GeneratesAvailableTimeSlots
 
     private function checkAreaGroupStaggerConflict($roomId, $date, $startTime, $excludeId = null)
     {
-        $room = Room::find($roomId);
+        $room = $this->cachedRoom($roomId);
 
         if (!$room) {
             return false;
@@ -361,29 +451,11 @@ trait GeneratesAvailableTimeSlots
 
         $bookingStart = Carbon::parse($date . ' ' . $startTime);
 
-        if ($room->area_group) {
-            $roomIdsToCheck = Room::where('location_id', $room->location_id)
-                ->where(function ($query) use ($room) {
-                    $query->where('area_group', $room->area_group)
-                          ->orWhereNull('area_group');
-                })
-                ->pluck('id')
-                ->toArray();
-        } else {
-            $roomIdsToCheck = Room::where('location_id', $room->location_id)
-                ->pluck('id')
-                ->toArray();
-        }
+        $roomIdsToCheck = $this->roomIdsSharingStagger($room);
 
-        $query = PackageTimeSlot::whereIn('room_id', $roomIdsToCheck)
-            ->whereDate('booked_date', $date)
-            ->where('status', 'booked');
-
-        if ($excludeId) {
-            $query->where('id', '!=', $excludeId);
-        }
-
-        $existingSlots = $query->get();
+        $existingSlots = collect($roomIdsToCheck)
+            ->flatMap(fn ($id) => $this->bookedSlotsForRoom($id, $date))
+            ->when($excludeId, fn ($rows) => $rows->where('id', '!=', $excludeId));
 
         foreach ($existingSlots as $slot) {
             $existingStart = Carbon::parse($date . ' ' . $slot->time_slot_start);
