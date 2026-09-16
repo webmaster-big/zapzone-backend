@@ -29,6 +29,7 @@ class MobileAvailabilityController extends Controller
                 'phone',
                 'email',
                 'timezone',
+                'logo_path',
             ]);
 
         return response()->json([
