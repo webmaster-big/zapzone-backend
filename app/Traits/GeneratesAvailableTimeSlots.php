@@ -142,6 +142,27 @@ trait GeneratesAvailableTimeSlots
         return (int) round($duration);
     }
 
+    /**
+     * "Now" where the venue actually is. Some locations store a Windows-style zone name such as
+     * "Eastern Standard Time", which is not a valid identifier, so fall back rather than throw.
+     */
+    private function locationNow($locationId): Carbon
+    {
+        $key = 'now:' . $locationId;
+
+        if (! array_key_exists($key, $this->slotLookupCache)) {
+            $zone = \App\Models\Location::find($locationId)?->timezone;
+
+            try {
+                $this->slotLookupCache[$key] = Carbon::now($zone ?: config('app.timezone'));
+            } catch (\Throwable $e) {
+                $this->slotLookupCache[$key] = Carbon::now(config('app.timezone'));
+            }
+        }
+
+        return $this->slotLookupCache[$key]->copy();
+    }
+
     private function cleanupBufferMinutes(): int
     {
         return max(0, (int) config('booking_rules.room_cleanup_minutes', 15));
@@ -179,9 +200,17 @@ trait GeneratesAvailableTimeSlots
         $minForDate = $package->effectiveMinParticipants($date);
         $exclusive = $package->isExclusiveOn($date);
 
+        $now = $this->locationNow($locationId);
+        $isToday = $now->toDateString() === Carbon::parse($date)->toDateString();
+
         foreach ($timeSlots as $timeSlot) {
             $currentTime = Carbon::parse($date . ' ' . $timeSlot);
             $slotEndTime = (clone $currentTime)->addMinutes($slotDurationInMinutes);
+
+            // a start that has already gone by is not bookable
+            if ($isToday && $currentTime->format('H:i') < $now->format('H:i')) {
+                continue;
+            }
 
             $isPackageBlocked = $this->packageBlockedByDayOff(
                 $locationId,
