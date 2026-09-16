@@ -168,7 +168,7 @@ trait GeneratesAvailableTimeSlots
         return max(0, (int) config('booking_rules.room_cleanup_minutes', 15));
     }
 
-    private function generateAvailableSlotsWithRooms($package, $date)
+    private function generateAvailableSlotsWithRooms($package, $date, bool $includePastStarts = false)
     {
         $availableSlots = [];
 
@@ -211,8 +211,11 @@ trait GeneratesAvailableTimeSlots
             $currentTime = Carbon::parse($date . ' ' . $timeSlot);
             $slotEndTime = (clone $currentTime)->addMinutes($slotDurationInMinutes);
 
-            // a start that has already gone by is not bookable
-            if ($isToday && $currentTime->format('H:i') < $now->format('H:i')) {
+            // a start that has already gone by is not bookable by a customer, but staff still need
+            // to see the day the package actually runs — and to record a group that arrived late
+            $isPastStart = $isToday && $currentTime->format('H:i') < $now->format('H:i');
+
+            if ($isPastStart && ! $includePastStarts) {
                 continue;
             }
 
@@ -270,6 +273,7 @@ trait GeneratesAvailableTimeSlots
                     'remaining_tickets' => $remainingTickets,
                     'min_participants' => $minForDate,
                     'exclusive' => $exclusive,
+                    'is_past' => $isPastStart,
                 ];
             } elseif ($totalRooms === 0) {
                 $availableSlots[] = [
@@ -285,6 +289,7 @@ trait GeneratesAvailableTimeSlots
                     'remaining_tickets' => $remainingTickets,
                     'min_participants' => $minForDate,
                     'exclusive' => $exclusive,
+                    'is_past' => $isPastStart,
                 ];
             }
         }

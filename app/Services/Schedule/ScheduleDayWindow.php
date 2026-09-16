@@ -116,6 +116,8 @@ class ScheduleDayWindow
                 continue;
             }
 
+            $offered = $this->offeredStartMinutes($package, $day);
+
             $packageWindows[] = [
                 'package_id' => (int) $package->id,
                 'name' => $package->name,
@@ -126,7 +128,9 @@ class ScheduleDayWindow
                 // the grids need this to tell whether a walk-in would actually fit before the
                 // next booking, rather than only whether this minute is free
                 'duration_minutes' => $this->getDurationInMinutes($package->duration, $package->duration_unit),
-                'start_minutes' => $this->offeredStartMinutes($package, $day),
+                'start_minutes' => $offered['all'],
+                // already gone by: staff still see them, but they are not offered as the next start
+                'past_start_minutes' => $offered['past'],
                 'closed_ranges' => $packageClosedRanges,
                 'room_ids' => $package->rooms->pluck('id')->map(fn ($id) => (int) $id)->values()->all(),
             ];
@@ -238,17 +242,25 @@ class ScheduleDayWindow
         ];
     }
 
+    /**
+     * The staff schedule shows the whole day the package runs, not only what is still to come —
+     * a grid that empties as the day goes on no longer matches the package's own configuration.
+     */
     private function offeredStartMinutes($package, string $date): array
     {
-        return collect($this->generateAvailableSlotsWithRooms($package, $date))
+        $slots = collect($this->generateAvailableSlotsWithRooms($package, $date, true))
             ->map(function ($slot) {
                 [$h, $m] = array_map('intval', explode(':', $slot['start_time']));
 
-                return $h * 60 + $m;
+                return ['minute' => $h * 60 + $m, 'past' => (bool) ($slot['is_past'] ?? false)];
             })
-            ->sort()
-            ->values()
-            ->all();
+            ->sortBy('minute')
+            ->values();
+
+        return [
+            'all' => $slots->pluck('minute')->all(),
+            'past' => $slots->where('past', true)->pluck('minute')->values()->all(),
+        ];
     }
 
     private function packageInterval($schedule): int
