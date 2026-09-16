@@ -27,78 +27,6 @@ trait GeneratesAvailableTimeSlots
         return max(0, (int) config('booking_rules.room_cleanup_minutes', 15));
     }
 
-    /**
-     * How long a space stays shut before it can take the next booking.
-     *
-     * With ONE space the room's booking_interval is what the admin form calls "minutes between
-     * bookings", so it is the gap after a booking — never less than the cleanup the conflict
-     * check enforces, or a slot would be offered and then refused. With several spaces the
-     * interval is a stagger between them and the old rule stands.
-     */
-    private function reopenCycle(int $slotDurationInMinutes, int $roomCount, int $stagger): int
-    {
-        if ($roomCount === 1) {
-            return $slotDurationInMinutes + max($stagger, $this->cleanupBufferMinutes());
-        }
-
-        return max($slotDurationInMinutes + $this->cleanupBufferMinutes(), $roomCount * $stagger);
-    }
-
-    private function roomDrivenTimeSlots($package, string $date, int $slotDurationInMinutes): ?array
-    {
-        if ((string) config('booking_rules.room_driven_slots', 'on') !== 'on') {
-            return null;
-        }
-
-        if ($slotDurationInMinutes <= 0) {
-            return null;
-        }
-
-        $rooms = $package->rooms->where('is_available', true)->values();
-
-        if ($rooms->isEmpty()) {
-            return null;
-        }
-
-        $intervals = $rooms->map(fn ($room) => (int) ($room->booking_interval ?? 0))->filter(fn ($minutes) => $minutes > 0);
-
-        if ($intervals->isEmpty()) {
-            return null;
-        }
-
-        $schedule = $package->scheduleForDate($date);
-
-        if (!$schedule) {
-            return null;
-        }
-
-        $stagger = (int) $intervals->min();
-        $windowStart = Carbon::parse($date . ' ' . $schedule->time_slot_start);
-        $windowEnd = Carbon::parse($date . ' ' . $schedule->time_slot_end);
-
-        if ($windowEnd->lte($windowStart)) {
-            $windowEnd->addDay();
-        }
-
-        $cycle = $this->reopenCycle($slotDurationInMinutes, $rooms->count(), $stagger);
-        $times = [];
-
-        foreach ($rooms as $index => $room) {
-            $cursor = (clone $windowStart)->addMinutes($index * $stagger);
-
-            while ((clone $cursor)->addMinutes($slotDurationInMinutes)->lte($windowEnd)) {
-                // key on minutes from the window start, not on H:i — a window that
-                // crosses midnight would otherwise sort 00:15 ahead of 18:00
-                $times[$windowStart->diffInMinutes($cursor, false)] = $cursor->format('H:i');
-                $cursor->addMinutes($cycle);
-            }
-        }
-
-        ksort($times);
-
-        return array_values(array_unique($times));
-    }
-
     private function generateAvailableSlotsWithRooms($package, $date)
     {
         $availableSlots = [];
@@ -106,13 +34,6 @@ trait GeneratesAvailableTimeSlots
         $locationId = $package->location_id;
 
         $timeSlots = $package->getTimeSlotsForDate($date);
-
-        $slotDurationForGrid = $this->getDurationInMinutes($package->duration, $package->duration_unit);
-        $roomDriven = $this->roomDrivenTimeSlots($package, $date, $slotDurationForGrid);
-
-        if ($roomDriven !== null) {
-            $timeSlots = $roomDriven;
-        }
 
         if (empty($timeSlots)) {
             Log::info('No time slots found for package', [
@@ -335,6 +256,18 @@ trait GeneratesAvailableTimeSlots
         return $count;
     }
 
+    /**
+     * How long this space stays shut after a booking ends. The Spaces form calls it
+     * "minutes between bookings"; it only ever applies once a booking exists, never to the
+     * list of start times on offer.
+     */
+    private function turnaroundMinutes($roomId): int
+    {
+        $interval = (int) (Room::find($roomId)?->booking_interval ?? 0);
+
+        return $interval > 0 ? $interval : $this->cleanupBufferMinutes();
+    }
+
     private function checkTimeSlotConflict($roomId, $date, $startTime, $duration, $durationUnit, $excludeId = null)
     {
         $start = Carbon::parse($date . ' ' . $startTime);
@@ -356,7 +289,7 @@ trait GeneratesAvailableTimeSlots
             $existingDurationInMinutes = $this->getDurationInMinutes($slot->duration, $slot->duration_unit);
             $existingEnd = (clone $existingStart)->addMinutes($existingDurationInMinutes);
 
-            $existingEndWithBuffer = (clone $existingEnd)->addMinutes($this->cleanupBufferMinutes());
+            $existingEndWithBuffer = (clone $existingEnd)->addMinutes($this->turnaroundMinutes($roomId));
 
             if ($start->lt($existingEndWithBuffer) && $end->gt($existingStart)) {
                 return true;

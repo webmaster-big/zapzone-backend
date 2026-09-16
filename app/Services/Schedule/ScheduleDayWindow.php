@@ -275,7 +275,6 @@ class ScheduleDayWindow
     private function packageStartMinutes($package, $schedule, int $windowOpen, int $windowClose): array
     {
         $duration = $this->durationMinutes($package);
-        $stagger = $this->spaceStagger($package);
 
         // A package that has spaces but none available offers nothing at all — findAvailableRoom
         // returns null for every slot and total_rooms > 0 skips the roomless fallback.
@@ -283,60 +282,24 @@ class ScheduleDayWindow
             return [];
         }
 
-        if ($duration <= 0 || $stagger === null) {
-            // the column is signed, and a non-positive step would loop forever
-            $interval = max(1, (int) ($schedule->time_slot_interval ?: self::FALLBACK_INTERVAL));
-            $starts = [];
-            for ($minute = $windowOpen; $minute < $windowClose; $minute += $interval) {
-                if ($duration > 0 && $minute + $duration > $windowClose) {
-                    break;
-                }
-                $starts[] = $minute;
-            }
-
-            return $starts;
-        }
-
-        $cleanup = max(0, (int) config('booking_rules.room_cleanup_minutes', 15));
-        $spaceCount = $package->rooms->where('is_available', true)->count();
-
-        // mirrors GeneratesAvailableTimeSlots::reopenCycle — one space means the interval is
-        // the gap between bookings, several means it is the stagger between them
-        $cycle = $spaceCount === 1
-            ? $duration + max($stagger, $cleanup)
-            : max($duration + $cleanup, $spaceCount * $stagger);
-
+        // The schedule interval decides which start times are offered. A space's booking_interval
+        // is its turnaround AFTER a booking and never thins this list.
+        $interval = max(1, (int) ($schedule->time_slot_interval ?: self::FALLBACK_INTERVAL));
         $starts = [];
-        for ($index = 0; $index < $spaceCount; $index++) {
-            for ($minute = $windowOpen + $index * $stagger; $minute + $duration <= $windowClose; $minute += $cycle) {
-                $starts[$minute] = true;
-            }
-        }
 
-        $starts = array_keys($starts);
-        sort($starts);
+        for ($minute = $windowOpen; $minute < $windowClose; $minute += $interval) {
+            if ($duration > 0 && $minute + $duration > $windowClose) {
+                break;
+            }
+            $starts[] = $minute;
+        }
 
         return $starts;
     }
 
-    private function spaceStagger($package): ?int
-    {
-        if ((string) config('booking_rules.room_driven_slots', 'on') !== 'on') {
-            return null;
-        }
-
-        $intervals = $package->rooms
-            ->where('is_available', true)
-            ->map(fn ($room) => (int) ($room->booking_interval ?? 0))
-            ->filter(fn ($minutes) => $minutes > 0);
-
-        return $intervals->isEmpty() ? null : (int) $intervals->min();
-    }
-
     private function packageInterval($package, $schedule): int
     {
-        return $this->spaceStagger($package)
-            ?? (int) ($schedule->time_slot_interval ?: self::FALLBACK_INTERVAL);
+        return max(1, (int) ($schedule->time_slot_interval ?: self::FALLBACK_INTERVAL));
     }
 
     private function normalizeWindow(?string $start, ?string $end): ?array
