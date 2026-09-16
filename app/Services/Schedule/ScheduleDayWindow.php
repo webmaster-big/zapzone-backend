@@ -5,10 +5,13 @@ namespace App\Services\Schedule;
 use App\Models\DayOff;
 use App\Models\Package;
 use App\Models\Room;
+use App\Traits\GeneratesAvailableTimeSlots;
 use Carbon\Carbon;
 
 class ScheduleDayWindow
 {
+    use GeneratesAvailableTimeSlots;
+
     public const MINUTES_PER_DAY = 1440;
 
     public const FALLBACK_OPEN = 600;
@@ -119,13 +122,7 @@ class ScheduleDayWindow
                 'open_minutes' => $startMinutes,
                 'close_minutes' => $endMinutes,
                 'interval_minutes' => $this->packageInterval($package, $schedule),
-                'start_minutes' => $this->bookableStarts(
-                    $this->packageStartMinutes($package, $schedule, $window[0], $window[1]),
-                    $this->durationMinutes($package),
-                    $startMinutes,
-                    $endMinutes,
-                    $packageClosedRanges
-                ),
+                'start_minutes' => $this->offeredStartMinutes($package, $day),
                 'closed_ranges' => $packageClosedRanges,
                 'room_ids' => $package->rooms->pluck('id')->map(fn ($id) => (int) $id)->values()->all(),
             ];
@@ -207,12 +204,11 @@ class ScheduleDayWindow
                 $closureReason ??= 'Closed';
             }
 
-            $roomInterval = (int) ($room->booking_interval ?? 0);
-
             $roomPayload[] = [
                 'room_id' => (int) $room->id,
                 'location_id' => (int) $room->location_id,
-                'interval_minutes' => $roomInterval > 0 ? $roomInterval : null,
+                // the space's turnaround; a deliberate 0 means no gap, so send it as 0, not null
+                'interval_minutes' => max(0, (int) $room->booking_interval),
                 'open_minutes' => $roomClosedAllDay ? ($window['open_minutes'] ?? null) : $roomOpen,
                 'close_minutes' => $roomClosedAllDay ? ($window['close_minutes'] ?? null) : $roomClose,
                 'closed_all_day' => (bool) $roomClosedAllDay,
@@ -238,63 +234,17 @@ class ScheduleDayWindow
         ];
     }
 
-    private function bookableStarts(array $starts, int $duration, int $openMinutes, int $closeMinutes, array $closedRanges): array
+    private function offeredStartMinutes($package, string $date): array
     {
-        $span = max($duration, 1);
+        return collect($this->generateAvailableSlotsWithRooms($package, $date))
+            ->map(function ($slot) {
+                [$h, $m] = array_map('intval', explode(':', $slot['start_time']));
 
-        return array_values(array_filter($starts, function ($minute) use ($span, $duration, $openMinutes, $closeMinutes, $closedRanges) {
-            if ($minute < $openMinutes || $minute >= $closeMinutes) {
-                return false;
-            }
-
-            if ($duration > 0 && $minute + $duration > $closeMinutes) {
-                return false;
-            }
-
-            foreach ($closedRanges as $range) {
-                if ($minute < $range['end_minutes'] && $minute + $span > $range['start_minutes']) {
-                    return false;
-                }
-            }
-
-            return true;
-        }));
-    }
-
-    private function durationMinutes($package): int
-    {
-        $duration = (float) $package->duration;
-
-        if ($package->duration_unit === 'hours' || $package->duration_unit === 'hours and minutes') {
-            return (int) round($duration * 60);
-        }
-
-        return (int) round($duration);
-    }
-
-    private function packageStartMinutes($package, $schedule, int $windowOpen, int $windowClose): array
-    {
-        $duration = $this->durationMinutes($package);
-
-        // A package that has spaces but none available offers nothing at all — findAvailableRoom
-        // returns null for every slot and total_rooms > 0 skips the roomless fallback.
-        if ($package->rooms->isNotEmpty() && $package->rooms->where('is_available', true)->isEmpty()) {
-            return [];
-        }
-
-        // The schedule interval decides which start times are offered. A space's booking_interval
-        // is its turnaround AFTER a booking and never thins this list.
-        $interval = max(1, (int) ($schedule->time_slot_interval ?: self::FALLBACK_INTERVAL));
-        $starts = [];
-
-        for ($minute = $windowOpen; $minute < $windowClose; $minute += $interval) {
-            if ($duration > 0 && $minute + $duration > $windowClose) {
-                break;
-            }
-            $starts[] = $minute;
-        }
-
-        return $starts;
+                return $h * 60 + $m;
+            })
+            ->sort()
+            ->values()
+            ->all();
     }
 
     private function packageInterval($package, $schedule): int
