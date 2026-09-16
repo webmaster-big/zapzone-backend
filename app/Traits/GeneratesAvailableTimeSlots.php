@@ -446,7 +446,7 @@ trait GeneratesAvailableTimeSlots
             return false;
         }
 
-        $bookingInterval = $room->booking_interval ?? 15; // Default 15 minutes
+        $bookingInterval = $this->turnaroundMinutes($roomId);
 
         if ($bookingInterval <= 0) {
             return false; // No stagger interval configured
