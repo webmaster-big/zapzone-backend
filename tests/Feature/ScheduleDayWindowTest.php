@@ -551,9 +551,23 @@ class ScheduleDayWindowTest extends TestCase
 
     private function book(Room $room, Package $package, string $start, int $minutes): void
     {
+        // package_time_slots.booking_id is NOT NULL, so the slot needs a booking to hang off
+        $booking = \App\Models\Booking::create([
+            'reference_number' => 'TEST-' . $room->id . '-' . str_replace(':', '', $start),
+            'booking_date' => self::SUNDAY,
+            'location_id' => $this->location->id,
+            'package_id' => $package->id,
+            'room_id' => $room->id,
+            'booking_time' => $start,
+            'duration' => $minutes,
+            'duration_unit' => 'minutes',
+            'status' => 'confirmed',
+        ]);
+
         \App\Models\PackageTimeSlot::create([
             'package_id' => $package->id,
             'room_id' => $room->id,
+            'booking_id' => $booking->id,
             'booked_date' => self::SUNDAY,
             'time_slot_start' => $start,
             'duration' => $minutes,

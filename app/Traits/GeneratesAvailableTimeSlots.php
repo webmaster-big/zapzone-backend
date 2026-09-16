@@ -51,6 +51,29 @@ trait GeneratesAvailableTimeSlots
         return $this->slotLookupCache[$key]->get($roomId, collect());
     }
 
+    /**
+     * The staggering time for an AREA. area_group and booking_interval both live on the room, and
+     * a group's stagger is kept by writing the same value to every room in it — but nothing
+     * enforces that, so take the strictest. Reading one room's value instead would make the same
+     * pair of bookings legal or illegal depending only on which room you booked into.
+     */
+    private function areaStaggerMinutes($room): int
+    {
+        if (! $room->area_group) {
+            return $this->turnaroundMinutes($room->id);
+        }
+
+        $key = 'areastagger:' . $room->location_id . ':' . $room->area_group;
+
+        if (! array_key_exists($key, $this->slotLookupCache)) {
+            $this->slotLookupCache[$key] = (int) Room::where('location_id', $room->location_id)
+                ->where('area_group', $room->area_group)
+                ->max('booking_interval');
+        }
+
+        return max(0, $this->slotLookupCache[$key]);
+    }
+
     private function roomIdsSharingStagger($room)
     {
         if (! $room->area_group) {
@@ -448,7 +471,7 @@ trait GeneratesAvailableTimeSlots
             return false;
         }
 
-        $bookingInterval = $this->turnaroundMinutes($roomId);
+        $bookingInterval = $this->areaStaggerMinutes($room);
 
         if ($bookingInterval <= 0) {
             return false; // No stagger interval configured
