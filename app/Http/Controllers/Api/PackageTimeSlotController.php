@@ -284,6 +284,9 @@ class PackageTimeSlotController extends Controller
                 $lastHash = '';
 
                 while (true) {
+                    $package->refresh();
+                    $package->forgetResolvedSchedules();
+
                     $availableSlots = $this->generateAvailableSlotsWithRooms(
                         $package,
                         $date

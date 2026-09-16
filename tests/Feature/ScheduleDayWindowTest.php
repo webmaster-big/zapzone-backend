@@ -536,4 +536,188 @@ class ScheduleDayWindowTest extends TestCase
 
         $this->assertSame(15, $this->window()['interval_minutes']);
     }
+
+    private function spacedRoom(string $name, int $bookingInterval): Room
+    {
+        return Room::create([
+            'location_id' => $this->location->id,
+            'name' => $name,
+            'capacity' => 20,
+            'is_available' => true,
+            'booking_interval' => $bookingInterval,
+        ]);
+    }
+
+    private function startsFor(Package $package): array
+    {
+        return collect($this->window()['packages'])->firstWhere('package_id', $package->id)['start_minutes'];
+    }
+
+    public function test_a_single_space_interval_moves_the_start_grid(): void
+    {
+        $fifteen = $this->package('Quarter hour', '12:00', '18:00', [$this->spacedRoom('Space A', 15)]);
+        $thirty = $this->package('Half hour', '12:00', '18:00', [$this->spacedRoom('Space B', 30)]);
+
+        $this->assertSame([12 * 60, 14 * 60 + 15], $this->startsFor($fifteen));
+        $this->assertSame([12 * 60, 14 * 60 + 30], $this->startsFor($thirty));
+        $this->assertNotSame(
+            $this->startsFor($fifteen),
+            $this->startsFor($thirty),
+            'one space must still honour its booking interval'
+        );
+    }
+
+    public function test_every_start_lands_on_the_space_interval_grid(): void
+    {
+        $package = $this->package('Half hour', '12:00', '18:00', [$this->spacedRoom('Space A', 30)]);
+
+        foreach ($this->startsFor($package) as $start) {
+            $this->assertSame(0, ($start - 12 * 60) % 30, "start {$start} is off the 30 minute grid");
+        }
+    }
+
+    public function test_a_start_never_reopens_before_the_package_has_finished(): void
+    {
+        $package = $this->package('Half hour', '12:00', '18:00', [$this->spacedRoom('Space A', 30)]);
+        $starts = $this->startsFor($package);
+
+        for ($i = 1; $i < count($starts); $i++) {
+            $this->assertGreaterThanOrEqual(
+                120 + 15,
+                $starts[$i] - $starts[$i - 1],
+                'a single space cannot reopen before duration plus cleanup'
+            );
+        }
+    }
+
+    /**
+     * The reported bug: the Spaces form calls this field "minutes between bookings", so with one
+     * space the gap after a booking must be exactly what the admin typed — whatever the duration.
+     */
+    public function test_one_space_puts_exactly_the_typed_gap_between_bookings(): void
+    {
+        foreach ([[120, 30], [75, 30], [45, 20], [60, 45], [50, 30]] as $i => [$duration, $interval]) {
+            $package = $this->package("Gap {$i}", '10:00', '22:00', [$this->spacedRoom("Space {$i}", $interval)]);
+            $package->update(['duration' => $duration, 'duration_unit' => 'minutes']);
+
+            $starts = $this->startsFor($package);
+
+            $this->assertGreaterThan(1, count($starts), "expected several starts for {$duration}m/{$interval}m");
+            $this->assertSame(
+                $interval,
+                $starts[1] - $starts[0] - $duration,
+                "a {$duration} min package on a {$interval} min space must leave a {$interval} min gap"
+            );
+        }
+    }
+
+    public function test_the_gap_never_drops_below_the_cleanup_the_conflict_check_enforces(): void
+    {
+        $package = $this->package('Tiny gap', '10:00', '22:00', [$this->spacedRoom('Space A', 5)]);
+
+        $starts = $this->startsFor($package);
+
+        $this->assertSame(
+            15,
+            $starts[1] - $starts[0] - 120,
+            'a 5 min interval must still honour the 15 min cleanup, or the slot is offered then refused'
+        );
+    }
+
+    public function test_the_package_interval_is_the_space_stagger_not_the_schedule(): void
+    {
+        $package = $this->package('Half hour', '12:00', '18:00', [$this->spacedRoom('Space A', 30)], 15);
+
+        $entry = collect($this->window()['packages'])->firstWhere('package_id', $package->id);
+
+        $this->assertSame(30, $entry['interval_minutes']);
+    }
+
+    public function test_a_package_with_no_space_keeps_the_schedule_interval_grid(): void
+    {
+        $package = $this->package('Roomless', '12:00', '18:00', [], 60);
+
+        $entry = collect($this->window()['packages'])->firstWhere('package_id', $package->id);
+
+        $this->assertSame(60, $entry['interval_minutes']);
+        $this->assertSame(
+            [12 * 60, 13 * 60, 14 * 60, 15 * 60, 16 * 60],
+            $entry['start_minutes'],
+            'without spaces the schedule interval still rules, and a start must fit before closing'
+        );
+    }
+
+    public function test_a_package_day_off_removes_the_starts_it_covers(): void
+    {
+        $package = $this->package('All day', '10:00', '22:00', [$this->spacedRoom('Space A', 30)]);
+
+        $before = $this->startsFor($package);
+
+        DayOff::create([
+            'location_id' => $this->location->id,
+            'date' => self::SUNDAY,
+            'time_start' => '13:00',
+            'time_end' => '15:00',
+            'reason' => 'Private hire',
+            'is_recurring' => false,
+            'package_ids' => [$package->id],
+        ]);
+
+        $after = $this->startsFor($package);
+
+        $this->assertNotEmpty($after);
+        $this->assertLessThan(count($before), count($after));
+
+        foreach ($after as $start) {
+            $this->assertFalse(
+                $start < 15 * 60 && $start + 120 > 13 * 60,
+                "start {$start} overlaps the 13:00-15:00 closure"
+            );
+        }
+    }
+
+    public function test_an_early_close_drops_a_start_that_would_run_past_closing(): void
+    {
+        $package = $this->package('All day', '10:00', '22:00', [$this->spacedRoom('Space A', 30)]);
+
+        DayOff::create([
+            'location_id' => $this->location->id,
+            'date' => self::SUNDAY,
+            'time_start' => '16:00',
+            'reason' => 'Closing early',
+            'is_recurring' => false,
+            'package_ids' => [$package->id],
+        ]);
+
+        foreach ($this->startsFor($package) as $start) {
+            $this->assertLessThanOrEqual(
+                16 * 60,
+                $start + 120,
+                "start {$start} would still be running at the 16:00 close"
+            );
+        }
+    }
+
+    public function test_a_package_whose_only_space_is_unavailable_offers_no_starts(): void
+    {
+        $package = $this->package('Closed space', '12:00', '18:00', [$this->room('Space A', false)], 60);
+
+        $entry = collect($this->window()['packages'])->firstWhere('package_id', $package->id);
+
+        $this->assertSame(
+            [],
+            $entry['start_minutes'],
+            'the booking page offers nothing when no space is available, so neither may the grid'
+        );
+    }
+
+    public function test_each_space_publishes_its_own_booking_interval(): void
+    {
+        $this->package('Half hour', '12:00', '18:00', [$this->spacedRoom('Space A', 30)]);
+
+        $rooms = collect($this->window()['rooms'])->keyBy('room_id');
+        $space = $rooms->first();
+
+        $this->assertSame(30, $space['interval_minutes']);
+    }
 }

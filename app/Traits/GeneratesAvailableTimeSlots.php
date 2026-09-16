@@ -27,6 +27,23 @@ trait GeneratesAvailableTimeSlots
         return max(0, (int) config('booking_rules.room_cleanup_minutes', 15));
     }
 
+    /**
+     * How long a space stays shut before it can take the next booking.
+     *
+     * With ONE space the room's booking_interval is what the admin form calls "minutes between
+     * bookings", so it is the gap after a booking — never less than the cleanup the conflict
+     * check enforces, or a slot would be offered and then refused. With several spaces the
+     * interval is a stagger between them and the old rule stands.
+     */
+    private function reopenCycle(int $slotDurationInMinutes, int $roomCount, int $stagger): int
+    {
+        if ($roomCount === 1) {
+            return $slotDurationInMinutes + max($stagger, $this->cleanupBufferMinutes());
+        }
+
+        return max($slotDurationInMinutes + $this->cleanupBufferMinutes(), $roomCount * $stagger);
+    }
+
     private function roomDrivenTimeSlots($package, string $date, int $slotDurationInMinutes): ?array
     {
         if ((string) config('booking_rules.room_driven_slots', 'on') !== 'on') {
@@ -63,7 +80,7 @@ trait GeneratesAvailableTimeSlots
             $windowEnd->addDay();
         }
 
-        $cycle = max($slotDurationInMinutes + $this->cleanupBufferMinutes(), $rooms->count() * $stagger);
+        $cycle = $this->reopenCycle($slotDurationInMinutes, $rooms->count(), $stagger);
         $times = [];
 
         foreach ($rooms as $index => $room) {
