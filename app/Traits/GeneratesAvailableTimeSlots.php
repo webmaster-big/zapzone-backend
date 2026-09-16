@@ -11,7 +11,7 @@ use Illuminate\Support\Facades\Log;
 
 trait GeneratesAvailableTimeSlots
 {
-    /** findAvailableRoom/countAvailableRooms run per slot; without this they re-query per slot. */
+    /** availableRoomIds runs per slot; without this it would re-query the same rows per slot. */
     private array $slotLookupCache = [];
 
     private function cachedPackageWithRooms($packageId): ?Package
@@ -257,65 +257,6 @@ trait GeneratesAvailableTimeSlots
         }
 
         return $availableSlots;
-    }
-
-    private function findAvailableRoom($packageId, $date, $startTime, $duration, $durationUnit)
-    {
-        $package = $this->cachedPackageWithRooms($packageId);
-
-        if (!$package || $package->rooms->isEmpty()) {
-            return null;
-        }
-
-        $durationInMinutes = $this->getDurationInMinutes($duration, $durationUnit);
-        $slotStart = Carbon::parse($date . ' ' . $startTime);
-        $slotEnd = (clone $slotStart)->addMinutes($durationInMinutes);
-
-        foreach ($package->rooms as $room) {
-            if (!$room->is_available) {
-                continue;
-            }
-
-            $isRoomBlocked = $this->roomBlockedByDayOff(
-                $package->location_id,
-                $room->id,
-                $date,
-                $startTime,
-                $slotEnd->format('H:i')
-            );
-
-            if ($isRoomBlocked) {
-                continue; // Skip this room
-            }
-
-            $hasBookingConflict = $this->checkTimeSlotConflict(
-                $room->id,
-                $date,
-                $startTime,
-                $duration,
-                $durationUnit
-            );
-
-            $hasBreakTimeConflict = $this->checkBreakTimeConflict(
-                $room->id,
-                $date,
-                $startTime,
-                $duration,
-                $durationUnit
-            );
-
-            $hasStaggerConflict = $this->checkAreaGroupStaggerConflict(
-                $room->id,
-                $date,
-                $startTime
-            );
-
-            if (!$hasBookingConflict && !$hasBreakTimeConflict && !$hasStaggerConflict) {
-                return $room;
-            }
-        }
-
-        return null;
     }
 
     private function countAvailableRooms($packageId, $date, $startTime, $duration, $durationUnit)
