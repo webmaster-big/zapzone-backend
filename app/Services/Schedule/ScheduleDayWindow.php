@@ -123,6 +123,9 @@ class ScheduleDayWindow
                 'open_minutes' => $startMinutes,
                 'close_minutes' => $endMinutes,
                 'interval_minutes' => $this->packageInterval($package, $schedule),
+                // the grids need this to tell whether a walk-in would actually fit before the
+                // next booking, rather than only whether this minute is free
+                'duration_minutes' => $this->durationMinutes($package),
                 'start_minutes' => $this->offeredStartMinutes($package, $day),
                 'closed_ranges' => $packageClosedRanges,
                 'room_ids' => $package->rooms->pluck('id')->map(fn ($id) => (int) $id)->values()->all(),
@@ -233,6 +236,17 @@ class ScheduleDayWindow
             'rooms' => $roomPayload,
             'packages' => $packageWindows,
         ];
+    }
+
+    private function durationMinutes($package): int
+    {
+        $duration = (float) $package->duration;
+
+        if ($package->duration_unit === 'hours' || $package->duration_unit === 'hours and minutes') {
+            return (int) round($duration * 60);
+        }
+
+        return (int) round($duration);
     }
 
     private function offeredStartMinutes($package, string $date): array
