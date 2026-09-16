@@ -537,6 +537,44 @@ class ScheduleDayWindowTest extends TestCase
         $this->assertSame(15, $this->window()['interval_minutes']);
     }
 
+    private function groupedRoom(string $name, int $bookingInterval, string $areaGroup): Room
+    {
+        return Room::create([
+            'location_id' => $this->location->id,
+            'name' => $name,
+            'capacity' => 20,
+            'is_available' => true,
+            'booking_interval' => $bookingInterval,
+            'area_group' => $areaGroup,
+        ]);
+    }
+
+    private function book(Room $room, Package $package, string $start, int $minutes): void
+    {
+        \App\Models\PackageTimeSlot::create([
+            'package_id' => $package->id,
+            'room_id' => $room->id,
+            'booked_date' => self::SUNDAY,
+            'time_slot_start' => $start,
+            'duration' => $minutes,
+            'duration_unit' => 'minutes',
+            'status' => 'booked',
+        ]);
+    }
+
+    /** Runs the real availability rules for one space at one minute. */
+    private function bookable(Room $room, string $start): bool
+    {
+        $probe = new class { use \App\Traits\GeneratesAvailableTimeSlots;
+            public function check($roomId, $date, $start, $minutes): bool {
+                return ! $this->checkTimeSlotConflict($roomId, $date, $start, $minutes, 'minutes')
+                    && ! $this->checkAreaGroupStaggerConflict($roomId, $date, $start);
+            }
+        };
+
+        return $probe->check($room->id, self::SUNDAY, $start, 60);
+    }
+
     private function spacedRoom(string $name, int $bookingInterval): Room
     {
         return Room::create([
@@ -675,6 +713,68 @@ class ScheduleDayWindowTest extends TestCase
             [],
             $entry['start_minutes'],
             'the booking page offers nothing when no space is available, so neither may the grid'
+        );
+    }
+
+    /**
+     * The client's staggering rules, as worked examples. The package interval generates the
+     * list; the stagger only spaces bookings apart once one exists.
+     */
+    public function test_one_space_reopens_a_stagger_after_the_booking_ends(): void
+    {
+        $room = $this->spacedRoom('Solo', 30);
+        $package = $this->package('Escape', '16:00', '21:00', [$room], 15);
+        $package->update(['duration' => 60, 'duration_unit' => 'minutes']);
+
+        $this->book($room, $package, '16:00', 60);
+
+        $this->assertFalse($this->bookable($room, '17:00'), 'still turning over');
+        $this->assertFalse($this->bookable($room, '17:15'), 'still turning over');
+        $this->assertTrue($this->bookable($room, '17:30'), 'one hour plus a 30 min stagger');
+    }
+
+    public function test_a_zero_stagger_lets_the_next_booking_start_when_the_last_ends(): void
+    {
+        $room = $this->spacedRoom('Back to back', 0);
+        $package = $this->package('Escape', '16:00', '21:00', [$room], 15);
+        $package->update(['duration' => 60, 'duration_unit' => 'minutes']);
+
+        $this->book($room, $package, '16:00', 60);
+
+        $this->assertFalse($this->bookable($room, '16:45'));
+        $this->assertTrue($this->bookable($room, '17:00'), 'zero stagger means no gap at all');
+    }
+
+    public function test_a_stagger_walks_bookings_across_the_rooms_of_an_area(): void
+    {
+        $a = $this->groupedRoom('Room A', 15, 'Zone');
+        $b = $this->groupedRoom('Room B', 15, 'Zone');
+        $c = $this->groupedRoom('Room C', 15, 'Zone');
+        $package = $this->package('Escape', '16:00', '21:00', [$a, $b, $c], 15);
+        $package->update(['duration' => 60, 'duration_unit' => 'minutes']);
+
+        $this->book($a, $package, '16:00', 60);
+
+        $this->assertFalse($this->bookable($b, '16:05'), 'inside the 15 min stagger');
+        $this->assertTrue($this->bookable($b, '16:15'), 'one stagger after room A');
+
+        $this->book($b, $package, '16:15', 60);
+
+        $this->assertTrue($this->bookable($c, '16:30'), 'one stagger after room B');
+    }
+
+    public function test_a_space_with_no_area_group_is_staggered_only_against_itself(): void
+    {
+        $grouped = $this->groupedRoom('Party Table', 15, 'Tables');
+        $solo = $this->spacedRoom('Escape Room', 15);
+        $package = $this->package('Escape', '16:00', '21:00', [$solo], 15);
+        $other = $this->package('Party', '16:00', '21:00', [$grouped], 15);
+
+        $this->book($grouped, $other, '16:00', 60);
+
+        $this->assertTrue(
+            $this->bookable($solo, '16:05'),
+            'a space in no area must not be staggered against unrelated rooms'
         );
     }
 

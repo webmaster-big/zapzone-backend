@@ -53,13 +53,15 @@ trait GeneratesAvailableTimeSlots
 
     private function roomIdsSharingStagger($room)
     {
-        $key = 'stagger:' . $room->location_id . ':' . ($room->area_group ?? '-');
+        if (! $room->area_group) {
+            return [(int) $room->id];
+        }
+
+        $key = 'stagger:' . $room->location_id . ':' . $room->area_group;
 
         if (! array_key_exists($key, $this->slotLookupCache)) {
             $this->slotLookupCache[$key] = Room::where('location_id', $room->location_id)
-                ->when($room->area_group, fn ($q) => $q->where(function ($inner) use ($room) {
-                    $inner->where('area_group', $room->area_group)->orWhereNull('area_group');
-                }))
+                ->where('area_group', $room->area_group)
                 ->pluck('id')
                 ->all();
         }
@@ -360,9 +362,10 @@ trait GeneratesAvailableTimeSlots
      */
     private function turnaroundMinutes($roomId): int
     {
-        $interval = (int) ($this->cachedRoom($roomId)?->booking_interval ?? 0);
+        $room = $this->cachedRoom($roomId);
 
-        return $interval > 0 ? $interval : $this->cleanupBufferMinutes();
+        // the column is NOT NULL with a default, so a zero is a deliberate "no gap"
+        return $room === null ? $this->cleanupBufferMinutes() : max(0, (int) $room->booking_interval);
     }
 
     private function checkTimeSlotConflict($roomId, $date, $startTime, $duration, $durationUnit, $excludeId = null)
