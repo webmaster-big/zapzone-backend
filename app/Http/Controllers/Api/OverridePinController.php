@@ -9,6 +9,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Validation\Rule;
 
@@ -182,6 +183,34 @@ class OverridePinController extends Controller
         }
 
         return (int) ($payload['approver_id'] ?? 0) ?: null;
+    }
+
+    /**
+     * Whether anyone could approve an overlap at this venue. Refusing a booking when nobody holds a
+     * PIN would strand the desk with no way through, so enforcement waits for the first PIN.
+     */
+    public static function locationHasApprover(int $locationId): bool
+    {
+        // this runs on the booking-creation path, so it must never be the thing that breaks a save.
+        // Before the migration lands there is no column to read, and the honest answer is "nobody
+        // can approve yet" — which leaves overlaps logged rather than refused.
+        try {
+            return User::query()
+                ->whereIn('role', self::APPROVER_ROLES)
+                ->whereNotNull('override_pin')
+                ->where(function ($query) use ($locationId) {
+                    $query->whereIn('role', ['company_admin', 'admin'])
+                        ->orWhere('location_id', $locationId);
+                })
+                ->exists();
+        } catch (\Throwable $e) {
+            Log::warning('Could not check for an override PIN holder; treating the venue as having none', [
+                'location_id' => $locationId,
+                'error' => $e->getMessage(),
+            ]);
+
+            return false;
+        }
     }
 
     private function findApprover(string $pin, int $locationId): ?User

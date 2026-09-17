@@ -37,7 +37,14 @@ class ScheduleDayWindow
 
         $rooms = Room::query()
             ->when($locationId !== null, fn ($q) => $q->where('location_id', $locationId))
-            ->get(['id', 'location_id', 'name', 'is_available', 'booking_interval']);
+            ->get(['id', 'location_id', 'name', 'is_available', 'booking_interval', 'area_group']);
+
+        // spaces in one area group start apart from each other by the strictest interval in the
+        // group, which is the rule the server enforces on save
+        $areaStagger = $rooms
+            ->filter(fn ($room) => (string) $room->area_group !== '')
+            ->groupBy(fn ($room) => $room->location_id . '|' . $room->area_group)
+            ->map(fn ($group) => (int) $group->max('booking_interval'));
 
         $locationClosed = $locationId !== null && DayOff::isDateBlocked($locationId, $day);
 
@@ -217,6 +224,10 @@ class ScheduleDayWindow
                 'location_id' => (int) $room->location_id,
                 // the space's turnaround; a deliberate 0 means no gap, so send it as 0, not null
                 'interval_minutes' => max(0, (int) $room->booking_interval),
+                'area_group' => (string) $room->area_group !== '' ? $room->area_group : null,
+                'stagger_minutes' => (string) $room->area_group !== ''
+                    ? max(0, (int) ($areaStagger[$room->location_id . '|' . $room->area_group] ?? 0))
+                    : 0,
                 'open_minutes' => $roomClosedAllDay ? ($window['open_minutes'] ?? null) : $roomOpen,
                 'close_minutes' => $roomClosedAllDay ? ($window['close_minutes'] ?? null) : $roomClose,
                 'closed_all_day' => (bool) $roomClosedAllDay,

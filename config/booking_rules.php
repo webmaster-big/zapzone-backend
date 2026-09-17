@@ -8,7 +8,12 @@ return [
     'capacity' => env('BOOKING_RULES_CAPACITY', 'log'),
     'package_required' => env('BOOKING_RULES_PACKAGE_REQUIRED', 'log'),
     'csv_participants' => env('BOOKING_RULES_CSV_PARTICIPANTS', 'log'),
-    'slot_conflict' => env('BOOKING_RULES_SLOT_CONFLICT', 'log'),
+    /*
+     * 'enforce' refuses a booking that overlaps another, unless a manager approves it with their
+     * override PIN. A venue where no manager holds a PIN yet is warned in the log and allowed
+     * through, so turning this on cannot strand a front desk.
+     */
+    'slot_conflict' => env('BOOKING_RULES_SLOT_CONFLICT', 'enforce'),
 
     /*
      * Whether a booking change must carry a typed reason.

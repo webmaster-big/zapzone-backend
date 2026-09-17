@@ -533,6 +533,12 @@ class BookingController extends Controller
                 $slotConflicts[] = 'this time overlaps a scheduled break';
             }
 
+            // spaces in one area group start apart from each other, so staff can run them; the
+            // availability list already respects this, but a walk-in at an off-grid minute does not
+            if ($this->checkAreaGroupStaggerConflict((int) $validated['room_id'], $bookingDate, $bookingTime)) {
+                $slotConflicts[] = 'another space in the same area starts too close to this time';
+            }
+
             if (!empty($slotConflicts)) {
                 // a manager's PIN, proved by a short-lived token, is what lets an overlap through
                 $overlapApprovedBy = \App\Http\Controllers\Api\OverridePinController::approverFromToken(
@@ -540,7 +546,21 @@ class BookingController extends Controller
                     $bookingLocationId
                 );
 
-                if (! $overlapApprovedBy && (string) config('booking_rules.slot_conflict', 'log') === 'enforce') {
+                $enforcing = (string) config('booking_rules.slot_conflict', 'log') === 'enforce';
+                // never refuse a booking nobody at this venue can approve
+                $approvable = $enforcing && \App\Http\Controllers\Api\OverridePinController::locationHasApprover($bookingLocationId);
+
+                if (! $overlapApprovedBy && $enforcing && ! $approvable) {
+                    Log::warning('Overlap allowed through: no manager at this location holds an override PIN', [
+                        'location_id' => $bookingLocationId,
+                        'room_id' => $validated['room_id'],
+                        'booking_date' => $bookingDate,
+                        'booking_time' => $bookingTime,
+                        'conflicts' => $slotConflicts,
+                    ]);
+                }
+
+                if (! $overlapApprovedBy && $approvable) {
                     return response()->json([
                         'success' => false,
                         'message' => 'That space is not free then — '.implode(', ', $slotConflicts).'. A manager can approve it with their override PIN.',
