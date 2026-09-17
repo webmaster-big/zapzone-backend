@@ -38,6 +38,8 @@ class User extends Authenticatable
     protected $hidden = [
         'password',
         'remember_token',
+        // the override PIN is a credential: it must never reach a response
+        'override_pin',
     ];
 
     protected function casts(): array
@@ -45,6 +47,7 @@ class User extends Authenticatable
         return [
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
+            'override_pin_set_at' => 'datetime',
             'assigned_areas' => 'array',
             'hire_date' => 'date',
             'last_login' => 'datetime',

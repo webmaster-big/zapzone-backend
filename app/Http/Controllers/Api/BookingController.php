@@ -367,6 +367,7 @@ class BookingController extends Controller
             'booking_time' => 'required|date_format:H:i',
             'participants' => 'required|integer|min:1',
             'duration' => 'required|numeric|min:0.01',
+            'overlap_override_token' => 'nullable|string',
             'duration_unit' => ['required', Rule::in(['hours', 'minutes', 'hours and minutes'])],
             'total_amount' => 'required|numeric|min:0',
             'amount_paid' => 'numeric|min:0',
@@ -447,6 +448,24 @@ class BookingController extends Controller
                 ]);
                 $validated['location_id'] = $bookedPackage->location_id;
             }
+
+            // a booking lasts as long as its package says it does — staff choose the package, never
+            // the length, so a submitted duration is only ever a mirror of the package's own
+            if ($bookedPackage) {
+                $submittedMinutes = $this->getDurationInMinutes($validated['duration'], $validated['duration_unit']);
+                $packageMinutes = $this->getDurationInMinutes($bookedPackage->duration, $bookedPackage->duration_unit);
+
+                if ($packageMinutes > 0 && $submittedMinutes !== $packageMinutes) {
+                    Log::warning('Booking duration did not match the package; corrected to the package duration', [
+                        'package_id' => $bookedPackage->id,
+                        'submitted' => $validated['duration'] . ' ' . $validated['duration_unit'],
+                        'package' => $bookedPackage->duration . ' ' . $bookedPackage->duration_unit,
+                    ]);
+
+                    $validated['duration'] = $bookedPackage->duration;
+                    $validated['duration_unit'] = $bookedPackage->duration_unit;
+                }
+            }
         }
 
         $bookingDate = Carbon::parse($validated['booking_date'])->toDateString();
@@ -501,6 +520,8 @@ class BookingController extends Controller
             ], 200);
         }
 
+        $overlapOverride = [];
+
         if (!empty($validated['room_id'])) {
             $slotConflicts = [];
 
@@ -513,21 +534,53 @@ class BookingController extends Controller
             }
 
             if (!empty($slotConflicts)) {
-                if ((string) config('booking_rules.slot_conflict', 'log') === 'enforce') {
+                // a manager's PIN, proved by a short-lived token, is what lets an overlap through
+                $overlapApprovedBy = \App\Http\Controllers\Api\OverridePinController::approverFromToken(
+                    $validated['overlap_override_token'] ?? null,
+                    $bookingLocationId
+                );
+
+                if (! $overlapApprovedBy && (string) config('booking_rules.slot_conflict', 'log') === 'enforce') {
                     return response()->json([
                         'success' => false,
-                        'message' => 'That space is not free then — '.implode(', ', $slotConflicts).'.',
-                    ], 422);
+                        'message' => 'That space is not free then — '.implode(', ', $slotConflicts).'. A manager can approve it with their override PIN.',
+                        'requires_override' => true,
+                        'conflicts' => $slotConflicts,
+                    ], 409);
                 }
 
-                Log::warning('Booking store into an occupied slot (log-only)', [
-                    'room_id' => $validated['room_id'],
-                    'package_id' => $validated['package_id'] ?? null,
-                    'booking_date' => $bookingDate,
-                    'booking_time' => $bookingTime,
-                    'conflicts' => $slotConflicts,
-                    'staff' => $isStaff,
-                ]);
+                if ($overlapApprovedBy) {
+                    $overlapOverride = [
+                        'overlap_override_by' => $overlapApprovedBy,
+                        'overlap_override_at' => now(),
+                        'overlap_override_reason' => implode(', ', $slotConflicts),
+                    ];
+
+                    ActivityLog::log(
+                        'booking_overlap_override',
+                        'bookings',
+                        'An overlapping booking was saved with a manager override: '.implode(', ', $slotConflicts),
+                        auth()->id(),
+                        $bookingLocationId,
+                        'room',
+                        (int) $validated['room_id'],
+                        [
+                            'approved_by_user_id' => $overlapApprovedBy,
+                            'booking_date' => $bookingDate,
+                            'booking_time' => $bookingTime,
+                            'conflicts' => $slotConflicts,
+                        ]
+                    );
+                } else {
+                    Log::warning('Booking store into an occupied slot (log-only)', [
+                        'room_id' => $validated['room_id'],
+                        'package_id' => $validated['package_id'] ?? null,
+                        'booking_date' => $bookingDate,
+                        'booking_time' => $bookingTime,
+                        'conflicts' => $slotConflicts,
+                        'staff' => $isStaff,
+                    ]);
+                }
             }
         }
 
@@ -712,7 +765,10 @@ class BookingController extends Controller
                 $validated['package_pricing_type_at_booking'] = $capPackage->pricing_type;
             }
 
-            $created = Booking::create($validated);
+            // the token is proof of approval, never a stored column
+            unset($validated['overlap_override_token']);
+
+            $created = Booking::create($validated + $overlapOverride);
 
             if ($giftCardRedeemed > 0 && $appliedGiftCardId) {
                 $discounts->recordRedemptionForPayable((int) $appliedGiftCardId, $giftCardRedeemed, \App\Models\Payment::TYPE_BOOKING, (int) $created->id);
@@ -1620,11 +1676,11 @@ class BookingController extends Controller
 
         $newAddons = [];
         if (isset($validated['additional_addons'])) {
-            $newAddons = $booking->addOns()->with('addOn')->get()->map(fn($a) => [
-                'addon_id' => $a->add_on_id,
-                'name' => $a->addOn->name ?? 'N/A',
-                'quantity' => $a->quantity,
-                'price' => $a->price_at_booking,
+            $newAddons = $booking->addOns()->get()->map(fn($a) => [
+                'addon_id' => $a->id,
+                'name' => $a->name ?? 'N/A',
+                'quantity' => $a->pivot->quantity,
+                'price' => $a->pivot->price_at_booking,
             ])->toArray();
             if ($originalAddons !== $newAddons) {
                 $changes['addons'] = [
@@ -1636,11 +1692,11 @@ class BookingController extends Controller
 
         $newAttractions = [];
         if (isset($validated['additional_attractions'])) {
-            $newAttractions = $booking->attractions()->with('attraction')->get()->map(fn($a) => [
-                'attraction_id' => $a->attraction_id,
-                'name' => $a->attraction->name ?? 'N/A',
-                'quantity' => $a->quantity,
-                'price' => $a->price_at_booking,
+            $newAttractions = $booking->attractions()->get()->map(fn($a) => [
+                'attraction_id' => $a->id,
+                'name' => $a->name ?? 'N/A',
+                'quantity' => $a->pivot->quantity,
+                'price' => $a->pivot->price_at_booking,
             ])->toArray();
             if ($originalAttractions !== $newAttractions) {
                 $changes['attractions'] = [

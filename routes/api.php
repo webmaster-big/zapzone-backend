@@ -246,6 +246,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::middleware('staff')->group(function () {
         Route::get('targeting-options', [\App\Http\Controllers\Api\TargetingOptionController::class, 'index']);
 
+        // A manager's PIN approves a booking that overlaps something already in the space. Any
+        // staff member may ASK (they are standing at the desk with the manager); only a manager's
+        // PIN will actually mint a token, and only a manager can set one.
+        Route::get('override-pin', [\App\Http\Controllers\Api\OverridePinController::class, 'show']);
+        Route::post('override-pin', [\App\Http\Controllers\Api\OverridePinController::class, 'store']);
+        Route::post('override-pin/verify', [\App\Http\Controllers\Api\OverridePinController::class, 'verify']);
+
         Route::get('custom-fields', [\App\Http\Controllers\Api\CustomFieldController::class, 'index']);
         Route::get('custom-fields/{customField}', [\App\Http\Controllers\Api\CustomFieldController::class, 'show']);
     });

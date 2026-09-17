@@ -15,6 +15,10 @@ class Booking extends Model
     use HasFactory, SoftDeletes;
 
     protected $fillable = [
+        // who approved saving this on top of a conflict, and what the conflict was
+        'overlap_override_by',
+        'overlap_override_at',
+        'overlap_override_reason',
         'reference_number',
         'qr_code_path',
         'customer_id',
@@ -67,6 +71,7 @@ class Booking extends Model
     ];
 
     protected $casts = [
+        'overlap_override_at' => 'datetime',
         'booking_date' => 'date',
         'booking_time' => 'datetime:H:i',
         'total_amount' => 'decimal:2',
