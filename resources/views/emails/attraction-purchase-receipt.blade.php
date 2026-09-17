@@ -457,7 +457,7 @@
                                                         <table width="100%" cellpadding="0" cellspacing="0" border="0">
                                                             <tr>
                                                                 <td style="font-weight: 500; color: #6b7280; width: 140px;">Duration:</td>
-                                                                <td style="color: #111827;">{{ $purchase->attraction->duration }} {{ $purchase->attraction->duration_unit }}</td>
+                                                                <td style="color: #111827;">{{ \App\Support\DurationLabel::make($purchase->attraction->duration, $purchase->attraction->duration_unit) }}</td>
                                                             </tr>
                                                         </table>
                                                     </td>

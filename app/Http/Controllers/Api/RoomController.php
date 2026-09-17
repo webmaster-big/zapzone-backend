@@ -195,7 +195,7 @@ class RoomController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => "Booking interval updated for {$updatedCount} rooms in area group '{$areaGroup}'",
+            'message' => "Turnaround updated for {$updatedCount} space" . ($updatedCount === 1 ? '' : 's') . " in the {$areaGroup} area",
             'data' => ['updated_count' => $updatedCount],
         ]);
     }
