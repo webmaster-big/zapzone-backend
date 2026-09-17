@@ -658,7 +658,7 @@ class BookingController extends Controller
 
         try {
             $serverExpectedTotal = $serverExpectedTotal ?? null;
-            $booking = DB::transaction(function () use (&$validated, $discountItems, $request, $discounts, $customFieldAnswers, $rules, $isStaff, $addOnLines, $attractionLines, $serverExpectedTotal) {
+            $booking = DB::transaction(function () use (&$validated, $discountItems, $request, $discounts, $customFieldAnswers, $rules, $isStaff, $addOnLines, $attractionLines, $serverExpectedTotal, $overlapOverride) {
             $capPackage = null;
 
             if (!empty($validated['package_id'])) {
