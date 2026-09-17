@@ -41,6 +41,13 @@ class ScheduleDayWindow
 
         // spaces in one area group start apart from each other by the strictest interval in the
         // group, which is the rule the server enforces on save
+        // A package with no space attached but a space of the same name at the same venue is the same
+        // thing entered twice — an escape room whose package was never linked to its room. Treat them
+        // as one so the schedule shows a single column, and so a booking made from it carries the room.
+        $roomIdByName = $rooms->mapWithKeys(fn ($room) => [
+            $room->location_id . '|' . mb_strtolower(trim((string) $room->name)) => (int) $room->id,
+        ]);
+
         $areaStagger = $rooms
             ->filter(fn ($room) => (string) $room->area_group !== '')
             ->groupBy(fn ($room) => $room->location_id . '|' . $room->area_group)
@@ -123,6 +130,15 @@ class ScheduleDayWindow
                 continue;
             }
 
+            $packageRooms = $package->rooms;
+
+            if ($packageRooms->isEmpty()) {
+                $matchedId = $roomIdByName->get($package->location_id . '|' . mb_strtolower(trim((string) $package->name)));
+                if ($matchedId !== null) {
+                    $packageRooms = $rooms->where('id', $matchedId)->values();
+                }
+            }
+
             $offered = $this->offeredStartMinutes($package, $day);
 
             $packageWindows[] = [
@@ -139,7 +155,7 @@ class ScheduleDayWindow
                 // already gone by: staff still see them, but they are not offered as the next start
                 'past_start_minutes' => $offered['past'],
                 'closed_ranges' => $packageClosedRanges,
-                'room_ids' => $package->rooms->pluck('id')->map(fn ($id) => (int) $id)->values()->all(),
+                'room_ids' => $packageRooms->pluck('id')->map(fn ($id) => (int) $id)->values()->all(),
             ];
 
             $open = $open === null ? $startMinutes : min($open, $startMinutes);
@@ -150,7 +166,7 @@ class ScheduleDayWindow
                 $interval = $interval === null ? $scheduleInterval : min($interval, $scheduleInterval);
             }
 
-            foreach ($package->rooms as $room) {
+            foreach ($packageRooms as $room) {
                 $roomId = (int) $room->id;
                 $existing = $roomWindows[$roomId] ?? null;
                 $roomWindows[$roomId] = [
