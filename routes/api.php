@@ -534,8 +534,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('location-change-requests', [LocationChangeRequestController::class, 'index']);
     Route::patch('location-change-requests/{locationChangeRequest}/approve', [LocationChangeRequestController::class, 'approve']);
     Route::patch('location-change-requests/{locationChangeRequest}/reject', [LocationChangeRequestController::class, 'reject']);
-    Route::get('bookings/{booking}/summary', [BookingController::class, 'summary']);
-    Route::get('bookings/{booking}/summary/view', [BookingController::class, 'summaryView']);
+    // these PDFs print bookings.internal_notes, which is desk commentary the guest must never read.
+    // auth:sanctum alone lets a CUSTOMER token through, and the id is unvalidated.
+    Route::get('bookings/{booking}/summary', [BookingController::class, 'summary'])->middleware('staff');
+    Route::get('bookings/{booking}/summary/view', [BookingController::class, 'summaryView'])->middleware('staff');
 
     Route::get('bookings/{booking}/invitations', [BookingInvitationController::class, 'index']);
     Route::post('bookings/{booking}/invitations', [BookingInvitationController::class, 'store']);
@@ -557,8 +559,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('payments/{payment}/void', [PaymentController::class, 'voidTransaction'])->middleware('staff');
     Route::patch('payments/{payment}/restore', [PaymentController::class, 'restore'])->middleware('staff:company_admin|admin|location_manager');
     Route::delete('payments/{payment}/force-delete', [PaymentController::class, 'forceDelete'])->middleware('staff:company_admin|admin|location_manager');
-    Route::get('payments/{payment}/invoice', [PaymentController::class, 'invoice']);
-    Route::get('payments/{payment}/invoice/view', [PaymentController::class, 'invoiceView']);
+    // the booking branch of this invoice prints internal_notes too
+    Route::get('payments/{payment}/invoice', [PaymentController::class, 'invoice'])->middleware('staff');
+    Route::get('payments/{payment}/invoice/view', [PaymentController::class, 'invoiceView'])->middleware('staff');
 
 
     Route::apiResource('activity-logs', ActivityLogController::class)->only(['index', 'store', 'show']);
