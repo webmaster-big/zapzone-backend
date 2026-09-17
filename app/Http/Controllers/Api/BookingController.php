@@ -533,13 +533,24 @@ class BookingController extends Controller
                 $slotConflicts[] = 'this time overlaps a scheduled break';
             }
 
-            // spaces in one area group start apart from each other, so staff can run them; the
-            // availability list already respects this, but a walk-in at an off-grid minute does not
+            // Spaces in one area group start apart from each other so staff can run them. This is a
+            // comfort rule, not a double booking: at a ten-table venue one party at 3pm would block
+            // every table for a quarter of an hour, which would make walk-ins nearly impossible. So
+            // it is recorded and shown, never refused — the schedules warn before staff even click.
             if ($this->checkAreaGroupStaggerConflict((int) $validated['room_id'], $bookingDate, $bookingTime)) {
-                $slotConflicts[] = 'another space in the same area starts too close to this time';
+                Log::info('Booking starts close to another space in the same area', [
+                    'room_id' => $validated['room_id'],
+                    'location_id' => $bookingLocationId,
+                    'booking_date' => $bookingDate,
+                    'booking_time' => $bookingTime,
+                ]);
             }
 
-            if (!empty($slotConflicts)) {
+            // a booking being written down after the fact describes what already happened; refusing
+            // it for clashing with the live schedule would make history unrecordable
+            $recordingThePast = Carbon::parse($bookingDate)->lt(Carbon::today());
+
+            if (!empty($slotConflicts) && ! $recordingThePast) {
                 // a manager's PIN, proved by a short-lived token, is what lets an overlap through
                 $overlapApprovedBy = \App\Http\Controllers\Api\OverridePinController::approverFromToken(
                     $validated['overlap_override_token'] ?? null,
