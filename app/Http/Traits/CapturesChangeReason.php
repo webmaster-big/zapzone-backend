@@ -62,7 +62,7 @@ trait CapturesChangeReason
         }
 
         if ($policy === 'all') {
-            return true;
+            return $sensitivity !== self::CHANGE_INTERNAL;
         }
 
         return $sensitivity === self::CHANGE_GUEST_VISIBLE;

@@ -1661,80 +1661,88 @@ class BookingController extends Controller
             $this->sendNotificationEmail($booking, 'updated');
         }
 
-        $changes = [];
-        foreach ($validated as $field => $newValue) {
-            if (in_array($field, ['additional_attractions', 'additional_addons', 'send_notification'])) {
-                continue; // Handle separately
+        try {
+            $changes = [];
+            foreach ($validated as $field => $newValue) {
+                if (in_array($field, ['additional_attractions', 'additional_addons', 'send_notification'])) {
+                    continue; // Handle separately
+                }
+                $oldValue = $originalValues[$field] ?? null;
+                if ($oldValue !== $newValue) {
+                    $changes[$field] = in_array($field, self::REDACTED_CHANGE_FIELDS, true)
+                        ? self::redactedChange($oldValue, $newValue)
+                        : ['from' => $oldValue, 'to' => $newValue];
+                }
             }
-            $oldValue = $originalValues[$field] ?? null;
-            if ($oldValue !== $newValue) {
-                $changes[$field] = in_array($field, self::REDACTED_CHANGE_FIELDS, true)
-                    ? self::redactedChange($oldValue, $newValue)
-                    : ['from' => $oldValue, 'to' => $newValue];
+
+            $newAddons = [];
+            if (isset($validated['additional_addons'])) {
+                $newAddons = $booking->addOns()->get()->map(fn($a) => [
+                    'addon_id' => $a->id,
+                    'name' => $a->name ?? 'N/A',
+                    'quantity' => $a->pivot->quantity,
+                    'price' => $a->pivot->price_at_booking,
+                ])->toArray();
+                if ($originalAddons !== $newAddons) {
+                    $changes['addons'] = [
+                        'from' => $originalAddons,
+                        'to' => $newAddons,
+                    ];
+                }
             }
-        }
 
-        $newAddons = [];
-        if (isset($validated['additional_addons'])) {
-            $newAddons = $booking->addOns()->get()->map(fn($a) => [
-                'addon_id' => $a->id,
-                'name' => $a->name ?? 'N/A',
-                'quantity' => $a->pivot->quantity,
-                'price' => $a->pivot->price_at_booking,
-            ])->toArray();
-            if ($originalAddons !== $newAddons) {
-                $changes['addons'] = [
-                    'from' => $originalAddons,
-                    'to' => $newAddons,
-                ];
+            $newAttractions = [];
+            if (isset($validated['additional_attractions'])) {
+                $newAttractions = $booking->attractions()->get()->map(fn($a) => [
+                    'attraction_id' => $a->id,
+                    'name' => $a->name ?? 'N/A',
+                    'quantity' => $a->pivot->quantity,
+                    'price' => $a->pivot->price_at_booking,
+                ])->toArray();
+                if ($originalAttractions !== $newAttractions) {
+                    $changes['attractions'] = [
+                        'from' => $originalAttractions,
+                        'to' => $newAttractions,
+                    ];
+                }
             }
-        }
 
-        $newAttractions = [];
-        if (isset($validated['additional_attractions'])) {
-            $newAttractions = $booking->attractions()->get()->map(fn($a) => [
-                'attraction_id' => $a->id,
-                'name' => $a->name ?? 'N/A',
-                'quantity' => $a->pivot->quantity,
-                'price' => $a->pivot->price_at_booking,
-            ])->toArray();
-            if ($originalAttractions !== $newAttractions) {
-                $changes['attractions'] = [
-                    'from' => $originalAttractions,
-                    'to' => $newAttractions,
-                ];
-            }
-        }
+            $customerName = $booking->customer ? "{$booking->customer->first_name} {$booking->customer->last_name}" : $booking->guest_name;
+            $changedFieldsList = array_keys($changes);
+            $changesSummary = count($changedFieldsList) > 0 ? implode(', ', $changedFieldsList) : 'no fields';
 
-        $customerName = $booking->customer ? "{$booking->customer->first_name} {$booking->customer->last_name}" : $booking->guest_name;
-        $changedFieldsList = array_keys($changes);
-        $changesSummary = count($changedFieldsList) > 0 ? implode(', ', $changedFieldsList) : 'no fields';
-
-        ActivityLog::log(
-            action: 'Booking Edited',
-            category: 'update',
-            description: "Booking {$booking->reference_number} edited for {$customerName}. Changed: {$changesSummary}",
-            userId: auth()->id(),
-            locationId: $booking->location_id,
-            entityType: 'booking',
-            entityId: $booking->id,
-            metadata: [
+            ActivityLog::log(
+                action: 'Booking Edited',
+                category: 'update',
+                description: "Booking {$booking->reference_number} edited for {$customerName}. Changed: {$changesSummary}",
+                userId: auth()->id(),
+                locationId: $booking->location_id,
+                entityType: 'booking',
+                entityId: $booking->id,
+                metadata: [
+                    'reference_number' => $booking->reference_number,
+                    'customer_name' => $customerName,
+                    'customer_id' => $booking->customer_id,
+                    'updated_by' => auth()->user() ? auth()->user()->name ?? auth()->user()->email : 'System',
+                    'updated_at' => now()->toIso8601String(),
+                    'changes' => $changes,
+                    'updated_fields' => $changedFieldsList,
+                    'booking_date' => $booking->booking_date,
+                    'booking_time' => $booking->booking_time,
+                    'total_amount' => $booking->total_amount,
+                    'amount_paid' => $booking->amount_paid,
+                    'status' => $booking->status,
+                    'payment_status' => $booking->payment_status,
+                ],
+                reason: $changeReason,
+            );
+        } catch (\Throwable $e) {
+            Log::error('Booking update saved but its change log could not be written', [
+                'booking_id' => $booking->id,
                 'reference_number' => $booking->reference_number,
-                'customer_name' => $customerName,
-                'customer_id' => $booking->customer_id,
-                'updated_by' => auth()->user() ? auth()->user()->name ?? auth()->user()->email : 'System',
-                'updated_at' => now()->toIso8601String(),
-                'changes' => $changes,
-                'updated_fields' => $changedFieldsList,
-                'booking_date' => $booking->booking_date,
-                'booking_time' => $booking->booking_time,
-                'total_amount' => $booking->total_amount,
-                'amount_paid' => $booking->amount_paid,
-                'status' => $booking->status,
-                'payment_status' => $booking->payment_status,
-            ],
-            reason: $changeReason,
-        );
+                'error' => $e->getMessage(),
+            ]);
+        }
 
         try {
             $gcalService = new GoogleCalendarService($booking->location_id);
@@ -2320,7 +2328,7 @@ class BookingController extends Controller
             'payment_status' => ['required', Rule::in(['paid', 'partial'])],
         ]);
 
-        $changeReason = $this->resolveChangeReason($request, self::CHANGE_INTERNAL);
+        $changeReason = $this->resolveChangeReason($request, self::CHANGE_GUEST_VISIBLE);
 
         $previousStatus = $booking->payment_status;
 

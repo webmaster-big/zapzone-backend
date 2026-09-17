@@ -12,11 +12,15 @@ return [
 
     /*
      * Whether a booking change must carry a typed reason.
-     *   'all'           - DEFAULT. Required for every employee-made booking change, per the
-     *                     requirement. Customers and unauthenticated callers are never prompted
+     *   'all'           - DEFAULT. Required for every employee-made booking change EXCEPT the two
+     *                     marked CHANGE_INTERNAL: editing internal notes and checking a party in.
+     *                     Staff do both dozens of times a shift and neither is a decision anyone
+     *                     audits, so the prompt was pure friction. Everything else - including
+     *                     changing payment status, which moves money and emails the guest - still
+     *                     needs one. Customers and unauthenticated callers are never prompted
      *                     (see CapturesChangeReason::actorIsStaff).
-     *   'guest_visible' - narrower fallback: only changes a guest would notice (date, time, room,
-     *                     package, participants, price, status, cancellation, location move).
+     *   'guest_visible' - narrower: only changes a guest would notice (date, time, room, package,
+     *                     participants, price, status, cancellation, location move).
      *   'off'           - never required; reasons are still stored when supplied.
      */
     'change_reason' => env('BOOKING_RULES_CHANGE_REASON', 'all'),
