@@ -550,7 +550,7 @@ class BookingController extends Controller
                 // never refuse a booking nobody at this venue can approve
                 $approvable = $enforcing && \App\Http\Controllers\Api\OverridePinController::locationHasApprover($bookingLocationId);
 
-                if (! $overlapApprovedBy && $enforcing && ! $approvable) {
+                if (! $overlapApprovedBy && $enforcing && ! $approvable && $isStaff) {
                     Log::warning('Overlap allowed through: no manager at this location holds an override PIN', [
                         'location_id' => $bookingLocationId,
                         'room_id' => $validated['room_id'],
@@ -558,6 +558,15 @@ class BookingController extends Controller
                         'booking_time' => $bookingTime,
                         'conflicts' => $slotConflicts,
                     ]);
+                }
+
+                // a guest booking online has no manager and no PIN: tell them plainly that the time
+                // went, and never show them the desk's wording or the override flag
+                if (! $overlapApprovedBy && $enforcing && ! $isStaff) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Sorry — that time was taken while you were booking. Please pick another time.',
+                    ], 409);
                 }
 
                 if (! $overlapApprovedBy && $approvable) {

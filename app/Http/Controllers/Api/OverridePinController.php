@@ -7,10 +7,12 @@ use App\Models\ActivityLog;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 
 /**
@@ -127,6 +129,8 @@ class OverridePinController extends Controller
 
         $token = Crypt::encryptString(json_encode([
             'purpose' => 'overlap_override',
+            // one approval, one booking: the id is burnt the first time it is accepted
+            'jti' => (string) Str::uuid(),
             'approver_id' => $approver->getKey(),
             'location_id' => (int) $validated['location_id'],
             'requested_by' => $request->user()?->getKey(),
@@ -179,6 +183,20 @@ class OverridePinController extends Controller
         }
 
         if ((int) ($payload['expires_at'] ?? 0) < now()->timestamp) {
+            return null;
+        }
+
+        $jti = (string) ($payload['jti'] ?? '');
+
+        if ($jti === '') {
+            return null;
+        }
+
+        // add() only succeeds the first time, so a token cannot approve a second booking. Kept a
+        // little past the token's own life so a replay after expiry still finds the mark.
+        if (! Cache::add('override-token:' . $jti, true, self::TOKEN_TTL_SECONDS * 2)) {
+            Log::warning('An overlap override token was presented twice', ['approver_id' => $payload['approver_id'] ?? null]);
+
             return null;
         }
 
