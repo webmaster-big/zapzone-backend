@@ -24,8 +24,10 @@ class DurationLabel
             return 'Not specified';
         }
 
+        // zero means no length was configured, and the storefront has always shown that as
+        // "Unlimited" — the email has to say the same thing or the guest is told two stories
         if ($value <= 0) {
-            return 'Not specified';
+            return 'Unlimited';
         }
 
         if ($unit === 'minutes') {

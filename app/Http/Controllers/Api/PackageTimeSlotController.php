@@ -100,7 +100,7 @@ class PackageTimeSlotController extends Controller
         if ($conflict) {
             return response()->json([
                 'success' => false,
-                'message' => 'This time slot is already booked for the selected room and date.',
+                'message' => 'That start time is not available any more. Please choose another time.',
             ], 422);
         }
 
@@ -113,7 +113,7 @@ class PackageTimeSlotController extends Controller
         if ($staggerConflict) {
             return response()->json([
                 'success' => false,
-                'message' => 'This time slot conflicts with another booking in the same area. Please choose a different time.',
+                'message' => 'Another group is already starting near that time. Please pick a start time a little earlier or later.',
             ], 422);
         }
 
@@ -166,7 +166,7 @@ class PackageTimeSlotController extends Controller
             if ($conflict) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'This time slot is already booked for the selected room and date.',
+                    'message' => 'That space is not free then — either another booking runs into it, or it is still being reset from an earlier one.',
                 ], 422);
             }
 
@@ -180,7 +180,7 @@ class PackageTimeSlotController extends Controller
             if ($staggerConflict) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'This time slot conflicts with another booking in the same area. Please choose a different time.',
+                    'message' => 'Another booking in the same area starts too close to this time. Spaces in one area hold their start times apart.',
                 ], 422);
             }
         }

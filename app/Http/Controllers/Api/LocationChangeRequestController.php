@@ -378,7 +378,7 @@ class LocationChangeRequestController extends Controller
             $conflicts[] = ['type' => 'time_slot', 'message' => 'Another booking already occupies this room at the selected date and time.'];
         }
         if ($this->checkAreaGroupStaggerConflict($roomId, $bookingDate, $startTime, $excludeSlotId)) {
-            $conflicts[] = ['type' => 'area_stagger', 'message' => 'This time is too close to another booking in the same area group.'];
+            $conflicts[] = ['type' => 'area_stagger', 'message' => 'Another booking in the same area starts too close to this time.'];
         }
         if ($this->checkBreakTimeConflict($roomId, $bookingDate, $startTime, $duration, $durationUnit)) {
             $conflicts[] = ['type' => 'break_time', 'message' => 'This time overlaps a scheduled break for the selected room.'];
