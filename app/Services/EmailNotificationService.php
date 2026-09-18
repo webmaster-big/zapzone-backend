@@ -841,7 +841,7 @@ HTML;
 
             'package_name' => $package?->name ?? '',
             'package_description' => $package?->description ?? '',
-            'package_duration' => (string) ($package?->duration_minutes ?? 0) . ' minutes',
+            'package_duration' => \App\Support\DurationLabel::make($package?->duration, $package?->duration_unit),
             'package_price' => '$' . number_format($package?->price ?? 0, 2),
             'package_min_participants' => (string) ($package?->min_participants ?? 1),
             'package_max_participants' => (string) ($package?->max_participants ?? 10),
@@ -915,7 +915,7 @@ HTML;
             'attraction_name' => $attraction?->name ?? '',
             'attraction_description' => $attraction?->description ?? '',
             'attraction_price' => '$' . number_format($attraction?->price ?? 0, 2),
-            'attraction_duration' => (string) ($attraction?->duration_minutes ?? 0) . ' minutes',
+            'attraction_duration' => \App\Support\DurationLabel::make($attraction?->duration, $attraction?->duration_unit),
 
             'location_name' => $location?->name ?? '',
             'location_address' => $locationAddress,
