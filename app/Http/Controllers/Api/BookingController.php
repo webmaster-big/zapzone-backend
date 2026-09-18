@@ -137,7 +137,7 @@ class BookingController extends Controller
                     'discount_amount', 'applied_fees', 'applied_discounts', 'payment_method', 'payment_status', 'status', 'notes', 'internal_notes',
                     'special_requests', 'transaction_id',
                     'guest_address', 'guest_city', 'guest_state', 'guest_zip', 'guest_country',
-                    'guest_of_honor_name', 'guest_of_honor_age', 'guest_of_honor_gender', 'created_at', 'updated_at'
+                    'guest_of_honor_name', 'guest_of_honor_age', 'guest_of_honor_gender', 'checked_in_at', 'created_at', 'updated_at'
                 ])
                 ->with([
                     'customer:id,first_name,last_name,email,phone',
