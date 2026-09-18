@@ -1423,6 +1423,7 @@ class BookingController extends Controller
             'participants' => 'sometimes|integer|min:1',
             'duration' => 'sometimes|numeric|min:0.01',
             'duration_unit' => ['sometimes', Rule::in(['hours', 'minutes', 'hours and minutes'])],
+            'overlap_override_token' => 'nullable|string',
             'total_amount' => 'sometimes|numeric|min:0',
             'amount_paid' => 'sometimes|numeric|min:0',
             'discount_amount' => 'sometimes|nullable|numeric|min:0',
@@ -1512,6 +1513,148 @@ class BookingController extends Controller
         $attractionLines = isset($validated['additional_attractions'])
             ? $rules->normalize(is_array($validated['additional_attractions']) ? $validated['additional_attractions'] : [], 'attraction_id', 'price_at_booking')
             : null;
+
+        // A package decides how long its booking runs, so swapping the package has to carry its
+        // length with it — otherwise the booking keeps the old one and sits on the schedule over
+        // minutes it does not own, which the clash check below would then measure wrongly.
+        // Only on an actual package change: a booking whose stored length already differs is left
+        // exactly as it is, so editing a note never silently resizes it.
+        $packageChanged = array_key_exists('package_id', $validated)
+            && ! empty($validated['package_id'])
+            && (int) $validated['package_id'] !== (int) $booking->package_id;
+
+        if ($packageChanged) {
+            $packageForDuration = \App\Models\Package::find($validated['package_id']);
+
+            if ($packageForDuration) {
+                $packageMinutes = $this->getDurationInMinutes($packageForDuration->duration, $packageForDuration->duration_unit);
+                $submittedMinutes = $this->getDurationInMinutes(
+                    $validated['duration'] ?? $booking->duration,
+                    $validated['duration_unit'] ?? $booking->duration_unit
+                );
+
+                if ($packageMinutes > 0 && $submittedMinutes !== $packageMinutes) {
+                    Log::warning('Booking duration did not match the new package; corrected to the package duration', [
+                        'booking_id' => $booking->id,
+                        'package_id' => $validated['package_id'],
+                        'was_minutes' => $submittedMinutes,
+                        'now_minutes' => $packageMinutes,
+                    ]);
+
+                    $validated['duration'] = $packageForDuration->duration;
+                    $validated['duration_unit'] = $packageForDuration->duration_unit;
+                }
+            }
+        }
+
+        // Moving a booking is the same act as making one, so it answers to the same rule. Without
+        // this the overlap gate was trivially avoidable: save a booking on a free time, then edit
+        // it onto the clash, because update() checked nothing at all.
+        $targetRoomId = array_key_exists('room_id', $validated) ? $validated['room_id'] : $booking->room_id;
+        $targetDate = Carbon::parse($validated['booking_date'] ?? $booking->booking_date)->toDateString();
+        $targetTime = substr((string) ($validated['booking_time'] ?? ($booking->booking_time?->format('H:i') ?? $booking->booking_time)), 0, 5);
+        $targetDuration = $validated['duration'] ?? $booking->duration;
+        $targetDurationUnit = $validated['duration_unit'] ?? $booking->duration_unit;
+        $targetLocationId = (int) ($validated['location_id'] ?? $booking->location_id);
+
+        $currentDate = Carbon::parse($booking->booking_date)->toDateString();
+        $currentTime = substr((string) ($booking->booking_time?->format('H:i') ?? $booking->booking_time), 0, 5);
+
+        // only when the booking would occupy different minutes, or a different space. Editing a
+        // note or a phone number must never be able to fail on a clash.
+        $slotMoved = (int) $targetRoomId !== (int) $booking->room_id
+            || $targetDate !== $currentDate
+            || $targetTime !== $currentTime
+            || (float) $targetDuration !== (float) $booking->duration
+            || (string) $targetDurationUnit !== (string) $booking->duration_unit;
+
+        $overlapOverride = [];
+
+        if ($slotMoved && $targetRoomId && $targetStatus !== 'cancelled') {
+            $slotConflicts = [];
+
+            if ($this->checkTimeSlotConflict((int) $targetRoomId, $targetDate, $targetTime, $targetDuration, $targetDurationUnit, $booking->id)) {
+                $slotConflicts[] = 'another booking already occupies this space';
+            }
+
+            if ($this->checkBreakTimeConflict((int) $targetRoomId, $targetDate, $targetTime, $targetDuration, $targetDurationUnit)) {
+                $slotConflicts[] = 'this time overlaps a scheduled break';
+            }
+
+            // as on the create path, the area rule is a comfort rule: recorded, never refused
+            if ($this->checkAreaGroupStaggerConflict((int) $targetRoomId, $targetDate, $targetTime, $booking->id)) {
+                Log::info('Booking moved close to another space in the same area', [
+                    'booking_id' => $booking->id,
+                    'room_id' => $targetRoomId,
+                    'location_id' => $targetLocationId,
+                    'booking_date' => $targetDate,
+                    'booking_time' => $targetTime,
+                ]);
+            }
+
+            $recordingThePast = Carbon::parse($targetDate)->lt(Carbon::today());
+
+            if (! empty($slotConflicts) && ! $recordingThePast) {
+                $overlapApprovedBy = \App\Http\Controllers\Api\OverridePinController::approverFromToken(
+                    $validated['overlap_override_token'] ?? null,
+                    $targetLocationId
+                );
+
+                $enforcing = (string) config('booking_rules.slot_conflict', 'log') === 'enforce';
+                $approvable = $enforcing && \App\Http\Controllers\Api\OverridePinController::locationHasApprover($targetLocationId);
+
+                if (! $overlapApprovedBy && $enforcing && ! $approvable && $isStaff) {
+                    Log::warning('Overlapping edit allowed through: no manager at this location holds an override PIN', [
+                        'booking_id' => $booking->id,
+                        'location_id' => $targetLocationId,
+                        'conflicts' => $slotConflicts,
+                    ]);
+                }
+
+                // a customer moving their own booking gets plain words and never the desk's wording
+                if (! $overlapApprovedBy && $enforcing && ! $isStaff) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Sorry — that time is no longer free. Please pick another time.',
+                    ], 409);
+                }
+
+                if (! $overlapApprovedBy && $approvable) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'That space is not free then — '.implode(', ', $slotConflicts).'. A manager can approve it with their override PIN.',
+                        'requires_override' => true,
+                        'conflicts' => $slotConflicts,
+                    ], 409);
+                }
+
+                if ($overlapApprovedBy) {
+                    $overlapOverride = [
+                        'overlap_override_by' => $overlapApprovedBy,
+                        'overlap_override_at' => now(),
+                        'overlap_override_reason' => implode(', ', $slotConflicts),
+                    ];
+
+                    ActivityLog::log(
+                        'booking_overlap_override',
+                        'booking',
+                        'A manager approved moving a booking onto an occupied time',
+                        $request->user('sanctum')?->getKey(),
+                        $targetLocationId,
+                        'booking',
+                        $booking->id,
+                        ['conflicts' => $slotConflicts, 'approved_by' => $overlapApprovedBy]
+                    );
+                }
+            }
+        }
+
+        // the token is proof, not a column; merging the outcome into $validated keeps it out of the
+        // transaction closure entirely, where a new variable would have to be added to use()
+        unset($validated['overlap_override_token']);
+        if ($overlapOverride !== []) {
+            $validated = array_merge($validated, $overlapOverride);
+        }
 
         $originalValues = $booking->only([
             'status', 'payment_status', 'total_amount', 'amount_paid', 'discount_amount',
