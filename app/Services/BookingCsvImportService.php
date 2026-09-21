@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Booking;
+use App\Models\BookingInternalNote;
 use App\Models\Contact;
 use App\Models\Location;
 use App\Models\Package;
@@ -333,7 +334,6 @@ class BookingCsvImportService
             'payment_status' => $paymentStatus,
             'status' => $status,
             'notes' => !empty($notes) ? $notes : null,
-            'internal_notes' => $internalNotes,
             'guest_name' => $customerName ?: null,
             'guest_email' => $customerEmail ?: null,
             'guest_phone' => !empty($customerPhone) ? $this->cleanPhone($customerPhone) : null,
@@ -351,6 +351,21 @@ class BookingCsvImportService
         if ($createdDate) {
             $booking->created_at = $createdDate;
             $booking->save();
+        }
+
+        // whatever the import worked out about this row goes into the booking's permanent log,
+        // attributed to whoever ran the import
+        if (!empty($internalNotes)) {
+            $importActor = auth()->user();
+            $importActorIsUser = $importActor instanceof \App\Models\User;
+
+            BookingInternalNote::create([
+                'booking_id' => $booking->id,
+                'user_id' => $importActorIsUser ? $importActor->getKey() : null,
+                'author_name' => $importActorIsUser ? null : 'CSV import',
+                'category' => null,
+                'body' => $internalNotes,
+            ]);
         }
 
         if ($room && $package) {
@@ -382,13 +397,16 @@ class BookingCsvImportService
                     $addonLines[] = "Add-on not found: {$a['name']}{$qty}";
                 }
                 if (!empty($addonLines)) {
-                    $currentNotes = $booking->internal_notes ?? '';
-                    if (empty($currentNotes)) {
-                        $currentNotes = "[CSV Import]\n" . implode("\n", $addonLines);
-                    } else {
-                        $currentNotes .= "\n" . implode("\n", $addonLines);
-                    }
-                    $booking->update(['internal_notes' => $currentNotes]);
+                    $addonActor = auth()->user();
+                    $addonActorIsUser = $addonActor instanceof \App\Models\User;
+
+                    BookingInternalNote::create([
+                        'booking_id' => $booking->id,
+                        'user_id' => $addonActorIsUser ? $addonActor->getKey() : null,
+                        'author_name' => $addonActorIsUser ? null : 'CSV import',
+                        'category' => null,
+                        'body' => "[CSV Import]\n" . implode("\n", $addonLines),
+                    ]);
                 }
             }
         }

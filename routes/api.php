@@ -267,16 +267,16 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::get('ticket-orders', [TicketOrderController::class, 'index']);
     Route::get('ticket-orders/{ticketOrder}', [TicketOrderController::class, 'show']);
-    Route::post('ticket-orders/{ticketOrder}/check-in', [TicketOrderController::class, 'checkIn']);
+    Route::post('ticket-orders/{ticketOrder}/check-in', [TicketOrderController::class, 'checkIn'])->middleware('staff');
     Route::post('ticket-orders/{ticketOrder}/cancel', [TicketOrderController::class, 'cancel']);
 
     Route::get('metrics/dashboard/{user}', [MetricsController::class, 'dashboard']);
     Route::get('metrics/attendant', [MetricsController::class, 'attendant']);
 
-    Route::get('analytics/company', [AnalyticsController::class, 'getCompanyAnalytics']);
+    Route::get('analytics/company', [AnalyticsController::class, 'getCompanyAnalytics'])->middleware('staff');
     Route::post('analytics/company/export', [AnalyticsController::class, 'exportAnalytics']);
 
-    Route::get('analytics/location', [AnalyticsController::class, 'getLocationAnalytics']);
+    Route::get('analytics/location', [AnalyticsController::class, 'getLocationAnalytics'])->middleware('staff');
     Route::post('analytics/location/export', [AnalyticsController::class, 'exportAnalytics']);
 
     Route::get('accounting-analytics/report', [AccountingAnalyticsController::class, 'getReport']);
@@ -401,7 +401,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('attractions/reorder', [AttractionController::class, 'reorder']);
     });
 
-    Route::get('attraction-purchases/trashed', [AttractionPurchaseController::class, 'trashed']);
+    Route::get('attraction-purchases/trashed', [AttractionPurchaseController::class, 'trashed'])->middleware('staff');
     Route::get('attraction-purchases/statistics', [AttractionPurchaseController::class, 'statistics']);
     Route::post('attraction-purchases/bulk-restore', [AttractionPurchaseController::class, 'bulkRestore']);
     Route::apiResource('attraction-purchases', AttractionPurchaseController::class)->except(['store', 'destroy']);
@@ -411,8 +411,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('attraction-purchases/{attractionPurchase}/confirm', [AttractionPurchaseController::class, 'markAsConfirmed']);
     Route::patch('attraction-purchases/{attractionPurchase}/cancel', [AttractionPurchaseController::class, 'cancel']);
     Route::post('attraction-purchases/{attractionPurchase}/send-receipt', [AttractionPurchaseController::class, 'sendReceipt']);
-    Route::get('attraction-purchases/{id}/verify', [AttractionPurchaseController::class, 'verify']);
-    Route::patch('attraction-purchases/{id}/check-in', [AttractionPurchaseController::class, 'checkIn']);
+    Route::get('attraction-purchases/{id}/verify', [AttractionPurchaseController::class, 'verify'])->middleware('staff');
+    Route::patch('attraction-purchases/{id}/check-in', [AttractionPurchaseController::class, 'checkIn'])->middleware('staff');
     Route::post('attraction-purchases/bulk-delete', [AttractionPurchaseController::class, 'bulkDelete']);
     Route::post('attraction-purchases/{id}/restore', [AttractionPurchaseController::class, 'restore']);
 
@@ -478,6 +478,12 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('bookings/{booking}/status', [BookingController::class, 'updateStatus']);
         Route::patch('bookings/{booking}/location', [BookingController::class, 'updateLocation']);
         Route::patch('bookings/{booking}/payment-status', [BookingController::class, 'updatePaymentStatus']);
+        // internal notes are a permanent, append-only log: read the whole thing, or add one entry
+        Route::get('bookings/{id}/internal-notes', [BookingController::class, 'internalNotes']);
+        Route::post('bookings/{id}/internal-notes', [BookingController::class, 'storeInternalNote']);
+        // a note can be corrected; the version it replaces is kept
+        Route::match(['put', 'patch'], 'bookings/{id}/internal-notes/{note}', [BookingController::class, 'updateInternalNote'])->whereNumber('note');
+        // kept only so a tab left open across the change gets a sentence instead of a 405
         Route::patch('bookings/{id}/internal-notes', [BookingController::class, 'updateInternalNotes']);
         Route::post('bookings/bulk-delete', [BookingController::class, 'bulkDelete']);
         Route::post('bookings/{id}/restore', [BookingController::class, 'restore']);
@@ -513,15 +519,15 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('promos/{promo}/toggle-status', [PromoController::class, 'toggleStatus'])->middleware('staff');
 
     // Immutable booking change history (read-only; activity_logs is append-only).
-    Route::get('bookings/export', [BookingController::class, 'exportIndex']);
+    Route::get('bookings/export', [BookingController::class, 'exportIndex'])->middleware('staff');
 
-    Route::get('bookings/details-report', [BookingController::class, 'bookingDetailsReport']);
+    Route::get('bookings/details-report', [BookingController::class, 'bookingDetailsReport'])->middleware('staff');
 
-    Route::get('bookings/summaries/export', [BookingController::class, 'summariesExport']);
+    Route::get('bookings/summaries/export', [BookingController::class, 'summariesExport'])->middleware('staff');
     Route::get('bookings/summaries/day/{date}', [BookingController::class, 'summariesDay']);
     Route::get('bookings/summaries/week/{week?}', [BookingController::class, 'summariesWeek']);
 
-    Route::get('bookings/trashed', [BookingController::class, 'trashed']);
+    Route::get('bookings/trashed', [BookingController::class, 'trashed'])->middleware('staff');
     Route::get('bookings/location-date', [BookingController::class, 'getByLocationAndDate']);
     Route::get('bookings/search', [BookingController::class, 'search']);
 
@@ -530,10 +536,10 @@ Route::middleware('auth:sanctum')->group(function () {
     // venue and a manager makes the change - so those verbs are staff-only. This also keeps the
     // required-reason prompt off the customer side entirely.
     Route::apiResource('bookings', BookingController::class)->only(['index', 'show']);
-    Route::post('bookings/{booking}/location-change-requests', [LocationChangeRequestController::class, 'store']);
-    Route::get('location-change-requests', [LocationChangeRequestController::class, 'index']);
-    Route::patch('location-change-requests/{locationChangeRequest}/approve', [LocationChangeRequestController::class, 'approve']);
-    Route::patch('location-change-requests/{locationChangeRequest}/reject', [LocationChangeRequestController::class, 'reject']);
+    Route::post('bookings/{booking}/location-change-requests', [LocationChangeRequestController::class, 'store'])->middleware('staff');
+    Route::get('location-change-requests', [LocationChangeRequestController::class, 'index'])->middleware('staff');
+    Route::patch('location-change-requests/{locationChangeRequest}/approve', [LocationChangeRequestController::class, 'approve'])->middleware('staff');
+    Route::patch('location-change-requests/{locationChangeRequest}/reject', [LocationChangeRequestController::class, 'reject'])->middleware('staff');
     // these PDFs print bookings.internal_notes, which is desk commentary the guest must never read.
     // auth:sanctum alone lets a CUSTOMER token through, and the id is unvalidated.
     Route::get('bookings/{booking}/summary', [BookingController::class, 'summary'])->middleware('staff');
@@ -564,7 +570,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('payments/{payment}/invoice/view', [PaymentController::class, 'invoiceView'])->middleware('staff');
 
 
-    Route::apiResource('activity-logs', ActivityLogController::class)->only(['index', 'store', 'show']);
+    Route::apiResource('activity-logs', ActivityLogController::class)->only(['index', 'store', 'show'])->middleware('staff');
 
     Route::patch('notifications/mark-all-as-read', [NotificationController::class, 'markAllAsRead']);
     Route::delete('notifications/clear-all', [NotificationController::class, 'clearAll']);
@@ -609,14 +615,14 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/{emailCampaign}/resend', [EmailCampaignController::class, 'resend']);
     });
 
-    Route::prefix('checkout-concerns')->group(function () {
+    Route::prefix('checkout-concerns')->middleware('staff')->group(function () {
         Route::get('/', [CheckoutConcernController::class, 'index']);
         Route::get('/statistics', [CheckoutConcernController::class, 'statistics']);
         Route::get('/{checkoutConcern}', [CheckoutConcernController::class, 'show']);
         Route::put('/{checkoutConcern}', [CheckoutConcernController::class, 'update']);
     });
 
-    Route::prefix('contacts')->group(function () {
+    Route::prefix('contacts')->middleware('staff')->group(function () {
         Route::get('/', [ContactController::class, 'index']);
         Route::post('/', [ContactController::class, 'store']);
         Route::get('/tags', [ContactController::class, 'getTags']);
@@ -680,10 +686,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('event-purchases/bulk-restore', [EventPurchaseController::class, 'bulkRestore']);
     Route::apiResource('event-purchases', EventPurchaseController::class)->except(['store']);
     Route::patch('event-purchases/{eventPurchase}/cancel', [EventPurchaseController::class, 'cancel']);
-    Route::patch('event-purchases/{eventPurchase}/status', [EventPurchaseController::class, 'updateStatus']);
+    Route::patch('event-purchases/{eventPurchase}/status', [EventPurchaseController::class, 'updateStatus'])->middleware('staff');
     Route::post('event-purchases/{id}/restore', [EventPurchaseController::class, 'restore']);
 
-    Route::prefix('google-calendar')->group(function () {
+    Route::prefix('google-calendar')->middleware('staff')->group(function () {
         Route::get('/connections', [GoogleCalendarController::class, 'connections']);
         Route::get('/status', [GoogleCalendarController::class, 'status']);
         Route::get('/auth-url', [GoogleCalendarController::class, 'getAuthUrl']);
@@ -744,27 +750,27 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // --- Waivers (staff/admin) ---
     // Waiver templates (builder)
-    Route::get('waiver-templates/content-tokens',        [WaiverTemplateController::class, 'contentTokens']);
-    Route::get('waiver-templates/available-activities',  [WaiverTemplateController::class, 'availableActivities']);
-    Route::get('waiver-templates/{waiverTemplate}/versions', [WaiverTemplateController::class, 'versions']);
-    Route::get('waiver-templates/{waiverTemplate}/kiosk-preview', [WaiverTemplateController::class, 'kioskPreview']);
-    Route::patch('waiver-templates/{waiverTemplate}/status',  [WaiverTemplateController::class, 'updateStatus']);
-    Route::post('waiver-templates/{id}/restore',         [WaiverTemplateController::class, 'restore']);
-    Route::delete('waiver-templates/{id}/force-delete',  [WaiverTemplateController::class, 'forceDestroy']);
-    Route::apiResource('waiver-templates', WaiverTemplateController::class);
+    Route::get('waiver-templates/content-tokens',        [WaiverTemplateController::class, 'contentTokens'])->middleware('staff');
+    Route::get('waiver-templates/available-activities',  [WaiverTemplateController::class, 'availableActivities'])->middleware('staff');
+    Route::get('waiver-templates/{waiverTemplate}/versions', [WaiverTemplateController::class, 'versions'])->middleware('staff');
+    Route::get('waiver-templates/{waiverTemplate}/kiosk-preview', [WaiverTemplateController::class, 'kioskPreview'])->middleware('staff');
+    Route::patch('waiver-templates/{waiverTemplate}/status',  [WaiverTemplateController::class, 'updateStatus'])->middleware('staff');
+    Route::post('waiver-templates/{id}/restore',         [WaiverTemplateController::class, 'restore'])->middleware('staff');
+    Route::delete('waiver-templates/{id}/force-delete',  [WaiverTemplateController::class, 'forceDestroy'])->middleware('staff');
+    Route::apiResource('waiver-templates', WaiverTemplateController::class)->middleware('staff');
 
     // Waiver settings (admin)
-    Route::get('waiver-settings',  [WaiverSettingController::class, 'show']);
-    Route::put('waiver-settings',  [WaiverSettingController::class, 'update']);
+    Route::get('waiver-settings',  [WaiverSettingController::class, 'show'])->middleware('staff');
+    Route::put('waiver-settings',  [WaiverSettingController::class, 'update'])->middleware('staff');
 
     // Bulk waiver invites (staff-initiated)
-    Route::post('waiver-bulk-invites/{waiverBulkInvite}/resend', [WaiverBulkInviteController::class, 'resend']);
-    Route::apiResource('waiver-bulk-invites', WaiverBulkInviteController::class)->only(['index', 'show', 'store']);
+    Route::post('waiver-bulk-invites/{waiverBulkInvite}/resend', [WaiverBulkInviteController::class, 'resend'])->middleware('staff');
+    Route::apiResource('waiver-bulk-invites', WaiverBulkInviteController::class)->only(['index', 'show', 'store'])->middleware('staff');
 
     // Waiver records — specific routes BEFORE the resource so they aren't shadowed
-    Route::get('waivers/deletion-log',      [WaiverController::class, 'deletionLog']);
-    Route::get('waivers/export',            [WaiverController::class, 'export']);
-    Route::get('waivers/for',               [WaiverController::class, 'entityWaivers']);
+    Route::get('waivers/deletion-log',      [WaiverController::class, 'deletionLog'])->middleware('staff');
+    Route::get('waivers/export',            [WaiverController::class, 'export'])->middleware('staff');
+    Route::get('waivers/for',               [WaiverController::class, 'entityWaivers'])->middleware('staff');
     Route::get('waivers/reports/{type}',    [WaiverReportController::class, 'report'])->middleware('staff');
 
     Route::middleware('staff:company_admin|admin|location_manager')->group(function () {
@@ -784,19 +790,19 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('waiver-profile-dependents/{dependent}',          [WaiverProfileController::class, 'updateDependent'])->whereNumber('dependent');
         Route::delete('waiver-profile-dependents/{dependent}',         [WaiverProfileController::class, 'destroyDependent'])->whereNumber('dependent');
     });
-    Route::post('waivers/assign',           [WaiverController::class, 'assign']);
-    Route::post('waivers/kiosk-session',    [WaiverController::class, 'kioskSession']);
+    Route::post('waivers/assign',           [WaiverController::class, 'assign'])->middleware('staff');
+    Route::post('waivers/kiosk-session',    [WaiverController::class, 'kioskSession'])->middleware('staff');
     Route::get('dashboard-settings',  [DashboardSettingController::class, 'show'])->middleware('staff');
     Route::put('dashboard-settings',  [DashboardSettingController::class, 'update'])->middleware('staff');
     Route::post('waivers/scan',             [WaiverController::class, 'scan'])->middleware(['staff', 'throttle:60,1']);
-    Route::post('waivers/check-in-all',     [WaiverController::class, 'checkInAll']);
-    Route::post('waivers/{waiver}/check-in',      [WaiverController::class, 'checkIn']);
-    Route::post('waivers/{waiver}/undo-check-in', [WaiverController::class, 'undoCheckIn']);
-    Route::get('waivers/{waiver}/print',    [WaiverController::class, 'print']);
-    Route::get('waivers',                   [WaiverController::class, 'index']);
-    Route::get('waivers/period-summary',    [WaiverController::class, 'periodSummary']);
-    Route::get('waivers/{waiver}',          [WaiverController::class, 'show'])->whereNumber('waiver');
-    Route::delete('waivers/{waiver}',       [WaiverController::class, 'destroy'])->whereNumber('waiver');
+    Route::post('waivers/check-in-all',     [WaiverController::class, 'checkInAll'])->middleware('staff');
+    Route::post('waivers/{waiver}/check-in',      [WaiverController::class, 'checkIn'])->middleware('staff');
+    Route::post('waivers/{waiver}/undo-check-in', [WaiverController::class, 'undoCheckIn'])->middleware('staff');
+    Route::get('waivers/{waiver}/print',    [WaiverController::class, 'print'])->middleware('staff');
+    Route::get('waivers',                   [WaiverController::class, 'index'])->middleware('staff');
+    Route::get('waivers/period-summary',    [WaiverController::class, 'periodSummary'])->middleware('staff');
+    Route::get('waivers/{waiver}',          [WaiverController::class, 'show'])->whereNumber('waiver')->middleware('staff');
+    Route::delete('waivers/{waiver}',       [WaiverController::class, 'destroy'])->whereNumber('waiver')->middleware('staff');
 
     // Every photo endpoint requires a real staff User with an approved role. The shared
     // ScopesByAuthUser trait applies no scoping at all for a non-User principal, so this

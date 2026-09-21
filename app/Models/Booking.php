@@ -58,7 +58,10 @@ class Booking extends Model
         'reminder_sent',
         'reminder_sent_at',
         'notes',
-        'internal_notes',
+        // NOT fillable on purpose: this column is a derived digest of booking_internal_notes,
+        // rebuilt by BookingInternalNote::refreshBookingSummary(). Leaving it mass-assignable
+        // would let any Booking::create() or ->update() silently replace the whole log.
+        // 'internal_notes',
         'special_requests',
         'guest_of_honor_name',
         'guest_of_honor_age',
@@ -158,6 +161,17 @@ class Booking extends Model
     public function invitations(): HasMany
     {
         return $this->hasMany(BookingInvitation::class);
+    }
+
+    /**
+     * The permanent internal log. Newest first, because the desk reads the latest entry.
+     *
+     * bookings.internal_notes still holds a readable digest of these for the badges, the staff
+     * PDFs and search, but this relation is where the notes actually live.
+     */
+    public function internalNotes(): HasMany
+    {
+        return $this->hasMany(BookingInternalNote::class)->orderByDesc('created_at')->orderByDesc('id');
     }
 
     public function scopeByStatus($query, $status)

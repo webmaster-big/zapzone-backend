@@ -18,6 +18,8 @@ use App\Http\Traits\CapturesChangeReason;
 use App\Models\EmailNotification;
 use App\Models\Booking;
 use App\Models\BookingAttraction;
+use App\Models\BookingInternalNote;
+use App\Models\BookingInternalNoteRevision;
 use App\Models\DayOff;
 use App\Models\BookingAddOn;
 use App\Models\Contact;
@@ -388,7 +390,8 @@ class BookingController extends Controller
             'applied_discounts.*.source' => 'nullable|string',
             'payment_method' => ['nullable', Rule::in(['card', 'in-store', 'paylater', 'authorize.net'])],
             'notes' => 'nullable|string',
-            'internal_notes' => 'nullable|string',
+            // POST /bookings is public for storefront checkout, so it must not be able to put
+            // anything into the staff log — which is permanent and cannot be deleted.
             'send_notification' => 'nullable|boolean',
             'send_email' => 'nullable|boolean',
             'sent_email_to_staff' => 'nullable|boolean',
@@ -850,7 +853,6 @@ class BookingController extends Controller
         } catch (\RuntimeException $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
         }
-
 
         // Create a pending waiver if a template covers this booking's package/attractions,
         // so the confirmation email/SMS can include the {{waiver_link}}. Non-fatal.
@@ -1444,7 +1446,8 @@ class BookingController extends Controller
             'payment_status' => ['sometimes', Rule::in(['paid', 'partial', 'pending', 'refunded', 'voided'])],
             'status' => ['sometimes', Rule::in(['pending', 'confirmed', 'checked-in', 'completed', 'cancelled'])],
             'notes' => 'sometimes|nullable|string',
-            'internal_notes' => 'sometimes|nullable|string',
+            // internal_notes is a permanent log now, written only through the notes endpoint.
+            // Accepting it here would let an ordinary save replace the whole history.
             'send_notification' => 'sometimes|nullable|boolean',
             'special_requests' => 'sometimes|nullable|string',
             'guest_of_honor_name' => 'sometimes|nullable|string|max:255',
@@ -2732,39 +2735,249 @@ class BookingController extends Controller
         ]);
     }
 
-    public function updateInternalNotes(Request $request, string $id): JsonResponse
+    /**
+     * One note as the UI needs it, including whether this caller may correct it and what it used
+     * to say before it was last changed.
+     *
+     * Any employee who can open the booking can correct any note on it — shifts hand over, and the
+     * person who spots a mistake is rarely the one who made it. What keeps that safe is the history
+     * rather than a lock: every version is kept with the name of whoever changed it.
+     */
+    private function presentInternalNote(BookingInternalNote $note, ?User $actor): array
     {
-        $booking = Booking::findOrFail($id);
+        return [
+            'id' => $note->id,
+            'body' => $note->body,
+            'category' => $note->category,
+            'category_label' => $note->category
+                ? (BookingInternalNote::CATEGORIES[$note->category] ?? $note->category)
+                : null,
+            'employee_name' => $note->author_name,
+            'employee_role' => $note->author_role,
+            'created_at' => $note->created_at?->toIso8601String(),
+            'edited_at' => $note->edited_at?->toIso8601String(),
+            'edited_by_name' => $note->editor_name,
+            'can_edit' => $actor instanceof User,
+            'revisions' => $note->relationLoaded('revisions')
+                ? $note->revisions->map(fn (BookingInternalNoteRevision $revision) => [
+                    'id' => $revision->id,
+                    'body' => $revision->body,
+                    'category' => $revision->category,
+                    'category_label' => $revision->category
+                        ? (BookingInternalNote::CATEGORIES[$revision->category] ?? $revision->category)
+                        : null,
+                    'edited_by_name' => $revision->editor_name,
+                    'created_at' => $revision->created_at?->toIso8601String(),
+                ])->values()
+                : [],
+        ];
+    }
 
-        $validated = $request->validate([
-            'internal_notes' => 'nullable|string',
-        ]);
+    /** The booking whose log is being read or written, once the caller is allowed to see it. */
+    private function bookingForNotes(string $id): Booking|JsonResponse
+    {
+        $booking = Booking::withTrashed()->find($id);
 
-        $changeReason = $this->resolveChangeReason($request, self::CHANGE_INTERNAL);
+        if (! $booking) {
+            return response()->json(['success' => false, 'message' => 'Booking not found'], 404);
+        }
 
-        $booking->internal_notes = $validated['internal_notes'] ?? null;
-        $booking->save();
+        if (! $this->authorizeRecordScope($booking)) {
+            return response()->json(['success' => false, 'message' => 'Forbidden'], 403);
+        }
 
-        ActivityLog::log(
-            action: 'Booking Internal Notes Updated',
-            category: 'update',
-            description: "Internal notes updated for booking {$booking->reference_number}",
-            userId: auth()->id(),
-            locationId: $booking->location_id,
-            entityType: 'booking',
-            entityId: $booking->id,
-            metadata: ['reference_number' => $booking->reference_number],
-                reason: $changeReason
-            );
+        return $booking;
+    }
+
+    /**
+     * A booking's internal log, newest first, with the history of anything that was corrected.
+     */
+    public function internalNotes(Request $request, string $id): JsonResponse
+    {
+        $booking = $this->bookingForNotes($id);
+
+        if ($booking instanceof JsonResponse) {
+            return $booking;
+        }
+
+        $actor = $request->user();
+        $actor = $actor instanceof User ? $actor : null;
 
         return response()->json([
             'success' => true,
-            'message' => 'Internal notes updated successfully',
             'data' => [
-                'id' => $booking->id,
-                'internal_notes' => $booking->internal_notes,
+                'notes' => $booking->internalNotes()->with('revisions')->get()
+                    ->map(fn (BookingInternalNote $note) => $this->presentInternalNote($note, $actor))
+                    ->values(),
+                'categories' => BookingInternalNote::CATEGORIES,
             ],
         ]);
+    }
+
+    /**
+     * Add a note. New information goes in as its own entry rather than on the end of an old one,
+     * so the log reads in the order things actually happened.
+     */
+    public function storeInternalNote(Request $request, string $id): JsonResponse
+    {
+        $booking = $this->bookingForNotes($id);
+
+        if ($booking instanceof JsonResponse) {
+            return $booking;
+        }
+
+        $validated = $request->validate([
+            'body' => ['required', 'string', 'max:5000'],
+            'category' => ['nullable', Rule::in(array_keys(BookingInternalNote::CATEGORIES))],
+        ], [
+            'body.required' => 'Write the note before saving it.',
+        ]);
+
+        $body = trim($validated['body']);
+
+        if ($body === '') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Write the note before saving it.',
+                'errors' => ['body' => ['Write the note before saving it.']],
+            ], 422);
+        }
+
+        // the route is staff-gated, but a Customer token also satisfies auth:sanctum elsewhere in
+        // this app, so never take an id on trust for a users foreign key
+        $author = $request->user();
+        $authorId = $author instanceof User ? $author->getKey() : null;
+
+        $note = BookingInternalNote::create([
+            'booking_id' => $booking->id,
+            'user_id' => $authorId,
+            'category' => $validated['category'] ?? null,
+            'body' => $body,
+        ]);
+
+        ActivityLog::log(
+            action: 'Booking Internal Note Added',
+            category: 'update',
+            description: "Internal note added to booking {$booking->reference_number}",
+            userId: $authorId,
+            locationId: $booking->location_id,
+            entityType: 'booking',
+            entityId: $booking->id,
+            metadata: [
+                'reference_number' => $booking->reference_number,
+                'note_id' => $note->id,
+                'note_category' => $note->category,
+            ]
+        );
+
+        $note->setRelation('revisions', collect());
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Note added.',
+            'data' => $this->presentInternalNote($note, $author instanceof User ? $author : null) + [
+                // so a caller holding a stale booking can refresh the badge and the list text
+                'internal_notes' => $booking->fresh()?->internal_notes,
+            ],
+        ], 201);
+    }
+
+    /**
+     * Correct a note. Any employee who can open the booking may do it: the version being replaced
+     * is kept with their name on it, so the log still shows what was there before and who changed
+     * it. Access to the booking itself is still checked above.
+     */
+    public function updateInternalNote(Request $request, string $id, string $noteId): JsonResponse
+    {
+        $booking = $this->bookingForNotes($id);
+
+        if ($booking instanceof JsonResponse) {
+            return $booking;
+        }
+
+        $note = BookingInternalNote::where('booking_id', $booking->id)->find($noteId);
+
+        if (! $note) {
+            return response()->json(['success' => false, 'message' => 'Note not found'], 404);
+        }
+
+        $actor = $request->user();
+        $actor = $actor instanceof User ? $actor : null;
+
+        $validated = $request->validate([
+            'body' => ['required', 'string', 'max:5000'],
+            'category' => ['nullable', Rule::in(array_keys(BookingInternalNote::CATEGORIES))],
+        ], [
+            'body.required' => 'A note cannot be emptied. Write what it should say.',
+        ]);
+
+        $body = trim($validated['body']);
+
+        if ($body === '') {
+            return response()->json([
+                'success' => false,
+                'message' => 'A note cannot be emptied. Write what it should say.',
+                'errors' => ['body' => ['A note cannot be emptied. Write what it should say.']],
+            ], 422);
+        }
+
+        $previous = $note->body;
+
+        // read by the model's updating hook, so the kept version names the right person
+        $note->edited_by = $actor?->getKey();
+        $note->body = $body;
+        $note->category = $validated['category'] ?? null;
+
+        if (! $note->isDirty(['body', 'category'])) {
+            return response()->json([
+                'success' => true,
+                'message' => 'Nothing changed.',
+                'data' => $this->presentInternalNote($note->load('revisions'), $actor),
+            ]);
+        }
+
+        $note->save();
+
+        ActivityLog::log(
+            action: 'Booking Internal Note Edited',
+            category: 'update',
+            description: "Internal note corrected on booking {$booking->reference_number}",
+            userId: $actor?->getKey(),
+            locationId: $booking->location_id,
+            entityType: 'booking',
+            entityId: $booking->id,
+            metadata: [
+                'reference_number' => $booking->reference_number,
+                'note_id' => $note->id,
+                'note_category' => $note->category,
+                // the words themselves stay out of activity_logs, which can never be redacted
+                'previous_length' => mb_strlen((string) $previous),
+                'new_length' => mb_strlen($body),
+            ]
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Note updated. The previous version is kept.',
+            'data' => $this->presentInternalNote($note->load('revisions'), $actor) + [
+                'internal_notes' => $booking->fresh()?->internal_notes,
+            ],
+        ]);
+    }
+
+    /**
+     * The old "replace all the internal notes with this text" endpoint.
+     *
+     * Kept so a browser tab left open across the change gets a sentence it can act on instead of
+     * a 405. It refuses rather than writing what it was sent: that payload is the whole previous
+     * text plus an edit, and storing it would put a duplicate of the entire history into the log.
+     */
+    public function updateInternalNotes(Request $request, string $id): JsonResponse
+    {
+        return response()->json([
+            'success' => false,
+            'message' => 'Internal notes are a log now. Please refresh the page, then add a note or edit the one you meant.',
+        ], 409);
     }
 
     private function sendNotificationEmail(Booking $booking, string $action = 'updated'): void
