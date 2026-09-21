@@ -24,6 +24,10 @@ class Photo extends Model
     public const SLIDESHOW_HIDDEN = 'hidden';
     public const SLIDESHOW_REMOVED = 'removed';
 
+    public const APPROVAL_PENDING = 'pending';
+    public const APPROVAL_APPROVED = 'approved';
+    public const APPROVAL_REJECTED = 'rejected';
+
     protected $fillable = [
         'photo_session_id',
         'company_id',
@@ -43,6 +47,9 @@ class Photo extends Model
         'bytes',
         'slideshow_eligible',
         'slideshow_state',
+        'slideshow_approval_status',
+        'slideshow_approved_at',
+        'slideshow_approved_by',
         'slideshow_priority',
         'captured_at',
         'capture_date',
@@ -56,6 +63,7 @@ class Photo extends Model
         'processing_status' => self::PROCESSING_PENDING,
         'slideshow_eligible' => false,
         'slideshow_state' => self::SLIDESHOW_VISIBLE,
+        'slideshow_approval_status' => self::APPROVAL_PENDING,
         'slideshow_priority' => 0,
         'download_count' => 0,
     ];
@@ -67,6 +75,7 @@ class Photo extends Model
         'bytes' => 'integer',
         'slideshow_eligible' => 'boolean',
         'slideshow_priority' => 'integer',
+        'slideshow_approved_at' => 'datetime',
         'captured_at' => 'datetime',
         'capture_date' => 'date',
         'operating_day' => 'date',
@@ -103,7 +112,25 @@ class Photo extends Model
     {
         return $this->slideshow_eligible
             && $this->slideshow_state === self::SLIDESHOW_VISIBLE
+            && $this->isApproved()
             && $this->isReady();
+    }
+
+    public function isApproved(): bool
+    {
+        return $this->slideshow_approval_status === self::APPROVAL_APPROVED;
+    }
+
+    public function isAwaitingApproval(): bool
+    {
+        return $this->slideshow_eligible
+            && $this->slideshow_approval_status === self::APPROVAL_PENDING
+            && $this->slideshow_state !== self::SLIDESHOW_REMOVED;
+    }
+
+    public function approver(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'slideshow_approved_by');
     }
 
     public function pathForVariant(string $variant): ?string
@@ -153,6 +180,18 @@ class Photo extends Model
     public function scopeLive($query)
     {
         return $query->whereNull('purged_at');
+    }
+
+    public function scopeApproved($query)
+    {
+        return $query->where('slideshow_approval_status', self::APPROVAL_APPROVED);
+    }
+
+    public function scopeAwaitingApproval($query)
+    {
+        return $query->where('slideshow_eligible', true)
+            ->where('slideshow_approval_status', self::APPROVAL_PENDING)
+            ->where('slideshow_state', '!=', self::SLIDESHOW_REMOVED);
     }
 
     public function scopeReady($query)

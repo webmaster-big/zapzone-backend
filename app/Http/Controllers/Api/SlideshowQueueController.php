@@ -50,6 +50,9 @@ class SlideshowQueueController extends Controller
                 'past' => $past->map(fn ($queue) => $this->presentQueue($queue, $location, false))->values(),
                 'settings' => [
                     'slideshow_enabled' => $setting->slideshow_enabled,
+                    'slideshow_requires_approval' => $setting->slideshow_requires_approval,
+                    'slideshow_auto_add_kiosk' => $setting->slideshow_auto_add_kiosk,
+                    'slideshow_auto_add_staff' => $setting->slideshow_auto_add_staff,
                     'slideshow_duration_seconds' => $setting->slideshow_duration_seconds,
                     'slideshow_url' => $setting->slideshowUrl(),
                     'slideshow_passcode' => (string) $setting->slideshow_passcode,
@@ -152,12 +155,13 @@ class SlideshowQueueController extends Controller
 
         if ($include) {
             $queue = SlideshowQueue::activeFor($photo->location);
+            $setting = LocationPhotoSetting::forLocation($photo->location);
 
-            $photo->update([
+            $photo->update(array_merge([
                 'slideshow_eligible' => true,
                 'slideshow_state' => Photo::SLIDESHOW_VISIBLE,
                 'slideshow_queue_id' => $queue->id,
-            ]);
+            ], $setting->approvalAttributes($this->resolveAuthUser($request)?->id)));
         } else {
             $photo->update([
                 'slideshow_eligible' => false,
@@ -187,6 +191,109 @@ class SlideshowQueueController extends Controller
                 ? 'Added to the venue slideshow. It appears on the screen within a few seconds.'
                 : 'Removed from the venue slideshow.',
             'data' => $this->presentPhoto($photo->fresh()),
+        ]);
+    }
+
+    public function setApproval(Request $request, Photo $photo): JsonResponse
+    {
+        if (!$this->authorizeRecordScope($photo)) {
+            return $this->forbidden();
+        }
+
+        $validated = $request->validate([
+            'status' => ['required', Rule::in([Photo::APPROVAL_APPROVED, Photo::APPROVAL_REJECTED, Photo::APPROVAL_PENDING])],
+        ]);
+
+        $status = $validated['status'];
+
+        if ($status === Photo::APPROVAL_APPROVED && !$photo->isReady()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This photo is not ready to show yet.',
+            ], 422);
+        }
+
+        $photo->loadMissing('location');
+        $staffId = $this->resolveAuthUser($request)?->id;
+
+        $changes = [
+            'slideshow_approval_status' => $status,
+            'slideshow_approved_at' => $status === Photo::APPROVAL_PENDING ? null : now(),
+            'slideshow_approved_by' => $status === Photo::APPROVAL_PENDING ? null : $staffId,
+        ];
+
+        if ($status === Photo::APPROVAL_APPROVED) {
+            $changes['slideshow_eligible'] = true;
+
+            if ($photo->slideshow_state === Photo::SLIDESHOW_REMOVED) {
+                $changes['slideshow_state'] = Photo::SLIDESHOW_VISIBLE;
+            }
+
+            if ($photo->slideshow_queue_id === null) {
+                $changes['slideshow_queue_id'] = SlideshowQueue::activeFor($photo->location)->id;
+            }
+        }
+
+        $photo->update($changes);
+
+        ActivityLog::log(
+            'slideshow_photo_' . $status,
+            'photos',
+            sprintf('%s photo #%d for the venue slideshow', ucfirst($status), $photo->id),
+            $staffId,
+            $photo->location_id,
+            'photo',
+            $photo->id,
+            $changes
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => match ($status) {
+                Photo::APPROVAL_APPROVED => 'Approved. It appears on the screen within a few seconds.',
+                Photo::APPROVAL_REJECTED => 'Rejected. It stays off every public display.',
+                default => 'Sent back for approval. It is off the screen until someone approves it.',
+            },
+            'data' => $this->presentPhoto($photo->fresh()),
+        ]);
+    }
+
+    public function approvePending(Request $request, SlideshowQueue $slideshowQueue): JsonResponse
+    {
+        if (!$this->authorizeRecordScope($slideshowQueue)) {
+            return $this->forbidden();
+        }
+
+        $staffId = $this->resolveAuthUser($request)?->id;
+        $ids = $slideshowQueue->photosAwaitingApproval()->pluck('photos.id')->all();
+
+        if ($ids !== []) {
+            Photo::whereIn('id', $ids)->update([
+                'slideshow_approval_status' => Photo::APPROVAL_APPROVED,
+                'slideshow_approved_at' => now(),
+                'slideshow_approved_by' => $staffId,
+            ]);
+
+            ActivityLog::log(
+                'slideshow_photos_approved',
+                'photos',
+                sprintf('Approved %d waiting photo(s) for the venue slideshow', count($ids)),
+                $staffId,
+                $slideshowQueue->location_id,
+                'slideshow_queue',
+                $slideshowQueue->id,
+                ['photo_ids' => $ids]
+            );
+        }
+
+        $slideshowQueue->loadMissing('location');
+
+        return response()->json([
+            'success' => true,
+            'message' => $ids === []
+                ? 'Nothing was waiting for approval.'
+                : sprintf('Approved %d photo%s.', count($ids), count($ids) === 1 ? '' : 's'),
+            'data' => $this->presentQueue($slideshowQueue->fresh(), $slideshowQueue->location, true),
         ]);
     }
 
@@ -246,7 +353,7 @@ class SlideshowQueueController extends Controller
     {
         $photos = $withPhotos
             ? $queue->photos()
-                ->with('session')
+                ->with('session', 'approver')
                 ->where('processing_status', Photo::PROCESSING_READY)
                 ->whereNull('purged_at')
                 ->orderByDesc('slideshow_priority')
@@ -267,6 +374,7 @@ class SlideshowQueueController extends Controller
                 : null,
             'total_photos' => $queue->photos()->whereNull('purged_at')->count(),
             'visible_photos' => $queue->visiblePhotos()->count(),
+            'awaiting_approval' => $queue->photosAwaitingApproval()->count(),
             'photos' => $photos->map(fn (Photo $photo) => array_merge($this->presentPhoto($photo), [
                 'session_source' => $photo->session?->source,
             ]))->values(),

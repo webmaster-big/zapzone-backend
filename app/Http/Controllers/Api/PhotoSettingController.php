@@ -7,9 +7,11 @@ use App\Http\Traits\ScopesByAuthUser;
 use App\Models\ActivityLog;
 use App\Models\Location;
 use App\Models\LocationPhotoSetting;
+use App\Models\Photo;
 use App\Models\PhotoDelivery;
 use App\Models\PhotoMessageTemplate;
 use App\Models\PhotoSession;
+use App\Models\SlideshowQueue;
 use App\Services\PhotoDeliveryService;
 use App\Support\OperatingDay;
 use Illuminate\Http\JsonResponse;
@@ -77,6 +79,9 @@ class PhotoSettingController extends Controller
             'slideshow_enabled' => ['nullable', 'boolean'],
             'kiosk_countdown_seconds' => ['nullable', 'integer', Rule::in(LocationPhotoSetting::COUNTDOWN_OPTIONS)],
             'slideshow_duration_seconds' => ['nullable', 'integer', Rule::in(LocationPhotoSetting::SLIDESHOW_DURATIONS)],
+            'slideshow_requires_approval' => ['nullable', 'boolean'],
+            'slideshow_auto_add_kiosk' => ['nullable', 'boolean'],
+            'slideshow_auto_add_staff' => ['nullable', 'boolean'],
             'retention_days' => ['nullable', 'integer', 'min:1', 'max:730'],
             'date_format' => ['nullable', Rule::in(LocationPhotoSetting::DATE_FORMATS)],
             'date_position' => ['nullable', Rule::in(LocationPhotoSetting::DATE_POSITIONS)],
@@ -102,13 +107,27 @@ class PhotoSettingController extends Controller
         if ($request->has('failure_notify_email') && $request->input('failure_notify_email') === null) {
             $changes['failure_notify_email'] = null;
         }
-        foreach (['kiosk_enabled', 'slideshow_enabled'] as $flag) {
+        foreach ([
+            'kiosk_enabled',
+            'slideshow_enabled',
+            'slideshow_requires_approval',
+            'slideshow_auto_add_kiosk',
+            'slideshow_auto_add_staff',
+        ] as $flag) {
             if ($request->has($flag)) {
                 $changes[$flag] = $request->boolean($flag);
             }
         }
 
+        $approvalTurnedOff = array_key_exists('slideshow_requires_approval', $changes)
+            && $changes['slideshow_requires_approval'] === false
+            && $setting->slideshow_requires_approval === true;
+
         $setting->update($changes);
+
+        if ($approvalTurnedOff) {
+            $this->releaseWaitingPhotos($location, $this->resolveAuthUser($request)?->id);
+        }
 
         ActivityLog::log(
             'photo_settings_updated',
@@ -125,6 +144,33 @@ class PhotoSettingController extends Controller
             'success' => true,
             'data' => $setting->fresh()->toAdminArray(),
         ]);
+    }
+
+    protected function releaseWaitingPhotos(Location $location, ?int $staffId): void
+    {
+        $queue = SlideshowQueue::activeFor($location);
+        $ids = $queue->photosAwaitingApproval()->pluck('photos.id')->all();
+
+        if ($ids === []) {
+            return;
+        }
+
+        Photo::whereIn('id', $ids)->update([
+            'slideshow_approval_status' => Photo::APPROVAL_APPROVED,
+            'slideshow_approved_at' => now(),
+            'slideshow_approved_by' => $staffId,
+        ]);
+
+        ActivityLog::log(
+            'slideshow_photos_approved',
+            'photos',
+            sprintf('Approval was turned off, releasing %d waiting photo(s) onto the venue slideshow', count($ids)),
+            $staffId,
+            $location->id,
+            'slideshow_queue',
+            $queue->id,
+            ['photo_ids' => $ids]
+        );
     }
 
     public function rotatePasscode(Request $request): JsonResponse

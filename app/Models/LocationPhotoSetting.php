@@ -29,6 +29,9 @@ class LocationPhotoSetting extends Model
         'kiosk_passcode',
         'slideshow_passcode',
         'slideshow_duration_seconds',
+        'slideshow_requires_approval',
+        'slideshow_auto_add_kiosk',
+        'slideshow_auto_add_staff',
         'retention_days',
         'date_format',
         'date_position',
@@ -46,6 +49,9 @@ class LocationPhotoSetting extends Model
         'slideshow_passcode' => 'encrypted',
         'kiosk_countdown_seconds' => 'integer',
         'slideshow_duration_seconds' => 'integer',
+        'slideshow_requires_approval' => 'boolean',
+        'slideshow_auto_add_kiosk' => 'boolean',
+        'slideshow_auto_add_staff' => 'boolean',
         'retention_days' => 'integer',
         'date_font_size' => 'integer',
         'date_margin' => 'integer',
@@ -62,6 +68,9 @@ class LocationPhotoSetting extends Model
         'slideshow_enabled' => true,
         'kiosk_countdown_seconds' => 10,
         'slideshow_duration_seconds' => 8,
+        'slideshow_requires_approval' => true,
+        'slideshow_auto_add_kiosk' => true,
+        'slideshow_auto_add_staff' => false,
         'retention_days' => 90,
         'date_format' => 'M j, Y',
         'date_position' => 'bottom_right',
@@ -108,6 +117,30 @@ class LocationPhotoSetting extends Model
         return $this->slideshow_passcode !== null
             && $candidate !== null
             && hash_equals((string) $this->slideshow_passcode, trim($candidate));
+    }
+
+    public function approvalAttributes(?int $approvedBy = null): array
+    {
+        if ($this->slideshow_requires_approval && $approvedBy === null) {
+            return [
+                'slideshow_approval_status' => Photo::APPROVAL_PENDING,
+                'slideshow_approved_at' => null,
+                'slideshow_approved_by' => null,
+            ];
+        }
+
+        return [
+            'slideshow_approval_status' => Photo::APPROVAL_APPROVED,
+            'slideshow_approved_at' => now(),
+            'slideshow_approved_by' => $approvedBy,
+        ];
+    }
+
+    public function autoAddsSource(string $source): bool
+    {
+        return $source === PhotoSession::SOURCE_KIOSK
+            ? (bool) $this->slideshow_auto_add_kiosk
+            : (bool) $this->slideshow_auto_add_staff;
     }
 
     public function kioskUrl(): string

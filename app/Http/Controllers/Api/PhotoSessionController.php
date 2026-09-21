@@ -374,7 +374,11 @@ class PhotoSessionController extends Controller
         }
 
         $photoSession->startQrWindow();
-        $this->applySlideshowChoice($photoSession, $request->boolean('slideshow_opt_in'));
+        $this->applySlideshowChoice(
+            $photoSession,
+            $request->has('slideshow_opt_in') ? $request->boolean('slideshow_opt_in') : null,
+            $this->resolveAuthUser($request)?->id
+        );
 
         if ($validated['method'] === PhotoSession::DELIVERY_STAFF_QR) {
             $photoSession->forceFill([
@@ -539,6 +543,9 @@ class PhotoSessionController extends Controller
                 'active_overlay' => $overlay ? ['id' => $overlay->id, 'name' => $overlay->name] : null,
                 'has_overlay' => $overlay !== null,
                 'slideshow_queue_id' => $queue->id,
+                'slideshow_enabled' => $setting->slideshow_enabled,
+                'slideshow_requires_approval' => $setting->slideshow_requires_approval,
+                'slideshow_auto_add_staff' => $setting->slideshow_auto_add_staff,
                 'limits' => [
                     'staff_max_photos' => PhotoSession::STAFF_MAX_PHOTOS,
                     'kiosk_max_photos' => PhotoSession::KIOSK_MAX_PHOTOS,
@@ -557,30 +564,41 @@ class PhotoSessionController extends Controller
      * Staff can put a session's photos on the venue screen at delivery time. Kiosk visitors
      * choose this for themselves; before this, a staff capture had no way onto the slideshow.
      */
-    protected function applySlideshowChoice(PhotoSession $session, bool $optIn): void
+    protected function applySlideshowChoice(PhotoSession $session, ?bool $optIn, ?int $staffId = null): void
     {
-        $session->slideshow_opt_in = $optIn;
+        $session->loadMissing('location');
+        $setting = LocationPhotoSetting::forLocation($session->location);
+        $chosen = $optIn ?? $setting->autoAddsSource($session->source);
 
-        if (!$optIn) {
+        $session->slideshow_opt_in = $chosen;
+
+        if (!$chosen) {
             return;
         }
 
-        $session->loadMissing('location');
         $queue = SlideshowQueue::activeFor($session->location);
+        $approval = $setting->approvalAttributes();
 
         foreach ($session->photos()->ready()->get() as $photo) {
-            $photo->update([
+            $photo->update(array_merge([
                 'slideshow_eligible' => true,
                 'slideshow_state' => Photo::SLIDESHOW_VISIBLE,
                 'slideshow_queue_id' => $queue->id,
-            ]);
+            ], $approval));
         }
 
         ActivityLog::log(
-            'slideshow_photo_added',
+            $approval['slideshow_approval_status'] === Photo::APPROVAL_PENDING
+                ? 'slideshow_photos_awaiting_approval'
+                : 'slideshow_photo_added',
             'photos',
-            sprintf('Added the photos from session #%d to the venue slideshow', $session->id),
-            $this->resolveAuthUser()?->id,
+            sprintf(
+                $approval['slideshow_approval_status'] === Photo::APPROVAL_PENDING
+                    ? 'Sent the photos from session #%d to the slideshow approval queue'
+                    : 'Added the photos from session #%d to the venue slideshow',
+                $session->id
+            ),
+            $staffId ?? $this->resolveAuthUser()?->id,
             $session->location_id,
             'photo_session',
             $session->id

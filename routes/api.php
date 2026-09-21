@@ -839,6 +839,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('slideshow-photos/{photo}',                [SlideshowQueueController::class, 'updatePhoto'])->whereNumber('photo');
         // Put any photo on the venue screen, staff captures included, or take it off.
         Route::post('slideshow-photos/{photo}/inclusion',        [SlideshowQueueController::class, 'setInclusion'])->whereNumber('photo');
+        Route::post('slideshow-photos/{photo}/approval',         [SlideshowQueueController::class, 'setApproval'])->whereNumber('photo');
+        Route::post('slideshow-queues/{slideshowQueue}/approve-pending', [SlideshowQueueController::class, 'approvePending'])->whereNumber('slideshowQueue');
 
         // Overlays
         Route::get('photo-overlays',                   [PhotoOverlayController::class, 'index'])->middleware('photo.staff:company_admin|admin|location_manager');
