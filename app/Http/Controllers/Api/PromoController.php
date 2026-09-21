@@ -11,14 +11,18 @@ use App\Models\Promo;
 use App\Services\DiscountService;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class PromoController extends Controller
 {
     use ScopesByAuthUser;
     use RecordsPageAnalytics;
+
+    private const MULTI_LOCATION_ROLES = ['company_admin', 'admin'];
 
     public function index(Request $request): JsonResponse
     {
@@ -106,16 +110,16 @@ class PromoController extends Controller
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'code' => 'sometimes|string|unique:promos',
+            'code' => ['sometimes', 'string', 'max:255', Rule::unique('promos')->where(fn ($q) => $q->where('deleted', false))],
             'name' => 'required|string|max:255',
             'type' => ['required', Rule::in(['fixed', 'percentage'])],
             'value' => 'required|numeric|min:0',
             'start_date' => 'required|date',
-            'end_date' => 'required|date|after:start_date',
+            'end_date' => 'required|date|after_or_equal:start_date',
             'usage_limit_total' => 'nullable|integer|min:1',
-            'usage_limit_per_user' => 'integer|min:1',
+            'usage_limit_per_user' => 'nullable|integer|min:1',
             'description' => 'nullable|string',
-            'created_by' => 'required|exists:users,id',
+            'created_by' => 'sometimes|nullable|integer',
             'location_ids' => 'nullable|array',
             'location_ids.*' => 'integer|exists:locations,id',
             'package_ids' => 'nullable|array',
@@ -139,13 +143,50 @@ class PromoController extends Controller
             }
         }
 
-        if (!isset($validated['code'])) {
+        if (isset($validated['code'])) {
+            $validated['code'] = trim($validated['code']);
+        }
+
+        if (empty($validated['code'])) {
             do {
                 $validated['code'] = 'PROMO' . strtoupper(Str::random(6));
             } while (Promo::where('code', $validated['code'])->exists());
         }
 
-        $promo = Promo::create($validated);
+        $validated['location_ids'] = $this->locationIdsForActor($request, $validated['location_ids'] ?? null);
+        $validated['created_by'] = $this->resolveAuthUser($request)?->id ?? ($validated['created_by'] ?? null);
+
+        foreach (['package_ids', 'attraction_ids', 'event_ids'] as $axis) {
+            $validated[$axis] = $validated[$axis] ?? null;
+        }
+
+        if (!array_key_exists('usage_limit_per_user', $validated) || $validated['usage_limit_per_user'] === null) {
+            $validated['usage_limit_per_user'] = 1;
+        }
+
+        $freedFrom = null;
+
+        $promo = DB::transaction(function () use ($request, $validated, &$freedFrom) {
+            $freedFrom = $this->freeRetiredCode($request, $validated['code']);
+
+            return Promo::create($validated);
+        });
+
+        ActivityLog::log(
+            action: 'Promo Created',
+            category: 'create',
+            description: "Promo code '{$promo->code}' was created",
+            userId: $this->resolveAuthUser($request)?->id,
+            locationId: $this->promoLogLocation($promo),
+            entityType: 'promo',
+            entityId: $promo->id,
+            metadata: array_merge([
+                'created_by' => $this->actorMeta($request),
+                'promo_details' => $this->promoSnapshot($promo),
+                'targeting' => $this->targetingSnapshot($promo),
+            ], $freedFrom === null ? [] : ['reused_code_retired_from_promo_id' => $freedFrom])
+        );
+
         $promo->load(['creator']);
 
         return response()->json([
@@ -153,6 +194,193 @@ class PromoController extends Controller
             'message' => 'Promo created successfully',
             'data' => $promo,
         ], 201);
+    }
+
+    protected function actorMeta(Request $request): array
+    {
+        $user = $this->resolveAuthUser($request);
+
+        return [
+            'user_id' => $user?->id,
+            'name' => $user ? trim(($user->first_name ?? '') . ' ' . ($user->last_name ?? '')) : null,
+            'email' => $user?->email,
+            'role' => $user?->role,
+        ];
+    }
+
+    protected function promoSnapshot(Promo $promo): array
+    {
+        return [
+            'code' => $promo->code,
+            'name' => $promo->name,
+            'type' => $promo->type,
+            'value' => (string) $promo->value,
+            'start_date' => $promo->start_date?->toDateString(),
+            'end_date' => $promo->end_date?->toDateString(),
+            'usage_limit_total' => $promo->usage_limit_total,
+            'usage_limit_per_user' => $promo->usage_limit_per_user,
+            'status' => $promo->status,
+        ];
+    }
+
+    protected function targetingSnapshot(Promo $promo): array
+    {
+        return [
+            'location_ids' => Promo::normalizeIds($promo->location_ids),
+            'package_ids' => Promo::normalizeIds($promo->package_ids),
+            'attraction_ids' => Promo::normalizeIds($promo->attraction_ids),
+            'event_ids' => Promo::normalizeIds($promo->event_ids),
+        ];
+    }
+
+    protected function promoLogLocation(Promo $promo): ?int
+    {
+        $targets = Promo::normalizeIds($promo->location_ids);
+
+        return $targets !== null && count($targets) === 1 ? $targets[0] : null;
+    }
+
+    protected function freeRetiredCode(Request $request, string $code): ?int
+    {
+        $retired = Promo::where('code', $code)->where('deleted', true)->lockForUpdate()->first();
+
+        if (!$retired) {
+            return null;
+        }
+
+        $user = $this->resolveAuthUser($request);
+        $sameCompany = $user === null
+            || $user->company_id === null
+            || $this->promoBelongsToCompany($retired, (int) $user->company_id);
+
+        if (!$sameCompany) {
+            throw ValidationException::withMessages([
+                'code' => ['That code is not available. Please choose another one.'],
+            ]);
+        }
+
+        $base = substr($code, 0, 200) . '-retired-' . $retired->id;
+        $freed = $base;
+        $attempt = 1;
+
+        while (Promo::where('code', $freed)->whereKeyNot($retired->id)->exists()) {
+            $freed = $base . '-' . $attempt;
+            $attempt++;
+        }
+
+        $retired->forceFill(['code' => $freed])->save();
+
+        ActivityLog::log(
+            action: 'Promo Code Freed',
+            category: 'update',
+            description: "Deleted promo '{$code}' was renamed to '{$freed}' so the code could be issued again",
+            userId: $this->resolveAuthUser($request)?->id,
+            locationId: $this->promoLogLocation($retired),
+            entityType: 'promo',
+            entityId: $retired->id,
+            metadata: [
+                'freed_by' => $this->actorMeta($request),
+                'previous_code' => $code,
+                'new_code' => $freed,
+            ]
+        );
+
+        return $retired->id;
+    }
+
+    protected function promoBelongsToCompany(Promo $promo, int $companyId): bool
+    {
+        $creatorCompanyId = $promo->creator?->company_id;
+
+        if ($creatorCompanyId !== null) {
+            return (int) $creatorCompanyId === $companyId;
+        }
+
+        $targets = Promo::normalizeIds($promo->location_ids);
+
+        if ($targets === null) {
+            return true;
+        }
+
+        $companyLocationIds = Location::where('company_id', $companyId)->pluck('id')->map(fn ($id) => (int) $id)->all();
+
+        return array_diff($targets, $companyLocationIds) === [];
+    }
+
+    protected function locationIdsForActor(Request $request, ?array $requested): ?array
+    {
+        $requested = Promo::normalizeIds($requested);
+        $user = $this->resolveAuthUser($request);
+
+        if (!$user) {
+            return $requested;
+        }
+
+        if (!in_array((string) $user->role, self::MULTI_LOCATION_ROLES, true)) {
+            $own = $user->location_id ? (int) $user->location_id : null;
+
+            if ($own === null) {
+                throw ValidationException::withMessages([
+                    'location_ids' => ['Your account is not assigned to a location, so it cannot create promo codes. Please ask an administrator.'],
+                ]);
+            }
+
+            if ($requested !== null && $requested !== [$own]) {
+                $name = Location::find($own)?->name ?? 'your location';
+
+                throw ValidationException::withMessages([
+                    'location_ids' => ["You can only create promo codes for {$name}. Ask a company admin for a code that covers other locations."],
+                ]);
+            }
+
+            return [$own];
+        }
+
+        if ($requested !== null && $user->company_id) {
+            $allowed = Location::where('company_id', $user->company_id)->pluck('id')->map(fn ($id) => (int) $id)->all();
+            $outside = array_diff($requested, $allowed);
+
+            if ($outside !== []) {
+                throw ValidationException::withMessages([
+                    'location_ids' => ['One of those locations does not belong to your company.'],
+                ]);
+            }
+        }
+
+        return $requested;
+    }
+
+    protected function assertCanManageBatch(Request $request, string $batchId): void
+    {
+        foreach (Promo::where('batch_id', $batchId)->get() as $promo) {
+            $this->assertCanManage($request, $promo);
+        }
+    }
+
+    protected function encodeIds(?array $ids): ?string
+    {
+        $normalized = Promo::normalizeIds($ids);
+
+        return $normalized === null ? null : json_encode($normalized);
+    }
+
+    protected function assertCanManage(Request $request, Promo $promo): void
+    {
+        $user = $this->resolveAuthUser($request);
+
+        if (!$user || in_array((string) $user->role, self::MULTI_LOCATION_ROLES, true)) {
+            return;
+        }
+
+        $own = $user->location_id ? (int) $user->location_id : null;
+        $target = Promo::normalizeIds($promo->location_ids);
+        $theirs = $promo->created_by !== null && (int) $promo->created_by === (int) $user->id;
+
+        if (!$theirs && ($own === null || $target !== [$own])) {
+            throw ValidationException::withMessages([
+                'location_ids' => ['This promo code covers more than your location, so only a company admin can change it.'],
+            ]);
+        }
     }
 
     public function show(Promo $promo): JsonResponse
@@ -167,13 +395,15 @@ class PromoController extends Controller
 
     public function update(Request $request, Promo $promo): JsonResponse
     {
+        $this->assertCanManage($request, $promo);
+
         $validated = $request->validate([
-            'code' => 'sometimes|string|unique:promos,code,' . $promo->id,
+            'code' => ['sometimes', 'string', 'max:255', Rule::unique('promos')->ignore($promo->id)->where(fn ($q) => $q->where('deleted', false))],
             'name' => 'sometimes|string|max:255',
             'type' => ['sometimes', Rule::in(['fixed', 'percentage'])],
             'value' => 'sometimes|numeric|min:0',
             'start_date' => 'sometimes|date',
-            'end_date' => 'sometimes|date|after:start_date',
+            'end_date' => 'sometimes|date|after_or_equal:start_date',
             'usage_limit_total' => 'sometimes|nullable|integer|min:1',
             'usage_limit_per_user' => 'sometimes|integer|min:1',
             'status' => ['sometimes', Rule::in(['active', 'inactive', 'expired', 'exhausted'])],
@@ -188,11 +418,16 @@ class PromoController extends Controller
             'event_ids.*' => 'integer|exists:events,id',
         ]);
 
-        if (($validated['type'] ?? $promo->type) === 'percentage' && isset($validated['value']) && (float) $validated['value'] > 100) {
+        if (($validated['type'] ?? $promo->type) === 'percentage'
+            && (float) ($validated['value'] ?? $promo->value) > 100) {
             return response()->json([
                 'success' => false,
                 'message' => 'Percentage discount cannot exceed 100%',
             ], 422);
+        }
+
+        if (array_key_exists('code', $validated)) {
+            $validated['code'] = trim($validated['code']);
         }
 
         foreach (['location_ids', 'package_ids', 'attraction_ids', 'event_ids'] as $field) {
@@ -201,7 +436,50 @@ class PromoController extends Controller
             }
         }
 
-        $promo->update($validated);
+        if (array_key_exists('location_ids', $validated)) {
+            $validated['location_ids'] = $this->locationIdsForActor($request, $validated['location_ids']);
+        }
+
+        if (array_key_exists('usage_limit_per_user', $validated) && $validated['usage_limit_per_user'] === null) {
+            unset($validated['usage_limit_per_user']);
+        }
+
+        $before = $this->promoSnapshot($promo) + $this->targetingSnapshot($promo);
+
+        DB::transaction(function () use ($request, $validated, $promo) {
+            if (array_key_exists('code', $validated)) {
+                $this->freeRetiredCode($request, $validated['code']);
+            }
+
+            $promo->update($validated);
+        });
+
+        $promo->refresh();
+        $after = $this->promoSnapshot($promo) + $this->targetingSnapshot($promo);
+        $changed = [];
+
+        foreach ($after as $field => $value) {
+            if (($before[$field] ?? null) !== $value) {
+                $changed[$field] = ['from' => $before[$field] ?? null, 'to' => $value];
+            }
+        }
+
+        ActivityLog::log(
+            action: 'Promo Updated',
+            category: 'update',
+            description: $changed === []
+                ? "Promo code '{$promo->code}' was saved with no changes"
+                : sprintf("Promo code '%s' was updated (%s)", $promo->code, implode(', ', array_keys($changed))),
+            userId: $this->resolveAuthUser($request)?->id,
+            locationId: $this->promoLogLocation($promo),
+            entityType: 'promo',
+            entityId: $promo->id,
+            metadata: [
+                'updated_by' => $this->actorMeta($request),
+                'changes' => $changed,
+            ]
+        );
+
         $promo->load(['creator']);
 
         return response()->json([
@@ -211,8 +489,10 @@ class PromoController extends Controller
         ]);
     }
 
-    public function destroy(Promo $promo): JsonResponse
+    public function destroy(Request $request, Promo $promo): JsonResponse
     {
+        $this->assertCanManage($request, $promo);
+
         $promoCode = $promo->code;
         $promoId = $promo->id;
 
@@ -339,10 +619,27 @@ class PromoController extends Controller
         ]);
     }
 
-    public function toggleStatus(Promo $promo): JsonResponse
+    public function toggleStatus(Request $request, Promo $promo): JsonResponse
     {
+        $this->assertCanManage($request, $promo);
+
+        $previousStatus = $promo->status;
         $newStatus = $promo->status === 'active' ? 'inactive' : 'active';
         $promo->update(['status' => $newStatus]);
+
+        ActivityLog::log(
+            action: $newStatus === 'active' ? 'Promo Activated' : 'Promo Deactivated',
+            category: 'update',
+            description: sprintf("Promo code '%s' was %s", $promo->code, $newStatus === 'active' ? 'activated' : 'deactivated'),
+            userId: $this->resolveAuthUser($request)?->id,
+            locationId: $this->promoLogLocation($promo),
+            entityType: 'promo',
+            entityId: $promo->id,
+            metadata: [
+                'changed_by' => $this->actorMeta($request),
+                'status' => ['from' => $previousStatus, 'to' => $newStatus],
+            ]
+        );
 
         return response()->json([
             'success' => true,
@@ -358,14 +655,25 @@ class PromoController extends Controller
             'type' => ['required', Rule::in(['fixed', 'percentage'])],
             'value' => 'required|numeric|min:0',
             'start_date' => 'required|date',
-            'end_date' => 'required|date|after:start_date',
+            'end_date' => 'required|date|after_or_equal:start_date',
             'description' => 'nullable|string',
-            'created_by' => 'required|exists:users,id',
+            'created_by' => 'sometimes|nullable|integer',
             'quantity' => 'required|integer|min:1|max:1000',
             'code_prefix' => 'nullable|string|max:10|alpha_num',
             'code_length' => 'nullable|integer|min:4|max:16',
             'usage_limit_per_code' => 'nullable|integer|min:1',
+            'location_ids' => 'nullable|array',
+            'location_ids.*' => 'integer|exists:locations,id',
+            'package_ids' => 'nullable|array',
+            'package_ids.*' => 'integer|exists:packages,id',
+            'attraction_ids' => 'nullable|array',
+            'attraction_ids.*' => 'integer|exists:attractions,id',
+            'event_ids' => 'nullable|array',
+            'event_ids.*' => 'integer|exists:events,id',
         ]);
+
+        $locationIds = $this->locationIdsForActor($request, $validated['location_ids'] ?? null);
+        $createdBy = $this->resolveAuthUser($request)?->id ?? ($validated['created_by'] ?? null);
 
         if ($validated['type'] === 'percentage' && (float) $validated['value'] > 100) {
             return response()->json([
@@ -419,8 +727,12 @@ class PromoController extends Controller
                 'current_usage' => 0,
                 'status' => 'active',
                 'description' => $validated['description'] ?? null,
-                'created_by' => $validated['created_by'],
+                'created_by' => $createdBy,
                 'deleted' => false,
+                'location_ids' => $locationIds === null ? null : json_encode($locationIds),
+                'package_ids' => $this->encodeIds($validated['package_ids'] ?? null),
+                'attraction_ids' => $this->encodeIds($validated['attraction_ids'] ?? null),
+                'event_ids' => $this->encodeIds($validated['event_ids'] ?? null),
                 'created_at' => $now,
                 'updated_at' => $now,
             ];
@@ -589,12 +901,29 @@ class PromoController extends Controller
         ]);
     }
 
-    public function deactivateBatch(string $batchId): JsonResponse
+    public function deactivateBatch(Request $request, string $batchId): JsonResponse
     {
+        $this->assertCanManageBatch($request, $batchId);
+
         $count = Promo::where('batch_id', $batchId)
             ->where('deleted', false)
             ->where('status', 'active')
             ->update(['status' => 'inactive']);
+
+        ActivityLog::log(
+            action: 'Bulk Promo Batch Deactivated',
+            category: 'update',
+            description: "Deactivated batch {$batchId} ({$count} codes)",
+            userId: $this->resolveAuthUser($request)?->id,
+            locationId: null,
+            entityType: 'promo',
+            entityId: null,
+            metadata: [
+                'deactivated_by' => $this->actorMeta($request),
+                'batch_id' => $batchId,
+                'deactivated_count' => $count,
+            ]
+        );
 
         return response()->json([
             'success' => true,
@@ -603,8 +932,10 @@ class PromoController extends Controller
         ]);
     }
 
-    public function destroyBatch(string $batchId): JsonResponse
+    public function destroyBatch(Request $request, string $batchId): JsonResponse
     {
+        $this->assertCanManageBatch($request, $batchId);
+
         $count = Promo::where('batch_id', $batchId)
             ->where('deleted', false)
             ->update(['deleted' => true, 'status' => 'inactive']);
