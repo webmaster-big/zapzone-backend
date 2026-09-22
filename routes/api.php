@@ -13,6 +13,7 @@ use App\Http\Controllers\Api\LocationChangeRequestController;
 use App\Http\Controllers\Api\BookingInvitationController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\CompanyController;
+use App\Http\Controllers\Api\ClientErrorController;
 use App\Http\Controllers\Api\CheckoutConcernController;
 use App\Http\Controllers\Api\ContactController;
 use App\Http\Controllers\Api\CustomerController;
@@ -92,6 +93,8 @@ Route::get('waivers/bulk/{manageToken}',             [WaiverPublicController::cl
 Route::post('waivers/bulk/{manageToken}/recipients', [WaiverPublicController::class, 'bulkAddRecipients'])->middleware('throttle:30,1');
 Route::post('waivers/bulk/{manageToken}/send',       [WaiverPublicController::class, 'bulkSend'])->middleware('throttle:10,1');
 Route::post('waivers/bulk/{manageToken}/recipients/{recipientId}/resend', [WaiverPublicController::class, 'bulkResendRecipient'])->middleware('throttle:10,1')->whereNumber('recipientId');
+
+Route::post('client-errors', [ClientErrorController::class, 'store'])->middleware('throttle:client-errors');
 
 // --- Public photo flows (passcode-protected devices and token-addressed customer pages, no auth) ---
 Route::prefix('photos')->group(function () {

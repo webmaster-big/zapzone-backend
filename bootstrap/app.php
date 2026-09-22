@@ -55,6 +55,10 @@ return Application::configure(basePath: dirname(__DIR__))
             \App\Http\Middleware\Cors::class,
         ]);
 
+        $middleware->api(prepend: [
+            \App\Http\Middleware\LogApiFailures::class,
+        ]);
+
         $middleware->alias([
             'photo.staff' => \App\Http\Middleware\EnsurePhotoStaff::class,
             'staff' => \App\Http\Middleware\EnsureStaff::class,
