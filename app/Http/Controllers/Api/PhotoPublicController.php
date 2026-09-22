@@ -279,25 +279,37 @@ class PhotoPublicController extends Controller
         ])->save();
 
         $queue = SlideshowQueue::activeFor($location, OperatingDay::forLocation($location, $now));
+        $setting = LocationPhotoSetting::forLocation($location);
+        $approval = $setting->approvalAttributes();
 
-        $photo->update([
+        $photo->update(array_merge([
             'slideshow_eligible' => $optIn,
             'slideshow_queue_id' => $optIn ? $queue->id : null,
             'slideshow_state' => Photo::SLIDESHOW_VISIBLE,
-        ]);
+        ], $optIn ? $approval : []));
+
+        $awaitingApproval = $optIn && $approval['slideshow_approval_status'] === Photo::APPROVAL_PENDING;
 
         ActivityLog::log(
             'kiosk_photo_accepted',
             'photos',
             sprintf(
                 'A kiosk visitor accepted their photo%s',
-                $optIn ? ' and allowed it on the venue slideshow' : ' and kept it off the slideshow'
+                match (true) {
+                    $awaitingApproval => ' and asked for it on the venue slideshow, which is waiting for staff approval',
+                    $optIn => ' and allowed it on the venue slideshow',
+                    default => ' and kept it off the slideshow',
+                }
             ),
             null,
             $location->id,
             'photo_session',
             $photoSession->id,
-            ['slideshow_opt_in' => $optIn, 'slideshow_queue_id' => $optIn ? $queue->id : null]
+            [
+                'slideshow_opt_in' => $optIn,
+                'slideshow_queue_id' => $optIn ? $queue->id : null,
+                'slideshow_approval_status' => $optIn ? $approval['slideshow_approval_status'] : null,
+            ]
         );
 
         return response()->json([
@@ -653,7 +665,12 @@ class PhotoPublicController extends Controller
             'has_overlay' => $overlay !== null,
             'overlay_name' => $overlay?->name,
             'capture_date_label' => OperatingDay::localNow($location)->format($setting->date_format),
-            'slideshow_tooltip' => 'When selected, this photo may appear on a public screen at this venue.',
+            'slideshow_offered' => (bool) $setting->slideshow_enabled,
+            'slideshow_default_on' => (bool) $setting->slideshow_auto_add_kiosk,
+            'slideshow_requires_approval' => (bool) $setting->slideshow_requires_approval,
+            'slideshow_tooltip' => $setting->slideshow_requires_approval
+                ? 'When selected, this photo goes to our team for approval before it can appear on a screen at this venue.'
+                : 'When selected, this photo may appear on a public screen at this venue.',
             'consent_text' => 'By taking a photo you agree that ' . ($location->company?->name ?? 'Zap Zone')
                 . ' may store it so you can download it, and send it to the contact details you provide on the next screen.',
         ];

@@ -39,6 +39,13 @@ trait PresentsPhotos
             'operating_day' => $photo->operating_day?->toDateString(),
             'slideshow_eligible' => $photo->slideshow_eligible,
             'slideshow_state' => $photo->slideshow_state,
+            'slideshow_approval_status' => $photo->slideshow_approval_status,
+            'slideshow_approved_at' => $photo->slideshow_approved_at?->toIso8601String(),
+            'slideshow_approved_by_name' => $photo->relationLoaded('approver') && $photo->approver
+                ? trim(($photo->approver->first_name ?? '') . ' ' . ($photo->approver->last_name ?? ''))
+                : null,
+            'shows_in_slideshow' => $photo->showsInSlideshow(),
+            'awaiting_approval' => $photo->isAwaitingApproval(),
             'slideshow_priority' => $photo->slideshow_priority,
             'download_count' => $photo->download_count,
             'purged' => $photo->purged_at !== null,

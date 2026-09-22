@@ -253,6 +253,9 @@ class PhotoReportController extends Controller
 
         return [
             'eligible_photos' => (clone $photos)->count(),
+            'approved' => (clone $photos)->where('slideshow_approval_status', Photo::APPROVAL_APPROVED)->count(),
+            'awaiting_approval' => (clone $photos)->where('slideshow_approval_status', Photo::APPROVAL_PENDING)->count(),
+            'rejected' => (clone $photos)->where('slideshow_approval_status', Photo::APPROVAL_REJECTED)->count(),
             'visible' => (clone $photos)->where('slideshow_state', Photo::SLIDESHOW_VISIBLE)->count(),
             'hidden' => (clone $photos)->where('slideshow_state', Photo::SLIDESHOW_HIDDEN)->count(),
             'removed' => (clone $photos)->where('slideshow_state', Photo::SLIDESHOW_REMOVED)->count(),
@@ -263,6 +266,9 @@ class PhotoReportController extends Controller
                 ? round($activeQueues->sum(fn ($queue) => $queue->visiblePhotos()->count()) / $activeQueues->count(), 1)
                 : 0,
             'hide_actions' => (clone $this->logs($request, $from, $to))->where('action', 'slideshow_photo_updated')->count(),
+            'approval_actions' => (clone $this->logs($request, $from, $to))
+                ->whereIn('action', ['slideshow_photo_approved', 'slideshow_photo_rejected', 'slideshow_photos_approved'])
+                ->count(),
         ];
     }
 

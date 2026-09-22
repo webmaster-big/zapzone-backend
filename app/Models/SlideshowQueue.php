@@ -52,9 +52,21 @@ class SlideshowQueue extends Model
         return $this->photos()
             ->where('slideshow_eligible', true)
             ->where('slideshow_state', Photo::SLIDESHOW_VISIBLE)
+            ->where('slideshow_approval_status', Photo::APPROVAL_APPROVED)
             ->where('processing_status', Photo::PROCESSING_READY)
             ->whereNull('purged_at')
             ->orderByDesc('slideshow_priority')
+            ->orderBy('captured_at');
+    }
+
+    public function photosAwaitingApproval(): HasMany
+    {
+        return $this->photos()
+            ->where('slideshow_eligible', true)
+            ->where('slideshow_approval_status', Photo::APPROVAL_PENDING)
+            ->where('slideshow_state', '!=', Photo::SLIDESHOW_REMOVED)
+            ->where('processing_status', Photo::PROCESSING_READY)
+            ->whereNull('purged_at')
             ->orderBy('captured_at');
     }
 
