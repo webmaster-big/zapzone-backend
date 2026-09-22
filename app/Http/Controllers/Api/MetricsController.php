@@ -24,6 +24,8 @@ class MetricsController extends Controller
 
     protected const DEFAULT_TIMEFRAME = 'today';
 
+    protected const LOCATION_NONE = -1;
+
     /**
      * The whole visit days a waiver count should cover for a dashboard timeframe.
      *
@@ -36,6 +38,22 @@ class MetricsController extends Controller
     {
         return app(\App\Services\WaiverMetricsService::class)
             ->periodFor($timeframe, $dateFrom, $dateTo, $timezone);
+    }
+
+    protected function resolveMetricsLocationId(Request $request, $user): ?int
+    {
+        $role = (string) ($user->role ?? '');
+
+        if (!in_array($role, ['company_admin', 'admin'], true)) {
+            return $user->location_id !== null ? (int) $user->location_id : self::LOCATION_NONE;
+        }
+
+        $requested = $request->query('location_id');
+        if ($requested !== null && $requested !== '' && $requested !== 'all') {
+            return (int) $requested;
+        }
+
+        return null;
     }
 
     protected function queryCacheDiscriminator(Request $request): string
@@ -130,16 +148,7 @@ class MetricsController extends Controller
             }
         }
 
-        $locationId = null;
-        if (in_array($user->role, ['location_manager', 'attendant'])) {
-            $locationId = $user->location_id;
-        } else {
-            // company_admin (or higher) may filter to a specific location; omitted/"all" = company-wide
-            $requestedLocation = $request->query('location_id');
-            if ($requestedLocation !== null && $requestedLocation !== '' && $requestedLocation !== 'all') {
-                $locationId = (int) $requestedLocation;
-            }
-        }
+        $locationId = $this->resolveMetricsLocationId($request, $user);
 
         $bookingQuery = Booking::query();
         $purchaseQuery = AttractionPurchase::query();
@@ -767,7 +776,12 @@ class MetricsController extends Controller
     public function attendant(Request $request)
     {
         try {
-            $locationId = $request->query('location_id');
+            $authUser = auth()->user();
+            if (!$authUser) {
+                return response()->json(['success' => false, 'message' => 'Unauthenticated'], 401);
+            }
+
+            $locationId = $this->resolveMetricsLocationId($request, $authUser);
 
             $cacheKey = 'dashboards:attendant:' . (auth()->id() ?? 'x') . ':' . $this->queryCacheDiscriminator($request);
             if (($cached = \App\Support\CacheGroups::get([\App\Support\CacheGroups::DASHBOARDS], $cacheKey)) !== null) {

@@ -273,8 +273,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('ticket-orders/{ticketOrder}/check-in', [TicketOrderController::class, 'checkIn'])->middleware('staff');
     Route::post('ticket-orders/{ticketOrder}/cancel', [TicketOrderController::class, 'cancel']);
 
-    Route::get('metrics/dashboard/{user}', [MetricsController::class, 'dashboard']);
-    Route::get('metrics/attendant', [MetricsController::class, 'attendant']);
+    Route::get('metrics/dashboard/{user}', [MetricsController::class, 'dashboard'])->middleware('staff');
+    Route::get('metrics/attendant', [MetricsController::class, 'attendant'])->middleware('staff');
 
     Route::get('analytics/company', [AnalyticsController::class, 'getCompanyAnalytics'])->middleware('staff');
     Route::post('analytics/company/export', [AnalyticsController::class, 'exportAnalytics']);
