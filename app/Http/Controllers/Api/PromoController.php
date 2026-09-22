@@ -57,7 +57,11 @@ class PromoController extends Controller
         }
 
         if ($request->has('status')) {
-            $query->where('status', $request->status);
+            if ($request->status !== 'all') {
+                $query->where('status', $request->status);
+            }
+
+            $query->where('deleted', false);
         } else {
             $query->active();
         }
@@ -110,7 +114,7 @@ class PromoController extends Controller
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'code' => ['sometimes', 'string', 'max:255', Rule::unique('promos')->where(fn ($q) => $q->where('deleted', false))],
+            'code' => ['sometimes', 'string', 'max:255'],
             'name' => 'required|string|max:255',
             'type' => ['required', Rule::in(['fixed', 'percentage'])],
             'value' => 'required|numeric|min:0',
@@ -167,6 +171,7 @@ class PromoController extends Controller
         $freedFrom = null;
 
         $promo = DB::transaction(function () use ($request, $validated, &$freedFrom) {
+            $this->assertCodeIsFree($request, $validated['code'], null, $validated['location_ids'] ?? null);
             $freedFrom = $this->freeRetiredCode($request, $validated['code']);
 
             return Promo::create($validated);
@@ -238,6 +243,108 @@ class PromoController extends Controller
         $targets = Promo::normalizeIds($promo->location_ids);
 
         return $targets !== null && count($targets) === 1 ? $targets[0] : null;
+    }
+
+    protected function assertCodeIsFree(Request $request, string $code, ?int $ignoreId = null, ?array $locationIds = null): void
+    {
+        $conflict = Promo::where('code', $code)
+            ->when($ignoreId !== null, fn ($q) => $q->whereKeyNot($ignoreId))
+            ->first();
+
+        if (!$conflict || $conflict->deleted) {
+            return;
+        }
+
+        $user = $this->resolveAuthUser($request);
+        $theirs = $user === null
+            || $user->company_id === null
+            || $this->promoBelongsToCompany($conflict, (int) $user->company_id);
+
+        $suggestion = $this->suggestFreeCode($request, $code, $locationIds);
+
+        if (!$theirs) {
+            $this->refuseCode(
+                sprintf('That code is already in use elsewhere. Try %s instead, or pick your own.', $suggestion),
+                $suggestion,
+                null
+            );
+        }
+
+        $this->refuseCode(
+            sprintf(
+                'That code is already used by "%s" (%s%s) at %s. Try %s instead, or edit that promo.',
+                $conflict->name,
+                $conflict->status,
+                $conflict->batch_id ? ', part of a bulk batch' : '',
+                $this->describeTargets($conflict),
+                $suggestion
+            ),
+            $suggestion,
+            [
+                'id' => $conflict->id,
+                'name' => $conflict->name,
+                'status' => $conflict->status,
+                'locations' => $this->describeTargets($conflict),
+                'in_batch' => $conflict->batch_id !== null,
+            ]
+        );
+    }
+
+    protected function refuseCode(string $message, string $suggestion, ?array $conflict): void
+    {
+        $exception = ValidationException::withMessages(['code' => [$message]]);
+
+        $exception->response = response()->json([
+            'success' => false,
+            'message' => $message,
+            'errors' => ['code' => [$message]],
+            'suggested_code' => $suggestion,
+            'conflict' => $conflict,
+        ], 422);
+
+        throw $exception;
+    }
+
+    protected function suggestFreeCode(Request $request, string $code, ?array $locationIds = null): string
+    {
+        $base = strtoupper(preg_replace('/[^A-Za-z0-9-]/', '', $code) ?: 'PROMO');
+        $user = $this->resolveAuthUser($request);
+        $targets = Promo::normalizeIds($locationIds);
+        $hintLocationId = $targets[0] ?? $user?->location_id;
+        $locationName = $hintLocationId ? Location::find($hintLocationId)?->name : null;
+
+        $hint = $locationName
+            ? strtoupper(substr(preg_replace('/[^A-Za-z0-9]/', '', strtok($locationName, ' ')) ?: '', 0, 12))
+            : '';
+
+        $candidates = $hint !== '' ? [$base . '-' . $hint] : [];
+
+        for ($i = 2; $i <= 99; $i++) {
+            $candidates[] = $base . '-' . $i;
+        }
+
+        foreach ($candidates as $candidate) {
+            $candidate = substr($candidate, 0, 255);
+
+            if (!Promo::where('code', $candidate)->exists()) {
+                return $candidate;
+            }
+        }
+
+        return $base . '-' . strtoupper(Str::random(4));
+    }
+
+    protected function describeTargets(Promo $promo): string
+    {
+        $targets = Promo::normalizeIds($promo->location_ids);
+
+        if ($targets === null) {
+            return 'all locations';
+        }
+
+        $names = Location::whereIn('id', $targets)->orderBy('name')->pluck('name')->all();
+
+        return $names === [] ? 'no location' : implode(', ', $names);
     }
 
     protected function freeRetiredCode(Request $request, string $code): ?int
@@ -398,7 +505,7 @@ class PromoController extends Controller
         $this->assertCanManage($request, $promo);
 
         $validated = $request->validate([
-            'code' => ['sometimes', 'string', 'max:255', Rule::unique('promos')->ignore($promo->id)->where(fn ($q) => $q->where('deleted', false))],
+            'code' => ['sometimes', 'string', 'max:255'],
             'name' => 'sometimes|string|max:255',
             'type' => ['sometimes', Rule::in(['fixed', 'percentage'])],
             'value' => 'sometimes|numeric|min:0',
@@ -428,6 +535,7 @@ class PromoController extends Controller
 
         if (array_key_exists('code', $validated)) {
             $validated['code'] = trim($validated['code']);
+            $this->assertCodeIsFree($request, $validated['code'], $promo->id, $validated['location_ids'] ?? $promo->location_ids);
         }
 
         foreach (['location_ids', 'package_ids', 'attraction_ids', 'event_ids'] as $field) {
@@ -448,6 +556,12 @@ class PromoController extends Controller
 
         DB::transaction(function () use ($request, $validated, $promo) {
             if (array_key_exists('code', $validated)) {
+                $this->assertCodeIsFree(
+                    $request,
+                    $validated['code'],
+                    $promo->id,
+                    $validated['location_ids'] ?? $promo->location_ids
+                );
                 $this->freeRetiredCode($request, $validated['code']);
             }
 

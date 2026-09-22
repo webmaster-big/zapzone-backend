@@ -593,6 +593,98 @@ class PromoCreationTest extends TestCase
         ]);
     }
 
+    public function test_a_taken_code_says_which_promo_holds_it_and_where(): void
+    {
+        $this->actingAs($this->admin, 'sanctum')
+            ->postJson('/api/promos', $this->browserPayload([
+                'code' => 'TAKEN',
+                'name' => 'Brighton Summer',
+                'location_ids' => [$this->brighton->id],
+                'package_ids' => null,
+            ]))
+            ->assertStatus(201);
+
+        Promo::where('code', 'TAKEN')->update(['status' => 'inactive']);
+
+        $response = $this->actingAs($this->admin, 'sanctum')
+            ->postJson('/api/promos', $this->browserPayload([
+                'code' => 'TAKEN',
+                'location_ids' => [$this->madison->id],
+                'package_ids' => null,
+            ]))
+            ->assertStatus(422);
+
+        $message = (string) $response->json('message');
+
+        $this->assertStringContainsString('Brighton Summer', $message);
+        $this->assertStringContainsString('inactive', $message);
+        $this->assertStringContainsString('Brighton', $message);
+    }
+
+    public function test_a_taken_code_comes_back_with_one_that_is_free(): void
+    {
+        $this->actingAs($this->admin, 'sanctum')
+            ->postJson('/api/promos', $this->browserPayload(['code' => 'UNLOCK', 'package_ids' => null]))
+            ->assertStatus(201);
+
+        $response = $this->actingAs($this->manager, 'sanctum')
+            ->postJson('/api/promos', $this->browserPayload([
+                'code' => 'UNLOCK',
+                'location_ids' => null,
+                'package_ids' => null,
+            ]))
+            ->assertStatus(422);
+
+        $suggestion = (string) $response->json('suggested_code');
+
+        $this->assertSame('UNLOCK-MADISON', $suggestion);
+        $this->assertDatabaseMissing('promos', ['code' => $suggestion]);
+        $this->assertStringContainsString($suggestion, (string) $response->json('message'));
+        $this->assertSame('Unlock', $response->json('conflict.name'));
+
+        $this->actingAs($this->manager, 'sanctum')
+            ->postJson('/api/promos', $this->browserPayload([
+                'code' => $suggestion,
+                'location_ids' => null,
+                'package_ids' => null,
+            ]))
+            ->assertStatus(201);
+    }
+
+    public function test_an_inactive_code_can_be_found_from_the_promo_list(): void
+    {
+        $this->actingAs($this->admin, 'sanctum')
+            ->postJson('/api/promos', $this->browserPayload(['code' => 'HIDDEN', 'package_ids' => null]))
+            ->assertStatus(201);
+
+        Promo::where('code', 'HIDDEN')->update(['status' => 'inactive']);
+
+        $this->actingAs($this->admin, 'sanctum')
+            ->getJson('/api/promos')
+            ->assertOk()
+            ->assertJsonMissing(['code' => 'HIDDEN']);
+
+        $this->actingAs($this->admin, 'sanctum')
+            ->getJson('/api/promos?status=all')
+            ->assertOk()
+            ->assertJsonFragment(['code' => 'HIDDEN']);
+    }
+
+    public function test_a_deleted_code_never_shows_in_the_list(): void
+    {
+        $this->actingAs($this->admin, 'sanctum')
+            ->postJson('/api/promos', $this->browserPayload(['code' => 'GONE', 'package_ids' => null]))
+            ->assertStatus(201);
+
+        $promo = Promo::where('code', 'GONE')->firstOrFail();
+        $this->actingAs($this->admin, 'sanctum')->deleteJson("/api/promos/{$promo->id}")->assertOk();
+
+        $this->actingAs($this->admin, 'sanctum')
+            ->getJson('/api/promos?status=all')
+            ->assertOk()
+            ->assertJsonMissing(['code' => 'GONE']);
+    }
+
     public function test_a_manager_cannot_aim_a_bulk_batch_elsewhere(): void
     {
         $this->actingAs($this->manager, 'sanctum')
