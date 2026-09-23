@@ -347,13 +347,19 @@ class PromoController extends Controller
         return $names === [] ? 'no location' : implode(', ', $names);
     }
 
-    protected function freeRetiredCode(Request $request, string $code): ?int
+    protected function freeRetiredCode(Request $request, string $code, ?int $ignoreId = null): ?int
     {
-        $retired = Promo::where('code', $code)->where('deleted', true)->lockForUpdate()->first();
+        $retired = Promo::where('code', $code)
+            ->where('deleted', true)
+            ->when($ignoreId !== null, fn ($q) => $q->whereKeyNot($ignoreId))
+            ->lockForUpdate()
+            ->first();
 
         if (!$retired) {
             return null;
         }
+
+        $this->assertCanManage($request, $retired);
 
         $user = $this->resolveAuthUser($request);
         $sameCompany = $user === null
@@ -482,10 +488,11 @@ class PromoController extends Controller
         $own = $user->location_id ? (int) $user->location_id : null;
         $target = Promo::normalizeIds($promo->location_ids);
         $theirs = $promo->created_by !== null && (int) $promo->created_by === (int) $user->id;
+        $appliesHere = $target === null || ($own !== null && in_array($own, $target, true));
 
-        if (!$theirs && ($own === null || $target !== [$own])) {
+        if (!$theirs && !$appliesHere) {
             throw ValidationException::withMessages([
-                'location_ids' => ['This promo code covers more than your location, so only a company admin can change it.'],
+                'location_ids' => ['This promo code belongs to another location, so only a company admin can change it.'],
             ]);
         }
     }
@@ -545,7 +552,13 @@ class PromoController extends Controller
         }
 
         if (array_key_exists('location_ids', $validated)) {
-            $validated['location_ids'] = $this->locationIdsForActor($request, $validated['location_ids']);
+            $user = $this->resolveAuthUser($request);
+
+            if ($user && !in_array((string) $user->role, self::MULTI_LOCATION_ROLES, true)) {
+                unset($validated['location_ids']);
+            } else {
+                $validated['location_ids'] = $this->locationIdsForActor($request, $validated['location_ids']);
+            }
         }
 
         if (array_key_exists('usage_limit_per_user', $validated) && $validated['usage_limit_per_user'] === null) {
@@ -562,7 +575,7 @@ class PromoController extends Controller
                     $promo->id,
                     $validated['location_ids'] ?? $promo->location_ids
                 );
-                $this->freeRetiredCode($request, $validated['code']);
+                $this->freeRetiredCode($request, $validated['code'], $promo->id);
             }
 
             $promo->update($validated);

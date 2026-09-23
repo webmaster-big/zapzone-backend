@@ -29,6 +29,9 @@ class Cors
         // Photo kiosk and slideshow devices identify themselves with these.
         'X-Photo-Device',
         'X-Kiosk-Session',
+        // Shared staff terminals identify themselves with this.
+        'X-Staff-Terminal',
+        'X-Staff-Elevation',
     ];
 
     public function handle(Request $request, Closure $next): Response
@@ -52,7 +55,8 @@ class Cors
                 ->header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS')
                 ->header('Access-Control-Allow-Headers', implode(', ', self::ALLOWED_HEADERS))
                 ->header('Access-Control-Allow-Credentials', 'true')
-                ->header('Access-Control-Max-Age', '86400');
+                ->header('Access-Control-Max-Age', '86400')
+                ->header('Access-Control-Expose-Headers', LogApiFailures::HEADER);
         }
 
         $response = $next($request);
@@ -62,6 +66,7 @@ class Cors
         $response->headers->set('Access-Control-Allow-Headers', implode(', ', self::ALLOWED_HEADERS));
         $response->headers->set('Access-Control-Allow-Credentials', 'true');
         $response->headers->set('Access-Control-Max-Age', '86400');
+        $response->headers->set('Access-Control-Expose-Headers', LogApiFailures::HEADER);
 
         return $response;
     }

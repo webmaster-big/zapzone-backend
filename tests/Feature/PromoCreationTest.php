@@ -230,6 +230,85 @@ class PromoCreationTest extends TestCase
             ->assertStatus(422);
     }
 
+    public function test_a_manager_editing_a_company_wide_promo_does_not_re_pin_it(): void
+    {
+        $this->actingAs($this->admin, 'sanctum')
+            ->postJson('/api/promos', $this->browserPayload([
+                'code' => 'COMPANYWIDE',
+                'location_ids' => null,
+                'package_ids' => null,
+            ]))
+            ->assertStatus(201);
+
+        $promo = Promo::where('code', 'COMPANYWIDE')->firstOrFail();
+
+        $this->actingAs($this->manager, 'sanctum')
+            ->patchJson("/api/promos/{$promo->id}", [
+                'value' => 12,
+                'location_ids' => [$this->madison->id],
+            ])
+            ->assertOk();
+
+        $fresh = $promo->fresh();
+
+        $this->assertNull($fresh->location_ids, 'a manager must not re-aim a company-wide promo at their own venue');
+        $this->assertSame('12.00', $fresh->value);
+    }
+
+    public function test_a_manager_can_still_switch_off_a_promo_that_covers_their_venue(): void
+    {
+        $this->actingAs($this->admin, 'sanctum')
+            ->postJson('/api/promos', $this->browserPayload([
+                'code' => 'EVERYVENUE',
+                'location_ids' => null,
+                'package_ids' => null,
+            ]))
+            ->assertStatus(201);
+
+        $promo = Promo::where('code', 'EVERYVENUE')->firstOrFail();
+
+        $this->actingAs($this->manager, 'sanctum')
+            ->patchJson("/api/promos/{$promo->id}/toggle-status")
+            ->assertOk();
+
+        $this->assertSame('inactive', $promo->fresh()->status);
+    }
+
+    public function test_a_manager_still_cannot_touch_another_venues_promo(): void
+    {
+        $this->actingAs($this->admin, 'sanctum')
+            ->postJson('/api/promos', $this->browserPayload([
+                'code' => 'BRIGHTONONLY',
+                'location_ids' => [$this->brighton->id],
+                'package_ids' => null,
+            ]))
+            ->assertStatus(201);
+
+        $promo = Promo::where('code', 'BRIGHTONONLY')->firstOrFail();
+
+        $this->actingAs($this->manager, 'sanctum')
+            ->patchJson("/api/promos/{$promo->id}", ['value' => 99])
+            ->assertStatus(422);
+
+        $this->assertSame('30.00', $promo->fresh()->value);
+    }
+
+    public function test_editing_a_deleted_promo_does_not_rename_its_own_code(): void
+    {
+        $this->actingAs($this->admin, 'sanctum')
+            ->postJson('/api/promos', $this->browserPayload(['code' => 'SELFRENAME', 'package_ids' => null]))
+            ->assertStatus(201);
+
+        $promo = Promo::where('code', 'SELFRENAME')->firstOrFail();
+        $this->actingAs($this->admin, 'sanctum')->deleteJson("/api/promos/{$promo->id}")->assertOk();
+
+        $this->actingAs($this->admin, 'sanctum')
+            ->patchJson("/api/promos/{$promo->id}", ['code' => 'SELFRENAME', 'name' => 'Renamed'])
+            ->assertOk();
+
+        $this->assertSame('SELFRENAME', $promo->fresh()->code);
+    }
+
     public function test_a_manager_cannot_widen_an_existing_promo_to_every_location(): void
     {
         $this->actingAs($this->manager, 'sanctum')
@@ -246,12 +325,16 @@ class PromoCreationTest extends TestCase
 
         $this->actingAs($this->manager, 'sanctum')
             ->patchJson("/api/promos/{$promo->id}", ['location_ids' => [$this->brighton->id]])
-            ->assertStatus(422);
+            ->assertOk();
 
-        $this->assertSame([$this->madison->id], $promo->fresh()->location_ids);
+        $this->assertSame(
+            [$this->madison->id],
+            $promo->fresh()->location_ids,
+            'a manager may edit their own promo but never re-aim it at another venue'
+        );
     }
 
-    public function test_a_manager_cannot_touch_a_company_wide_promo(): void
+    public function test_a_manager_can_work_on_a_company_wide_promo_that_covers_their_venue(): void
     {
         $this->actingAs($this->admin, 'sanctum')
             ->postJson('/api/promos', $this->browserPayload([
@@ -265,11 +348,10 @@ class PromoCreationTest extends TestCase
 
         $this->actingAs($this->manager, 'sanctum')
             ->patchJson("/api/promos/{$promo->id}", ['value' => 5])
-            ->assertStatus(422);
+            ->assertOk();
 
-        $this->actingAs($this->manager, 'sanctum')
-            ->deleteJson("/api/promos/{$promo->id}")
-            ->assertStatus(422);
+        $this->assertSame('5.00', $promo->fresh()->value);
+        $this->assertNull($promo->fresh()->location_ids);
 
         $this->assertFalse((bool) $promo->fresh()->deleted);
     }
