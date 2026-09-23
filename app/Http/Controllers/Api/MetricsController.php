@@ -22,6 +22,10 @@ class MetricsController extends Controller
 {
     use ScopesByAuthUser;
 
+    protected const DEFAULT_TIMEFRAME = 'today';
+
+    protected const LOCATION_NONE = -1;
+
     /**
      * The whole visit days a waiver count should cover for a dashboard timeframe.
      *
@@ -36,6 +40,37 @@ class MetricsController extends Controller
             ->periodFor($timeframe, $dateFrom, $dateTo, $timezone);
     }
 
+    protected function resolveMetricsLocationId(Request $request, $user): ?int
+    {
+        $role = (string) ($user->role ?? '');
+
+        if (!in_array($role, ['company_admin', 'admin'], true)) {
+            return $user->location_id !== null ? (int) $user->location_id : self::LOCATION_NONE;
+        }
+
+        $requested = $request->query('location_id');
+        if ($requested !== null && $requested !== '' && $requested !== 'all') {
+            return (int) $requested;
+        }
+
+        return null;
+    }
+
+    protected function queryCacheDiscriminator(Request $request): string
+    {
+        $query = $request->query();
+        ksort($query);
+
+        $key = md5(json_encode($query));
+
+        $timeframe = $request->query('timeframe', self::DEFAULT_TIMEFRAME);
+        if ($timeframe === 'today' || $request->query('date_from') || $request->query('date_to')) {
+            $key .= ':' . \Carbon\Carbon::now(config('app.timezone', 'UTC'))->toDateString();
+        }
+
+        return $key;
+    }
+
     public function dashboard(Request $request, $id)
     {
         try {
@@ -46,7 +81,7 @@ class MetricsController extends Controller
             $user = $authUser;
 
             $cacheKey = 'dashboards:metrics:' . $user->id . ':' . $user->role . ':' . ($user->location_id ?? 'all')
-                . ':' . md5(json_encode($request->query()));
+                . ':' . $this->queryCacheDiscriminator($request);
             if (($cached = \App\Support\CacheGroups::get([\App\Support\CacheGroups::DASHBOARDS], $cacheKey)) !== null) {
                 return response()->json($cached);
             }
@@ -60,7 +95,7 @@ class MetricsController extends Controller
                 'timestamp' => now()->toDateTimeString(),
             ]);
 
-        $timeframe = $request->query('timeframe', 'all_time');
+        $timeframe = $request->query('timeframe', self::DEFAULT_TIMEFRAME);
         $dateFrom = $request->query('date_from');
         $dateTo = $request->query('date_to');
         $useDateTime = false; // Flag to determine if we should use datetime or date-only comparison
@@ -113,16 +148,7 @@ class MetricsController extends Controller
             }
         }
 
-        $locationId = null;
-        if (in_array($user->role, ['location_manager', 'attendant'])) {
-            $locationId = $user->location_id;
-        } else {
-            // company_admin (or higher) may filter to a specific location; omitted/"all" = company-wide
-            $requestedLocation = $request->query('location_id');
-            if ($requestedLocation !== null && $requestedLocation !== '' && $requestedLocation !== 'all') {
-                $locationId = (int) $requestedLocation;
-            }
-        }
+        $locationId = $this->resolveMetricsLocationId($request, $user);
 
         $bookingQuery = Booking::query();
         $purchaseQuery = AttractionPurchase::query();
@@ -750,14 +776,19 @@ class MetricsController extends Controller
     public function attendant(Request $request)
     {
         try {
-            $locationId = $request->query('location_id');
+            $authUser = auth()->user();
+            if (!$authUser) {
+                return response()->json(['success' => false, 'message' => 'Unauthenticated'], 401);
+            }
 
-            $cacheKey = 'dashboards:attendant:' . (auth()->id() ?? 'x') . ':' . md5(json_encode($request->query()));
+            $locationId = $this->resolveMetricsLocationId($request, $authUser);
+
+            $cacheKey = 'dashboards:attendant:' . (auth()->id() ?? 'x') . ':' . $this->queryCacheDiscriminator($request);
             if (($cached = \App\Support\CacheGroups::get([\App\Support\CacheGroups::DASHBOARDS], $cacheKey)) !== null) {
                 return response()->json($cached);
             }
 
-            $timeframe = $request->query('timeframe', 'all_time');
+            $timeframe = $request->query('timeframe', self::DEFAULT_TIMEFRAME);
             $dateFrom = $request->query('date_from');
             $dateTo = $request->query('date_to');
             $useDateTime = false; // Flag to determine if we should use datetime or date-only comparison

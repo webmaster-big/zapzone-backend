@@ -142,6 +142,10 @@ class AppServiceProvider extends ServiceProvider
             return [Limit::perMinute(60)->by('pay-charge:' . $key)];
         });
 
+        RateLimiter::for('client-errors', fn (Request $request) => Limit::perMinute(30)->by(
+            ($request->user()?->getKey() ?: 'guest') . '|' . $request->ip()
+        ));
+
         RateLimiter::for('discount-code-validate', function (Request $request) {
             $who = $request->user('sanctum')?->getKey();
             $key = $who ? 'u:' . $who : 'ip:' . $request->ip();

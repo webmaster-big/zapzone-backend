@@ -76,10 +76,12 @@ class WaiverMetricsService
     ): Builder {
         $now = Carbon::now($timezone);
 
-        $rolling = function (Carbon $from) use ($query, $now) {
+        $storageTimezone = \App\Support\DateRange::storageTimezone();
+
+        $rolling = function (Carbon $from) use ($query, $now, $storageTimezone) {
             return $query
-                ->whereRaw(self::SIGNED_AT . ' >= ?', [$from->clone()->utc()])
-                ->whereRaw(self::SIGNED_AT . ' <= ?', [$now->clone()->utc()]);
+                ->whereRaw(self::SIGNED_AT . ' >= ?', [$from->clone()->setTimezone($storageTimezone)])
+                ->whereRaw(self::SIGNED_AT . ' <= ?', [$now->clone()->setTimezone($storageTimezone)]);
         };
 
         return match ($timeframe) {
