@@ -582,7 +582,6 @@ class MetricsController extends Controller
             ];
 
             $waiverTotal = max(1, $waiverSummary['total']);
-            $waiverCompletedTotal = max(1, $waiverSummary['completed']);
             foreach ($waiverService->sourceBreakdown($waiverBase) as $row) {
                 $waiverBreakdownData[] = [
                     'label' => $row['source'],
@@ -597,19 +596,22 @@ class MetricsController extends Controller
                     'percentage' => round($row['count'] / $waiverTotal * 100, 1),
                 ];
             }
-            foreach ($waiverService->ageBrackets($waiverBase) as $row) {
+            $adultBracketRows = $waiverService->ageBrackets($waiverBase);
+            $adultBracketTotal = max(1, (int) array_sum(array_column($adultBracketRows, 'count')));
+            foreach ($adultBracketRows as $row) {
                 $waiverAgeBreakdownData[] = [
                     'label' => $row['bracket'],
                     'count' => $row['count'],
-                    'percentage' => round($row['count'] / $waiverCompletedTotal * 100, 1),
+                    'percentage' => round($row['count'] / $adultBracketTotal * 100, 1),
                 ];
             }
-            $waiverMinorsTotal = max(1, (int) $waiverSummary['minors_covered']);
-            foreach ($waiverService->minorAgeBrackets($waiverBase) as $row) {
+            $minorBracketRows = $waiverService->minorAgeBrackets($waiverBase);
+            $minorBracketTotal = max(1, (int) array_sum(array_column($minorBracketRows, 'count')));
+            foreach ($minorBracketRows as $row) {
                 $waiverMinorAgeBreakdownData[] = [
                     'label' => $row['bracket'],
                     'count' => $row['count'],
-                    'percentage' => round($row['count'] / $waiverMinorsTotal * 100, 1),
+                    'percentage' => round($row['count'] / $minorBracketTotal * 100, 1),
                 ];
             }
         } catch (\Throwable $e) {
