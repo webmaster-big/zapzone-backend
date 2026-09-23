@@ -71,30 +71,8 @@ class MetricsController extends Controller
         return $key;
     }
 
-    public function dashboard(Request $request, $id)
+    protected function resolveTimeframeWindow(Request $request): array
     {
-        try {
-            $authUser = auth()->user();
-            if (!$authUser) {
-                return response()->json(['success' => false, 'message' => 'Unauthenticated'], 401);
-            }
-            $user = $authUser;
-
-            $cacheKey = 'dashboards:metrics:' . $user->id . ':' . $user->role . ':' . ($user->location_id ?? 'all')
-                . ':' . $this->queryCacheDiscriminator($request);
-            if (($cached = \App\Support\CacheGroups::get([\App\Support\CacheGroups::DASHBOARDS], $cacheKey)) !== null) {
-                return response()->json($cached);
-            }
-
-            Log::info('=== Dashboard Metrics API Called ===', [
-                'user_role' => $user->role,
-                'user_location_id' => $user->location_id,
-                'date_from' => $request->query('date_from'),
-                'date_to' => $request->query('date_to'),
-                'timeframe' => $request->query('timeframe'),
-                'timestamp' => now()->toDateTimeString(),
-            ]);
-
         $timeframe = $request->query('timeframe', self::DEFAULT_TIMEFRAME);
         $dateFrom = $request->query('date_from');
         $dateTo = $request->query('date_to');
@@ -148,8 +126,11 @@ class MetricsController extends Controller
             }
         }
 
-        $locationId = $this->resolveMetricsLocationId($request, $user);
+        return [$timeframe, $dateFrom, $dateTo, $useDateTime, $timezone];
+    }
 
+    protected function buildScopedPayload($user, ?int $locationId, $timeframe, $dateFrom, $dateTo, bool $useDateTime, string $timezone): array
+    {
         $bookingQuery = Booking::query();
         $purchaseQuery = AttractionPurchase::query();
         $eventPurchaseQuery = EventPurchase::query();
@@ -707,6 +688,39 @@ class MetricsController extends Controller
             'recentEventPurchases' => $recentEventPurchases,
         ];
 
+        return $response;
+    }
+
+    public function dashboard(Request $request, $id)
+    {
+        try {
+            $authUser = auth()->user();
+            if (!$authUser) {
+                return response()->json(['success' => false, 'message' => 'Unauthenticated'], 401);
+            }
+            $user = $authUser;
+
+            $cacheKey = 'dashboards:metrics:' . $user->id . ':' . $user->role . ':' . ($user->location_id ?? 'all')
+                . ':' . $this->queryCacheDiscriminator($request);
+            if (($cached = \App\Support\CacheGroups::get([\App\Support\CacheGroups::DASHBOARDS], $cacheKey)) !== null) {
+                return response()->json($cached);
+            }
+
+            Log::info('=== Dashboard Metrics API Called ===', [
+                'user_role' => $user->role,
+                'user_location_id' => $user->location_id,
+                'date_from' => $request->query('date_from'),
+                'date_to' => $request->query('date_to'),
+                'timeframe' => $request->query('timeframe'),
+                'timestamp' => now()->toDateTimeString(),
+            ]);
+
+        [$timeframe, $dateFrom, $dateTo, $useDateTime, $timezone] = $this->resolveTimeframeWindow($request);
+
+        $locationId = $this->resolveMetricsLocationId($request, $user);
+
+        $response = $this->buildScopedPayload($user, $locationId, $timeframe, $dateFrom, $dateTo, $useDateTime, $timezone);
+
         if ($user->role === 'company_admin') {
             $locationStats = $this->getLocationStats($dateFrom, $dateTo, $useDateTime, is_string($timeframe) ? $timeframe : 'all_time', $timezone);
             $response['locationStats'] = $locationStats;
@@ -735,9 +749,9 @@ class MetricsController extends Controller
         Log::info('=== Dashboard Metrics Response ===', [
             'user_role' => $user->role,
             'metrics_summary' => [
-                'total_bookings' => $totalBookings,
-                'total_revenue' => $totalRevenue,
-                'total_customers' => $totalCustomers,
+                'total_bookings' => $response['metrics']['totalBookings'],
+                'total_revenue' => $response['metrics']['totalRevenue'],
+                'total_customers' => $response['metrics']['totalCustomers'],
             ],
             'has_location_stats' => isset($response['locationStats']),
             'has_location_details' => isset($response['locationDetails']),
@@ -788,54 +802,7 @@ class MetricsController extends Controller
                 return response()->json($cached);
             }
 
-            $timeframe = $request->query('timeframe', self::DEFAULT_TIMEFRAME);
-            $dateFrom = $request->query('date_from');
-            $dateTo = $request->query('date_to');
-            $useDateTime = false; // Flag to determine if we should use datetime or date-only comparison
-
-            // As above: the venue's day, never the viewer's.
-            $timezone = config('app.timezone', 'UTC');
-            try { new \DateTimeZone($timezone); } catch (\Exception $e) { $timezone = 'UTC'; }
-
-            if ($dateFrom || $dateTo) {
-                $timeframe = 'custom';
-                if ($dateFrom) {
-                    $dateFrom = \Carbon\Carbon::parse($dateFrom, $timezone)->startOfDay()->setTimezone(config('app.timezone'));
-                }
-                if ($dateTo) {
-                    $dateTo = \Carbon\Carbon::parse($dateTo, $timezone)->endOfDay()->setTimezone(config('app.timezone'));
-                }
-                $useDateTime = true;
-            } else {
-                switch ($timeframe) {
-                    case 'today':
-                        $dateFrom = \Carbon\Carbon::today($timezone)->setTimezone(config('app.timezone'));
-                        $dateTo = \Carbon\Carbon::tomorrow($timezone)->subSecond()->setTimezone(config('app.timezone'));
-                        $useDateTime = true;
-                        break;
-                    case 'last_24h':
-                        $dateFrom = now()->subHours(24);
-                        $dateTo = now();
-                        $useDateTime = true;
-                        break;
-                    case 'last_7d':
-                        $dateFrom = now()->subDays(7);
-                        $dateTo = now();
-                        $useDateTime = true;
-                        break;
-                    case 'last_30d':
-                        $dateFrom = now()->subDays(30);
-                        $dateTo = now();
-                        $useDateTime = true;
-                        break;
-                    case 'custom':
-                    case 'all_time':
-                    default:
-                        $dateFrom = null;
-                        $dateTo = null;
-                        break;
-                }
-            }
+            [$timeframe, $dateFrom, $dateTo, $useDateTime, $timezone] = $this->resolveTimeframeWindow($request);
 
             Log::info('=== Attendant Metrics API Called ===', [
                 'location_id' => $locationId,
@@ -845,228 +812,7 @@ class MetricsController extends Controller
                 'timestamp' => now()->toDateTimeString(),
             ]);
 
-        $bookingQuery = Booking::query();
-        $purchaseQuery = AttractionPurchase::query();
-        $eventPurchaseQuery = EventPurchase::query();
-
-        if ($locationId) {
-            $bookingQuery->where('location_id', $locationId);
-            $purchaseQuery->whereHas('attraction', function ($q) use ($locationId) {
-                $q->where('location_id', $locationId);
-            });
-            $eventPurchaseQuery->where('location_id', $locationId);
-            Log::info('Applied location filter', ['location_id' => $locationId]);
-        }
-
-        if ($dateFrom) {
-            if ($useDateTime) {
-                $bookingQuery->where('created_at', '>=', $dateFrom);
-                $purchaseQuery->where('created_at', '>=', $dateFrom);
-                $eventPurchaseQuery->where('created_at', '>=', $dateFrom);
-            } else {
-                $bookingQuery->whereDate('created_at', '>=', $dateFrom);
-                $purchaseQuery->whereDate('created_at', '>=', $dateFrom);
-                $eventPurchaseQuery->whereDate('created_at', '>=', $dateFrom);
-            }
-        }
-
-        if ($dateTo) {
-            if ($useDateTime) {
-                $bookingQuery->where('created_at', '<=', $dateTo);
-                $purchaseQuery->where('created_at', '<=', $dateTo);
-                $eventPurchaseQuery->where('created_at', '<=', $dateTo);
-            } else {
-                $bookingQuery->whereDate('created_at', '<=', $dateTo);
-                $purchaseQuery->whereDate('created_at', '<=', $dateTo);
-                $eventPurchaseQuery->whereDate('created_at', '<=', $dateTo);
-            }
-        }
-
-        $totalBookings = (clone $bookingQuery)->whereNotIn('status', ['cancelled'])->count();
-        $confirmedBookings = (clone $bookingQuery)->where('status', 'confirmed')->count();
-        $pendingBookings = (clone $bookingQuery)->where('status', 'pending')->count();
-        $completedBookings = (clone $bookingQuery)->where('status', 'completed')->count();
-        $cancelledBookings = (clone $bookingQuery)->where('status', 'cancelled')->count();
-        $totalParticipants = (clone $bookingQuery)->whereNotIn('status', ['cancelled'])->sum('participants') ?? 0;
-        $bookingRevenue = (clone $bookingQuery)->whereNotIn('status', ['cancelled'])->sum('amount_paid') ?? 0;
-
-        $soldPurchaseQuery = (clone $purchaseQuery)->whereNotIn('status', ['cancelled', 'refunded']);
-        $totalPurchases = (clone $soldPurchaseQuery)->count();
-        $totalAttractionTickets = (int) ((clone $soldPurchaseQuery)->sum('quantity') ?? 0);
-        $purchaseRevenue = (clone $soldPurchaseQuery)->sum('amount_paid') ?? 0;
-
-        $soldEventQuery = (clone $eventPurchaseQuery)->whereNotIn('status', ['cancelled', 'refunded']);
-        $totalEventPurchases = (clone $soldEventQuery)->count();
-        $eventPurchaseRevenue = (clone $soldEventQuery)->sum('amount_paid') ?? 0;
-        $totalEventTickets = (int) ((clone $soldEventQuery)->sum('quantity') ?? 0);
-
-        $totalRevenue = $bookingRevenue + $purchaseRevenue + $eventPurchaseRevenue;
-
-        Log::info('Attendant purchase metrics calculated', [
-            'total_purchases' => $totalPurchases,
-            'total_tickets' => $totalAttractionTickets,
-            'collected_revenue' => $purchaseRevenue,
-            'event_purchase_revenue' => $eventPurchaseRevenue,
-            'total_event_purchases' => $totalEventPurchases,
-            'total_revenue' => $totalRevenue,
-        ]);
-
-        $customerQuery = Customer::query();
-        if ($locationId || $dateFrom || $dateTo) {
-            $customerQuery->whereHas('bookings', function ($q) use ($locationId, $dateFrom, $dateTo, $useDateTime) {
-                if ($locationId) {
-                    $q->where('location_id', $locationId);
-                }
-                if ($dateFrom) {
-                    if ($useDateTime) {
-                        $q->where('created_at', '>=', $dateFrom);
-                    } else {
-                        $q->whereDate('created_at', '>=', $dateFrom);
-                    }
-                }
-                if ($dateTo) {
-                    if ($useDateTime) {
-                        $q->where('created_at', '<=', $dateTo);
-                    } else {
-                        $q->whereDate('created_at', '<=', $dateTo);
-                    }
-                }
-            })->orWhereHas('attractionPurchases', function ($q) use ($locationId, $dateFrom, $dateTo, $useDateTime) {
-                if ($locationId) {
-                    $q->whereHas('attraction', function ($aq) use ($locationId) {
-                        $aq->where('location_id', $locationId);
-                    });
-                }
-                if ($dateFrom) {
-                    if ($useDateTime) {
-                        $q->where('created_at', '>=', $dateFrom);
-                    } else {
-                        $q->whereDate('created_at', '>=', $dateFrom);
-                    }
-                }
-                if ($dateTo) {
-                    if ($useDateTime) {
-                        $q->where('created_at', '<=', $dateTo);
-                    } else {
-                        $q->whereDate('created_at', '<=', $dateTo);
-                    }
-                }
-            })->orWhereHas('eventPurchases', function ($q) use ($locationId, $dateFrom, $dateTo, $useDateTime) {
-                if ($locationId) {
-                    $q->where('location_id', $locationId);
-                }
-                if ($dateFrom) {
-                    if ($useDateTime) {
-                        $q->where('created_at', '>=', $dateFrom);
-                    } else {
-                        $q->whereDate('created_at', '>=', $dateFrom);
-                    }
-                }
-                if ($dateTo) {
-                    if ($useDateTime) {
-                        $q->where('created_at', '<=', $dateTo);
-                    } else {
-                        $q->whereDate('created_at', '<=', $dateTo);
-                    }
-                }
-            });
-        }
-        $totalCustomers = $customerQuery->count();
-
-        Log::info('Attendant metrics calculated', [
-            'bookings' => $totalBookings,
-            'purchases' => $totalPurchases,
-            'event_purchases' => $totalEventPurchases,
-            'revenue' => $totalRevenue,
-            'customers' => $totalCustomers,
-        ]);
-
-        $recentEventPurchasesQuery = EventPurchase::with(['customer', 'event']);
-        if ($locationId) {
-            $recentEventPurchasesQuery->where('location_id', $locationId);
-        }
-        if ($dateFrom) {
-            if ($useDateTime) {
-                $recentEventPurchasesQuery->where('created_at', '>=', $dateFrom);
-            } else {
-                $recentEventPurchasesQuery->whereDate('created_at', '>=', $dateFrom);
-            }
-        }
-        if ($dateTo) {
-            if ($useDateTime) {
-                $recentEventPurchasesQuery->where('created_at', '<=', $dateTo);
-            } else {
-                $recentEventPurchasesQuery->whereDate('created_at', '<=', $dateTo);
-            }
-        }
-
-        $recentEventPurchases = $recentEventPurchasesQuery
-            ->orderBy('created_at', 'desc')
-            ->limit(5)
-            ->get()
-            ->map(function ($purchase) {
-                return [
-                    'id' => $purchase->id,
-                    'customer_name' => $purchase->customer
-                        ? $purchase->customer->first_name . ' ' . $purchase->customer->last_name
-                        : $purchase->guest_name,
-                    'customer_email' => $purchase->customer
-                        ? $purchase->customer->email
-                        : $purchase->guest_email,
-                    'event_name' => $purchase->event->name ?? null,
-                    'quantity' => $purchase->quantity,
-                    'total_amount' => $purchase->total_amount,
-                    'amount_paid' => $purchase->amount_paid,
-                    'status' => $purchase->status,
-                    'purchase_date' => $purchase->purchase_date,
-                    'created_at' => $purchase->created_at->toIso8601String(),
-                ];
-            });
-
-        $recentPurchasesQuery = AttractionPurchase::with(['customer', 'attraction.location', 'createdBy']);
-        if ($locationId) {
-            $recentPurchasesQuery->whereHas('attraction', function ($q) use ($locationId) {
-                $q->where('location_id', $locationId);
-            });
-        }
-        if ($dateFrom) {
-            if ($useDateTime) {
-                $recentPurchasesQuery->where('created_at', '>=', $dateFrom);
-            } else {
-                $recentPurchasesQuery->whereDate('created_at', '>=', $dateFrom);
-            }
-        }
-        if ($dateTo) {
-            if ($useDateTime) {
-                $recentPurchasesQuery->where('created_at', '<=', $dateTo);
-            } else {
-                $recentPurchasesQuery->whereDate('created_at', '<=', $dateTo);
-            }
-        }
-
-        $recentPurchases = $recentPurchasesQuery
-            ->orderBy('created_at', 'desc')
-            ->limit(5)
-            ->get()
-            ->map(function ($purchase) {
-                return [
-                    'id' => $purchase->id,
-                    'customer_name' => $purchase->customer
-                        ? $purchase->customer->first_name . ' ' . $purchase->customer->last_name
-                        : $purchase->guest_name,
-                    'customer_email' => $purchase->customer
-                        ? $purchase->customer->email
-                        : $purchase->guest_email,
-                    'attraction_name' => $purchase->attraction->name ?? null,
-                    'location_name' => $purchase->attraction->location->name ?? null,
-                    'quantity' => $purchase->quantity,
-                    'total_amount' => $purchase->total_amount,
-                    'status' => $purchase->status,
-                    'payment_method' => $purchase->payment_method,
-                    'purchase_date' => $purchase->purchase_date,
-                    'created_at' => $purchase->created_at->toIso8601String(),
-                ];
-            });
+        $response = $this->buildScopedPayload($authUser, $locationId, $timeframe, $dateFrom, $dateTo, $useDateTime, $timezone);
 
         $recentBookingsQuery = Booking::with(['customer', 'package', 'location', 'room']);
         if ($locationId) {
@@ -1115,57 +861,16 @@ class MetricsController extends Controller
                 ];
             });
 
-        Log::info('Recent transactions fetched', [
-            'purchases_count' => $recentPurchases->count(),
-            'bookings_count' => $recentBookings->count(),
-            'event_purchases_count' => $recentEventPurchases->count(),
-        ]);
-
-        $response = [
-            'timeframe' => [
-                'type' => $timeframe,
-                'date_from' => $dateFrom ? ($useDateTime ? $dateFrom->toDateTimeString() : $dateFrom) : null,
-                'date_to' => $dateTo ? ($useDateTime ? $dateTo->toDateTimeString() : $dateTo) : null,
-                'description' => match($timeframe) {
-                    'today'   => 'Today',
-                    'last_24h' => 'Last 24 Hours',
-                    'last_7d' => 'Last 7 Days',
-                    'last_30d' => 'Last 30 Days',
-                    'custom' => 'Custom Range',
-                    default => 'All Time',
-                },
-            ],
-            'metrics' => [
-                'totalBookings' => $totalBookings,
-                'totalRevenue' => round($totalRevenue, 2),
-                'totalCustomers' => $totalCustomers,
-                'confirmedBookings' => $confirmedBookings,
-                'pendingBookings' => $pendingBookings,
-                'completedBookings' => $completedBookings,
-                'cancelledBookings' => $cancelledBookings,
-                'totalParticipants' => (int) $totalParticipants,
-                'bookingRevenue' => round($bookingRevenue, 2),
-                'purchaseRevenue' => round($purchaseRevenue, 2),
-                'purchaseRevenueCompleted' => round($purchaseRevenue, 2),
-                'totalPurchases' => $totalPurchases,
-                'totalAttractionTickets' => $totalAttractionTickets,
-                'eventPurchaseRevenue' => round($eventPurchaseRevenue, 2),
-                'totalEventPurchases' => $totalEventPurchases,
-                'totalEventTickets' => (int) $totalEventTickets,
-            ],
-            'recentPurchases' => $recentPurchases,
-            'recentEventPurchases' => $recentEventPurchases,
-            'recentBookings' => $recentBookings,
-        ];
+        $response['recentBookings'] = $recentBookings;
 
         Log::info('=== Attendant Metrics Response ===', [
             'metrics_summary' => [
-                'total_bookings' => $totalBookings,
-                'total_revenue' => $totalRevenue,
-                'total_customers' => $totalCustomers,
+                'total_bookings' => $response['metrics']['totalBookings'],
+                'total_revenue' => $response['metrics']['totalRevenue'],
+                'total_customers' => $response['metrics']['totalCustomers'],
             ],
             'recent_items' => [
-                'purchases' => $recentPurchases->count(),
+                'purchases' => count($response['recentPurchases']),
                 'bookings' => $recentBookings->count(),
             ],
             'timestamp' => now()->toDateTimeString(),
