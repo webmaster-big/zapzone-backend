@@ -365,16 +365,7 @@ class AttractionController extends Controller
         $validated['pricing_type'] = $validated['pricing_type'] ?? 'per_person';
 
         if ($request->hasFile('image') || isset($validated['image'])) {
-
-            if ($attraction->image && is_array($attraction->image)) {
-                foreach ($attraction->image as $oldImage) {
-                    $imagePath = public_path($oldImage);
-                    if (file_exists($imagePath)) {
-                        unlink($imagePath);
-                    }
-                }
-            }
-
+            $previousImages = is_array($attraction->image) ? $attraction->image : [];
             $uploadedImages = [];
 
             if ($request->hasFile('image')) {
@@ -411,6 +402,10 @@ class AttractionController extends Controller
             }
 
             $validated['image'] = !empty($uploadedImages) ? $uploadedImages : [];
+
+            foreach (array_diff($previousImages, $validated['image']) as $removedImage) {
+                $this->deleteStoredImage((string) $removedImage, $attraction->id);
+            }
         }
 
         $attraction->update($validated);
@@ -784,6 +779,27 @@ class AttractionController extends Controller
         $file->move($fullPath, $filename);
 
         return $path . '/' . $filename;
+    }
+
+    private function deleteStoredImage(string $path, int $exceptAttractionId): void
+    {
+        if ($path === '' || str_contains($path, '..')) {
+            return;
+        }
+
+        $stillInUse = Attraction::where('id', '!=', $exceptAttractionId)
+            ->whereJsonContains('image', $path)
+            ->exists();
+
+        if ($stillInUse) {
+            return;
+        }
+
+        foreach ([storage_path('app/public/' . $path), public_path($path)] as $candidate) {
+            if (is_file($candidate)) {
+                @unlink($candidate);
+            }
+        }
     }
 
     private function handleBase64Upload($base64String): string
