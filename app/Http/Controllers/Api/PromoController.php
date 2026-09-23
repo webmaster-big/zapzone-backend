@@ -270,6 +270,20 @@ class PromoController extends Controller
             );
         }
 
+        if ($user && !in_array((string) $user->role, self::MULTI_LOCATION_ROLES, true)) {
+            $own = $user->location_id ? (int) $user->location_id : null;
+            $targets = Promo::normalizeIds($conflict->location_ids);
+            $coversTheirVenue = $targets === null || ($own !== null && in_array($own, $targets, true));
+
+            if (!$coversTheirVenue) {
+                $this->refuseCode(
+                    sprintf('That code is in use at another location. Try %s instead, or pick your own.', $suggestion),
+                    $suggestion,
+                    null
+                );
+            }
+        }
+
         $this->refuseCode(
             sprintf(
                 'That code is already used by "%s" (%s%s) at %s. Try %s instead, or edit that promo.',
@@ -412,7 +426,7 @@ class PromoController extends Controller
         $targets = Promo::normalizeIds($promo->location_ids);
 
         if ($targets === null) {
-            return true;
+            return false;
         }
 
         $companyLocationIds = Location::where('company_id', $companyId)->pluck('id')->map(fn ($id) => (int) $id)->all();

@@ -767,6 +767,75 @@ class PromoCreationTest extends TestCase
             ->assertJsonMissing(['code' => 'GONE']);
     }
 
+    public function test_a_manager_is_not_told_about_a_code_held_by_another_venue(): void
+    {
+        $this->actingAs($this->admin, 'sanctum')
+            ->postJson('/api/promos', $this->browserPayload([
+                'code' => 'SECRETCODE',
+                'name' => 'Brighton Only Deal',
+                'location_ids' => [$this->brighton->id],
+                'package_ids' => null,
+            ]))
+            ->assertStatus(201);
+
+        $response = $this->actingAs($this->manager, 'sanctum')
+            ->postJson('/api/promos', $this->browserPayload([
+                'code' => 'SECRETCODE',
+                'location_ids' => null,
+                'package_ids' => null,
+            ]))
+            ->assertStatus(422);
+
+        $message = (string) $response->json('message');
+
+        $this->assertStringNotContainsString('Brighton Only Deal', $message);
+        $this->assertStringNotContainsString('Brighton', $message);
+        $this->assertNotEmpty($response->json('suggested_code'));
+        $this->assertNull($response->json('conflict'));
+    }
+
+    public function test_an_admin_is_still_told_which_promo_holds_the_code(): void
+    {
+        $this->actingAs($this->admin, 'sanctum')
+            ->postJson('/api/promos', $this->browserPayload([
+                'code' => 'OPENCODE',
+                'name' => 'Brighton Only Deal',
+                'location_ids' => [$this->brighton->id],
+                'package_ids' => null,
+            ]))
+            ->assertStatus(201);
+
+        $message = (string) $this->actingAs($this->admin, 'sanctum')
+            ->postJson('/api/promos', $this->browserPayload([
+                'code' => 'OPENCODE',
+                'location_ids' => [$this->madison->id],
+                'package_ids' => null,
+            ]))
+            ->assertStatus(422)
+            ->json('message');
+
+        $this->assertStringContainsString('Brighton Only Deal', $message);
+    }
+
+    public function test_a_promo_always_has_a_creator_so_ownership_can_always_be_traced(): void
+    {
+        $this->expectException(\Illuminate\Database\QueryException::class);
+
+        Promo::create([
+            'code' => 'ORPHANED',
+            'name' => 'Legacy',
+            'type' => 'fixed',
+            'value' => 10,
+            'start_date' => '2026-01-01',
+            'end_date' => '2026-12-31',
+            'usage_limit_per_user' => 1,
+            'status' => 'inactive',
+            'created_by' => null,
+            'location_ids' => null,
+            'deleted' => true,
+        ]);
+    }
+
     public function test_a_manager_cannot_aim_a_bulk_batch_elsewhere(): void
     {
         $this->actingAs($this->manager, 'sanctum')

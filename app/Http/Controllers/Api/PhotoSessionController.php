@@ -580,6 +580,10 @@ class PhotoSessionController extends Controller
         $approval = $setting->approvalAttributes();
 
         foreach ($session->photos()->ready()->get() as $photo) {
+            if ($photo->slideshow_approval_status === Photo::APPROVAL_REJECTED) {
+                continue;
+            }
+
             $photo->update(array_merge([
                 'slideshow_eligible' => true,
                 'slideshow_state' => Photo::SLIDESHOW_VISIBLE,

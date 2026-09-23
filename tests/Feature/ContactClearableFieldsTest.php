@@ -76,7 +76,6 @@ class ContactClearableFieldsTest extends TestCase
             ->putJson("/api/contacts/{$this->contact->id}", [
                 'first_name' => null,
                 'last_name' => null,
-                'email' => null,
                 'phone' => null,
                 'company_name' => null,
                 'job_title' => null,
@@ -93,10 +92,12 @@ class ContactClearableFieldsTest extends TestCase
 
         $fresh = $this->contact->fresh();
 
-        foreach (['first_name', 'last_name', 'email', 'phone', 'company_name', 'job_title',
+        foreach (['first_name', 'last_name', 'phone', 'company_name', 'job_title',
                   'address', 'city', 'state', 'zip', 'country', 'source', 'notes'] as $field) {
             $this->assertNull($fresh->{$field}, "{$field} should have been cleared");
         }
+
+        $this->assertSame('ada@example.test', $fresh->email, 'the last way of reaching a contact is kept');
     }
 
     public function test_a_null_status_is_refused_cleanly_rather_than_crashing(): void
@@ -122,6 +123,28 @@ class ContactClearableFieldsTest extends TestCase
             ->assertOk();
 
         $this->assertSame('inactive', $this->contact->fresh()->status);
+    }
+
+    public function test_a_contact_cannot_lose_both_its_email_and_its_phone(): void
+    {
+        $this->actingAs($this->staff, 'sanctum')
+            ->putJson("/api/contacts/{$this->contact->id}", ['email' => null, 'phone' => null])
+            ->assertStatus(422);
+
+        $fresh = $this->contact->fresh();
+
+        $this->assertSame('ada@example.test', $fresh->email);
+        $this->assertSame('2485550000', $fresh->phone);
+    }
+
+    public function test_one_of_the_two_can_still_be_cleared(): void
+    {
+        $this->actingAs($this->staff, 'sanctum')
+            ->putJson("/api/contacts/{$this->contact->id}", ['phone' => null])
+            ->assertOk();
+
+        $this->assertNull($this->contact->fresh()->phone);
+        $this->assertSame('ada@example.test', $this->contact->fresh()->email);
     }
 
     public function test_a_field_left_out_is_untouched(): void

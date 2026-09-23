@@ -11,6 +11,7 @@ use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class ContactController extends Controller
 {
@@ -195,6 +196,15 @@ class ContactController extends Controller
             'status' => 'sometimes|in:active,inactive',
             'sms_consent' => 'sometimes|boolean',
         ]);
+
+        $email = array_key_exists('email', $validated) ? $validated['email'] : $contact->email;
+        $phone = array_key_exists('phone', $validated) ? $validated['phone'] : $contact->phone;
+
+        if (blank($email) && blank($phone)) {
+            throw ValidationException::withMessages([
+                'email' => ['A contact needs either an email address or a phone number, so this one cannot lose both.'],
+            ]);
+        }
 
         $contact->update($validated);
         $contact->load(['company', 'location', 'creator']);
