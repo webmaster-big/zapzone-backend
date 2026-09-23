@@ -23,6 +23,7 @@ class UpdatePackageRequest extends FormRequest
             'description' => 'sometimes|string',
             'category' => 'sometimes|string|max:255',
             'package_type' => ['sometimes', 'string', Rule::in(['regular', 'custom', 'seasonal', 'holiday', 'special'])],
+            'features' => 'nullable|array',
             'features.*' => 'string|max:255',
             'price' => 'sometimes|numeric|min:0|regex:/^\d+(\.\d{1,2})?$/',
             'price_per_additional' => 'nullable|numeric|min:0|regex:/^\d+(\.\d{1,2})?$/',
