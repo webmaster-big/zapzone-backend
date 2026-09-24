@@ -658,7 +658,35 @@ class EventPurchaseController extends Controller
                 || (isset($validated['status']) && $eventPurchase->status === 'cancelled' && $validated['status'] !== 'cancelled');
 
             if ($slotTouched && ($validated['status'] ?? $eventPurchase->status) !== 'cancelled') {
-                $targetEvent = Event::find($eventPurchase->event_id);
+                $closureEvent = Event::find($eventPurchase->event_id);
+                $closureDate = isset($validated['purchase_date'])
+                    ? \Carbon\Carbon::parse($validated['purchase_date'])->toDateString()
+                    : $eventPurchase->purchase_date?->toDateString();
+                $closureTime = isset($validated['purchase_time'])
+                    ? substr((string) $validated['purchase_time'], 0, 5)
+                    : $eventPurchase->purchase_time?->format('H:i');
+
+                if ($closureEvent && $closureDate && \Carbon\Carbon::parse($closureDate)->gte(\Carbon\Carbon::today())) {
+                    $closureInterval = (int) ($closureEvent->interval_minutes ?: 60);
+                    $closureBlocked = $closureTime
+                        ? \App\Models\DayOff::isTimeSlotBlockedForEvent(
+                            $closureEvent->location_id,
+                            (int) $closureEvent->id,
+                            $closureDate,
+                            $closureTime,
+                            \Carbon\Carbon::parse($closureTime)->addMinutes($closureInterval)->format('H:i')
+                        )
+                        : \App\Models\DayOff::isDateBlockedForEvent($closureEvent->location_id, (int) $closureEvent->id, $closureDate);
+
+                    if ($closureBlocked) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => 'The selected date or time is closed for this event. Please choose another.',
+                        ], 422);
+                    }
+                }
+
+                $targetEvent = $closureEvent;
 
                 if ($targetEvent && $targetEvent->max_tickets_per_slot !== null) {
                     $slotDate = isset($validated['purchase_date']) ? \Carbon\Carbon::parse($validated['purchase_date'])->toDateString() : $eventPurchase->purchase_date?->toDateString();
