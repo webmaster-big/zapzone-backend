@@ -37,7 +37,7 @@ class LogApiFailures
 
     public function handle(Request $request, Closure $next): Response
     {
-        $requestId = (string) ($request->header(self::HEADER) ?: Str::uuid());
+        $requestId = $this->safeRequestId($request->header(self::HEADER));
         $request->attributes->set('request_id', $requestId);
         $startedAt = microtime(true);
 
@@ -53,7 +53,7 @@ class LogApiFailures
         $context = [
             'request_id' => $requestId,
             'method' => $request->method(),
-            'path' => $request->path(),
+            'path' => $this->redactPath($request->path()),
             'status' => $status,
             'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
             'ip' => $request->ip(),
@@ -65,6 +65,27 @@ class LogApiFailures
             : Log::channel('api')->warning('API request refused', $context);
 
         return $response;
+    }
+
+    protected function safeRequestId(?string $candidate): string
+    {
+        $candidate = is_string($candidate) ? trim($candidate) : '';
+
+        return preg_match('/^[A-Za-z0-9._-]{1,64}$/', $candidate) === 1
+            ? $candidate
+            : (string) Str::uuid();
+    }
+
+    protected function redactPath(string $path): string
+    {
+        $segments = array_map(
+            fn (string $segment) => strlen($segment) >= 20 && preg_match('/^[A-Za-z0-9._-]+$/', $segment) === 1
+                ? '[redacted]'
+                : $segment,
+            explode('/', $path)
+        );
+
+        return Str::limit(implode('/', $segments), 200, '');
     }
 
     protected function actor(Request $request): array

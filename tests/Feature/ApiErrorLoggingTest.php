@@ -143,6 +143,64 @@ class ApiErrorLoggingTest extends TestCase
         $this->assertStringContainsString('/packages/promos', $log);
     }
 
+    public function test_a_caller_cannot_stuff_the_log_with_a_giant_request_id(): void
+    {
+        $this->withHeaders(['X-Request-Id' => str_repeat('A', 7000)])
+            ->postJson('/api/auth/login', ['email' => 'nobody@zapzone.test', 'password' => 'wrong-password']);
+
+        $log = $this->logContents();
+
+        $this->assertStringNotContainsString(str_repeat('A', 100), $log, 'an oversized request id must not reach the log');
+        $this->assertLessThan(4000, strlen($log), 'one failed login should not write a large log entry');
+    }
+
+    public function test_a_forged_request_id_with_odd_characters_is_replaced(): void
+    {
+        $response = $this->withHeaders(['X-Request-Id' => "bad id\nwith newline"])
+            ->getJson('/api/promos');
+
+        $this->assertStringNotContainsString('with newline', $this->logContents());
+        $this->assertMatchesRegularExpression('/^[A-Za-z0-9._-]+$/', (string) $response->headers->get('X-Request-Id'));
+    }
+
+    public function test_a_token_in_the_path_is_not_written_to_the_log(): void
+    {
+        $token = 'abcdef0123456789abcdef0123456789';
+
+        $this->getJson("/api/photos/access/{$token}");
+
+        $log = $this->logContents();
+
+        $this->assertStringNotContainsString($token, $log, 'a guest access token must never be logged');
+        $this->assertStringContainsString('[redacted]', $log);
+    }
+
+    public function test_a_browser_report_does_not_carry_guest_details_from_the_url(): void
+    {
+        $this->postJson('/api/client-errors', [
+            'message' => 'Request failed',
+            'kind' => 'api',
+            'page' => '/bookings?guest_email=jane.doe@example.com',
+            'action' => 'GET /bookings?guest_email=jane.doe@example.com&page=1',
+        ])->assertStatus(202);
+
+        $log = $this->logContents();
+
+        $this->assertStringNotContainsString('jane.doe@example.com', $log, 'guest PII from a query string must be stripped');
+        $this->assertStringContainsString('GET /bookings', $log);
+    }
+
+    public function test_the_request_id_is_readable_by_the_browser(): void
+    {
+        $response = $this->withHeaders(['Origin' => 'http://localhost:5173'])->getJson('/api/promos');
+
+        $this->assertStringContainsString(
+            'X-Request-Id',
+            (string) $response->headers->get('Access-Control-Expose-Headers'),
+            'without Expose-Headers the SPA cannot read the id it is meant to quote back'
+        );
+    }
+
     public function test_a_junk_error_report_is_refused(): void
     {
         $this->postJson('/api/client-errors', ['kind' => 'render'])->assertStatus(422);

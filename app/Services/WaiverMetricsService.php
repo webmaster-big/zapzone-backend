@@ -271,7 +271,7 @@ class WaiverMetricsService
             if ($dob->gt($asOf)) {
                 continue;
             }
-            $age = $dob->diffInYears($asOf);
+            $age = (int) $dob->diffInYears($asOf);
             if ($age >= 18) {
                 $adults++;
                 continue;

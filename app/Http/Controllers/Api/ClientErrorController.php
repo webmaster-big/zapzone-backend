@@ -31,8 +31,8 @@ class ClientErrorController extends Controller
             'source' => 'frontend',
             'kind' => $validated['kind'] ?? 'unknown',
             'message' => Str::limit($validated['message'], 500),
-            'page' => $validated['page'] ?? null,
-            'action' => $validated['action'] ?? null,
+            'page' => isset($validated['page']) ? $this->withoutQuery($validated['page']) : null,
+            'action' => isset($validated['action']) ? $this->withoutQuery($validated['action']) : null,
             'status' => $validated['status'] ?? null,
             'request_id' => $validated['request_id'] ?? $request->attributes->get('request_id'),
             'stack' => isset($validated['stack']) ? Str::limit($validated['stack'], 2000) : null,
@@ -43,6 +43,18 @@ class ClientErrorController extends Controller
             'user_agent' => Str::limit((string) $request->userAgent(), 200),
         ]);
 
+        return $this->accepted($request);
+    }
+
+    protected function withoutQuery(string $value): string
+    {
+        $value = preg_replace('/[?#].*$/', '', $value) ?? $value;
+
+        return Str::limit(trim($value), 200, '');
+    }
+
+    protected function accepted(Request $request): JsonResponse
+    {
         return response()->json(['success' => true], 202)
             ->header(LogApiFailures::HEADER, (string) $request->attributes->get('request_id'));
     }
