@@ -231,10 +231,18 @@ class WaiverController extends Controller
             'attraction_purchase_id' => 'nullable|exists:attraction_purchases,id',
             'location_id' => 'nullable|exists:locations,id',
             'adult_email' => 'nullable|email',
-            'adult_phone' => 'nullable|string|max:30',
+            'adult_phone' => ['nullable', 'string', 'max:30', function ($attribute, $value, $fail) {
+                if (filled($value) && !\App\Models\WaiverProfile::digitsFor($value)) {
+                    $fail('Please enter a 10-digit phone number.');
+                }
+            }],
             // activity label for {{activity_name}} when there's no concrete linked record
             'activity_name' => 'nullable|string|max:255',
         ]);
+
+        if (filled($validated['adult_phone'] ?? null)) {
+            $validated['adult_phone'] = \App\Models\WaiverProfile::digitsFor($validated['adult_phone']);
+        }
 
         $template = WaiverTemplate::findOrFail($validated['waiver_template_id']);
         if (!$this->authorizeRecordScope($template)) {
