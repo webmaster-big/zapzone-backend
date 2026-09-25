@@ -1032,16 +1032,43 @@ class WaiverController extends Controller
     private function applySearchFilters($query, Request $request): void
     {
         if ($request->filled('search')) {
-            $terms = preg_split('/\s+/', trim((string) $request->search), -1, PREG_SPLIT_NO_EMPTY);
+            $raw = trim((string) $request->search);
+
+            // Stored numbers are a mix of bare digits and whatever guests typed before they were normalised,
+            // and the screen shows them formatted. Reduce the WHOLE search to digits before splitting on spaces,
+            // or "(810) 588-9748" becomes the terms "(810)" and "588-9748" and matches nothing.
+            $searchDigits = (string) preg_replace('/\D+/', '', $raw);
+            if (strlen($searchDigits) === 11 && str_starts_with($searchDigits, '1')) {
+                $searchDigits = substr($searchDigits, 1);
+            }
+            $phoneStrip = "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(adult_phone, ''), ' ', ''), '-', ''), '(', ''), ')', ''), '+', '')";
+
+            $terms = strlen($searchDigits) >= 7
+                ? []
+                : preg_split('/\s+/', $raw, -1, PREG_SPLIT_NO_EMPTY);
+
+            if (strlen($searchDigits) >= 7) {
+                $query->whereRaw($phoneStrip . ' LIKE ?', ['%' . $searchDigits . '%']);
+            }
+
             foreach ($terms as $term) {
                 $like = '%' . $term . '%';
-                $query->where(function ($q) use ($like, $term) {
+                $query->where(function ($q) use ($like, $term, $phoneStrip) {
                     $q->where('adult_first_name', 'like', $like)
                         ->orWhere('adult_last_name', 'like', $like)
                         ->orWhere('adult_email', 'like', $like)
                         ->orWhere('adult_phone', 'like', $like)
                         ->when(Waiver::supportsReferenceNumber(), fn ($qq) => $qq->orWhere('reference_number', 'like', $like))
                         ->orWhereRaw("CONCAT(COALESCE(adult_first_name, ''), ' ', COALESCE(adult_last_name, '')) LIKE ?", [$like]);
+
+                    // Stored numbers are a mix of bare digits and whatever guests typed before they were
+                    // normalised, and the screen shows them formatted. Comparing digits to digits is the only
+                    // way "(810) 588-9748", "810-588-9748" and "8105889748" all find the same row.
+                    $termDigits = preg_replace('/\D+/', '', $term);
+                    if (strlen((string) $termDigits) >= 4) {
+                        $q->orWhereRaw($phoneStrip . ' LIKE ?', ['%' . $termDigits . '%']);
+                    }
+
                     if (ctype_digit($term)) {
                         $q->orWhere('id', (int) $term);
                     }
