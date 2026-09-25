@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Waiver;
 use App\Models\WaiverBulkInvite;
 use App\Models\WaiverInviteRecipient;
+use App\Models\WaiverProfile;
 use App\Models\WaiverSetting;
 use App\Models\WaiverTemplate;
 use App\Services\WaiverService;
@@ -88,6 +89,10 @@ class WaiverPublicController extends Controller
 
         $template = $waiver->template;
         $data = $this->validateSubmission($request, $template);
+
+        if ($refused = $this->requireTenDigitPhone($data)) {
+            return $refused;
+        }
 
         // duplicate prevention (against OTHER completed waivers for this person/date/template)
         $duplicate = $this->waivers->findDuplicate(
@@ -271,7 +276,8 @@ class WaiverPublicController extends Controller
             $data['adult_first_name'] = $profile->first_name;
             $data['adult_last_name'] = $profile->last_name;
             $data['adult_email'] = $profile->email ?: ($data['adult_email'] ?? null);
-            $data['adult_phone'] = $profile->phone_raw ?: ($data['adult_phone'] ?? null);
+            $data['adult_phone'] = $profile->phone_raw
+                ?: ($profile->phone_digits ?: ($profile->phone_e164 ?: ($data['adult_phone'] ?? null)));
             $savedDob = $profile->date_of_birth?->toDateString();
             if ($savedDob && substr((string) ($data['adult_dob'] ?? ''), 0, 10) !== $savedDob) {
                 \Illuminate\Support\Facades\Log::warning('Returning-customer submit rejected; date of birth does not match the saved record', [
@@ -344,6 +350,10 @@ class WaiverPublicController extends Controller
             }
         }
         unset($data['waiver_profile_id'], $data['selected_dependent_ids'], $data['lookup_token']);
+
+        if (!$profile && ($refused = $this->requireTenDigitPhone($data))) {
+            return $refused;
+        }
 
         $waiver = Waiver::create(array_merge([
             'company_id' => $template->company_id,
@@ -748,6 +758,25 @@ class WaiverPublicController extends Controller
         }
 
         return false;
+    }
+
+    private function requireTenDigitPhone(array &$data): ?JsonResponse
+    {
+        $digits = WaiverProfile::digitsFor($data['adult_phone'] ?? null);
+
+        if (!$digits) {
+            \Illuminate\Support\Facades\Log::info('Waiver submission refused; phone is not ten digits');
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Please enter a 10-digit phone number.',
+                'errors' => ['adult_phone' => ['Please enter a 10-digit phone number.']],
+            ], 422);
+        }
+
+        $data['adult_phone'] = $digits;
+
+        return null;
     }
 
     private function validateSubmission(Request $request, WaiverTemplate $template): array

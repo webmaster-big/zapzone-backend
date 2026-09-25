@@ -41,6 +41,12 @@ class WaiverProfileService
             $matches = $this->profilesFor($companyId, $digits);
 
             if ($matches->count() > 1) {
+                Log::warning('Waiver returning lookup hit a shared phone number; more than one saved profile', [
+                    'company_id' => $companyId,
+                    'phone_last4' => substr($digits, -4),
+                    'profile_ids' => $matches->pluck('id')->all(),
+                ]);
+
                 return ['status' => self::STATUS_NEEDS_STAFF];
             }
 
@@ -52,9 +58,16 @@ class WaiverProfileService
             }
 
             if (!$profile) {
-                return $source === self::SOURCE_SHARED_PHONE
-                    ? ['status' => self::STATUS_NEEDS_STAFF]
-                    : ['status' => self::STATUS_NOT_FOUND];
+                if ($source === self::SOURCE_SHARED_PHONE) {
+                    Log::warning('Waiver returning lookup refused; waiver history shows more than one signer on this number', [
+                        'company_id' => $companyId,
+                        'phone_last4' => substr($digits, -4),
+                    ]);
+
+                    return ['status' => self::STATUS_NEEDS_STAFF];
+                }
+
+                return ['status' => self::STATUS_NOT_FOUND];
             }
 
             if (!self::nameMatches($profile->last_name, $lastName)) {
@@ -67,6 +80,11 @@ class WaiverProfileService
             }
 
             if ($profile->needs_staff_review) {
+                Log::warning('Waiver returning lookup refused; saved profile is flagged for staff review', [
+                    'company_id' => $companyId,
+                    'waiver_profile_id' => $profile->id,
+                ]);
+
                 return ['status' => self::STATUS_NEEDS_STAFF];
             }
 
