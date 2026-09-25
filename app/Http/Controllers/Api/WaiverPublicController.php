@@ -276,8 +276,8 @@ class WaiverPublicController extends Controller
             $data['adult_first_name'] = $profile->first_name;
             $data['adult_last_name'] = $profile->last_name;
             $data['adult_email'] = $profile->email ?: ($data['adult_email'] ?? null);
-            $data['adult_phone'] = $profile->phone_raw
-                ?: ($profile->phone_digits ?: ($profile->phone_e164 ?: ($data['adult_phone'] ?? null)));
+            $data['adult_phone'] = $profile->phone_digits
+                ?: ($profile->phone_e164 ?: ($profile->phone_raw ?: ($data['adult_phone'] ?? null)));
             $savedDob = $profile->date_of_birth?->toDateString();
             if ($savedDob && substr((string) ($data['adult_dob'] ?? ''), 0, 10) !== $savedDob) {
                 \Illuminate\Support\Facades\Log::warning('Returning-customer submit rejected; date of birth does not match the saved record', [
@@ -778,11 +778,15 @@ class WaiverPublicController extends Controller
 
     private function requireTenDigitPhone(array &$data): ?JsonResponse
     {
-        $digits = WaiverProfile::digitsFor($data['adult_phone'] ?? null);
+        $given = $data['adult_phone'] ?? null;
 
-        if (!$digits) {
-            \Illuminate\Support\Facades\Log::info('Waiver submission refused; phone is not ten digits');
+        // A North American number is stored as its ten digits, which is what the admin phone search and the
+        // duplicate check compare against. Anything else has to be dialable to count, so a visiting family on a
+        // foreign number can still sign while "555" still cannot.
+        $digits = WaiverProfile::digitsFor($given);
+        $dialable = $digits ?: \App\Services\SmsService::toE164($given);
 
+        if (!$dialable) {
             return response()->json([
                 'success' => false,
                 'message' => 'Please enter a 10-digit phone number.',
@@ -790,7 +794,7 @@ class WaiverPublicController extends Controller
             ], 422);
         }
 
-        $data['adult_phone'] = $digits;
+        $data['adult_phone'] = $dialable;
 
         return null;
     }
