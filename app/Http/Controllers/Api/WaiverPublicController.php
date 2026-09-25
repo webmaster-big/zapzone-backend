@@ -535,11 +535,22 @@ class WaiverPublicController extends Controller
             ->all();
 
         $added = 0;
+        $unreachable = 0;
         foreach ($validated['recipients'] as $row) {
             if (empty($row['email']) && empty($row['phone'])) {
                 continue; // need at least one channel
             }
-            $key = strtolower(trim((string) ($row['email'] ?? $row['phone'])));
+
+            $phone = filled($row['phone'] ?? null) ? WaiverProfile::digitsFor($row['phone']) : null;
+
+            // A number SmsService cannot dial is not a channel. When it is the only one the row has,
+            // the invite would be reported as sent and silently never arrive, so say so instead.
+            if (empty($row['email']) && !$phone) {
+                $unreachable++;
+                continue;
+            }
+
+            $key = strtolower(trim((string) ($row['email'] ?? $phone)));
             if (in_array($key, $existing, true)) {
                 continue;
             }
@@ -548,16 +559,21 @@ class WaiverPublicController extends Controller
             $invite->recipients()->create([
                 'name' => $row['name'] ?? null,
                 'email' => $row['email'] ?? null,
-                'phone' => $row['phone'] ?? null,
+                'phone' => $phone,
                 'status' => WaiverInviteRecipient::STATUS_NOT_SENT,
             ]);
             $added++;
         }
 
+        $message = "{$added} contact(s) added.";
+        if ($unreachable > 0) {
+            $message .= " {$unreachable} skipped — a 10-digit phone number is needed when there is no email address.";
+        }
+
         return response()->json([
             'success' => true,
-            'message' => "{$added} contact(s) added.",
-            'data' => ['added' => $added, 'total' => $invite->recipients()->count()],
+            'message' => $message,
+            'data' => ['added' => $added, 'skipped' => $unreachable, 'total' => $invite->recipients()->count()],
         ]);
     }
 
