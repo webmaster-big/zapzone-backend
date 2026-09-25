@@ -287,7 +287,7 @@ class WaiverProfileService
             'last_name' => $profile->last_name,
             'email' => self::maskEmail($profile->email),
             'has_email' => filled($profile->email),
-            'phone' => self::maskPhone($profile->phone_raw ?: $profile->phone_e164),
+            'phone' => self::maskPhone($profile->phone_digits ?: ($profile->phone_raw ?: $profile->phone_e164)),
             'age' => $profile->date_of_birth?->age,
             'dependents' => $profile->activeDependents
                 ->reject(fn (WaiverProfileDependent $d) => self::isAdultDependent($d))
