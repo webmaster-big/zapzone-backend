@@ -231,8 +231,10 @@ class WaiverController extends Controller
             'attraction_purchase_id' => 'nullable|exists:attraction_purchases,id',
             'location_id' => 'nullable|exists:locations,id',
             'adult_email' => 'nullable|email',
-            'adult_phone' => ['nullable', 'string', 'max:30', function ($attribute, $value, $fail) {
-                if (filled($value) && !\App\Models\WaiverProfile::digitsFor($value)) {
+            // 'bail' matters: without it an array value fails 'string' and still reaches the closure,
+            // where digitsFor() would raise a TypeError and turn a 422 into a 500.
+            'adult_phone' => ['bail', 'nullable', 'string', 'max:30', function ($attribute, $value, $fail) {
+                if (filled($value) && !\App\Services\SmsService::toE164($value)) {
                     $fail('Please enter a 10-digit phone number.');
                 }
             }],
@@ -240,9 +242,10 @@ class WaiverController extends Controller
             'activity_name' => 'nullable|string|max:255',
         ]);
 
-        if (filled($validated['adult_phone'] ?? null)) {
-            $validated['adult_phone'] = \App\Models\WaiverProfile::digitsFor($validated['adult_phone']);
-        }
+        $validated['adult_phone'] = filled($validated['adult_phone'] ?? null)
+            ? (\App\Models\WaiverProfile::digitsFor($validated['adult_phone'])
+                ?: \App\Services\SmsService::toE164($validated['adult_phone']))
+            : null;
 
         $template = WaiverTemplate::findOrFail($validated['waiver_template_id']);
         if (!$this->authorizeRecordScope($template)) {
