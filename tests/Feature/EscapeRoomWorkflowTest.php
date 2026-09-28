@@ -3700,6 +3700,47 @@ class EscapeRoomWorkflowTest extends TestCase
         $this->assertStringContainsString('{{booking_kind_title}}', $seeded->getEffectiveBody());
     }
 
+    public function test_the_booking_text_migration_only_rewrites_untouched_defaults(): void
+    {
+        $oldConfirmation = '{{company_name}}: Party booked! {{package_name}} on {{booking_date}} at {{booking_time}}. Ref {{booking_reference}}. Balance due {{booking_balance}}. Info: {{location_phone}} {{waiver_line}}';
+        $oldReminder = '{{company_name}} reminder: your {{package_name}} party is {{booking_date}} at {{booking_time}}, {{location_name}}. See you soon! {{location_phone}}';
+        $newConfirmation = '{{company_name}}: {{booking_kind_title}} booked! {{package_name}} on {{booking_date}} at {{booking_time}}. Ref {{booking_reference}}. Balance due {{booking_balance}}. Info: {{location_phone}} {{waiver_line}}';
+        $newReminder = '{{company_name}} reminder: your {{package_name}} {{booking_kind}} is {{booking_date}} at {{booking_time}}, {{location_name}}. See you soon! {{location_phone}}';
+
+        $second = Company::create([
+            'company_name' => 'Second Co',
+            'email' => 'second@zapzone.test',
+            'phone' => '5550001111',
+            'address' => '2 Main St',
+        ]);
+
+        $row = fn (Company $company, string $key) => SmsNotification::where('company_id', $company->id)->where('default_key', $key)->firstOrFail();
+        $untouched = $row($this->company, 'booking_confirmation_customer');
+        $following = $row($this->company, 'booking_reminder_customer');
+        $customized = $row($second, 'booking_confirmation_customer');
+        $recased = $row($second, 'booking_reminder_customer');
+        $recasedText = str_replace('reminder:', 'REMINDER:', $oldReminder);
+
+        \Illuminate\Support\Facades\DB::table('sms_notifications')->where('id', $untouched->id)->update(['body' => $oldConfirmation, 'default_body' => $oldConfirmation]);
+        \Illuminate\Support\Facades\DB::table('sms_notifications')->where('id', $following->id)->update(['body' => null, 'default_body' => $oldReminder]);
+        \Illuminate\Support\Facades\DB::table('sms_notifications')->where('id', $customized->id)->update(['body' => 'Our own words', 'default_body' => $oldConfirmation]);
+        \Illuminate\Support\Facades\DB::table('sms_notifications')->where('id', $recased->id)->update(['body' => $recasedText, 'default_body' => $oldReminder]);
+
+        $migration = require database_path('migrations/2026_09_26_000001_add_booking_kind_to_default_booking_sms.php');
+        $migration->up();
+
+        $this->assertSame([$newConfirmation, $newConfirmation], [$untouched->fresh()->body, $untouched->fresh()->default_body]);
+        $this->assertSame([null, $newReminder], [$following->fresh()->body, $following->fresh()->default_body]);
+        $this->assertSame(['Our own words', $newConfirmation], [$customized->fresh()->body, $customized->fresh()->default_body]);
+        $this->assertSame([$recasedText, $newReminder], [$recased->fresh()->body, $recased->fresh()->default_body]);
+
+        $migration->down();
+
+        $this->assertSame([$oldConfirmation, $oldConfirmation], [$untouched->fresh()->body, $untouched->fresh()->default_body]);
+        $this->assertSame([null, $oldReminder], [$following->fresh()->body, $following->fresh()->default_body]);
+        $this->assertSame('Our own words', $customized->fresh()->body);
+    }
+
     public function test_a_finished_game_photo_can_go_on_the_slideshow_when_everyone_agreed(): void
     {
         [$game, $photo] = $this->finishedGameWithPhoto([true, true]);
