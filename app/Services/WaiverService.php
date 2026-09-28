@@ -58,6 +58,14 @@ class WaiverService
     {
         $waiver->loadMissing(['company', 'location', 'booking.package', 'event', 'attractionPurchase.attraction', 'customer', 'template']);
 
+        if ($waiver->location && !array_key_exists('address', $waiver->location->getAttributes())) {
+            $waiver->load('location');
+        }
+
+        if ($waiver->booking && !array_key_exists('package_id', $waiver->booking->getAttributes())) {
+            $waiver->load('booking.package');
+        }
+
         $company = $waiver->company ?? $waiver->location?->company;
         $location = $waiver->location;
 
@@ -76,6 +84,7 @@ class WaiverService
             : ($waiver->typed_legal_name ?? '');
 
         $date = $waiver->selected_date ? $waiver->selected_date->format('F j, Y') : '';
+        $signedAt = ($waiver->submitted_at ?? Carbon::now())->copy()->timezone(config('app.timezone'));
 
         return [
             'business_legal_name' => $company?->company_name ?? '',
@@ -95,8 +104,8 @@ class WaiverService
             'adult_email' => $waiver->adult_email ?? '',
             'adult_phone' => $waiver->adult_phone ?? '',
             'relationship' => $waiver->relationship ?? '',
-            'current_date' => Carbon::now()->format('F j, Y'),
-            'current_year' => Carbon::now()->format('Y'),
+            'current_date' => $signedAt->format('F j, Y'),
+            'current_year' => $signedAt->format('Y'),
         ];
     }
 
@@ -371,7 +380,7 @@ class WaiverService
     public function generateAndStoreSignedPdf(Waiver $waiver): void
     {
         try {
-            $waiver->loadMissing(['template:id,title', 'version:id,version', 'location:id,name', 'minors', 'company', 'auditEvents']);
+            $waiver->load(['template', 'version', 'location:id,name', 'minors', 'company', 'auditEvents']);
 
             $bytes = Pdf::loadView('waivers.print', [
                 'waiver' => $waiver,
@@ -491,7 +500,7 @@ class WaiverService
      */
     public function ensureForBooking(Booking $booking): ?Waiver
     {
-        $existing = Waiver::where('booking_id', $booking->id)->first();
+        $existing = Waiver::where('booking_id', $booking->id)->exceptEscapeRoomSignIns()->first();
         if ($existing) {
             return $existing;
         }
@@ -502,17 +511,12 @@ class WaiverService
             return null;
         }
 
-        $template = WaiverTemplate::resolveForActivity(
-            $companyId,
-            $booking->location_id,
-            $booking->package_id,
-            $booking->attractions?->pluck('id')->all() ?? [],
-        );
+        $template = $this->templateForBooking($booking);
         if (!$template) {
             return null;
         }
 
-        return $this->createPending($template, [
+        return $this->createPending($template, array_merge([
             'company_id' => $companyId,
             'location_id' => $booking->location_id,
             'customer_id' => $booking->customer_id,
@@ -520,7 +524,94 @@ class WaiverService
             'selected_date' => $booking->booking_date,
             'adult_email' => $booking->customer?->email ?? $booking->guest_email,
             'adult_phone' => $booking->customer?->phone ?? $booking->guest_phone,
-        ]);
+        ], $template->isEscapeRoom() ? [
+            'package_id' => $booking->package_id,
+            'manual_activity_name' => $booking->package?->name,
+        ] : []));
+    }
+
+    public function escapeRoomTemplateForPendingWaiver(Waiver $waiver): ?WaiverTemplate
+    {
+        try {
+            if ($waiver->status !== Waiver::STATUS_PENDING
+                || !$waiver->booking_id
+                || $waiver->bulk_invite_id
+                || $waiver->is_manager_assigned
+                || !in_array($waiver->source, [Waiver::SOURCE_CONFIRMATION_EMAIL, Waiver::SOURCE_CHECKOUT, Waiver::SOURCE_SMS_LINK], true)
+                || $waiver->template?->isEscapeRoom()
+                || !app(EscapeRoomSessionService::class)->isEnabled()) {
+                return null;
+            }
+
+            $booking = Booking::with(['location', 'package'])->find($waiver->booking_id);
+
+            if (!$booking || $booking->status === 'cancelled' || !$booking->package?->isEscapeRoom()) {
+                return null;
+            }
+
+            return WaiverTemplate::resolveForEscapeRoom((int) $booking->location->company_id, (int) $booking->location_id, (int) $booking->package_id);
+        } catch (\Throwable $e) {
+            Log::warning('Could not check whether a pending booking waiver should use the escape-room waiver', [
+                'waiver_id' => $waiver->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+    }
+
+    public function upgradePendingBookingWaiver(Waiver $waiver): Waiver
+    {
+        try {
+            $template = $this->escapeRoomTemplateForPendingWaiver($waiver);
+
+            if (!$template) {
+                return $waiver;
+            }
+
+            $booking = Booking::with('package')->find($waiver->booking_id);
+            $version = $this->currentVersion($template);
+
+            $waiver->forceFill([
+                'waiver_template_id' => $template->id,
+                'waiver_template_version_id' => $version->id,
+                'package_id' => $booking->package_id,
+                'manual_activity_name' => $booking->package->name,
+            ])->save();
+
+            return $waiver->fresh(['template', 'version', 'company', 'location:id,name']);
+        } catch (\Throwable $e) {
+            Log::warning('Pending booking waiver could not be moved to the escape-room waiver', [
+                'waiver_id' => $waiver->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return $waiver;
+        }
+    }
+
+    public function templateForBooking(Booking $booking): ?WaiverTemplate
+    {
+        $booking->loadMissing(['location', 'attractions', 'package']);
+        $companyId = $booking->location?->company_id;
+        if (!$companyId) {
+            return null;
+        }
+
+        if ($booking->package_id && $booking->package?->isEscapeRoom()) {
+            $escapeRoomTemplate = WaiverTemplate::resolveForEscapeRoom($companyId, $booking->location_id, (int) $booking->package_id);
+
+            if ($escapeRoomTemplate) {
+                return $escapeRoomTemplate;
+            }
+        }
+
+        return WaiverTemplate::resolveForActivity(
+            $companyId,
+            $booking->location_id,
+            $booking->package_id,
+            $booking->attractions?->pluck('id')->all() ?? [],
+        );
     }
 
     /** Create a pending waiver for an event purchase when a template applies. */

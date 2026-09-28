@@ -17,6 +17,7 @@ class PhotoDelivery extends Model
     public const KIND_NEXT_DAY = 'next_day';
     public const KIND_KIOSK = 'kiosk';
     public const KIND_BACKEND = 'backend';
+    public const KIND_ESCAPE_ROOM = 'escape_room';
 
     public const STATUS_QUEUED = 'queued';
     public const STATUS_SCHEDULED = 'scheduled';

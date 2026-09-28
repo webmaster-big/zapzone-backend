@@ -94,8 +94,9 @@
             <td class="label">Submitted</td><td class="value">{{ $waiver->submitted_at ? $waiver->submitted_at->timezone('America/Detroit')->format('F j, Y, g:i A') . ' ET' : '—' }}</td>
         </tr>
         <tr>
+            @php($escapeGame = \App\Models\Waiver::supportsEscapeRoomSessionId() && $waiver->escape_room_session_id ? $waiver->escapeRoomSession : null)
             <td class="label">Version</td><td class="value">v{{ $waiver->version?->version ?? $waiver->waiver_template_version_id }}</td>
-            <td class="label"></td><td class="value"></td>
+            <td class="label">{{ $escapeGame ? 'Escape room' : '' }}</td><td class="value">{{ $escapeGame ? (($escapeGame->package?->name ?? 'Escape room') . ' · ' . \Illuminate\Support\Carbon::createFromFormat('H:i', $escapeGame->timeKey())->format('g:i A') . ' game') : '' }}</td>
         </tr>
     </table>
 

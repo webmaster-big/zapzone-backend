@@ -65,7 +65,7 @@ class PhotoProcessingService
             $source = $this->correctOrientation($source, $absolute);
 
             $setting = LocationPhotoSetting::forLocation($location);
-            $overlay = $this->resolveOverlay($location, $photo->captured_at ?: now());
+            $overlay = $this->resolveOverlay($location, $photo->captured_at ?: now(), $this->roomFor($photo));
 
             $delivery = $this->render($source, self::DELIVERY_MAX_EDGE, $overlay, $setting, $photo, $location);
             $deliveryPath = $this->pathFor($photo, 'delivery', 'jpg');
@@ -120,13 +120,29 @@ class PhotoProcessingService
         return $photo->fresh();
     }
 
-    public function resolveOverlay(?Location $location, ?Carbon $at = null): ?PhotoOverlay
+    public function roomFor(Photo $photo): ?int
+    {
+        $packageId = $photo->session?->linkedEscapeRoomSession()?->package_id;
+
+        return $packageId ? (int) $packageId : null;
+    }
+
+    public function resolveOverlay(?Location $location, ?Carbon $at = null, ?int $roomId = null): ?PhotoOverlay
     {
         if (!$location) {
             return null;
         }
 
         $at = $at ?: now();
+
+        if ($roomId !== null) {
+            $roomOverlay = PhotoOverlay::candidatesForRoom($location->id, $roomId, $at)->first();
+
+            if ($roomOverlay) {
+                return $roomOverlay;
+            }
+        }
+
         $candidates = PhotoOverlay::candidatesFor($location->id, $at)->get();
 
         if ($candidates->count() > 1) {
@@ -150,6 +166,10 @@ class PhotoProcessingService
 
         foreach ($overlays as $i => $a) {
             foreach ($overlays->slice($i + 1) as $b) {
+                if ($a->roomId() !== $b->roomId()) {
+                    continue;
+                }
+
                 if ($this->windowsOverlap($a, $b)) {
                     $conflicts[] = [
                         'overlay_id' => $a->id,

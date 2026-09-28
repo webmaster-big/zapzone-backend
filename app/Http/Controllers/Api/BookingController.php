@@ -143,7 +143,7 @@ class BookingController extends Controller
                 ])
                 ->with([
                     'customer:id,first_name,last_name,email,phone',
-                    'package:id,name,price,category,display_label',
+                    'package:id,name,price,category,display_label' . (\App\Models\Package::supportsEscapeRoomFlag() ? ',is_escape_room' : ''),
                     'location:id,name',
                     'room:id,name',
                     'creator:id,first_name,last_name,email',
@@ -1130,7 +1130,7 @@ class BookingController extends Controller
             ])
             ->with([
                 'customer:id,first_name,last_name,email,phone',
-                'package:id,name,price,category,display_label',
+                'package:id,name,price,category,display_label' . (\App\Models\Package::supportsEscapeRoomFlag() ? ',is_escape_room' : ''),
                 'location:id,name',
                 'room:id,name',
                 'creator:id,first_name,last_name,email',
@@ -1321,9 +1321,21 @@ class BookingController extends Controller
             ], 403);
         }
 
+        if ($booking->location && ($denied = $this->guardCompanyAccess($request, $booking->location->company_id))) {
+            return $denied;
+        }
+
+        $escapeRoom = null;
+
+        try {
+            $escapeRoom = app(\App\Services\EscapeRoomSessionService::class)->bookingGameSummary($booking);
+        } catch (\Throwable $e) {
+            Log::warning('Escape-room summary could not be built for a booking', ['booking_id' => $booking->id, 'error' => $e->getMessage()]);
+        }
+
         return response()->json([
             'success' => true,
-            'data' => $booking,
+            'data' => $escapeRoom ? array_merge($booking->toArray(), ['escape_room' => $escapeRoom]) : $booking,
         ]);
     }
 
@@ -1962,6 +1974,15 @@ class BookingController extends Controller
             }
         } catch (\Exception $e) {
             Log::warning('Google Calendar auto-sync failed for booking update', [
+                'booking_id' => $booking->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        try {
+            app(\App\Services\EscapeRoomSessionService::class)->followBooking($booking);
+        } catch (\Throwable $e) {
+            Log::warning('Escape-room waivers could not follow the booking update', [
                 'booking_id' => $booking->id,
                 'error' => $e->getMessage(),
             ]);

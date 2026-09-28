@@ -26,6 +26,7 @@ class PhotoOverlay extends Model
         'is_enabled',
         'priority',
         'created_by',
+        'package_id',
     ];
 
     protected $attributes = [
@@ -48,6 +49,21 @@ class PhotoOverlay extends Model
     public function creator(): BelongsTo
     {
         return $this->belongsTo(User::class, 'created_by');
+    }
+
+    public function package(): BelongsTo
+    {
+        return $this->belongsTo(Package::class)->withTrashed();
+    }
+
+    public static function supportsRooms(): bool
+    {
+        return \App\Support\SchemaSupport::hasColumn('photo_overlays', 'package_id');
+    }
+
+    public function roomId(): ?int
+    {
+        return self::supportsRooms() && $this->package_id ? (int) $this->package_id : null;
     }
 
     public function isActiveAt(?\Illuminate\Support\Carbon $at = null): bool
@@ -98,6 +114,25 @@ class PhotoOverlay extends Model
         $at = $at ?: now();
 
         return $query->where('location_id', $locationId)
+            ->when(self::supportsRooms(), fn ($q) => $q->whereNull('package_id'))
+            ->where('is_enabled', true)
+            ->where(fn ($q) => $q->whereNull('starts_at')->orWhere('starts_at', '<=', $at))
+            ->where(fn ($q) => $q->whereNull('ends_at')->orWhere('ends_at', '>=', $at))
+            ->orderByDesc('priority')
+            ->orderByDesc('starts_at')
+            ->orderByDesc('id');
+    }
+
+    public function scopeCandidatesForRoom($query, int $locationId, int $packageId, ?\Illuminate\Support\Carbon $at = null)
+    {
+        $at = $at ?: now();
+
+        if (!self::supportsRooms()) {
+            return $query->whereRaw('1 = 0');
+        }
+
+        return $query->where('location_id', $locationId)
+            ->where('package_id', $packageId)
             ->where('is_enabled', true)
             ->where(fn ($q) => $q->whereNull('starts_at')->orWhere('starts_at', '<=', $at))
             ->where(fn ($q) => $q->whereNull('ends_at')->orWhere('ends_at', '>=', $at))

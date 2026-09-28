@@ -668,16 +668,50 @@ class EmailNotificationService
             $variables['waiver_line'] = $link
                 ? 'To save time at check-in, please complete your waiver before you arrive: ' . $link
                 : '';
+            $variables['escape_room_checkin_link'] = '';
+
+            $checkInLink = $type === 'booking' ? $this->escapeRoomCheckInLinkFor($entity) : '';
+
+            if ($checkInLink !== '') {
+                $variables['escape_room_checkin_link'] = $checkInLink;
+                $variables['waiver_section'] = $this->escapeRoomWaiverSectionHtml($link, $checkInLink);
+                $variables['waiver_line'] = trim(
+                    ($link ? 'Your waiver: ' . $link . ' ' : '')
+                    . 'Every player signs their own waiver, any time before the game: ' . $checkInLink
+                );
+            }
         }
 
         return $variables;
+    }
+
+    protected function escapeRoomCheckInLinkFor($booking): string
+    {
+        return app(EscapeRoomSessionService::class)->checkInLinkForBooking($booking);
+    }
+
+    protected function escapeRoomWaiverSectionHtml(string $link, string $checkInLink): string
+    {
+        $button = $link !== ''
+            ? '<a href="' . e($link) . '" style="display: inline-block; background-color: #1e40af; color: #ffffff; padding: 11px 26px; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 14px;">Sign Your Waiver</a>'
+            : '';
+        $checkIn = e($checkInLink);
+        $signNow = $link !== '' ? 'Sign yours now to save time. ' : '';
+
+        return <<<HTML
+<div style="margin: 24px 0; padding: 20px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; text-align: center;">
+    <p style="margin: 0 0 10px 0; font-size: 14px; color: #1e3a8a; line-height: 1.5;"><strong>Every player signs their own waiver.</strong> Your group photo and finish time are emailed after the game to everyone who signed.</p>
+    <p style="margin: 0 0 14px 0; font-size: 14px; color: #1e3a8a; line-height: 1.5;">{$signNow}The rest of your group can sign on their phones any time before the game here: <a href="{$checkIn}" style="color: #1e40af;">{$checkIn}</a></p>
+    {$button}
+</div>
+HTML;
     }
 
     /** Resolve the public waiver link for a booking / event / attraction purchase. */
     protected function waiverLinkFor($entity, string $type): string
     {
         $waiver = match ($type) {
-            'booking' => Waiver::where('booking_id', $entity->id)->latest('id')->first(),
+            'booking' => Waiver::where('booking_id', $entity->id)->exceptEscapeRoomSignIns()->latest('id')->first(),
             'event' => Waiver::where('event_id', $entity->event_id ?? null)
                 ->where('customer_id', $entity->customer_id ?? null)
                 ->latest('id')->first(),
@@ -709,7 +743,16 @@ HTML;
             ? $waiver->adult_full_name
             : ($customer ? trim($customer->first_name . ' ' . $customer->last_name) : 'Guest');
 
-        $activityName = $waiver->event?->name ?? $waiver->booking?->package?->name ?? '';
+        $activityName = $waiver->event?->name ?? $waiver->booking?->package?->name ?? $waiver->manual_activity_name ?? '';
+        $game = null;
+
+        try {
+            if (Waiver::supportsEscapeRoomSessionId() && $waiver->escape_room_session_id) {
+                $game = app(EscapeRoomSessionService::class)->describeWaiverGame(\App\Models\EscapeRoomSession::find($waiver->escape_room_session_id));
+            }
+        } catch (\Throwable $e) {
+            $game = null;
+        }
 
         return array_merge($this->buildCommonVariables($location, $company), [
             'customer_name' => $name,
@@ -723,7 +766,9 @@ HTML;
             'waiver_status' => ucfirst($waiver->status ?? ''),
             'waiver_date' => $waiver->selected_date?->format('F j, Y') ?? '',
             'waiver_title' => $waiver->template?->title ?? 'Waiver',
-            'activity_name' => $activityName,
+            'activity_name' => $game['room_name'] ?? $activityName,
+            'escape_room_name' => $game['room_name'] ?? '',
+            'escape_room_time' => $game['time_label'] ?? '',
             'business_legal_name' => $company?->company_name ?? '',
         ]);
     }
@@ -845,6 +890,8 @@ HTML;
             'package_price' => '$' . number_format($package?->price ?? 0, 2),
             'package_min_participants' => (string) ($package?->min_participants ?? 1),
             'package_max_participants' => (string) ($package?->max_participants ?? 10),
+            'booking_kind' => $package?->isEscapeRoom() ? 'escape room game' : 'party',
+            'booking_kind_title' => $package?->isEscapeRoom() ? 'Escape room game' : 'Party',
 
             'room_name' => $room?->name ?? '',
             'room_description' => $room?->description ?? '',
@@ -1332,6 +1379,8 @@ HTML;
                     'package_price' => 'Package price',
                     'package_min_participants' => 'Minimum participants',
                     'package_max_participants' => 'Maximum participants',
+                    'booking_kind' => 'What was booked: "party", or "escape room game" for escape rooms',
+                    'booking_kind_title' => 'Same, starting with a capital: "Party" or "Escape room game"',
                 ],
                 'Room' => [
                     'room_name' => 'Room name',

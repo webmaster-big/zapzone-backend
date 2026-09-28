@@ -613,6 +613,28 @@ class PhotoPublicController extends Controller
         );
     }
 
+    protected function escapeRoomPagePayload(PhotoSession $session, string $tz): ?array
+    {
+        $game = $session->linkedEscapeRoomSession();
+
+        if (!$game) {
+            return null;
+        }
+
+        $game->loadMissing('package:id,name');
+        $time = \Illuminate\Support\Carbon::createFromFormat('H:i', $game->timeKey(), $tz);
+
+        return [
+            'room_name' => $game->package?->name,
+            'session_date' => $game->session_date?->format('M j, Y'),
+            'session_time' => $time ? $time->format('g:i A') : $game->timeKey(),
+            'completed' => $game->isCompleted(),
+            'escaped' => $game->escaped,
+            'completion_label' => $game->completionLabel(),
+            'result' => $game->resultLabel(),
+        ];
+    }
+
     protected function photoPagePayload(PhotoSession $session): array
     {
         $tz = OperatingDay::timezoneFor($session->location);
@@ -632,6 +654,7 @@ class PhotoPublicController extends Controller
             'expires_at' => $session->access_expires_at?->toIso8601String(),
             'expires_on_label' => $session->access_expires_at?->copy()->setTimezone($tz)->format('M j, Y'),
             'allow_download_all' => $photos->count() > 1,
+            'escape_room' => $this->escapeRoomPagePayload($session, $tz),
             'photos' => $photos->map(fn (Photo $photo) => [
                 'id' => $photo->id,
                 'url' => PhotoMediaController::signedUrl($photo, 'delivery'),

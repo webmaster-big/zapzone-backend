@@ -51,6 +51,7 @@ class WaiverTemplate extends Model
         'crm_sync_minor',
         'attorney_reviewed',
         'created_by',
+        'kind',
     ];
 
     protected $casts = [
@@ -84,6 +85,11 @@ class WaiverTemplate extends Model
     public const STATUS_ACTIVE = 'active';
     public const STATUS_INACTIVE = 'inactive';
     public const STATUS_ARCHIVED = 'archived';
+
+    public const KIND_STANDARD = 'standard';
+    public const KIND_ESCAPE_ROOM = 'escape_room';
+
+    public const KINDS = [self::KIND_STANDARD, self::KIND_ESCAPE_ROOM];
 
     public const DUPLICATE_NONE = 'none';
     public const DUPLICATE_ALLOW = 'allow';
@@ -155,6 +161,32 @@ class WaiverTemplate extends Model
         return $query->where('company_id', $companyId);
     }
 
+    public static function supportsKind(): bool
+    {
+        return \App\Support\SchemaSupport::hasColumn('waiver_templates', 'kind');
+    }
+
+    public function isEscapeRoom(): bool
+    {
+        return self::supportsKind() && $this->kind === self::KIND_ESCAPE_ROOM;
+    }
+
+    public function scopeStandard(Builder $query): Builder
+    {
+        if (!self::supportsKind()) {
+            return $query;
+        }
+
+        return $query->where(fn ($q) => $q->where('kind', self::KIND_STANDARD)->orWhereNull('kind'));
+    }
+
+    public function scopeEscapeRooms(Builder $query): Builder
+    {
+        return self::supportsKind()
+            ? $query->where('kind', self::KIND_ESCAPE_ROOM)
+            : $query->whereRaw('1 = 0');
+    }
+
     /**
      * Does this template cover the given activity?
      * Mirrors FeeSupport::appliesToEntity().
@@ -190,6 +222,7 @@ class WaiverTemplate extends Model
     ): ?self {
         $candidates = static::active()
             ->forCompany($companyId)
+            ->standard()
             ->where(function ($q) use ($locationId) {
                 $q->whereNull('location_id');
                 if ($locationId) {
@@ -213,6 +246,30 @@ class WaiverTemplate extends Model
                 }
             }
             if ($partyType !== null && $template->appliesToActivity('party_type', $partyType)) {
+                return $template;
+            }
+        }
+
+        return $candidates->firstWhere('is_default', true);
+    }
+
+    public static function resolveForEscapeRoom(int $companyId, ?int $locationId, int $packageId): ?self
+    {
+        $candidates = static::active()
+            ->forCompany($companyId)
+            ->escapeRooms()
+            ->where(function ($q) use ($locationId) {
+                $q->whereNull('location_id');
+                if ($locationId) {
+                    $q->orWhere('location_id', $locationId);
+                }
+            })
+            ->orderByRaw('location_id IS NULL')
+            ->orderBy('id')
+            ->get();
+
+        foreach ($candidates as $template) {
+            if ($template->appliesToActivity('package', $packageId)) {
                 return $template;
             }
         }

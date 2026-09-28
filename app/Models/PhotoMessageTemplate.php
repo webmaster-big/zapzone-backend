@@ -13,8 +13,9 @@ class PhotoMessageTemplate extends Model
     public const KIND_IMMEDIATE = 'immediate';
     public const KIND_NEXT_DAY = 'next_day';
     public const KIND_KIOSK = 'kiosk';
+    public const KIND_ESCAPE_ROOM = 'escape_room';
 
-    public const KINDS = [self::KIND_IMMEDIATE, self::KIND_NEXT_DAY, self::KIND_KIOSK];
+    public const KINDS = [self::KIND_IMMEDIATE, self::KIND_NEXT_DAY, self::KIND_KIOSK, self::KIND_ESCAPE_ROOM];
 
     public const VARIABLES = [
         'first_name',
@@ -25,6 +26,16 @@ class PhotoMessageTemplate extends Model
         'business_name',
         'support_contact',
         'photo_count',
+    ];
+
+    public const ESCAPE_ROOM_VARIABLES = [
+        'room_name',
+        'session_date',
+        'session_time',
+        'completion_time',
+        'escape_result',
+        'photos_line',
+        'location_phone',
     ];
 
     protected $fillable = [
@@ -62,7 +73,19 @@ class PhotoMessageTemplate extends Model
                 'email_body' => "<p>Hi {{first_name}},</p>\n<p>Here is the photo you took at {{location_name}} on {{photo_date}}.</p>\n<p><a href=\"{{photo_link}}\">View your photo</a></p>\n<p>This link works until {{expires_on}}.</p>\n<p>{{business_name}}<br>{{support_contact}}</p>",
                 'sms_body' => "Here is your {{location_name}} photo: {{photo_link}} (available until {{expires_on}})",
             ],
+            self::KIND_ESCAPE_ROOM => [
+                'email_subject' => 'Your {{room_name}} group photo from {{location_name}}',
+                'email_body' => "<p>Hi {{first_name}},</p>\n<p>Thanks for playing {{room_name}} at {{location_name}} on {{session_date}} at {{session_time}}.</p>\n<p><strong>{{escape_result}}</strong></p>\n<p>{{photos_line}}</p>\n<p><a href=\"{{photo_link}}\">View and download your photos</a></p>\n<p>This link works until {{expires_on}}.</p>\n<p>{{location_name}}<br>{{location_phone}}</p>",
+                'sms_body' => "Your {{room_name}} group photo from {{location_name}} is ready: {{photo_link}}",
+            ],
         ];
+    }
+
+    public static function variablesFor(string $kind): array
+    {
+        return $kind === self::KIND_ESCAPE_ROOM
+            ? array_merge(self::VARIABLES, self::ESCAPE_ROOM_VARIABLES)
+            : self::VARIABLES;
     }
 
     public static function forCompany(?int $companyId, string $kind): self
@@ -75,10 +98,22 @@ class PhotoMessageTemplate extends Model
 
         $defaults = self::defaults()[$kind] ?? self::defaults()[self::KIND_IMMEDIATE];
 
-        return self::create(array_merge($defaults, [
-            'company_id' => $companyId,
-            'kind' => $kind,
-        ]));
+        try {
+            return self::create(array_merge($defaults, [
+                'company_id' => $companyId,
+                'kind' => $kind,
+            ]));
+        } catch (\Illuminate\Database\QueryException $e) {
+            $existing = (string) $e->getCode() === '23000'
+                ? self::where('company_id', $companyId)->where('kind', $kind)->first()
+                : null;
+
+            if ($existing) {
+                return $existing;
+            }
+
+            throw $e;
+        }
     }
 
     public static function allForCompany(?int $companyId): Collection

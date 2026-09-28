@@ -264,6 +264,8 @@ class SmsNotificationController extends Controller
             'location_name' => 'Zap Zone Brighton',
             'location_phone' => '(810) 555-1234',
             'package_name' => 'Ultimate Party Package',
+            'booking_kind' => 'party',
+            'booking_kind_title' => 'Party',
             'attraction_name' => 'Laser Tag',
             'event_name' => 'Glow Night',
             'booking_reference' => 'BK-100245',

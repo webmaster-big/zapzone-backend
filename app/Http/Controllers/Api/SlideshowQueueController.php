@@ -10,6 +10,7 @@ use App\Models\Location;
 use App\Models\LocationPhotoSetting;
 use App\Models\Photo;
 use App\Models\SlideshowQueue;
+use App\Services\EscapeRoomSessionService;
 use App\Support\OperatingDay;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -97,6 +98,11 @@ class SlideshowQueueController extends Controller
             return response()->json(['success' => false, 'message' => 'There are no changes to save.'], 422);
         }
 
+        if (($validated['slideshow_state'] ?? null) === Photo::SLIDESHOW_VISIBLE
+            && ($blocked = $this->escapeRoomReleaseBlock($photo, $request->boolean('confirm_release')))) {
+            return $blocked;
+        }
+
         $changes = [];
         if (!empty($validated['slideshow_state'])) {
             $changes['slideshow_state'] = $validated['slideshow_state'];
@@ -149,6 +155,10 @@ class SlideshowQueueController extends Controller
                 'success' => false,
                 'message' => 'This photo is not ready to show yet.',
             ], 422);
+        }
+
+        if ($include && ($blocked = $this->escapeRoomReleaseBlock($photo, $request->boolean('confirm_release')))) {
+            return $blocked;
         }
 
         $photo->loadMissing('location');
@@ -213,6 +223,10 @@ class SlideshowQueueController extends Controller
             ], 422);
         }
 
+        if ($status === Photo::APPROVAL_APPROVED && ($blocked = $this->escapeRoomReleaseBlock($photo, $request->boolean('confirm_release')))) {
+            return $blocked;
+        }
+
         $photo->loadMissing('location');
         $staffId = $this->resolveAuthUser($request)?->id;
 
@@ -265,7 +279,12 @@ class SlideshowQueueController extends Controller
         }
 
         $staffId = $this->resolveAuthUser($request)?->id;
-        $ids = $slideshowQueue->photosAwaitingApproval()->pluck('photos.id')->all();
+        $waiting = $slideshowQueue->photosAwaitingApproval()->pluck('photos.id')->all();
+        $ids = array_values(array_filter(
+            $waiting,
+            fn ($id) => ($photo = Photo::find($id)) && $this->escapeRoomReleaseBlock($photo, false) === null
+        ));
+        $held = count($waiting) - count($ids);
 
         if ($ids !== []) {
             Photo::whereIn('id', $ids)->update([
@@ -290,11 +309,63 @@ class SlideshowQueueController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => $ids === []
-                ? 'Nothing was waiting for approval.'
-                : sprintf('Approved %d photo%s.', count($ids), count($ids) === 1 ? '' : 's'),
+            'message' => trim(($ids === []
+                ? ($held > 0 ? '' : 'Nothing was waiting for approval.')
+                : sprintf('Approved %d photo%s.', count($ids), count($ids) === 1 ? '' : 's'))
+                . ($held > 0 ? sprintf(' %d escape-room photo%s left waiting, because the game is not finished or the photo release needs checking. Approve %s one at a time.', $held, $held === 1 ? ' was' : 's were', $held === 1 ? 'it' : 'them') : '')),
             'data' => $this->presentQueue($slideshowQueue->fresh(), $slideshowQueue->location, true),
         ]);
+    }
+
+    protected function escapeRoomReleaseBlock(Photo $photo, bool $confirmed): ?JsonResponse
+    {
+        $photo->loadMissing('session');
+        $game = $photo->session?->linkedEscapeRoomSession();
+
+        if (!$game) {
+            return null;
+        }
+
+        if (!$game->isCompleted()) {
+            return response()->json([
+                'success' => false,
+                'code' => 'escape_room_not_finished',
+                'message' => 'Finish this escape-room game before putting its photo on the venue slideshow.',
+            ], 422);
+        }
+
+        $release = app(EscapeRoomSessionService::class)->slideshowRelease($game);
+
+        if ($release['declined'] > 0) {
+            return response()->json([
+                'success' => false,
+                'code' => 'photo_release_declined',
+                'declined' => $release['declined'],
+                'message' => sprintf(
+                    '%d player%s in this game declined the photo release, so this photo cannot go on the venue slideshow.',
+                    $release['declined'],
+                    $release['declined'] === 1 ? '' : 's'
+                ),
+            ], 422);
+        }
+
+        if (($release['not_asked'] > 0 || $release['players'] === 0) && !$confirmed) {
+            return response()->json([
+                'success' => false,
+                'code' => 'photo_release_unconfirmed',
+                'not_asked' => $release['not_asked'],
+                'message' => $release['players'] === 0
+                    ? 'Nobody in this game signed a waiver, so no one agreed to a photo release. Only show it if the group said yes.'
+                    : sprintf(
+                        '%d player%s in this game %s not asked about a photo release. Only show it if the group said yes.',
+                        $release['not_asked'],
+                        $release['not_asked'] === 1 ? '' : 's',
+                        $release['not_asked'] === 1 ? 'was' : 'were'
+                    ),
+            ], 409);
+        }
+
+        return null;
     }
 
     public function reorder(Request $request, SlideshowQueue $slideshowQueue): JsonResponse

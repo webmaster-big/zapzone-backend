@@ -99,14 +99,14 @@ class WaiverController extends Controller
     public function index(Request $request): JsonResponse
     {
         try {
-            $query = Waiver::query()->withoutHeavyColumns()->with([
+            $query = Waiver::query()->withoutHeavyColumns()->with(array_merge([
                 'template:id,title',
                 'location:id,name',
                 'minors:id,waiver_id,first_name,last_name,date_of_birth',
                 'booking:id,reference_number',
                 'attractionPurchase:id',
                 'event:id,name',
-            ]);
+            ], $this->escapeRoomRelations()));
             $this->applyAuthScope($query, $request);
 
             // Status: defaults to completed, which is the daily lookup staff do most. "all"
@@ -182,6 +182,13 @@ class WaiverController extends Controller
         }
     }
 
+    private function escapeRoomRelations(): array
+    {
+        return Waiver::supportsEscapeRoomSessionId() && \App\Models\EscapeRoomSession::isAvailable()
+            ? ['escapeRoomSession:id,package_id,session_date,session_time,completed_at,escaped,completion_seconds', 'escapeRoomSession.package:id,name']
+            : [];
+    }
+
     public function show(Waiver $waiver): JsonResponse
     {
         if (!$this->authorizeRecordScope($waiver)) {
@@ -189,16 +196,17 @@ class WaiverController extends Controller
         }
 
         $waiver->load([
-            'template:id,title,duplicate_rule',
-            'version:id,version',
+            'template',
+            'version',
             'location:id,name',
             'customer:id,first_name,last_name,email,phone',
             'minors',
             'auditEvents',
-            'booking:id,reference_number,booking_date',
+            'booking:id,reference_number,booking_date,package_id',
             'event:id,name',
             'creator:id,first_name,last_name',
             'assigner:id,first_name,last_name',
+            ...$this->escapeRoomRelations(),
         ]);
 
         return response()->json([
@@ -250,6 +258,13 @@ class WaiverController extends Controller
         $template = WaiverTemplate::findOrFail($validated['waiver_template_id']);
         if (!$this->authorizeRecordScope($template)) {
             return $this->forbidden();
+        }
+        if ($template->isEscapeRoom()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Escape-room waivers are signed from the escape-room check-in, where the guest picks their room and time. Choose a standard waiver to assign.',
+                'errors' => ['waiver_template_id' => ['Escape-room waivers cannot be assigned.']],
+            ], 422);
         }
 
         if (in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
@@ -329,6 +344,7 @@ class WaiverController extends Controller
         $templateOverride = null;
         if (!empty($validated['template_id'])) {
             $templateOverride = WaiverTemplate::where('id', $validated['template_id'])
+                ->standard()
                 ->where('company_id', $authUser->company_id)
                 ->when(
                     in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id,
@@ -338,12 +354,16 @@ class WaiverController extends Controller
                 ->first();
         }
 
-        $waiver = match ($validated['source_type']) {
-            'booking'             => $this->kioskForBooking($authUser, $validated, $templateOverride),
-            'attraction_purchase' => $this->kioskForAttractionPurchase($authUser, $validated, $templateOverride),
-            'event_purchase'      => $this->kioskForEventPurchase($authUser, $validated, $templateOverride),
-            default               => $this->resolveActivityKioskWaiver($authUser, $validated, $templateOverride),
-        };
+        try {
+            $waiver = match ($validated['source_type']) {
+                'booking'             => $this->kioskForBooking($authUser, $validated, $templateOverride),
+                'attraction_purchase' => $this->kioskForAttractionPurchase($authUser, $validated, $templateOverride),
+                'event_purchase'      => $this->kioskForEventPurchase($authUser, $validated, $templateOverride),
+                default               => $this->resolveActivityKioskWaiver($authUser, $validated, $templateOverride),
+            };
+        } catch (\App\Support\EscapeRoomException $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], $e->status);
+        }
 
         if (!$waiver) {
             return response()->json([
@@ -376,17 +396,13 @@ class WaiverController extends Controller
             return null;
         }
 
-        $existing = Waiver::where('booking_id', $booking->id)->first();
+        $existing = Waiver::where('booking_id', $booking->id)->exceptEscapeRoomSignIns()->first();
         if ($existing) {
             return $existing;
         }
 
-        $resolved = $template ?? WaiverTemplate::resolveForActivity(
-            $booking->location?->company_id ?? $authUser->company_id,
-            $booking->location_id,
-            $booking->package_id,
-            $booking->attractions?->pluck('id')->all() ?? [],
-        );
+        $automatic = $this->waivers->templateForBooking($booking);
+        $resolved = $automatic?->isEscapeRoom() ? $automatic : ($template ?? $automatic);
         if (!$resolved) {
             return null;
         }
@@ -394,7 +410,7 @@ class WaiverController extends Controller
         $companyId = $booking->location?->company_id ?? $authUser->company_id;
         $version = $this->waivers->syncVersion($resolved, $authUser->id);
 
-        return Waiver::create([
+        return Waiver::create(array_merge([
             'company_id'                => $companyId,
             'location_id'               => $booking->location_id,
             'waiver_template_id'        => $resolved->id,
@@ -409,7 +425,10 @@ class WaiverController extends Controller
             'created_by'                => $authUser->id,
             'assigned_by'               => $authUser->id,
             'is_manager_assigned'       => true,
-        ]);
+        ], $resolved->isEscapeRoom() ? [
+            'package_id'                => $booking->package_id,
+            'manual_activity_name'      => $booking->package?->name,
+        ] : []));
     }
 
     private function kioskForAttractionPurchase($authUser, array $data, ?WaiverTemplate $template): ?Waiver
@@ -505,6 +524,11 @@ class WaiverController extends Controller
             if (!$model || !$this->locAllowed($authUser, $model->location_id)) {
                 return null;
             }
+            if ($model->isEscapeRoom()
+                && app(\App\Services\EscapeRoomSessionService::class)->isEnabled()
+                && \App\Models\WaiverTemplate::resolveForEscapeRoom((int) $companyId, (int) $model->location_id, (int) $model->id)) {
+                throw new \App\Support\EscapeRoomException('Escape rooms are signed on the escape-room check-in. Open Photos, Escape Rooms for the link.');
+            }
             $packageId = $model->id;
             $activityName = $model->name;
             $locationId = $locationId ?? $model->location_id;
@@ -569,7 +593,13 @@ class WaiverController extends Controller
         $reason = $request->input('reason');
 
         try {
-            DB::transaction(function () use ($waiver, $authUser, $reason) {
+            $game = null;
+
+            if (Waiver::supportsEscapeRoomSessionId() && $waiver->escape_room_session_id && \App\Models\EscapeRoomSession::isAvailable()) {
+                $game = app(\App\Services\EscapeRoomSessionService::class)->describeWaiverGame(\App\Models\EscapeRoomSession::find($waiver->escape_room_session_id));
+            }
+
+            DB::transaction(function () use ($waiver, $authUser, $reason, $game) {
                 WaiverDeletionLog::create([
                     'company_id' => $waiver->company_id,
                     'waiver_id' => $waiver->id,
@@ -583,6 +613,10 @@ class WaiverController extends Controller
                         'status' => $waiver->status,
                         'waiver_template_id' => $waiver->waiver_template_id,
                         'submitted_at' => optional($waiver->submitted_at)->toIso8601String(),
+                        'booking_id' => $waiver->booking_id,
+                        'activity' => $waiver->manual_activity_name,
+                        'escape_room_session_id' => $game['session_id'] ?? null,
+                        'escape_room' => $game ? trim(($game['room_name'] ?? '') . ' ' . ($game['time_label'] ?? '')) : null,
                     ],
                 ]);
 
@@ -627,7 +661,7 @@ class WaiverController extends Controller
             }
         }
 
-        $waiver->load(['template:id,title', 'version:id,version', 'location:id,name', 'minors', 'company', 'auditEvents']);
+        $waiver->load(['template', 'version', 'location:id,name', 'minors', 'company', 'auditEvents']);
 
         $pdf = Pdf::loadView('waivers.print', [
             'waiver' => $waiver,
@@ -645,13 +679,13 @@ class WaiverController extends Controller
             return $guard;
         }
 
-        $query = Waiver::query()->withoutHeavyColumns()->with([
+        $query = Waiver::query()->withoutHeavyColumns()->with(array_merge([
                 'template:id,title',
                 'location:id,name',
                 'minors:id,waiver_id,first_name,last_name,date_of_birth,relationship',
                 'booking:id,reference_number',
                 'event:id,name',
-            ])
+            ], $this->escapeRoomRelations()))
             ->when(
                 $request->string('status')->toString() !== 'all',
                 fn ($q) => $q->where('status', $request->string('status')->toString() ?: Waiver::STATUS_COMPLETED)
@@ -713,6 +747,10 @@ class WaiverController extends Controller
             'attraction_purchase_id' => $w->attraction_purchase_id,
             'customer_id' => $w->customer_id,
             'manual_activity_name' => $w->manual_activity_name,
+            'escape_room' => $w->relationLoaded('escapeRoomSession') ? ($w->escapeRoomSession?->package?->name ?? '') : '',
+            'escape_room_game_time' => $w->relationLoaded('escapeRoomSession') && $w->escapeRoomSession
+                ? \Illuminate\Support\Carbon::createFromFormat('H:i', $w->escapeRoomSession->timeKey())->format('g:i A')
+                : '',
             'submitted_at' => $w->submitted_at?->toIso8601String(),
             'checked_in_at' => $w->checked_in_at?->toIso8601String(),
             'created_at' => $w->created_at?->toIso8601String(),
@@ -834,7 +872,7 @@ class WaiverController extends Controller
             ], 404);
         }
 
-        $waiver->load(['template:id,title', 'location:id,name', 'minors:id,waiver_id,first_name,last_name,date_of_birth']);
+        $waiver->load(array_merge(['template:id,title', 'location:id,name', 'minors:id,waiver_id,first_name,last_name,date_of_birth'], $this->escapeRoomRelations()));
 
         return response()->json([
             'success' => true,

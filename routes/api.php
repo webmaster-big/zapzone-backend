@@ -23,6 +23,7 @@ use App\Http\Controllers\Api\EmailCampaignController;
 use App\Http\Controllers\Api\EmailNotificationController;
 use App\Http\Controllers\Api\SmsNotificationController;
 use App\Http\Controllers\Api\EmailTemplateController;
+use App\Http\Controllers\Api\EscapeRoomSessionController;
 use App\Http\Controllers\Api\EventController;
 use App\Http\Controllers\Api\EventPurchaseController;
 use App\Http\Controllers\Api\FeeSupportController;
@@ -88,6 +89,9 @@ Route::get('waivers/kiosk/{templateId}',      [WaiverPublicController::class, 'k
 Route::post('waivers/kiosk/{templateId}/submit', [WaiverPublicController::class, 'kioskSubmit'])->middleware('throttle:60,1')->whereNumber('templateId');
 Route::post('waivers/ads/learn-more', [WaiverAdController::class, 'learnMore'])->middleware('throttle:waiver-ad-learn-more');
 Route::post('waivers/kiosk/{templateId}/lookup', [WaiverPublicController::class, 'kioskLookup'])->middleware('throttle:waiver-returning-lookup')->whereNumber('templateId');
+Route::get('waivers/escape-room/{locationId}', [WaiverPublicController::class, 'escapeRoomKiosk'])->whereNumber('locationId')->middleware('throttle:escape-room-kiosk');
+Route::get('waivers/escape-room/{locationId}/rooms/{packageId}', [WaiverPublicController::class, 'escapeRoomForm'])->whereNumber(['locationId', 'packageId'])->middleware('throttle:escape-room-kiosk');
+Route::post('waivers/escape-room/{locationId}/submit', [WaiverPublicController::class, 'escapeRoomSubmit'])->whereNumber('locationId')->middleware('throttle:escape-room-submit');
 // Bulk / chaperone (manage-token addressed, no auth)
 Route::get('waivers/bulk/{manageToken}',             [WaiverPublicController::class, 'bulkShow']);
 Route::post('waivers/bulk/{manageToken}/recipients', [WaiverPublicController::class, 'bulkAddRecipients'])->middleware('throttle:30,1');
@@ -706,6 +710,7 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
 
+    Route::get('customer-bookings/waivers', [\App\Http\Controllers\Api\CustomerBookingWaiverController::class, 'index']);
     Route::get('memberships/me',        [MembershipController::class, 'myMembership']);
     Route::get('memberships/mine/all',  [MembershipController::class, 'myMemberships']);
     Route::post('memberships/purchase', [MembershipController::class, 'purchase']);
@@ -867,6 +872,20 @@ Route::middleware('auth:sanctum')->group(function () {
 
         // Reporting
         Route::get('photo-reports/{type}', [PhotoReportController::class, 'report'])->middleware('photo.staff:company_admin|admin|location_manager');
+
+        Route::get('escape-rooms/day',   [EscapeRoomSessionController::class, 'day']);
+        Route::get('escape-rooms/rooms', [EscapeRoomSessionController::class, 'rooms']);
+        Route::post('escape-rooms/sessions', [EscapeRoomSessionController::class, 'open']);
+        Route::get('escape-rooms/sessions/{escapeRoomSession}', [EscapeRoomSessionController::class, 'show'])->whereNumber('escapeRoomSession');
+        Route::post('escape-rooms/sessions/{escapeRoomSession}/photo-session', [EscapeRoomSessionController::class, 'startPhoto'])->whereNumber('escapeRoomSession');
+        Route::post('escape-rooms/sessions/{escapeRoomSession}/complete', [EscapeRoomSessionController::class, 'complete'])->whereNumber('escapeRoomSession');
+        Route::post('escape-rooms/sessions/{escapeRoomSession}/send-new', [EscapeRoomSessionController::class, 'sendToNew'])->whereNumber('escapeRoomSession');
+        Route::post('escape-rooms/sessions/{escapeRoomSession}/waivers/{waiver}/move', [EscapeRoomSessionController::class, 'moveWaiver'])->whereNumber(['escapeRoomSession', 'waiver']);
+        Route::post('escape-rooms/sessions/{escapeRoomSession}/waivers/{waiver}/booking', [EscapeRoomSessionController::class, 'linkBooking'])->whereNumber(['escapeRoomSession', 'waiver']);
+        Route::post('escape-rooms/sessions/{escapeRoomSession}/waivers/{waiver}/remove', [EscapeRoomSessionController::class, 'removeWaiver'])->whereNumber(['escapeRoomSession', 'waiver']);
+        Route::post('escape-rooms/sessions/{escapeRoomSession}/waivers/{waiver}/resend', [EscapeRoomSessionController::class, 'resendToPlayer'])->whereNumber(['escapeRoomSession', 'waiver']);
+        Route::post('escape-rooms/sessions/{escapeRoomSession}/result', [EscapeRoomSessionController::class, 'correctResult'])->whereNumber('escapeRoomSession');
+        Route::get('escape-rooms/bookings/{booking}', [EscapeRoomSessionController::class, 'bookingGame'])->whereNumber('booking');
     });
 });
 

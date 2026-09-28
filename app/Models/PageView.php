@@ -32,6 +32,7 @@ class PageView extends Model
         'waiver_kiosk',          // /waiver/kiosk/:id
         'waiver_kiosk_session',  // /waiver/kiosk-session/:token
         'waiver_bulk',           // /waiver/bulk/:manageToken
+        'waiver_escape_room',
         'waiver_sign',           // /waiver/:token
         'customer_photos',       // /photos/:accessToken
         'cart',

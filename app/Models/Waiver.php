@@ -76,6 +76,7 @@ class Waiver extends Model
         'assigned_by',
         'is_manager_assigned',
         'deleted_by',
+        'escape_room_session_id',
     ];
 
     protected $casts = [
@@ -129,6 +130,18 @@ class Waiver extends Model
                 $waiver->reference_number = self::generateReference();
             }
         });
+
+        static::saved(function (Waiver $waiver) {
+            if ($waiver->photo_video_consent !== false || $waiver->status !== self::STATUS_COMPLETED) {
+                return;
+            }
+
+            if (!$waiver->wasRecentlyCreated && !$waiver->wasChanged(['status', 'escape_room_session_id', 'booking_id', 'photo_video_consent'])) {
+                return;
+            }
+
+            app(\App\Services\EscapeRoomSessionService::class)->withdrawSlideshowForDecliner($waiver);
+        });
     }
 
     public static function generateUniqueToken(): string
@@ -170,6 +183,11 @@ class Waiver extends Model
         return self::$supportsEventPurchaseId;
     }
 
+    public static function supportsEscapeRoomSessionId(): bool
+    {
+        return \App\Support\SchemaSupport::hasColumn('waivers', 'escape_room_session_id');
+    }
+
     public static function generateReference(): string
     {
         do {
@@ -182,6 +200,11 @@ class Waiver extends Model
     public function eventPurchase(): BelongsTo
     {
         return $this->belongsTo(EventPurchase::class, 'event_purchase_id');
+    }
+
+    public function escapeRoomSession(): BelongsTo
+    {
+        return $this->belongsTo(EscapeRoomSession::class);
     }
 
     public function profile(): BelongsTo
@@ -282,6 +305,26 @@ class Waiver extends Model
     public function scopePending(Builder $query): Builder
     {
         return $query->where('status', self::STATUS_PENDING);
+    }
+
+    public function scopeExceptEscapeRoomSignIns(Builder $query): Builder
+    {
+        if (!self::supportsEscapeRoomSessionId()) {
+            return $query;
+        }
+
+        return $query->where(fn ($q) => $q
+            ->whereNull('escape_room_session_id')
+            ->orWhere('source', '!=', self::SOURCE_KIOSK)
+            ->orWhere('is_manager_assigned', true));
+    }
+
+    public function isEscapeRoomSignIn(): bool
+    {
+        return self::supportsEscapeRoomSessionId()
+            && $this->escape_room_session_id !== null
+            && $this->source === self::SOURCE_KIOSK
+            && !$this->is_manager_assigned;
     }
 
     public function scopeForDate(Builder $query, $date): Builder
