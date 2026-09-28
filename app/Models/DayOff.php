@@ -105,7 +105,10 @@ class DayOff extends Model
 
     public function scopeUpcoming($query)
     {
-        return $query->where('date', '>=', now()->toDateString());
+        return $query->where(function ($q) {
+            $q->where('date', '>=', now()->toDateString())
+              ->orWhere('is_recurring', true);
+        });
     }
 
     public function scopeForPackage($query, $packageId)
@@ -203,6 +206,10 @@ class DayOff extends Model
         if ($this->isTimeRange()) {
             $rangeStart = Carbon::parse($this->time_start);
             $rangeEnd = Carbon::parse($this->time_end);
+
+            if ($rangeEnd->lte($rangeStart)) {
+                return false;
+            }
 
             if ($slotEndTime) {
                 if ($slotStartTime->lt($rangeEnd) && $slotEndTime->gt($rangeStart)) {

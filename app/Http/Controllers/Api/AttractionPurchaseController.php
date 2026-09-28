@@ -806,7 +806,28 @@ class AttractionPurchaseController extends Controller
             || (isset($validated['status']) && $attractionPurchase->status === AttractionPurchase::STATUS_CANCELLED && $validated['status'] !== AttractionPurchase::STATUS_CANCELLED);
 
         if ($slotTouched && ($validated['status'] ?? $attractionPurchase->status) !== AttractionPurchase::STATUS_CANCELLED) {
-            $targetAttraction = \App\Models\Attraction::find($validated['attraction_id'] ?? $attractionPurchase->attraction_id);
+            $closureAttraction = \App\Models\Attraction::find($validated['attraction_id'] ?? $attractionPurchase->attraction_id);
+            $closureDate = isset($validated['scheduled_date'])
+                ? Carbon::parse($validated['scheduled_date'])->toDateString()
+                : $attractionPurchase->scheduled_date?->toDateString();
+            $closureTime = isset($validated['scheduled_time'])
+                ? substr((string) $validated['scheduled_time'], 0, 5)
+                : $attractionPurchase->scheduled_time?->format('H:i');
+
+            if ($closureAttraction && $closureAttraction->location_id && $closureDate && Carbon::parse($closureDate)->gte(Carbon::today())) {
+                $closureBlocked = $closureTime
+                    ? DayOff::isTimeSlotBlockedForAttraction((int) $closureAttraction->location_id, (int) $closureAttraction->id, $closureDate, $closureTime)
+                    : DayOff::isDateBlockedForAttraction((int) $closureAttraction->location_id, (int) $closureAttraction->id, $closureDate);
+
+                if ($closureBlocked) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'The selected date or time is closed for this attraction. Please choose another.',
+                    ], 422);
+                }
+            }
+
+            $targetAttraction = $closureAttraction;
 
             if ($targetAttraction && $targetAttraction->max_tickets_per_slot !== null) {
                 $slotDate = isset($validated['scheduled_date']) ? Carbon::parse($validated['scheduled_date'])->toDateString() : $attractionPurchase->scheduled_date?->toDateString();

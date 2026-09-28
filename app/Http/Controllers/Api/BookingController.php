@@ -1571,6 +1571,31 @@ class BookingController extends Controller
             || (float) $targetDuration !== (float) $booking->duration
             || (string) $targetDurationUnit !== (string) $booking->duration_unit;
 
+        $closureInputsChanged = $slotMoved
+            || (int) $targetPackageId !== (int) $booking->package_id
+            || $targetLocationId !== (int) $booking->location_id;
+
+        if ($closureInputsChanged && $targetStatus !== 'cancelled' && Carbon::parse($targetDate)->gte(Carbon::today())) {
+            $targetEndTime = Carbon::parse($targetTime)
+                ->addMinutes($this->getDurationInMinutes($targetDuration, $targetDurationUnit))
+                ->format('H:i');
+
+            $closureBlocked = ! empty($targetPackageId)
+                ? DayOff::isTimeSlotBlockedForPackage($targetLocationId, (int) $targetPackageId, $targetDate, $targetTime, $targetEndTime)
+                : DayOff::isTimeSlotBlocked($targetLocationId, $targetDate, $targetTime, $targetEndTime);
+
+            if (! $closureBlocked && ! empty($targetRoomId)) {
+                $closureBlocked = DayOff::isTimeSlotBlockedForRoom($targetLocationId, (int) $targetRoomId, $targetDate, $targetTime, $targetEndTime);
+            }
+
+            if ($closureBlocked) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'The selected date or time is closed. Please choose another slot.',
+                ], 422);
+            }
+        }
+
         $overlapOverride = [];
 
         if ($slotMoved && $targetRoomId && $targetStatus !== 'cancelled') {
@@ -2239,16 +2264,38 @@ class BookingController extends Controller
             ], 422);
         }
 
+        $bookingDate = $booking->booking_date instanceof Carbon
+            ? $booking->booking_date->format('Y-m-d')
+            : Carbon::parse($booking->booking_date)->format('Y-m-d');
+        $startTime = $booking->booking_time instanceof Carbon
+            ? $booking->booking_time->format('H:i')
+            : substr((string) $booking->booking_time, 0, 5);
+        $duration = $booking->duration ?? 2;
+        $durationUnit = $booking->duration_unit ?? 'hours';
+
+        if ($booking->status !== 'cancelled' && Carbon::parse($bookingDate)->gte(Carbon::today())) {
+            $endTime = Carbon::parse($startTime)
+                ->addMinutes($this->getDurationInMinutes($duration, $durationUnit))
+                ->format('H:i');
+
+            $closureBlocked = ! empty($booking->package_id)
+                ? DayOff::isTimeSlotBlockedForPackage($newLocationId, (int) $booking->package_id, $bookingDate, $startTime, $endTime)
+                : DayOff::isTimeSlotBlocked($newLocationId, $bookingDate, $startTime, $endTime);
+
+            if (! $closureBlocked && $roomId) {
+                $closureBlocked = DayOff::isTimeSlotBlockedForRoom($newLocationId, (int) $roomId, $bookingDate, $startTime, $endTime);
+            }
+
+            if ($closureBlocked) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'The destination location is closed at this booking\'s date and time. Choose another location, or reschedule the booking first.',
+                ], 422);
+            }
+        }
+
         $conflicts = [];
         if ($roomId) {
-            $bookingDate = $booking->booking_date instanceof Carbon
-                ? $booking->booking_date->format('Y-m-d')
-                : Carbon::parse($booking->booking_date)->format('Y-m-d');
-            $startTime = $booking->booking_time instanceof Carbon
-                ? $booking->booking_time->format('H:i')
-                : substr((string) $booking->booking_time, 0, 5);
-            $duration = $booking->duration ?? 2;
-            $durationUnit = $booking->duration_unit ?? 'hours';
             $excludeSlotId = PackageTimeSlot::where('booking_id', $booking->id)->value('id');
 
             if ($this->checkTimeSlotConflict($roomId, $bookingDate, $startTime, $duration, $durationUnit, $excludeSlotId)) {

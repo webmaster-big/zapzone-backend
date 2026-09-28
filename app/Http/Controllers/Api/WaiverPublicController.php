@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Waiver;
 use App\Models\WaiverBulkInvite;
 use App\Models\WaiverInviteRecipient;
+use App\Models\WaiverProfile;
 use App\Models\WaiverSetting;
 use App\Models\WaiverTemplate;
 use App\Services\WaiverService;
@@ -88,6 +89,10 @@ class WaiverPublicController extends Controller
 
         $template = $waiver->template;
         $data = $this->validateSubmission($request, $template);
+
+        if ($refused = $this->requireTenDigitPhone($data)) {
+            return $refused;
+        }
 
         // duplicate prevention (against OTHER completed waivers for this person/date/template)
         $duplicate = $this->waivers->findDuplicate(
@@ -271,7 +276,8 @@ class WaiverPublicController extends Controller
             $data['adult_first_name'] = $profile->first_name;
             $data['adult_last_name'] = $profile->last_name;
             $data['adult_email'] = $profile->email ?: ($data['adult_email'] ?? null);
-            $data['adult_phone'] = $profile->phone_raw ?: ($data['adult_phone'] ?? null);
+            $data['adult_phone'] = $profile->phone_digits
+                ?: ($profile->phone_e164 ?: ($profile->phone_raw ?: ($data['adult_phone'] ?? null)));
             $savedDob = $profile->date_of_birth?->toDateString();
             if ($savedDob && substr((string) ($data['adult_dob'] ?? ''), 0, 10) !== $savedDob) {
                 \Illuminate\Support\Facades\Log::warning('Returning-customer submit rejected; date of birth does not match the saved record', [
@@ -344,6 +350,10 @@ class WaiverPublicController extends Controller
             }
         }
         unset($data['waiver_profile_id'], $data['selected_dependent_ids'], $data['lookup_token']);
+
+        if (!$profile && ($refused = $this->requireTenDigitPhone($data))) {
+            return $refused;
+        }
 
         $waiver = Waiver::create(array_merge([
             'company_id' => $template->company_id,
@@ -525,11 +535,22 @@ class WaiverPublicController extends Controller
             ->all();
 
         $added = 0;
+        $unreachable = 0;
         foreach ($validated['recipients'] as $row) {
             if (empty($row['email']) && empty($row['phone'])) {
                 continue; // need at least one channel
             }
-            $key = strtolower(trim((string) ($row['email'] ?? $row['phone'])));
+
+            $phone = filled($row['phone'] ?? null) ? WaiverProfile::digitsFor($row['phone']) : null;
+
+            // A number SmsService cannot dial is not a channel. When it is the only one the row has,
+            // the invite would be reported as sent and silently never arrive, so say so instead.
+            if (empty($row['email']) && !$phone) {
+                $unreachable++;
+                continue;
+            }
+
+            $key = strtolower(trim((string) ($row['email'] ?? $phone)));
             if (in_array($key, $existing, true)) {
                 continue;
             }
@@ -538,16 +559,21 @@ class WaiverPublicController extends Controller
             $invite->recipients()->create([
                 'name' => $row['name'] ?? null,
                 'email' => $row['email'] ?? null,
-                'phone' => $row['phone'] ?? null,
+                'phone' => $phone,
                 'status' => WaiverInviteRecipient::STATUS_NOT_SENT,
             ]);
             $added++;
         }
 
+        $message = "{$added} contact(s) added.";
+        if ($unreachable > 0) {
+            $message .= " {$unreachable} skipped — a 10-digit phone number is needed when there is no email address.";
+        }
+
         return response()->json([
             'success' => true,
-            'message' => "{$added} contact(s) added.",
-            'data' => ['added' => $added, 'total' => $invite->recipients()->count()],
+            'message' => $message,
+            'data' => ['added' => $added, 'skipped' => $unreachable, 'total' => $invite->recipients()->count()],
         ]);
     }
 
@@ -748,6 +774,29 @@ class WaiverPublicController extends Controller
         }
 
         return false;
+    }
+
+    private function requireTenDigitPhone(array &$data): ?JsonResponse
+    {
+        $given = $data['adult_phone'] ?? null;
+
+        // A North American number is stored as its ten digits, which is what the admin phone search and the
+        // duplicate check compare against. Anything else has to be dialable to count, so a visiting family on a
+        // foreign number can still sign while "555" still cannot.
+        $digits = WaiverProfile::digitsFor($given);
+        $dialable = $digits ?: \App\Services\SmsService::toE164($given);
+
+        if (!$dialable) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Please enter a 10-digit phone number.',
+                'errors' => ['adult_phone' => ['Please enter a 10-digit phone number.']],
+            ], 422);
+        }
+
+        $data['adult_phone'] = $dialable;
+
+        return null;
     }
 
     private function validateSubmission(Request $request, WaiverTemplate $template): array

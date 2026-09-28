@@ -18,6 +18,8 @@ class DayOffController extends Controller
 {
     use ScopesByAuthUser;
 
+    private const MINUTES_PER_DAY = 1440;
+
     public function index(Request $request): JsonResponse
     {
         $query = DayOff::with('location');
@@ -123,6 +125,10 @@ class DayOffController extends Controller
         $location = $this->scopedLocation($request, $validated['location_id']);
         if ($location instanceof JsonResponse) {
             return $location;
+        }
+
+        if ($this->closureRangeIsInvalid($validated['time_start'] ?? null, $validated['time_end'] ?? null)) {
+            return $this->invalidClosureRangeResponse();
         }
 
         $validated['package_ids'] = !empty($validated['package_ids']) ? array_map('intval', $validated['package_ids']) : null;
@@ -298,6 +304,15 @@ class DayOffController extends Controller
             }
         }
 
+        if (array_key_exists('time_start', $validated) || array_key_exists('time_end', $validated)) {
+            $effectiveStart = array_key_exists('time_start', $validated) ? $validated['time_start'] : $dayOff->time_start;
+            $effectiveEnd = array_key_exists('time_end', $validated) ? $validated['time_end'] : $dayOff->time_end;
+
+            if ($this->closureRangeIsInvalid($effectiveStart, $effectiveEnd)) {
+                return $this->invalidClosureRangeResponse();
+            }
+        }
+
         if (array_key_exists('package_ids', $validated)) {
             $validated['package_ids'] = !empty($validated['package_ids']) ? array_map('intval', $validated['package_ids']) : null;
         }
@@ -440,7 +455,7 @@ class DayOffController extends Controller
             $dayOff = null;
             if ($isBlocked) {
                 $dayOff = DayOff::where('location_id', $validated['location_id'])
-                    ->where('date', $validated['date'])
+                    ->forDate($validated['date'])
                     ->whereNull('time_start')
                     ->whereNull('time_end')
                     ->first();
@@ -448,7 +463,7 @@ class DayOffController extends Controller
         }
 
         $allDayOffs = DayOff::where('location_id', $validated['location_id'])
-            ->where('date', $validated['date'])
+            ->forDate($validated['date'])
             ->get();
 
         return response()->json([
@@ -532,33 +547,71 @@ class DayOffController extends Controller
         ]);
     }
 
+    private function closureMinutes(?string $clock): ?int
+    {
+        if ($clock === null || $clock === '') {
+            return null;
+        }
+
+        $parts = explode(':', $clock);
+
+        if (count($parts) < 2 || ! is_numeric($parts[0]) || ! is_numeric($parts[1])) {
+            return null;
+        }
+
+        return ((int) $parts[0]) * 60 + (int) $parts[1];
+    }
+
+    private function closureRangeIsInvalid(?string $start, ?string $end): bool
+    {
+        $startMinutes = $this->closureMinutes($start);
+        $endMinutes = $this->closureMinutes($end);
+
+        if ($startMinutes === null || $endMinutes === null) {
+            return false;
+        }
+
+        return $endMinutes <= $startMinutes;
+    }
+
+    private function invalidClosureRangeResponse(): JsonResponse
+    {
+        return response()->json([
+            'success' => false,
+            'message' => 'The closure end time must be later than the closure start time',
+            'errors' => ['time_end' => ['The closure end time must be later than the closure start time']],
+        ], 422);
+    }
+
+    private function closureBlockedInterval(?string $start, ?string $end): ?array
+    {
+        $startMinutes = $this->closureMinutes($start);
+        $endMinutes = $this->closureMinutes($end);
+
+        if ($startMinutes === null && $endMinutes === null) {
+            return [0, self::MINUTES_PER_DAY];
+        }
+
+        if ($endMinutes === null) {
+            return [$startMinutes, self::MINUTES_PER_DAY];
+        }
+
+        if ($startMinutes === null) {
+            return [0, $endMinutes];
+        }
+
+        return $endMinutes > $startMinutes ? [$startMinutes, $endMinutes] : null;
+    }
+
     private function hasTimeOverlap(DayOff $existing, array $new): bool
     {
-        $existingStart = $existing->time_start;
-        $existingEnd = $existing->time_end;
-        $newStart = $new['time_start'] ?? null;
-        $newEnd = $new['time_end'] ?? null;
+        $existingWindow = $this->closureBlockedInterval($existing->time_start, $existing->time_end);
+        $newWindow = $this->closureBlockedInterval($new['time_start'] ?? null, $new['time_end'] ?? null);
 
-        if (is_null($existingStart) && is_null($existingEnd) && is_null($newStart) && is_null($newEnd)) {
-            return true;
+        if ($existingWindow === null || $newWindow === null) {
+            return false;
         }
 
-        if ((is_null($existingStart) && is_null($existingEnd)) || (is_null($newStart) && is_null($newEnd))) {
-            return true;
-        }
-
-        if (!is_null($existingStart) && is_null($existingEnd) && !is_null($newStart) && is_null($newEnd)) {
-            return true; // Both close early, overlap from whichever is earlier
-        }
-
-        if (is_null($existingStart) && !is_null($existingEnd) && is_null($newStart) && !is_null($newEnd)) {
-            return true; // Both delayed opening, overlap from start until whichever is later
-        }
-
-        if (!is_null($existingStart) && !is_null($existingEnd) && !is_null($newStart) && !is_null($newEnd)) {
-            return $newStart < $existingEnd && $newEnd > $existingStart;
-        }
-
-        return true;
+        return $existingWindow[0] < $newWindow[1] && $newWindow[0] < $existingWindow[1];
     }
 }

@@ -231,10 +231,21 @@ class WaiverController extends Controller
             'attraction_purchase_id' => 'nullable|exists:attraction_purchases,id',
             'location_id' => 'nullable|exists:locations,id',
             'adult_email' => 'nullable|email',
-            'adult_phone' => 'nullable|string|max:30',
+            // 'bail' matters: without it an array value fails 'string' and still reaches the closure,
+            // where digitsFor() would raise a TypeError and turn a 422 into a 500.
+            'adult_phone' => ['bail', 'nullable', 'string', 'max:30', function ($attribute, $value, $fail) {
+                if (filled($value) && !\App\Services\SmsService::toE164($value)) {
+                    $fail('Please enter a 10-digit phone number.');
+                }
+            }],
             // activity label for {{activity_name}} when there's no concrete linked record
             'activity_name' => 'nullable|string|max:255',
         ]);
+
+        $validated['adult_phone'] = filled($validated['adult_phone'] ?? null)
+            ? (\App\Models\WaiverProfile::digitsFor($validated['adult_phone'])
+                ?: \App\Services\SmsService::toE164($validated['adult_phone']))
+            : null;
 
         $template = WaiverTemplate::findOrFail($validated['waiver_template_id']);
         if (!$this->authorizeRecordScope($template)) {
@@ -1021,16 +1032,43 @@ class WaiverController extends Controller
     private function applySearchFilters($query, Request $request): void
     {
         if ($request->filled('search')) {
-            $terms = preg_split('/\s+/', trim((string) $request->search), -1, PREG_SPLIT_NO_EMPTY);
+            $raw = trim((string) $request->search);
+
+            // Stored numbers are a mix of bare digits and whatever guests typed before they were normalised,
+            // and the screen shows them formatted. Reduce the WHOLE search to digits before splitting on spaces,
+            // or "(810) 588-9748" becomes the terms "(810)" and "588-9748" and matches nothing.
+            $searchDigits = (string) preg_replace('/\D+/', '', $raw);
+            if (strlen($searchDigits) === 11 && str_starts_with($searchDigits, '1')) {
+                $searchDigits = substr($searchDigits, 1);
+            }
+            $phoneStrip = "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(adult_phone, ''), ' ', ''), '-', ''), '(', ''), ')', ''), '+', '')";
+
+            $terms = strlen($searchDigits) >= 7
+                ? []
+                : preg_split('/\s+/', $raw, -1, PREG_SPLIT_NO_EMPTY);
+
+            if (strlen($searchDigits) >= 7) {
+                $query->whereRaw($phoneStrip . ' LIKE ?', ['%' . $searchDigits . '%']);
+            }
+
             foreach ($terms as $term) {
                 $like = '%' . $term . '%';
-                $query->where(function ($q) use ($like, $term) {
+                $query->where(function ($q) use ($like, $term, $phoneStrip) {
                     $q->where('adult_first_name', 'like', $like)
                         ->orWhere('adult_last_name', 'like', $like)
                         ->orWhere('adult_email', 'like', $like)
                         ->orWhere('adult_phone', 'like', $like)
                         ->when(Waiver::supportsReferenceNumber(), fn ($qq) => $qq->orWhere('reference_number', 'like', $like))
                         ->orWhereRaw("CONCAT(COALESCE(adult_first_name, ''), ' ', COALESCE(adult_last_name, '')) LIKE ?", [$like]);
+
+                    // Stored numbers are a mix of bare digits and whatever guests typed before they were
+                    // normalised, and the screen shows them formatted. Comparing digits to digits is the only
+                    // way "(810) 588-9748", "810-588-9748" and "8105889748" all find the same row.
+                    $termDigits = preg_replace('/\D+/', '', $term);
+                    if (strlen((string) $termDigits) >= 4) {
+                        $q->orWhereRaw($phoneStrip . ' LIKE ?', ['%' . $termDigits . '%']);
+                    }
+
                     if (ctype_digit($term)) {
                         $q->orWhere('id', (int) $term);
                     }

@@ -184,7 +184,7 @@ class MobileAvailabilityController extends Controller
         }
 
         $dayOffs = DayOff::where('location_id', $locationId)
-            ->whereDate('date', $date)
+            ->forDate($date)
             ->forPackage($packageId)
             ->get();
 
