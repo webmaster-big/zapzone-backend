@@ -38,6 +38,8 @@ class WaiverPublicController extends Controller
             return response()->json(['success' => false, 'message' => 'Waiver link not found.'], 404);
         }
 
+        $waiver = $this->waivers->upgradePendingBookingWaiver($waiver);
+
         if ($waiver->isCompleted()) {
             return response()->json([
                 'success' => true,
@@ -80,6 +82,12 @@ class WaiverPublicController extends Controller
         if (!$waiver) {
             return response()->json(['success' => false, 'message' => 'Waiver link not found.'], 404);
         }
+        if (!$waiver->isCompleted() && $this->waivers->escapeRoomTemplateForPendingWaiver($waiver)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This waiver has been updated. Please reload the page and review it before signing.',
+            ], 409);
+        }
         if ($waiver->isCompleted()) {
             return response()->json([
                 'success' => false,
@@ -95,16 +103,18 @@ class WaiverPublicController extends Controller
         }
 
         // duplicate prevention (against OTHER completed waivers for this person/date/template)
-        $duplicate = $this->waivers->findDuplicate(
-            $template->id,
-            $waiver->selected_date,
-            $waiver->customer_id,
-            $data['adult_email'] ?? null,
-            $data['adult_phone'] ?? null
-        );
-        [$allowed, $reason] = $this->waivers->evaluateDuplicateRule($template, $duplicate, $waiver->is_manager_assigned);
-        if (!$allowed) {
-            return response()->json(['success' => false, 'message' => $reason], 409);
+        if (!$template->isEscapeRoom()) {
+            $duplicate = $this->waivers->findDuplicate(
+                $template->id,
+                $waiver->selected_date,
+                $waiver->customer_id,
+                $data['adult_email'] ?? null,
+                $data['adult_phone'] ?? null
+            );
+            [$allowed, $reason] = $this->waivers->evaluateDuplicateRule($template, $duplicate, $waiver->is_manager_assigned);
+            if (!$allowed) {
+                return response()->json(['success' => false, 'message' => $reason], 409);
+            }
         }
 
         $data = $this->applyGpsGate($data, $template->company_id);
@@ -118,6 +128,21 @@ class WaiverPublicController extends Controller
             'user_agent' => $ua,
             'source' => $waiver->source ?: Waiver::SOURCE_CONFIRMATION_EMAIL,
         ]);
+
+        if ($template->isEscapeRoom()) {
+            try {
+                $this->escapeRooms()->attachSignedBookingWaiver($completed);
+
+                if ($completed->fresh()?->escape_room_session_id) {
+                    $this->waivers->generateAndStoreSignedPdf($completed->fresh());
+                }
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('Signed escape-room waiver could not be linked to its game', [
+                    'waiver_id' => $completed->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
 
         $this->notifySigned($completed);
 
@@ -147,6 +172,9 @@ class WaiverPublicController extends Controller
         $template = WaiverTemplate::active()->find($templateId);
         if (!$template) {
             return response()->json(['success' => false, 'message' => 'Waiver not available.'], 404);
+        }
+        if ($template->isEscapeRoom()) {
+            return $this->escapeRoomOnly();
         }
 
         $version = $template->versions()->first();
@@ -200,6 +228,9 @@ class WaiverPublicController extends Controller
         $template = WaiverTemplate::active()->find($templateId);
         if (!$template) {
             return response()->json(['success' => false, 'message' => 'Waiver not available.'], 404);
+        }
+        if ($template->isEscapeRoom()) {
+            return $this->escapeRoomOnly();
         }
         $version = $template->versions()->first();
         if (!$version) {
@@ -432,7 +463,7 @@ class WaiverPublicController extends Controller
         }
 
         $template = WaiverTemplate::active()->find($templateId);
-        if (!$template) {
+        if (!$template || $template->isEscapeRoom()) {
             return response()->json(['success' => false, 'message' => 'Waiver not available.'], 404);
         }
 
@@ -475,6 +506,216 @@ class WaiverPublicController extends Controller
         }
 
         return response()->json(['success' => true, 'data' => $payload]);
+    }
+
+    public function escapeRoomKiosk(Request $request, int $locationId): JsonResponse
+    {
+        $service = $this->escapeRooms();
+        $location = $service->isEnabled() ? \App\Models\Location::find($locationId) : null;
+
+        if (!$location) {
+            return response()->json(['success' => false, 'message' => 'Escape-room check-in is not available here.'], 404);
+        }
+
+        $today = $service->today($location);
+        $linked = $this->linkedEscapeRoomGame($request, $location);
+        $date = $linked['date'] ?? $today;
+
+        $rooms = $linked
+            ? collect([[
+                'id' => $linked['room']->id,
+                'name' => $linked['room']->name,
+                'duration_minutes' => max(1, $linked['room']->getDurationInMinutes()),
+                'times' => $linked['times'],
+            ]])
+            : $service->roomsAt($location)
+                ->filter(fn ($room) => $service->templateForRoom($location, $room) !== null)
+                ->map(fn ($room) => [
+                    'id' => $room->id,
+                    'name' => $room->name,
+                    'duration_minutes' => max(1, $room->getDurationInMinutes()),
+                    'times' => $service->guestTimes($location, $room, $request->boolean('recent') ? \App\Services\EscapeRoomSessionService::SUBMIT_GRACE_MINUTES : 0),
+                ])
+                ->values();
+
+        $settings = WaiverSetting::forCompany($location->company_id);
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'location' => [
+                    'id' => $location->id,
+                    'name' => $location->name,
+                    'logo_path' => $location->logo_path ?? null,
+                ],
+                'date' => $date,
+                'date_label' => \Illuminate\Support\Carbon::parse($date)->format('l, F j'),
+                'today' => $today,
+                'ahead' => (bool) ($linked['ahead'] ?? false),
+                'rooms' => $rooms,
+                'settings' => [
+                    'inactivity_timeout_seconds' => $settings->kiosk_inactivity_timeout_seconds,
+                    'gps_capture_enabled' => (bool) $settings->gps_capture_enabled,
+                ],
+            ],
+        ]);
+    }
+
+    public function escapeRoomForm(Request $request, int $locationId, int $packageId): JsonResponse
+    {
+        $service = $this->escapeRooms();
+        $location = $service->isEnabled() ? \App\Models\Location::find($locationId) : null;
+        $room = $location ? $service->findRoom($location, $packageId) : null;
+        $template = $room ? $service->templateForRoom($location, $room) : null;
+        $version = $template?->versions()->first();
+
+        if (!$template || !$version) {
+            return response()->json(['success' => false, 'message' => 'This room is not set up for check-in yet. Please see the front desk.'], 404);
+        }
+
+        $staticVars = $this->waivers->staticContentVariables($template, $location);
+        $staticVars['activity_name'] = $room->name;
+        $settings = WaiverSetting::forCompany($location->company_id);
+        $linked = $this->linkedEscapeRoomGame($request, $location);
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'kiosk' => true,
+                'template' => $this->templatePayload($template, $version, $staticVars),
+                'body' => $this->waivers->render($version->body_text, $staticVars),
+                'room' => [
+                    'id' => $room->id,
+                    'name' => $room->name,
+                    'duration_minutes' => max(1, $room->getDurationInMinutes()),
+                ],
+                'times' => $linked && (int) $linked['room']->id === (int) $room->id
+                    ? $linked['times']
+                    : $service->guestTimes($location, $room, $request->boolean('recent') ? \App\Services\EscapeRoomSessionService::SUBMIT_GRACE_MINUTES : 0),
+                'settings' => [
+                    'inactivity_timeout_seconds' => $settings->kiosk_inactivity_timeout_seconds,
+                    'gps_capture_enabled' => (bool) $settings->gps_capture_enabled,
+                ],
+            ],
+        ]);
+    }
+
+    public function escapeRoomSubmit(Request $request, int $locationId): JsonResponse
+    {
+        $service = $this->escapeRooms();
+        $location = $service->isEnabled() ? \App\Models\Location::find($locationId) : null;
+
+        if (!$location) {
+            return response()->json(['success' => false, 'message' => 'Escape-room check-in is not available here.'], 404);
+        }
+
+        try {
+            $choice = $service->resolveGuestChoice($location, $request->input('package_id'), $request->input('session_time'), $request->input('session_date'), $request->input('game_signature'));
+        } catch (\App\Support\EscapeRoomException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+                'errors' => [($e->field ?? 'session_time') => [$e->getMessage()]],
+            ], $e->status);
+        }
+
+        $template = $choice['template'];
+        $room = $choice['room'];
+        $version = $template->versions()->first();
+
+        if (!$version) {
+            return response()->json(['success' => false, 'message' => 'This room is not set up for check-in yet. Please see the front desk.'], 404);
+        }
+
+        if (($request->filled('waiver_template_id') && (int) $request->input('waiver_template_id') !== (int) $template->id)
+            || ($request->filled('waiver_template_version') && (int) $request->input('waiver_template_version') !== (int) $version->version)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This waiver was updated while you were filling it in. Please read it again before signing.',
+                'errors' => ['waiver_template_version' => ['This waiver was updated while you were filling it in. Please read it again before signing.']],
+            ], 409);
+        }
+
+        $data = $this->validateSubmission($request, $template);
+        unset($data['waiver_profile_id'], $data['selected_dependent_ids'], $data['lookup_token']);
+
+        if ($refused = $this->requireTenDigitPhone($data)) {
+            return $refused;
+        }
+
+        $session = $service->sessionFor($room, $choice['date'], $choice['time']);
+
+        $waiver = Waiver::create([
+            'company_id' => $location->company_id,
+            'location_id' => $location->id,
+            'waiver_template_id' => $template->id,
+            'waiver_template_version_id' => $version->id,
+            'status' => Waiver::STATUS_PENDING,
+            'selected_date' => $choice['date'],
+            'source' => Waiver::SOURCE_KIOSK,
+            'package_id' => $room->id,
+            'manual_activity_name' => $room->name,
+            'booking_id' => $service->soleBookingId((int) $room->id, $choice['date'], $choice['time']),
+            'escape_room_session_id' => $session->id,
+        ]);
+
+        $data = $this->applyGpsGate($data, $location->company_id);
+        $ua = (string) $request->userAgent();
+
+        $completed = $this->waivers->completeSubmission($waiver, $data, [
+            'ip' => $request->ip(),
+            'device' => 'kiosk',
+            'browser' => UserAgentParser::browser($ua),
+            'operating_system' => UserAgentParser::os($ua),
+            'user_agent' => $ua,
+            'source' => Waiver::SOURCE_KIOSK,
+        ]);
+
+        $this->notifySigned($completed);
+
+        $ad = app(\App\Services\WaiverAdService::class)
+            ->selectForSubmission($template, $location->id, $completed);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Waiver completed.',
+            'data' => [
+                'id' => $completed->id,
+                'reference_number' => $completed->reference_number,
+                'room_name' => $room->name,
+                'session_time' => $choice['time'],
+                'session_time_label' => $service->timeLabel($choice['time']),
+                'ad' => $ad,
+            ],
+        ], 201);
+    }
+
+    private function linkedEscapeRoomGame(Request $request, \App\Models\Location $location): ?array
+    {
+        if (!$request->filled('date')) {
+            return null;
+        }
+
+        return $this->escapeRooms()->linkedGame(
+            $location,
+            $request->query('room'),
+            $request->query('time'),
+            $request->query('date'),
+            $request->query('sig')
+        );
+    }
+
+    private function escapeRooms(): \App\Services\EscapeRoomSessionService
+    {
+        return app(\App\Services\EscapeRoomSessionService::class);
+    }
+
+    private function escapeRoomOnly(): JsonResponse
+    {
+        return response()->json([
+            'success' => false,
+            'message' => 'This waiver is signed from the escape-room check-in, where you choose your room and time.',
+        ], 404);
     }
 
     // ---- bulk / chaperone (public, manage-token addressed) ----
@@ -683,6 +924,39 @@ class WaiverPublicController extends Controller
             'settings' => [
                 'gps_capture_enabled' => (bool) WaiverSetting::forCompany($waiver->company_id)->gps_capture_enabled,
             ],
+            'escape_room' => $this->escapeRoomContextFor($waiver),
+        ];
+    }
+
+    private function escapeRoomContextFor(Waiver $waiver): ?array
+    {
+        if (!$waiver->template?->isEscapeRoom()) {
+            return null;
+        }
+
+        $service = $this->escapeRooms();
+
+        if ($waiver->escape_room_session_id && ($session = $waiver->escapeRoomSession()->with('package:id,name')->first())) {
+            return [
+                'room_name' => $session->package?->name,
+                'date' => $session->dateKey(),
+                'time' => $session->timeKey(),
+                'time_label' => $service->timeLabel($session->timeKey()),
+            ];
+        }
+
+        $booking = $waiver->booking()->with('package:id,name')->first();
+        $time = $booking ? $service->bookingTime($booking) : null;
+
+        if (!$booking || !$time) {
+            return null;
+        }
+
+        return [
+            'room_name' => $booking->package?->name,
+            'date' => $booking->booking_date?->toDateString(),
+            'time' => $time,
+            'time_label' => $service->timeLabel($time),
         ];
     }
 

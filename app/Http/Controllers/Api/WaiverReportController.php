@@ -40,6 +40,7 @@ class WaiverReportController extends Controller
             'by-event' => $this->groupedCount($request, 'event_id'),
             'by-template' => $this->groupedCount($request, 'waiver_template_id'),
             'by-source' => $this->groupedCount($request, 'source'),
+            'by-escape-room' => $this->byEscapeRoom($request),
             'marketing-consent' => $this->marketingConsent($request),
             'deleted' => $this->deleted($request),
             'ad-performance' => $this->adPerformance($request),
@@ -136,6 +137,32 @@ class WaiverReportController extends Controller
         return $rows->map(fn ($r) => [
             'key' => $r->group_key,
             'label' => $labels[$r->group_key] ?? (string) $r->group_key,
+            'count' => (int) $r->total,
+        ])->all();
+    }
+
+    private function byEscapeRoom(Request $request): array
+    {
+        if (!Waiver::supportsEscapeRoomSessionId()) {
+            return [];
+        }
+
+        $q = Waiver::completed()->whereNotNull('escape_room_session_id');
+        $this->applyAuthScope($q, $request);
+        $this->applyDateRange($q, $request);
+
+        $rows = $q->selectRaw('package_id as group_key, COUNT(*) as total')
+            ->groupBy('package_id')
+            ->orderByDesc('total')
+            ->get();
+
+        $labels = \App\Models\Package::withTrashed()
+            ->whereIn('id', $rows->pluck('group_key')->filter()->all())
+            ->pluck('name', 'id');
+
+        return $rows->map(fn ($r) => [
+            'key' => $r->group_key,
+            'label' => $labels[$r->group_key] ?? 'Escape room',
             'count' => (int) $r->total,
         ])->all();
     }

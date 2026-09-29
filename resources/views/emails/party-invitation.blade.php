@@ -42,7 +42,14 @@
                         <td style="background-color: #ffffff; padding: 32px; border-radius: 0 0 8px 8px; border: 1px solid #e5e7eb; border-top: none;">
                             <p style="margin: 0 0 16px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #4b5563;">Dear {{ $guestName }},</p>
 
+                            @php($escapeRoomCheckIn = app(\App\Services\EscapeRoomSessionService::class)->checkInLinkForBooking($booking))
+                            @if($escapeRoomCheckIn !== '')
+                            <p style="margin: 0 0 16px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #4b5563;"><strong>{{ $hostName }}</strong> has invited you to play <strong>{{ $packageName }}</strong>, an escape room, with their group.</p>
+
+                            <p style="margin: 0 0 16px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #4b5563;">Every player signs a short waiver before the game. After the game, your group photo and finish time are emailed to everyone who signed. You can sign on your phone now or any time before the game: <a href="{{ $escapeRoomCheckIn }}" style="color: #1e40af;">{{ $escapeRoomCheckIn }}</a></p>
+                            @else
                             <p style="margin: 0 0 16px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #4b5563;"><strong>{{ $hostName }}</strong> has invited you to a <strong>{{ $packageName }}</strong> event. We would love for you to join us for a fun celebration!</p>
+                            @endif
 
                             @if($guestOfHonor)
                             <p style="margin: 0 0 16px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #4b5563;">

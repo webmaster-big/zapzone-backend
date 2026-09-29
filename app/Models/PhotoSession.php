@@ -141,6 +141,27 @@ class PhotoSession extends Model
         return $this->belongsToMany(Waiver::class, 'photo_session_waivers')->withTimestamps();
     }
 
+    public function escapeRoomSession(): \Illuminate\Database\Eloquent\Relations\HasOne
+    {
+        return $this->hasOne(EscapeRoomSession::class);
+    }
+
+    public function linkedEscapeRoomSession(): ?EscapeRoomSession
+    {
+        if (!EscapeRoomSession::isAvailable()) {
+            return null;
+        }
+
+        return $this->relationLoaded('escapeRoomSession')
+            ? $this->escapeRoomSession
+            : $this->escapeRoomSession()->first();
+    }
+
+    public function isEscapeRoom(): bool
+    {
+        return $this->linkedEscapeRoomSession() !== null;
+    }
+
     public function maxPhotos(): int
     {
         return $this->source === self::SOURCE_KIOSK ? self::KIOSK_MAX_PHOTOS : self::STAFF_MAX_PHOTOS;

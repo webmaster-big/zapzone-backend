@@ -37,7 +37,7 @@ class PhotoOverlayController extends Controller
         }
 
         $overlays = PhotoOverlay::where('location_id', $location->id)
-            ->with('creator')
+            ->with(PhotoOverlay::supportsRooms() ? ['creator', 'package:id,name'] : ['creator'])
             ->orderByDesc('priority')
             ->orderByDesc('id')
             ->get();
@@ -65,6 +65,7 @@ class PhotoOverlayController extends Controller
             'ends_at' => ['nullable', 'date', 'after:starts_at'],
             'is_enabled' => ['nullable', 'boolean'],
             'priority' => ['nullable', 'integer', 'min:0', 'max:100'],
+            'package_id' => ['nullable', 'integer'],
         ]);
 
         if ($denied = $this->guardLocationAccess($request, $validated['location_id'])) {
@@ -77,9 +78,15 @@ class PhotoOverlayController extends Controller
             return $denied;
         }
 
+        $roomId = $this->roomFor($validated['package_id'] ?? null, $location->id);
+
+        if ($roomId === false) {
+            return $this->invalidRoom();
+        }
+
         $path = $request->file('image')->store('photo-overlays/' . $location->id, 'public');
 
-        $overlay = PhotoOverlay::create([
+        $overlay = PhotoOverlay::create(array_merge($roomId ? ['package_id' => $roomId] : [], [
             'company_id' => $location->company_id,
             'location_id' => $location->id,
             'name' => $validated['name'],
@@ -89,7 +96,7 @@ class PhotoOverlayController extends Controller
             'is_enabled' => $validated['is_enabled'] ?? true,
             'priority' => $validated['priority'] ?? 0,
             'created_by' => $this->resolveAuthUser($request)?->id,
-        ]);
+        ]));
 
         $this->flagConflicts($location);
 
@@ -123,6 +130,7 @@ class PhotoOverlayController extends Controller
             'is_enabled' => ['nullable', 'boolean'],
             'priority' => ['nullable', 'integer', 'min:0', 'max:100'],
             'clear_schedule' => ['nullable', 'boolean'],
+            'package_id' => ['nullable', 'integer'],
         ]);
 
         $changes = [];
@@ -130,6 +138,16 @@ class PhotoOverlayController extends Controller
             if ($request->has($field)) {
                 $changes[$field] = $validated[$field] ?? null;
             }
+        }
+
+        if ($request->has('package_id') && PhotoOverlay::supportsRooms()) {
+            $roomId = $this->roomFor($validated['package_id'] ?? null, (int) $photoOverlay->location_id);
+
+            if ($roomId === false) {
+                return $this->invalidRoom();
+            }
+
+            $changes['package_id'] = $roomId;
         }
 
         if ($request->boolean('clear_schedule')) {
@@ -230,11 +248,43 @@ class PhotoOverlayController extends Controller
         );
     }
 
+    protected function roomFor(mixed $packageId, int $locationId): int|false|null
+    {
+        if ($packageId === null || $packageId === '' || (int) $packageId === 0) {
+            return null;
+        }
+
+        if (!PhotoOverlay::supportsRooms()) {
+            return false;
+        }
+
+        $room = \App\Models\Package::escapeRooms()
+            ->where('location_id', $locationId)
+            ->find((int) $packageId, ['id']);
+
+        return $room ? (int) $room->id : false;
+    }
+
+    protected function invalidRoom(): JsonResponse
+    {
+        return response()->json([
+            'success' => false,
+            'message' => 'Choose one of this location\'s escape rooms, or leave the overlay for all photos.',
+            'errors' => ['package_id' => ['Choose one of this location\'s escape rooms.']],
+        ], 422);
+    }
+
     protected function present(PhotoOverlay $overlay, ?int $activeId): array
     {
+        if ($overlay->roomId() && $overlay->location) {
+            $activeId = $this->processor->resolveOverlay($overlay->location, now(), $overlay->roomId())?->id;
+        }
+
         return [
             'id' => $overlay->id,
             'location_id' => $overlay->location_id,
+            'package_id' => $overlay->roomId(),
+            'room_name' => $overlay->roomId() ? $overlay->loadMissing('package:id,name')->package?->name : null,
             'name' => $overlay->name,
             'image_url' => $overlay->image_path ? Storage::disk('public')->url($overlay->image_path) : null,
             'starts_at' => $overlay->starts_at?->toIso8601String(),

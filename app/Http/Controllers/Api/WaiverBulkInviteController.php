@@ -116,6 +116,13 @@ class WaiverBulkInviteController extends Controller
         if (!$this->authorizeRecordScope($template)) {
             return $this->forbidden();
         }
+        if ($template->isEscapeRoom()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Escape-room waivers are signed from the escape-room check-in, so they cannot be sent as group invites. Choose a standard waiver.',
+                'errors' => ['waiver_template_id' => ['Escape-room waivers cannot be sent as group invites.']],
+            ], 422);
+        }
 
         if (in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
             $validated['location_id'] = $authUser->location_id;

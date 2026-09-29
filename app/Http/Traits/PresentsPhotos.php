@@ -76,6 +76,9 @@ trait PresentsPhotos
             'can_retry' => $delivery->canRetry(),
             'can_cancel' => $delivery->canCancel(),
             'created_at' => $delivery->created_at?->toIso8601String(),
+            'escape_room' => $delivery->kind === PhotoDelivery::KIND_ESCAPE_ROOM && $delivery->relationLoaded('session') && $delivery->session
+                ? $this->presentEscapeRoomLink($delivery->session)
+                : null,
         ];
     }
 
@@ -118,6 +121,7 @@ trait PresentsPhotos
                 ? trim(($session->creator->first_name ?? '') . ' ' . ($session->creator->last_name ?? ''))
                 : null,
             'created_at' => $session->created_at?->toIso8601String(),
+            'escape_room' => $this->presentEscapeRoomLink($session),
         ];
 
         if ($includeContact) {
@@ -131,6 +135,27 @@ trait PresentsPhotos
         }
 
         return $payload;
+    }
+
+    protected function presentEscapeRoomLink(PhotoSession $session): ?array
+    {
+        $escape = $session->linkedEscapeRoomSession();
+
+        if (!$escape) {
+            return null;
+        }
+
+        $escape->loadMissing('package:id,name');
+
+        return [
+            'id' => $escape->id,
+            'room_id' => $escape->package_id,
+            'room_name' => $escape->package?->name,
+            'session_date' => $escape->dateKey(),
+            'session_time' => $escape->timeKey(),
+            'completed' => $escape->isCompleted(),
+            'completion_label' => $escape->completionLabel(),
+        ];
     }
 
     protected function qrTargetUrl(PhotoSession $session): string

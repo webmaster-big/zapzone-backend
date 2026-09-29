@@ -32,7 +32,10 @@ class PhotoSessionController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        $query = PhotoSession::with(['location', 'photos', 'deliveries', 'creator'])
+        $query = PhotoSession::with(array_merge(
+            ['location', 'photos', 'deliveries', 'creator'],
+            \App\Models\EscapeRoomSession::isAvailable() ? ['escapeRoomSession.package:id,name'] : []
+        ))
             ->live()
             ->latest();
 
@@ -137,6 +140,13 @@ class PhotoSessionController extends Controller
             ], 422);
         }
 
+        if ($photoSession->linkedEscapeRoomSession()?->isCompleted()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This game is complete and its photo has already been sent, so no more photos can be added.',
+            ], 422);
+        }
+
         if ($photoSession->photos()->count() >= $photoSession->maxPhotos()) {
             return response()->json([
                 'success' => false,
@@ -219,6 +229,12 @@ class PhotoSessionController extends Controller
                 'message' => 'This session has already been delivered, so its photos cannot be removed here.',
             ], 422);
         }
+        if ($photoSession->linkedEscapeRoomSession()?->isCompleted()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This game is complete and its photo has already been sent, so its photos can no longer be changed.',
+            ], 422);
+        }
 
         $photo->deleteMedia();
         $photo->delete();
@@ -244,6 +260,13 @@ class PhotoSessionController extends Controller
             'order' => ['required', 'array', 'min:1'],
             'order.*' => ['integer'],
         ]);
+
+        if ($photoSession->linkedEscapeRoomSession()?->isCompleted()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This game is complete and its photo has already been sent, so its photos can no longer be changed.',
+            ], 422);
+        }
 
         $ids = $photoSession->photos()->pluck('id')->all();
 
@@ -353,6 +376,13 @@ class PhotoSessionController extends Controller
             'waiver_ids.*' => ['integer', 'exists:waivers,id'],
             'slideshow_opt_in' => ['nullable', 'boolean'],
         ]);
+
+        if ($photoSession->isEscapeRoom()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Escape-room photos are sent from Photos, Escape Rooms, so they only reach the players in that game.',
+            ], 422);
+        }
 
         if ($photoSession->photos()->ready()->count() === 0) {
             return response()->json([
@@ -487,6 +517,12 @@ class PhotoSessionController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'This session has already been delivered and cannot be discarded.',
+            ], 422);
+        }
+        if ($photoSession->linkedEscapeRoomSession()?->isCompleted()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This game is complete and its photo has already been sent, so its photos can no longer be changed.',
             ], 422);
         }
 

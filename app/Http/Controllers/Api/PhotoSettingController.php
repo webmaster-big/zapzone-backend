@@ -218,6 +218,9 @@ class PhotoSettingController extends Controller
             'data' => [
                 'templates' => $templates,
                 'variables' => PhotoMessageTemplate::VARIABLES,
+                'variables_by_kind' => collect(PhotoMessageTemplate::KINDS)
+                    ->mapWithKeys(fn (string $kind) => [$kind => PhotoMessageTemplate::variablesFor($kind)])
+                    ->all(),
                 'kinds' => PhotoMessageTemplate::KINDS,
             ],
         ]);
@@ -241,6 +244,16 @@ class PhotoSettingController extends Controller
             'sms_body' => ['required', 'string', 'max:600'],
             'is_active' => ['nullable', 'boolean'],
         ]);
+
+        if ($photoMessageTemplate->kind === PhotoMessageTemplate::KIND_ESCAPE_ROOM
+            && !str_contains($validated['email_body'], '{{completion_time}}')
+            && !str_contains($validated['email_body'], '{{escape_result}}')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'The escape-room email must show the group\'s result. Keep {{escape_result}} (or {{completion_time}}) in the email wording.',
+                'errors' => ['email_body' => ['Keep {{escape_result}} (or {{completion_time}}) in the escape-room email wording.']],
+            ], 422);
+        }
 
         $photoMessageTemplate->update($validated);
 

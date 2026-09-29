@@ -42,7 +42,10 @@ class PhotoLibraryController extends Controller
             return $denied;
         }
 
-        $query = Photo::with(['session.location', 'session.deliveries', 'overlay', 'location'])
+        $query = Photo::with(array_merge(
+            ['session.location', 'session.deliveries', 'overlay', 'location'],
+            \App\Models\EscapeRoomSession::isAvailable() ? ['session.escapeRoomSession.package:id,name'] : []
+        ))
             ->ready();
 
         $this->applyAuthScope($query, $request);
@@ -88,6 +91,7 @@ class PhotoLibraryController extends Controller
                             'access_status' => $photo->session?->accessStatus(),
                             'access_expires_at' => $photo->session?->access_expires_at?->toIso8601String(),
                             'photo_link' => $photo->session ? $this->sessionPhotoLink($photo->session) : null,
+                            'escape_room' => $photo->session ? $this->presentEscapeRoomLink($photo->session) : null,
                         ],
                         'location_name' => $photo->location?->name,
                     ]))->values(),
@@ -296,6 +300,13 @@ class PhotoLibraryController extends Controller
 
         $photo->loadMissing('session.location');
         $session = $photo->session;
+
+        if ($session?->isEscapeRoom()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Escape-room photos are sent from Photos, Escape Rooms, so they only reach the players in that game.',
+            ], 422);
+        }
 
         if (!$session || !$session->accessIsActive()) {
             return response()->json([

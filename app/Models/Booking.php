@@ -14,6 +14,20 @@ class Booking extends Model
 {
     use HasFactory, SoftDeletes;
 
+    protected static function booted(): void
+    {
+        static::forceDeleting(function (Booking $booking) {
+            try {
+                app(\App\Services\EscapeRoomSessionService::class)->releaseDeletedBooking((int) $booking->id);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('Escape-room players could not be released from a deleted booking', [
+                    'booking_id' => $booking->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        });
+    }
+
     protected $fillable = [
         // who approved saving this on top of a conflict, and what the conflict was
         'overlap_override_by',

@@ -44,7 +44,10 @@ class PhotoDeliveryController extends Controller
             return $denied;
         }
 
-        $query = PhotoDelivery::with(['session.location', 'waiver', 'creator'])->latest();
+        $query = PhotoDelivery::with(array_merge(
+            ['session.location', 'waiver', 'creator'],
+            \App\Models\EscapeRoomSession::isAvailable() ? ['session.escapeRoomSession.package:id,name'] : []
+        ))->latest();
         $this->applyAuthScope($query, $request);
 
         if ($request->filled('location_id')) {

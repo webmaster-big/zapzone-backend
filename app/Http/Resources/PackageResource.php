@@ -24,6 +24,7 @@ class PackageResource extends JsonResource
             'max_tickets_per_slot' => $this->max_tickets_per_slot,
             'participant_label' => $this->participant_label,
             'display_label' => $this->display_label,
+            'is_escape_room' => (bool) ($this->is_escape_room ?? false),
             'duration' => $this->duration,
             'duration_unit' => $this->duration_unit,
             'price_per_additional_30min' => $this->price_per_additional_30min,

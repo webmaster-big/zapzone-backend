@@ -104,7 +104,20 @@ class PhotoDeliveryService
             'business_name' => $location->company?->company_name ?? 'Zap Zone',
             'support_contact' => (string) config('photos.support_contact'),
             'photo_count' => '2',
+            'room_name' => 'The Vault',
+            'session_date' => now($tz)->format('M j, Y'),
+            'session_time' => '3:00 PM',
+            'completion_time' => '47:12',
+            'escape_result' => 'Your group escaped in 47:12!',
+            'photos_line' => 'Your group photos are attached (real emails include them). You can also view and download them here:',
+            'location_phone' => (string) ($location->phone ?? ''),
         ];
+
+        if ($kind === PhotoMessageTemplate::KIND_ESCAPE_ROOM) {
+            $bodyVariables = array_map(fn ($value) => e((string) $value), $variables);
+        } else {
+            $bodyVariables = $variables;
+        }
 
         try {
             if ($channel === PhotoDelivery::CHANNEL_EMAIL) {
@@ -118,7 +131,7 @@ class PhotoDeliveryService
                 $this->sendEmail(
                     $destination,
                     '[Test] ' . $template->render('email_subject', $variables),
-                    $this->wrapHtml($template->render('email_body', $variables)),
+                    $this->wrapHtml($template->render('email_body', $bodyVariables)),
                     $variables['business_name']
                 );
 
@@ -324,6 +337,95 @@ class PhotoDeliveryService
         ];
     }
 
+    public function createEscapeRoomDeliveries(PhotoSession $session, Collection $waivers, ?int $userId = null): array
+    {
+        $created = [];
+        $duplicates = 0;
+        $skippedWaiverIds = [];
+
+        $seen = PhotoDelivery::where('photo_session_id', $session->id)
+            ->where('kind', PhotoDelivery::KIND_ESCAPE_ROOM)
+            ->where('channel', PhotoDelivery::CHANNEL_EMAIL)
+            ->whereNull('duplicate_of_id')
+            ->where('status', '!=', PhotoDelivery::STATUS_CANCELED)
+            ->get()
+            ->keyBy('destination')
+            ->all();
+
+        foreach ($waivers as $waiver) {
+            if (!$this->validEmail($waiver->adult_email)) {
+                $skippedWaiverIds[] = $waiver->id;
+                continue;
+            }
+
+            $destination = strtolower(trim((string) $waiver->adult_email));
+            $primary = $seen[$destination] ?? null;
+
+            $delivery = PhotoDelivery::create([
+                'photo_session_id' => $session->id,
+                'company_id' => $session->company_id,
+                'location_id' => $session->location_id,
+                'waiver_id' => $waiver->id,
+                'duplicate_of_id' => $primary?->id,
+                'kind' => PhotoDelivery::KIND_ESCAPE_ROOM,
+                'channel' => PhotoDelivery::CHANNEL_EMAIL,
+                'destination' => $destination,
+                'recipient_name' => trim(($waiver->adult_first_name ?? '') . ' ' . ($waiver->adult_last_name ?? '')),
+                'status' => $primary ? PhotoDelivery::STATUS_SKIPPED : PhotoDelivery::STATUS_QUEUED,
+                'created_by' => $userId,
+            ]);
+
+            if ($primary) {
+                $duplicates++;
+                continue;
+            }
+
+            $seen[$destination] = $delivery;
+            $created[] = $delivery;
+        }
+
+        return [
+            'deliveries' => $created,
+            'duplicates' => $duplicates,
+            'skipped_waiver_ids' => $skippedWaiverIds,
+        ];
+    }
+
+    public function sendEscapeRoomDeliveries(PhotoSession $session, array $deliveries): int
+    {
+        $sent = 0;
+
+        foreach ($deliveries as $delivery) {
+            $claimed = $this->claimForSending($delivery);
+
+            if ($claimed && $this->send($claimed)) {
+                $sent++;
+            }
+        }
+
+        $session->forceFill([
+            'status' => PhotoSession::STATUS_READY,
+            'delivery_method' => PhotoSession::DELIVERY_WAIVER_MESSAGE,
+            'delivery_schedule' => PhotoSession::SCHEDULE_IMMEDIATE,
+            'delivered_at' => $session->delivered_at ?? now(),
+        ])->save();
+
+        return $sent;
+    }
+
+    public function claimForSending(PhotoDelivery $delivery): ?PhotoDelivery
+    {
+        $seen = $delivery->getRawOriginal('updated_at');
+        $now = now()->format('Y-m-d H:i:s');
+
+        $claimed = \Illuminate\Support\Facades\DB::update(
+            'UPDATE photo_deliveries SET updated_at = IF(updated_at >= ?, DATE_ADD(updated_at, INTERVAL 1 SECOND), ?) WHERE id = ? AND status = ? AND updated_at = ?',
+            [$now, $now, $delivery->id, PhotoDelivery::STATUS_QUEUED, $seen]
+        );
+
+        return $claimed === 1 ? $delivery->fresh() : null;
+    }
+
     public function queueKioskDeliveries(PhotoSession $session): array
     {
         $created = [];
@@ -391,14 +493,32 @@ class PhotoDeliveryService
 
         $template = PhotoMessageTemplate::forCompany($session->company_id, $this->templateKind($delivery->kind));
         $variables = $this->variables($session, $delivery);
+        $isEscapeRoom = $delivery->kind === PhotoDelivery::KIND_ESCAPE_ROOM;
+        $bodyVariables = $isEscapeRoom
+            ? array_map(fn ($value) => e((string) $value), $variables)
+            : $variables;
 
         try {
             if ($delivery->channel === PhotoDelivery::CHANNEL_EMAIL) {
+                $htmlBody = $template->render('email_body', $bodyVariables);
+
+                if ($isEscapeRoom
+                    && !str_contains((string) $template->email_body, '{{completion_time}}')
+                    && !str_contains((string) $template->email_body, '{{escape_result}}')
+                    && ($bodyVariables['escape_result'] ?? '') !== '') {
+                    $line = '<p><strong>' . $bodyVariables['escape_result'] . '</strong></p>';
+                    $lastParagraph = strripos($htmlBody, '<p');
+                    $htmlBody = $lastParagraph !== false && $lastParagraph > 0
+                        ? substr($htmlBody, 0, $lastParagraph) . $line . "\n" . substr($htmlBody, $lastParagraph)
+                        : $htmlBody . "\n" . $line;
+                }
+
                 $this->sendEmail(
                     $delivery->destination,
                     $template->render('email_subject', $variables),
-                    $this->wrapHtml($template->render('email_body', $variables)),
-                    $variables['business_name']
+                    $this->wrapHtml($htmlBody),
+                    $variables['business_name'],
+                    $isEscapeRoom ? $this->photoAttachments($session, $variables['room_name'] ?? '') : []
                 );
             } else {
                 $body = trim($template->render('sms_body', $variables));
@@ -542,7 +662,57 @@ class PhotoDeliveryService
             'business_name' => $location?->company?->company_name ?? 'Zap Zone',
             'support_contact' => (string) config('photos.support_contact'),
             'photo_count' => (string) $session->photos()->ready()->count(),
+        ] + $this->escapeRoomVariables($session, $tz);
+    }
+
+    protected function escapeRoomVariables(PhotoSession $session, string $tz): array
+    {
+        $blank = array_fill_keys(PhotoMessageTemplate::ESCAPE_ROOM_VARIABLES, '');
+        $escape = $session->linkedEscapeRoomSession();
+
+        if (!$escape) {
+            return $blank;
+        }
+
+        $escape->loadMissing('package');
+        $time = \Illuminate\Support\Carbon::createFromFormat('H:i', $escape->timeKey(), $tz);
+
+        $photoCount = $session->photos()->ready()->count();
+
+        return [
+            'room_name' => $escape->package?->name ?? '',
+            'session_date' => $escape->session_date?->format('M j, Y') ?? '',
+            'session_time' => $time ? $time->format('g:i A') : $escape->timeKey(),
+            'completion_time' => $escape->completionLabel(),
+            'escape_result' => $escape->resultLabel(),
+            'photos_line' => $photoCount > 1
+                ? "Your {$photoCount} group photos are attached. You can also view and download them here:"
+                : 'Your group photo is attached. You can also view and download it here:',
+            'location_phone' => (string) ($session->location?->phone ?? ''),
         ];
+    }
+
+    protected function photoAttachments(PhotoSession $session, string $roomName): array
+    {
+        $disk = \Illuminate\Support\Facades\Storage::disk(PhotoProcessingService::DISK);
+        $slug = \Illuminate\Support\Str::slug($roomName) ?: 'group';
+        $attachments = [];
+
+        foreach ($session->photos()->ready()->orderBy('position')->get() as $index => $photo) {
+            $path = $photo->pathForVariant('delivery');
+
+            if (!$path || !$disk->exists($path)) {
+                continue;
+            }
+
+            $attachments[] = [
+                'data' => base64_encode($disk->get($path)),
+                'filename' => $slug . '-photo-' . ($index + 1) . '.jpg',
+                'mime_type' => 'image/jpeg',
+            ];
+        }
+
+        return $attachments;
     }
 
     public function photoLink(PhotoSession $session): string
@@ -555,18 +725,19 @@ class PhotoDeliveryService
         return match ($deliveryKind) {
             PhotoDelivery::KIND_NEXT_DAY => PhotoMessageTemplate::KIND_NEXT_DAY,
             PhotoDelivery::KIND_KIOSK => PhotoMessageTemplate::KIND_KIOSK,
+            PhotoDelivery::KIND_ESCAPE_ROOM => PhotoMessageTemplate::KIND_ESCAPE_ROOM,
             default => PhotoMessageTemplate::KIND_IMMEDIATE,
         };
     }
 
-    protected function sendEmail(string $to, string $subject, string $html, ?string $fromName = null): void
+    protected function sendEmail(string $to, string $subject, string $html, ?string $fromName = null, array $attachments = []): void
     {
         $useGmailApi = config('gmail.enabled', false) &&
             (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
 
         if ($useGmailApi) {
             try {
-                (new GmailApiService())->sendEmail($to, $subject, $html, $fromName ?: 'Zap Zone');
+                (new GmailApiService())->sendEmail($to, $subject, $html, $fromName ?: 'Zap Zone', $attachments);
 
                 return;
             } catch (\Throwable $e) {
@@ -576,10 +747,18 @@ class PhotoDeliveryService
             }
         }
 
-        Mail::html($html, function ($message) use ($to, $subject, $fromName) {
+        Mail::html($html, function ($message) use ($to, $subject, $fromName, $attachments) {
             $message->to($to)
                 ->subject($subject)
                 ->from(config('mail.from.address'), $fromName ?: config('mail.from.name'));
+
+            foreach ($attachments as $attachment) {
+                $message->attachData(
+                    base64_decode($attachment['data']),
+                    $attachment['filename'],
+                    ['mime' => $attachment['mime_type']]
+                );
+            }
         });
     }
 

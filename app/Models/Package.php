@@ -45,6 +45,7 @@ class Package extends Model
         'min_booking_notice_hours',
         'partial_payment_percentage',
         'partial_payment_fixed',
+        'is_escape_room',
     ];
 
     protected $casts = [
@@ -63,11 +64,16 @@ class Package extends Model
         'has_guest_of_honor' => 'boolean',
         'booking_window_days' => 'integer',
         'min_booking_notice_hours' => 'integer',
+        'is_escape_room' => 'boolean',
     ];
 
     protected static function booted(): void
     {
         static::saving(function (Package $package) {
+            if (!self::supportsEscapeRoomFlag()) {
+                $package->offsetUnset('is_escape_room');
+            }
+
             if (DataUriImage::contains($package->image)) {
                 $package->image = DataUriImage::externalize($package->image, 'images/packages');
             }
@@ -107,6 +113,23 @@ class Package extends Model
     public function scopeActive($query)
     {
         return $query->where('is_active', true);
+    }
+
+    public static function supportsEscapeRoomFlag(): bool
+    {
+        return \App\Support\SchemaSupport::hasColumn('packages', 'is_escape_room');
+    }
+
+    public function isEscapeRoom(): bool
+    {
+        return self::supportsEscapeRoomFlag() && (bool) $this->is_escape_room;
+    }
+
+    public function scopeEscapeRooms($query)
+    {
+        return self::supportsEscapeRoomFlag()
+            ? $query->where('is_escape_room', true)
+            : $query->whereRaw('1 = 0');
     }
 
     public function scopeByLocation($query, $locationId)

@@ -33,6 +33,7 @@ class UpdatePackageRequest extends FormRequest
             'max_tickets_per_slot' => 'nullable|integer|min:1|max:10000',
             'participant_label' => 'nullable|string|max:50',
             'display_label' => 'nullable|string|max:100',
+            'is_escape_room' => 'sometimes|boolean',
             'duration' => 'sometimes|numeric|min:1',
             'duration_unit' => ['sometimes', Rule::in(['hours', 'minutes', 'hours and minutes'])],
             'price_per_additional_30min' => 'nullable|numeric|min:0|regex:/^\d+(\.\d{1,2})?$/',

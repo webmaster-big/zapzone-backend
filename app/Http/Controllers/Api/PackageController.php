@@ -748,6 +748,7 @@ class PackageController extends Controller
             'packages.*.max_tickets_per_slot' => 'nullable|integer|min:1|max:10000',
             'packages.*.participant_label' => 'nullable|string|max:50',
             'packages.*.display_label' => 'nullable|string|max:100',
+            'packages.*.is_escape_room' => 'sometimes|boolean',
             'packages.*.max_participants' => 'nullable|integer|min:1',
             'packages.*.duration' => 'nullable|numeric|min:0.01',
             'packages.*.duration_unit' => ['nullable', 'string', \Illuminate\Validation\Rule::in(['hours', 'minutes', 'hours and minutes'])],

@@ -35,6 +35,11 @@ class WaiverTemplateController extends Controller
             if ($request->filled('status')) {
                 $query->where('status', $request->string('status'));
             }
+            if ($request->filled('kind') && WaiverTemplate::supportsKind()) {
+                $request->string('kind')->toString() === WaiverTemplate::KIND_ESCAPE_ROOM
+                    ? $query->escapeRooms()
+                    : $query->standard();
+            }
             if ($request->filled('search')) {
                 $search = $request->string('search');
                 $query->where(fn ($q) => $q->where('title', 'like', "%{$search}%")
@@ -86,7 +91,11 @@ class WaiverTemplateController extends Controller
                 $validated['location_id'] = $authUser->location_id;
             }
 
-            if ($conflict = $this->assignmentConflict($authUser->company_id, $validated, null)) {
+            if ($refused = $this->applyKindRules($validated, null, (int) $authUser->company_id)) {
+                return $refused;
+            }
+
+            if ($conflict = $this->assignmentConflict($authUser->company_id, $validated, null, $validated['kind'] ?? WaiverTemplate::KIND_STANDARD)) {
                 return $conflict;
             }
 
@@ -121,7 +130,16 @@ class WaiverTemplateController extends Controller
         try {
             $validated = $this->validatePayload($request, false);
 
-            if ($conflict = $this->assignmentConflict($waiverTemplate->company_id, $validated, $waiverTemplate->id)) {
+            if ($refused = $this->applyKindRules($validated, $waiverTemplate, (int) $waiverTemplate->company_id)) {
+                return $refused;
+            }
+
+            $nextKind = $validated['kind'] ?? ($waiverTemplate->kind ?? WaiverTemplate::KIND_STANDARD);
+            $conflictPayload = $nextKind !== ($waiverTemplate->kind ?? WaiverTemplate::KIND_STANDARD)
+                ? $validated + $waiverTemplate->only(array_values(WaiverTemplate::ASSIGNMENT_COLUMNS))
+                : $validated;
+
+            if ($conflict = $this->assignmentConflict($waiverTemplate->company_id, $conflictPayload, $waiverTemplate->id, $nextKind)) {
                 return $conflict;
             }
 
@@ -297,17 +315,26 @@ class WaiverTemplateController extends Controller
         }
 
         $column = WaiverTemplate::ASSIGNMENT_COLUMNS[$type];
+        $escapeRoomsOnly = $request->string('kind')->toString() === WaiverTemplate::KIND_ESCAPE_ROOM;
+
+        if ($escapeRoomsOnly && $type !== 'package') {
+            return response()->json([
+                'success' => true,
+                'data' => ['type' => $type, 'claimed_ids' => [], 'available' => []],
+            ]);
+        }
 
         // IDs already claimed by other templates in this company
         $claimed = WaiverTemplate::where('company_id', $authUser->company_id)
             ->when($exceptTemplateId, fn ($q) => $q->where('id', '!=', $exceptTemplateId))
+            ->when(WaiverTemplate::supportsKind(), fn ($q) => $escapeRoomsOnly ? $q->escapeRooms() : $q->standard())
             ->pluck($column)
             ->flatMap(fn ($ids) => $ids ?? [])
             ->unique()
             ->values()
             ->all();
 
-        $items = $this->activityList($type, $authUser, $claimed);
+        $items = $this->activityList($type, $authUser, $claimed, $escapeRoomsOnly);
 
         return response()->json([
             'success' => true,
@@ -333,7 +360,7 @@ class WaiverTemplateController extends Controller
         }
     }
 
-    private function activityList(string $type, $authUser, array $excludeIds)
+    private function activityList(string $type, $authUser, array $excludeIds, bool $escapeRoomsOnly = false)
     {
         $model = match ($type) {
             'package' => Package::class,
@@ -346,6 +373,9 @@ class WaiverTemplateController extends Controller
         }
 
         $query = $model::query();
+        if ($escapeRoomsOnly) {
+            $query->escapeRooms();
+        }
         if ($authUser->company_id) {
             $query->whereHas('location', fn ($q) => $q->where('company_id', $authUser->company_id));
         }
@@ -356,16 +386,105 @@ class WaiverTemplateController extends Controller
         return $query
             ->with('location:id,name')
             ->whereNotIn('id', $excludeIds)
-            ->get(['id', 'name', 'location_id'])
-            ->map(fn ($item) => [
+            ->get(array_merge(['id', 'name', 'location_id'], $type === 'package' && Package::supportsEscapeRoomFlag() ? ['is_escape_room'] : []))
+            ->map(fn ($item) => array_merge([
                 'id'            => $item->id,
                 'name'          => $item->name,
                 'location_id'   => $item->location_id,
                 'location_name' => $item->location?->name ?? null,
-            ]);
+            ], $type === 'package' ? ['is_escape_room' => (bool) ($item->is_escape_room ?? false)] : []));
     }
 
-    private function assignmentConflict(int $companyId, array $payload, ?int $exceptTemplateId): ?JsonResponse
+    private function applyKindRules(array &$validated, ?WaiverTemplate $existing, int $companyId): ?JsonResponse
+    {
+        if (!WaiverTemplate::supportsKind()) {
+            if (($validated['kind'] ?? null) === WaiverTemplate::KIND_ESCAPE_ROOM) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Escape-room waivers are not switched on yet. Try again in a few minutes.',
+                    'errors' => ['kind' => ['Escape-room waivers are not switched on yet.']],
+                ], 422);
+            }
+
+            unset($validated['kind']);
+
+            return null;
+        }
+
+        $kind = $validated['kind'] ?? ($existing?->kind ?? WaiverTemplate::KIND_STANDARD);
+        $changingKind = $existing && array_key_exists('kind', $validated) && $validated['kind'] !== ($existing->kind ?? WaiverTemplate::KIND_STANDARD);
+
+        if ($changingKind && $existing->waivers()->withTrashed()->exists()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'People have already signed this waiver, so its type cannot be changed. Create a new waiver instead.',
+                'errors' => ['kind' => ['The waiver type cannot be changed once people have signed it.']],
+            ], 422);
+        }
+
+        if ($changingKind && \App\Models\WaiverBulkInvite::where('waiver_template_id', $existing->id)->exists()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'A group invite uses this waiver, so its type cannot be changed. Create a new waiver instead.',
+                'errors' => ['kind' => ['The waiver type cannot be changed while a group invite uses it.']],
+            ], 422);
+        }
+
+        if ($kind !== WaiverTemplate::KIND_ESCAPE_ROOM) {
+            return null;
+        }
+
+        $validated['assigned_attraction_ids'] = [];
+        $validated['assigned_event_ids'] = [];
+        $validated['assigned_party_types'] = [];
+
+        $packageIds = array_values(array_unique(array_map('intval', $validated['assigned_package_ids'] ?? ($existing?->assigned_package_ids ?? []))));
+        $templateLocationId = array_key_exists('location_id', $validated) ? $validated['location_id'] : $existing?->location_id;
+
+        if ($templateLocationId && $packageIds !== []) {
+            $elsewhere = Package::whereIn('id', $packageIds)
+                ->where('location_id', '!=', (int) $templateLocationId)
+                ->pluck('id')
+                ->map(fn ($id) => (int) $id)
+                ->all();
+
+            if ($elsewhere !== []) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "This waiver is for one location, so it can only cover that location's escape rooms.",
+                    'errors' => ['assigned_package_ids' => $elsewhere],
+                ], 422);
+            }
+        }
+
+        $alreadyAssigned = $existing?->isEscapeRoom() ? array_map('intval', $existing->assigned_package_ids ?? []) : [];
+        $packageIds = array_values(array_diff($packageIds, $alreadyAssigned));
+
+        if ($packageIds === []) {
+            return null;
+        }
+
+        $escapeRooms = Package::escapeRooms()
+            ->whereIn('id', $packageIds)
+            ->whereHas('location', fn ($q) => $q->where('company_id', $companyId))
+            ->pluck('id')
+            ->map(fn ($id) => (int) $id)
+            ->all();
+
+        $invalid = array_values(array_diff($packageIds, $escapeRooms));
+
+        if ($invalid !== []) {
+            return response()->json([
+                'success' => false,
+                'message' => 'An escape-room waiver can only cover packages that are switched on as escape rooms.',
+                'errors' => ['assigned_package_ids' => $invalid],
+            ], 422);
+        }
+
+        return null;
+    }
+
+    private function assignmentConflict(int $companyId, array $payload, ?int $exceptTemplateId, string $kind = WaiverTemplate::KIND_STANDARD): ?JsonResponse
     {
         foreach (WaiverTemplate::ASSIGNMENT_COLUMNS as $type => $column) {
             $incoming = $payload[$column] ?? null;
@@ -375,6 +494,7 @@ class WaiverTemplateController extends Controller
 
             $claimed = WaiverTemplate::where('company_id', $companyId)
                 ->when($exceptTemplateId, fn ($q) => $q->where('id', '!=', $exceptTemplateId))
+                ->when(WaiverTemplate::supportsKind(), fn ($q) => $kind === WaiverTemplate::KIND_ESCAPE_ROOM ? $q->escapeRooms() : $q->standard())
                 ->pluck($column)
                 ->flatMap(fn ($ids) => $ids ?? [])
                 ->all();
@@ -399,6 +519,7 @@ class WaiverTemplateController extends Controller
         return $request->validate([
             'location_id' => 'nullable|exists:locations,id',
             'title' => "{$req}|string|max:255",
+            'kind' => 'sometimes|in:' . implode(',', WaiverTemplate::KINDS),
             'internal_description' => 'nullable|string',
             'status' => 'sometimes|in:draft,active,inactive,archived',
             'is_default' => 'sometimes|boolean',

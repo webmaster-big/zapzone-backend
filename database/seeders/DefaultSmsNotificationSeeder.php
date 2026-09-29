@@ -97,7 +97,7 @@ class DefaultSmsNotificationSeeder extends Seeder
                 'entity_ids' => [],
                 'recipient_types' => [$C],
                 'custom_phones' => [],
-                'body' => '{{company_name}}: Party booked! {{package_name}} on {{booking_date}} at {{booking_time}}. Ref {{booking_reference}}. Balance due {{booking_balance}}. Info: {{location_phone}} {{waiver_line}}',
+                'body' => '{{company_name}}: {{booking_kind_title}} booked! {{package_name}} on {{booking_date}} at {{booking_time}}. Ref {{booking_reference}}. Balance due {{booking_balance}}. Info: {{location_phone}} {{waiver_line}}',
             ],
             [
                 'default_key' => SmsNotification::DEFAULT_BOOKING_REMINDER_CUSTOMER,
@@ -109,7 +109,7 @@ class DefaultSmsNotificationSeeder extends Seeder
                 'recipient_types' => [$C],
                 'custom_phones' => [],
                 'send_before_hours' => 24,
-                'body' => '{{company_name}} reminder: your {{package_name}} party is {{booking_date}} at {{booking_time}}, {{location_name}}. See you soon! {{location_phone}}',
+                'body' => '{{company_name}} reminder: your {{package_name}} {{booking_kind}} is {{booking_date}} at {{booking_time}}, {{location_name}}. See you soon! {{location_phone}}',
             ],
             [
                 'default_key' => SmsNotification::DEFAULT_BOOKING_RESCHEDULE_CUSTOMER,

@@ -153,7 +153,76 @@ class PhotoReportController extends Controller
             'processing_failures' => (clone $photos)->where('processing_status', Photo::PROCESSING_FAILED)->count(),
             'retakes' => (clone $this->logs($request, $from, $to))->where('action', 'kiosk_photo_retaken')->count(),
             'discarded_sessions' => (clone $this->logs($request, $from, $to))->where('action', 'photo_session_discarded')->count(),
+        ] + $this->escapeRoomGames($request, $from, $to);
+    }
+
+    protected function escapeRoomGames(Request $request, string $from, string $to): array
+    {
+        if (!\App\Models\EscapeRoomSession::isAvailable()) {
+            return [];
+        }
+
+        $games = \App\Models\EscapeRoomSession::query()
+            ->whereNotNull('completed_at')
+            ->whereBetween('session_date', [substr($from, 0, 10), substr($to, 0, 10)]);
+        $this->applyAuthScope($games, $request);
+        $this->scopeLocation($games, $request);
+
+        $escaped = (clone $games)->where('escaped', true)->whereNotNull('completion_seconds');
+        $average = (int) round((float) (clone $escaped)->avg('completion_seconds'));
+        $completed = (clone $games)->count();
+        $sent = (clone $games)->whereExists(fn ($deliveries) => $deliveries->selectRaw('1')
+            ->from('photo_deliveries')
+            ->whereColumn('photo_deliveries.photo_session_id', 'escape_room_sessions.photo_session_id')
+            ->where('photo_deliveries.kind', PhotoDelivery::KIND_ESCAPE_ROOM))
+            ->count();
+
+        return [
+            'escape_room_games_completed' => $completed,
+            'escape_room_games_sent' => $sent,
+            'escape_room_games_without_photo' => $completed - $sent,
+            'escape_room_games_escaped' => (clone $escaped)->count(),
+            'escape_room_games_not_escaped' => (clone $games)->where('escaped', false)->count(),
+            'escape_room_average_finish_time' => $average > 0 ? \App\Models\EscapeRoomSession::formatSeconds($average) : '',
+            'escape_room_by_room' => $this->escapeRoomsByRoom($games),
         ];
+    }
+
+    protected function escapeRoomsByRoom($games): array
+    {
+        $rows = (clone $games)
+            ->selectRaw('package_id, COUNT(*) as games')
+            ->selectRaw('SUM(CASE WHEN `escaped` = 1 AND completion_seconds IS NOT NULL THEN 1 ELSE 0 END) as escaped_games')
+            ->selectRaw('SUM(CASE WHEN `escaped` = 0 THEN 1 ELSE 0 END) as lost_games')
+            ->selectRaw('AVG(CASE WHEN `escaped` = 1 THEN completion_seconds END) as average_seconds')
+            ->selectRaw('MIN(CASE WHEN `escaped` = 1 THEN completion_seconds END) as best_seconds')
+            ->groupBy('package_id')
+            ->get();
+
+        $names = \App\Models\Package::withTrashed()
+            ->whereIn('id', $rows->pluck('package_id')->filter()->all())
+            ->pluck('name', 'id');
+
+        return $rows
+            ->map(function ($row) use ($names) {
+                $games = (int) $row->games;
+                $escapedGames = (int) $row->escaped_games;
+                $average = (int) round((float) $row->average_seconds);
+                $best = (int) $row->best_seconds;
+
+                return [
+                    'room' => $names[$row->package_id] ?? 'Deleted room',
+                    'games' => $games,
+                    'escaped' => $escapedGames,
+                    'not_escaped' => (int) $row->lost_games,
+                    'escape_rate' => $games > 0 ? (int) round($escapedGames * 100 / $games) : 0,
+                    'average_finish_time' => $average > 0 ? \App\Models\EscapeRoomSession::formatSeconds($average) : '',
+                    'best_finish_time' => $best > 0 ? \App\Models\EscapeRoomSession::formatSeconds($best) : '',
+                ];
+            })
+            ->sortBy('room', SORT_NATURAL | SORT_FLAG_CASE)
+            ->values()
+            ->all();
     }
 
     protected function delivery(Request $request, string $from, string $to): array
@@ -167,6 +236,7 @@ class PhotoReportController extends Controller
             'immediate' => (clone $real)->where('kind', PhotoDelivery::KIND_IMMEDIATE)->count(),
             'next_day' => (clone $real)->where('kind', PhotoDelivery::KIND_NEXT_DAY)->count(),
             'kiosk' => (clone $real)->where('kind', PhotoDelivery::KIND_KIOSK)->count(),
+            'escape_room' => (clone $real)->where('kind', PhotoDelivery::KIND_ESCAPE_ROOM)->count(),
             'email_sent' => (clone $real)->where('channel', PhotoDelivery::CHANNEL_EMAIL)->where('status', PhotoDelivery::STATUS_SENT)->count(),
             'email_failed' => (clone $real)->where('channel', PhotoDelivery::CHANNEL_EMAIL)->where('status', PhotoDelivery::STATUS_FAILED)->count(),
             'sms_sent' => (clone $real)->where('channel', PhotoDelivery::CHANNEL_SMS)->where('status', PhotoDelivery::STATUS_SENT)->count(),
