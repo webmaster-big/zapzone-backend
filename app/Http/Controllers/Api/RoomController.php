@@ -56,6 +56,8 @@ class RoomController extends Controller
                 $query->orderBy($sortBy, $sortOrder);
             }
 
+            $query->orderBy('rooms.id');
+
             $rooms = $query->paginate($perPage);
 
             return response()->json([

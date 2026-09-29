@@ -64,6 +64,8 @@ class ContactController extends Controller
             $query->orderBy($sortBy, $sortOrder);
         }
 
+        $query->orderBy('id', 'desc');
+
         $perPage = $request->get('per_page', 15);
         $contacts = $query->paginate($perPage);
 

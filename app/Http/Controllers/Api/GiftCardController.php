@@ -66,7 +66,9 @@ class GiftCardController extends Controller
             $query->forLocation($request->location_id);
         }
 
-        if ($request->has('status')) {
+        if ($request->get('status') === 'all') {
+            $query->where('deleted', false);
+        } elseif ($request->has('status')) {
             $query->where('status', $request->status);
         } else {
             $query->active();
@@ -102,6 +104,8 @@ class GiftCardController extends Controller
         if (in_array($sortBy, ['code', 'initial_value', 'balance', 'status', 'created_at', 'expiry_date'])) {
             $query->orderBy($sortBy, $sortOrder);
         }
+
+        $query->orderBy('gift_cards.id', 'desc');
 
         $perPage = $request->get('per_page', 15);
         $giftCards = $query->paginate($perPage);

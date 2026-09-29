@@ -106,12 +106,12 @@ class ActivityLog extends Model
 
     public function scopeByUser($query, $userId)
     {
-        return $query->where('user_id', $userId);
+        return is_array($userId) ? $query->whereIn('user_id', $userId) : $query->where('user_id', $userId);
     }
 
     public function scopeByLocation($query, $locationId)
     {
-        return $query->where('location_id', $locationId);
+        return is_array($locationId) ? $query->whereIn('location_id', $locationId) : $query->where('location_id', $locationId);
     }
 
     public function scopeByCategory($query, $category)

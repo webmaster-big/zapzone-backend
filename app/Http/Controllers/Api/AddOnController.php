@@ -58,6 +58,8 @@ class AddOnController extends Controller
                 $query->orderBy($sortBy, $sortOrder);
             }
 
+            $query->orderBy('add_ons.id');
+
             $addOns = $query->paginate($perPage);
 
             return response()->json([
