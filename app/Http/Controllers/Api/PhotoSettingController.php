@@ -211,17 +211,40 @@ class PhotoSettingController extends Controller
     public function templates(Request $request): JsonResponse
     {
         $authUser = $this->resolveAuthUser($request);
-        $templates = PhotoMessageTemplate::allForCompany($authUser?->company_id);
+        $kinds = array_values(array_diff(PhotoMessageTemplate::KINDS, [PhotoMessageTemplate::KIND_ESCAPE_ROOM]));
+        $templates = PhotoMessageTemplate::allForCompany($authUser?->company_id)
+            ->reject(fn (PhotoMessageTemplate $template) => $template->kind === PhotoMessageTemplate::KIND_ESCAPE_ROOM)
+            ->values();
+        $thanksEmail = $authUser?->company_id
+            ? \App\Models\EmailNotification::where('company_id', $authUser->company_id)
+                ->where('default_key', \App\Models\EmailNotification::DEFAULT_THANKS_FOR_PLAYING)
+                ->first(['id', 'name', 'is_active'])
+            : null;
+        $roomsWithoutEmail = null;
+
+        if ($authUser?->company_id) {
+            try {
+                $roomsWithoutEmail = app(\App\Services\VisitFollowUpService::class)->escapeRoomsWithoutThanks((int) $authUser->company_id);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('Escape-room email coverage could not be checked', ['error' => $e->getMessage()]);
+            }
+        }
 
         return response()->json([
             'success' => true,
             'data' => [
                 'templates' => $templates,
                 'variables' => PhotoMessageTemplate::VARIABLES,
-                'variables_by_kind' => collect(PhotoMessageTemplate::KINDS)
+                'variables_by_kind' => collect($kinds)
                     ->mapWithKeys(fn (string $kind) => [$kind => PhotoMessageTemplate::variablesFor($kind)])
                     ->all(),
-                'kinds' => PhotoMessageTemplate::KINDS,
+                'kinds' => $kinds,
+                'escape_room_email' => $thanksEmail ? [
+                    'id' => $thanksEmail->id,
+                    'name' => $thanksEmail->name,
+                    'is_active' => $roomsWithoutEmail === null ? (bool) $thanksEmail->is_active : $roomsWithoutEmail === [],
+                    'rooms_without_email' => $roomsWithoutEmail ?? [],
+                ] : null,
             ],
         ]);
     }
@@ -245,13 +268,11 @@ class PhotoSettingController extends Controller
             'is_active' => ['nullable', 'boolean'],
         ]);
 
-        if ($photoMessageTemplate->kind === PhotoMessageTemplate::KIND_ESCAPE_ROOM
-            && !str_contains($validated['email_body'], '{{completion_time}}')
-            && !str_contains($validated['email_body'], '{{escape_result}}')) {
+        if ($photoMessageTemplate->kind === PhotoMessageTemplate::KIND_ESCAPE_ROOM) {
             return response()->json([
                 'success' => false,
-                'message' => 'The escape-room email must show the group\'s result. Keep {{escape_result}} (or {{completion_time}}) in the email wording.',
-                'errors' => ['email_body' => ['Keep {{escape_result}} (or {{completion_time}}) in the escape-room email wording.']],
+                'message' => 'Escape-room photos are now emailed with the Thanks for Playing email. Change its wording under Email Notifications. Reload this page to see the current settings.',
+                'errors' => ['email_body' => ['Edit the Thanks for Playing email under Email Notifications instead.']],
             ], 422);
         }
 

@@ -3,13 +3,17 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Traits\ScopesByAuthUser;
 use App\Models\Attraction;
 use App\Models\AttractionPurchase;
 use App\Models\Booking;
 use App\Models\Customer;
 use App\Models\EmailNotification;
 use App\Models\Package;
+use App\Models\Promo;
+use App\Models\VisitFollowUp;
 use App\Services\EmailNotificationService;
+use App\Services\VisitFollowUpService;
 use Database\Seeders\DefaultEmailNotificationSeeder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -20,6 +24,8 @@ use Illuminate\Validation\Rule;
 
 class EmailNotificationController extends Controller
 {
+    use ScopesByAuthUser;
+
     public function index(Request $request): JsonResponse
     {
         $user = Auth::user();
@@ -31,7 +37,7 @@ class EmailNotificationController extends Controller
             }
         }
 
-        $query = EmailNotification::with(['company', 'location', 'template'])
+        $query = EmailNotification::with(array_merge(['company', 'location', 'template'], EmailNotification::supportsPromo() ? ['promo.creator'] : []))
             ->where('company_id', $user->company_id);
 
         if (in_array($user->role, ['location_manager', 'attendant'], true) && $user->location_id) {
@@ -94,7 +100,7 @@ class EmailNotificationController extends Controller
 
         $notifications = $query->paginate($request->per_page ?? 15);
 
-        $notifications->getCollection()->transform(function ($notification) {
+        $notifications->getCollection()->transform(function ($notification) use ($user) {
             $notification->effective_subject = $notification->getEffectiveSubject();
             $notification->effective_body = $notification->getEffectiveBody();
             $notification->is_subject_customized = $notification->is_default
@@ -103,6 +109,8 @@ class EmailNotificationController extends Controller
             $notification->is_body_customized = $notification->is_default
                 ? $notification->isBodyCustomized()
                 : false;
+            $notification->promo_summary = $this->promoSummary($notification);
+            $notification->can_edit = $this->visitWriteRefusal($notification, $user) === null;
             return $notification;
         });
 
@@ -137,9 +145,29 @@ class EmailNotificationController extends Controller
             'location_id' => 'nullable|exists:locations,id',
             'send_before_hours' => 'nullable|integer|min:1',
             'send_after_hours' => 'nullable|integer|min:1',
+            'promo_id' => 'nullable|integer',
+            'from_name' => 'nullable|string|max:120',
+            'review_url' => ['nullable', 'string', 'max:500', 'url:http,https'],
+            'activity_filter' => ['nullable', Rule::in(EmailNotification::ACTIVITY_FILTERS)],
         ]);
 
         $user = Auth::user();
+
+        if (!empty($validated['location_id']) && !\App\Models\Location::whereKey($validated['location_id'])->where('company_id', $user->company_id)->exists()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Choose one of your company\'s locations.',
+                'errors' => ['location_id' => ['Choose one of your company\'s locations.']],
+            ], 422);
+        }
+
+        if ($refused = $this->visitWriteRefusal(null, $user, $validated)) {
+            return $refused;
+        }
+
+        if ($refused = $this->applyVisitRules($validated, null, $user)) {
+            return $refused;
+        }
 
         try {
             DB::beginTransaction();
@@ -162,7 +190,12 @@ class EmailNotificationController extends Controller
                 'is_default' => false,
                 'send_before_hours' => $validated['send_before_hours'] ?? null,
                 'send_after_hours' => $validated['send_after_hours'] ?? null,
-            ]);
+            ] + (EmailNotification::supportsPromo() ? ['promo_id' => $validated['promo_id'] ?? null] : [])
+              + (EmailNotification::supportsFollowUpSettings() ? [
+                  'from_name' => $validated['from_name'] ?? null,
+                  'review_url' => $validated['review_url'] ?? null,
+                  'activity_filter' => $validated['activity_filter'] ?? null,
+              ] : []));
 
             DB::commit();
 
@@ -197,9 +230,9 @@ class EmailNotificationController extends Controller
             ], 404);
         }
 
-        $emailNotification->load(['company', 'location', 'template', 'logs' => function ($query) {
+        $emailNotification->load(array_merge(['company', 'location', 'template', 'logs' => function ($query) {
             $query->orderBy('created_at', 'desc')->limit(50);
-        }]);
+        }], EmailNotification::supportsPromo() ? ['promo.creator'] : []));
 
         $stats = [
             'total_sent' => $emailNotification->logs()->sent()->count(),
@@ -222,6 +255,11 @@ class EmailNotificationController extends Controller
 
         $emailNotification->effective_subject = $emailNotification->getEffectiveSubject();
         $emailNotification->effective_body = $emailNotification->getEffectiveBody();
+        $emailNotification->promo_summary = $this->promoSummary($emailNotification);
+        $emailNotification->can_edit = $this->visitWriteRefusal($emailNotification, $user) === null;
+        $emailNotification->visit_overrides = $emailNotification->isVisitTrigger()
+            ? app(VisitFollowUpService::class)->overridesFor($emailNotification)
+            : [];
 
         return response()->json([
             'success' => true,
@@ -266,11 +304,39 @@ class EmailNotificationController extends Controller
             'send_before_hours' => 'nullable|integer|min:1',
             'send_after_hours' => 'nullable|integer|min:1',
             'description' => 'nullable|string|max:1000',
+            'promo_id' => 'nullable|integer',
+            'from_name' => 'nullable|string|max:120',
+            'review_url' => ['nullable', 'string', 'max:500', 'url:http,https'],
+            'activity_filter' => ['nullable', Rule::in(EmailNotification::ACTIVITY_FILTERS)],
         ]);
 
         if ($emailNotification->is_default) {
-            $allowedDefaultFields = ['subject', 'body', 'is_active', 'include_qr_code', 'recipient_types', 'custom_emails', 'send_before_hours', 'send_after_hours', 'description'];
+            $allowedDefaultFields = ['subject', 'body', 'is_active', 'include_qr_code', 'recipient_types', 'custom_emails', 'send_before_hours', 'send_after_hours', 'description', 'promo_id', 'from_name', 'review_url'];
             $validated = array_intersect_key($validated, array_flip($allowedDefaultFields));
+        }
+
+        if (!empty($validated['location_id']) && !\App\Models\Location::whereKey($validated['location_id'])->where('company_id', $user->company_id)->exists()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Choose one of your company\'s locations.',
+                'errors' => ['location_id' => ['Choose one of your company\'s locations.']],
+            ], 422);
+        }
+
+        if ($refused = $this->visitWriteRefusal($emailNotification, $user, $validated)) {
+            return $refused;
+        }
+
+        if ($refused = $this->applyVisitRules($validated, $emailNotification, $user)) {
+            return $refused;
+        }
+
+        if (!EmailNotification::supportsPromo()) {
+            unset($validated['promo_id']);
+        }
+
+        if (!EmailNotification::supportsFollowUpSettings()) {
+            unset($validated['from_name'], $validated['review_url'], $validated['activity_filter']);
         }
 
         try {
@@ -313,6 +379,10 @@ class EmailNotificationController extends Controller
             ], 403);
         }
 
+        if ($refused = $this->visitWriteRefusal($emailNotification, $user)) {
+            return $refused;
+        }
+
         $emailNotification->delete();
 
         return response()->json([
@@ -332,9 +402,17 @@ class EmailNotificationController extends Controller
             ], 404);
         }
 
+        if ($refused = $this->visitWriteRefusal($emailNotification, $user)) {
+            return $refused;
+        }
+
         $emailNotification->update([
             'is_active' => !$emailNotification->is_active,
         ]);
+
+        $emailNotification->load(['company', 'location', 'template']);
+        $emailNotification->promo_summary = $this->promoSummary($emailNotification);
+        $emailNotification->can_edit = true;
 
         return response()->json([
             'success' => true,
@@ -355,8 +433,26 @@ class EmailNotificationController extends Controller
         }
 
         $newNotification = $emailNotification->replicate();
+
+        if ($emailNotification->isVisitTrigger() && !in_array((string) $user->role, ['company_admin', 'admin'], true)) {
+            if ($user->role !== 'location_manager' || !$user->location_id) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Only a manager or company admin can set up follow-up emails.',
+                ], 403);
+            }
+
+            $newNotification->location_id = $user->location_id;
+        }
+
         $newNotification->name = $emailNotification->name . ' (Copy)';
         $newNotification->is_active = false;
+        $newNotification->subject = $emailNotification->getEffectiveSubject();
+        $newNotification->body = $emailNotification->getEffectiveBody();
+        $newNotification->is_default = false;
+        $newNotification->default_key = null;
+        $newNotification->default_subject = null;
+        $newNotification->default_body = null;
         $newNotification->save();
 
         $newNotification->load(['company', 'location', 'template']);
@@ -373,9 +469,28 @@ class EmailNotificationController extends Controller
         $user = Auth::user();
         $entityType = $request->input('entity_type', 'package');
         $locationId = $request->input('location_id');
+        $inCompany = fn ($query) => $query->whereHas('location', fn ($location) => $location->where('company_id', $user->company_id));
 
         if ($entityType === 'package') {
-            $query = Package::query();
+            $query = Package::query()->tap($inCompany);
+
+            if ($locationId) {
+                $query->where('location_id', $locationId);
+            } elseif ($user->location_id) {
+                $query->where('location_id', $user->location_id);
+            }
+
+            $columns = ['id', 'name', 'location_id', 'is_active'];
+            if (Package::supportsEscapeRoomFlag()) {
+                $columns[] = 'is_escape_room';
+            }
+
+            $entities = $query->select($columns)
+                ->where('is_active', true)
+                ->orderBy('name')
+                ->get();
+        } elseif ($entityType === 'event') {
+            $query = \App\Models\Event::query()->tap($inCompany);
 
             if ($locationId) {
                 $query->where('location_id', $locationId);
@@ -388,7 +503,7 @@ class EmailNotificationController extends Controller
                 ->orderBy('name')
                 ->get();
         } else {
-            $query = Attraction::query();
+            $query = Attraction::query()->tap($inCompany);
 
             if ($locationId) {
                 $query->where('location_id', $locationId);
@@ -401,6 +516,9 @@ class EmailNotificationController extends Controller
                 ->orderBy('name')
                 ->get();
         }
+
+        $locationNames = \App\Models\Location::whereIn('id', $entities->pluck('location_id')->filter()->unique())->pluck('name', 'id');
+        $entities->each(fn ($entity) => $entity->setAttribute('location_name', $locationNames[$entity->location_id] ?? null));
 
         return response()->json([
             'success' => true,
@@ -429,6 +547,10 @@ class EmailNotificationController extends Controller
         ];
 
         $type = $typeMapping[$category] ?? 'booking';
+
+        if ($category === 'visit') {
+            $type = $triggerType === EmailNotification::TRIGGER_VISIT_FOLLOWUP ? 'visit_followup' : 'visit_completed';
+        }
 
         return response()->json([
             'success' => true,
@@ -522,6 +644,10 @@ class EmailNotificationController extends Controller
                 ], 404);
             }
 
+            if ($emailNotification->isVisitTrigger()) {
+                return $this->resendVisitLog($emailNotification, $log, $entity, $user);
+            }
+
             $log->update(['status' => 'pending', 'error_message' => null]);
 
             if ($log->notifiable_type === 'App\\Models\\Booking') {
@@ -554,6 +680,10 @@ class EmailNotificationController extends Controller
 
         if ($notification->entity_type === 'package') {
             return Package::whereIn('id', $entityIds)
+                ->pluck('name')
+                ->toArray();
+        } elseif ($notification->entity_type === 'event') {
+            return \App\Models\Event::whereIn('id', $entityIds)
                 ->pluck('name')
                 ->toArray();
         } else {
@@ -593,12 +723,19 @@ class EmailNotificationController extends Controller
         ]);
 
         try {
-            $variables = $this->buildSampleVariables($emailNotification, $validated);
+            if ($emailNotification->isVisitTrigger()) {
+                $built = app(VisitFollowUpService::class)->preview($emailNotification);
+                $variables = ['company_name' => $built['from_name']];
+                $subject = $built['subject'];
+                $htmlBody = $built['html'];
+            } else {
+                $variables = $this->buildSampleVariables($emailNotification, $validated);
 
-            $subject = $this->replaceVariables($emailNotification->getEffectiveSubject(), $variables);
-            $body = $this->replaceVariables($emailNotification->getEffectiveBody(), $variables);
+                $subject = $this->replaceVariables($emailNotification->getEffectiveSubject(), $variables);
+                $body = $this->replaceVariables($emailNotification->getEffectiveBody(), $variables);
 
-            $htmlBody = $this->generateHtmlEmail($body);
+                $htmlBody = $this->generateHtmlEmail($body);
+            }
 
             $useGmailApi = config('gmail.enabled', false) &&
                 (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
@@ -638,6 +775,10 @@ class EmailNotificationController extends Controller
 
     protected function buildSampleVariables(EmailNotification $notification, array $params = []): array
     {
+        if ($notification->isVisitTrigger()) {
+            return app(VisitFollowUpService::class)->sampleVariables($notification, $params);
+        }
+
         $company = $notification->company;
         $location = $notification->location ?? $company?->locations()->first();
 
@@ -985,6 +1126,10 @@ HTML;
             ], 400);
         }
 
+        if ($refused = $this->visitWriteRefusal($emailNotification, $user)) {
+            return $refused;
+        }
+
         $emailNotification->resetToDefault();
 
         $emailNotification->refresh();
@@ -1023,6 +1168,26 @@ HTML;
 
         $subject = $request->input('subject', $emailNotification->getEffectiveSubject());
         $body = $request->input('body', $emailNotification->getEffectiveBody());
+
+        if ($emailNotification->isVisitTrigger()) {
+            $built = app(VisitFollowUpService::class)->preview(
+                $emailNotification,
+                is_string($subject) ? $subject : null,
+                is_string($body) ? $body : null,
+                $request->only(['promo_id', 'review_url', 'from_name'])
+            );
+
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'subject' => $built['subject'],
+                    'body' => $built['body'],
+                    'html' => $built['html'],
+                    'from_name' => $built['from_name'],
+                    'variables_used' => $built['variables'],
+                ],
+            ]);
+        }
 
         $variables = $this->buildSampleVariables($emailNotification, $request->all());
 
@@ -1067,6 +1232,193 @@ HTML;
             'data' => $defaults,
             'count' => $defaults->count(),
         ]);
+    }
+
+    protected function applyVisitRules(array &$validated, ?EmailNotification $existing, $user): ?JsonResponse
+    {
+        $trigger = $validated['trigger_type'] ?? $existing?->trigger_type;
+        $isVisit = in_array($trigger, EmailNotification::VISIT_TRIGGERS, true);
+        $refuse = fn (string $field, string $message) => response()->json([
+            'success' => false,
+            'message' => $message,
+            'errors' => [$field => [$message]],
+        ], 422);
+
+        if (!$isVisit || $trigger !== EmailNotification::TRIGGER_VISIT_COMPLETED) {
+            if (!empty($validated['promo_id'])) {
+                return $refuse('promo_id', 'Only the Thanks for Playing email (Visit Completed) can include a promo code.');
+            }
+
+            if (array_key_exists('trigger_type', $validated) || $existing === null) {
+                $validated['promo_id'] = null;
+            }
+        } elseif (!empty($validated['promo_id']) && (int) $validated['promo_id'] !== (int) $existing?->promo_id) {
+            $promo = Promo::with('creator')->find((int) $validated['promo_id']);
+
+            if (!$promo || $promo->deleted || !$user?->company_id || !$promo->belongsToCompany((int) $user->company_id)) {
+                return $refuse('promo_id', 'Choose one of your company\'s promo codes. The one picked may have been deleted.');
+            }
+
+            if ($promo->code_mode === 'unique' || $promo->batch_id) {
+                return $refuse('promo_id', 'Codes from a bulk batch work only once each, so they cannot go in an email that every guest gets. Choose a shared code.');
+            }
+        }
+
+        if (!$isVisit) {
+            foreach (['from_name', 'review_url', 'activity_filter'] as $field) {
+                if (array_key_exists($field, $validated) || $existing === null) {
+                    $validated[$field] = null;
+                }
+            }
+
+            return null;
+        }
+
+        $entityType = $validated['entity_type'] ?? $existing?->entity_type;
+
+        if (!in_array($entityType, [EmailNotification::ENTITY_ALL, EmailNotification::ENTITY_PACKAGE, EmailNotification::ENTITY_EVENT], true)) {
+            return $refuse('entity_type', 'Visit emails can apply to every visit, to packages (parties and escape rooms) or to events.');
+        }
+
+        $filter = array_key_exists('activity_filter', $validated) ? $validated['activity_filter'] : $existing?->activity_filter;
+
+        if ($filter !== null && $entityType === EmailNotification::ENTITY_EVENT) {
+            return $refuse('activity_filter', 'Events are never escape rooms, so leave the escape-room choice on "Every activity" for event emails.');
+        }
+
+        $entityIds = array_values(array_unique(array_map('intval', (array) ($validated['entity_ids'] ?? []))));
+
+        if (array_key_exists('entity_ids', $validated) && $entityIds !== [] && in_array($entityType, [EmailNotification::ENTITY_PACKAGE, EmailNotification::ENTITY_EVENT], true)) {
+            $model = $entityType === EmailNotification::ENTITY_EVENT ? \App\Models\Event::class : Package::class;
+            $owned = $model::whereIn('id', $entityIds)
+                ->whereHas('location', fn ($location) => $location->where('company_id', $user?->company_id))
+                ->count();
+
+            if ($owned !== count($entityIds)) {
+                return $refuse('entity_ids', 'Choose packages or events from your own company.');
+            }
+        }
+
+        if (isset($validated['from_name'])) {
+            $validated['from_name'] = trim(str_replace(["\r", "\n", "\0"], ' ', (string) $validated['from_name'])) ?: null;
+        }
+
+        if ($existing === null || array_key_exists('recipient_types', $validated)) {
+            $validated['recipient_types'] = [EmailNotification::RECIPIENT_CUSTOMER];
+            $validated['custom_emails'] = [];
+        }
+
+        $validated['include_qr_code'] = false;
+        $validated['send_before_hours'] = null;
+
+        if ($trigger === EmailNotification::TRIGGER_VISIT_FOLLOWUP) {
+            $hours = $validated['send_after_hours'] ?? $existing?->send_after_hours ?? EmailNotification::REVIEW_REQUEST_DEFAULT_HOURS;
+
+            if ($hours < 1 || $hours > VisitFollowUpService::MAX_REVIEW_DELAY_HOURS) {
+                return $refuse('send_after_hours', 'Send the review request between 1 hour and 30 days (720 hours) after the visit.');
+            }
+
+            $validated['send_after_hours'] = (int) $hours;
+        } else {
+            $validated['send_after_hours'] = null;
+        }
+
+        return null;
+    }
+
+    protected function visitWriteRefusal(?EmailNotification $existing, $user, ?array &$validated = null): ?JsonResponse
+    {
+        $trigger = $validated['trigger_type'] ?? $existing?->trigger_type;
+
+        if (!in_array($trigger, EmailNotification::VISIT_TRIGGERS, true) && !$existing?->isVisitTrigger()) {
+            return null;
+        }
+
+        $deny = fn (string $message) => response()->json(['success' => false, 'message' => $message], 403);
+        $role = (string) ($user->role ?? '');
+
+        if (in_array($role, ['company_admin', 'admin'], true)) {
+            return null;
+        }
+
+        if ($role !== 'location_manager' || !$user->location_id) {
+            return $deny('Only a manager or company admin can change the follow-up emails.');
+        }
+
+        if ($existing && (int) $existing->location_id !== (int) $user->location_id) {
+            return $deny($existing->location_id === null
+                ? 'This email goes to guests of every location, so only a company admin can change it. Duplicate it to make a version for your location.'
+                : 'This email belongs to another location.');
+        }
+
+        if ($validated !== null && array_key_exists('location_id', $validated) && (int) $validated['location_id'] !== (int) $user->location_id) {
+            if ($validated['location_id'] !== null) {
+                return $deny('You can only set up follow-up emails for your own location.');
+            }
+
+            $validated['location_id'] = (int) $user->location_id;
+        }
+
+        return null;
+    }
+
+    protected function promoSummary(EmailNotification $notification): ?array
+    {
+        if ($notification->trigger_type !== EmailNotification::TRIGGER_VISIT_COMPLETED) {
+            return null;
+        }
+
+        return app(VisitFollowUpService::class)->promoInfo(
+            $notification,
+            (int) $notification->company_id,
+            $notification->location_id ? (int) $notification->location_id : null,
+            $notification->location?->name
+        );
+    }
+
+    protected function resendVisitLog(EmailNotification $notification, $log, $entity, $user): JsonResponse
+    {
+        if (!$user instanceof \App\Models\User || $this->denyForeignRecord($entity, 'visit') !== null) {
+            return response()->json(['success' => false, 'message' => 'You do not have access to this visit.'], 403);
+        }
+
+        $visitType = match (true) {
+            $entity instanceof Booking => VisitFollowUp::VISIT_BOOKING,
+            $entity instanceof \App\Models\EventPurchase => VisitFollowUp::VISIT_EVENT_PURCHASE,
+            $entity instanceof \App\Models\EscapeRoomSession => VisitFollowUp::VISIT_ESCAPE_ROOM_GAME,
+            default => null,
+        };
+
+        $row = $visitType && VisitFollowUp::isAvailable()
+            ? VisitFollowUp::forVisit($visitType, (int) $entity->id)
+                ->where('kind', $notification->trigger_type === EmailNotification::TRIGGER_VISIT_FOLLOWUP ? VisitFollowUp::KIND_REVIEW : VisitFollowUp::KIND_THANKS)
+                ->where('recipient_email', strtolower(trim((string) $log->recipient_email)))
+                ->first()
+            : null;
+
+        if (!$row && $entity instanceof \App\Models\EscapeRoomSession) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This email carried an escape-room group photo. Resend it to the player from the escape-room game screen.',
+            ], 422);
+        }
+
+        if (!$row) {
+            return response()->json(['success' => false, 'message' => 'The follow-up for this email could not be found.'], 404);
+        }
+
+        try {
+            $row = app(VisitFollowUpService::class)->sendNow($row, $user);
+        } catch (\DomainException $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+        }
+
+        return response()->json([
+            'success' => $row->status === VisitFollowUp::STATUS_SENT,
+            'message' => $row->status === VisitFollowUp::STATUS_SENT
+                ? 'Email sent again.'
+                : ($row->error ?: 'The email could not be sent.'),
+        ], $row->status === VisitFollowUp::STATUS_SENT ? 200 : 422);
     }
 
     public function getDefaultKeys(): JsonResponse

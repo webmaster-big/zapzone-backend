@@ -1402,6 +1402,10 @@ class BookingController extends Controller
 
     public function update(Request $request, Booking $booking): JsonResponse
     {
+        if ($denied = $this->denyForeignRecord($booking, 'booking')) {
+            return $denied;
+        }
+
         $data = $request->all();
         foreach ($data as $key => $value) {
             if ($value === 'undefined' || $value === 'null') {
@@ -1489,6 +1493,12 @@ class BookingController extends Controller
         // who omitted it got a 422 with the booking already committed and NOTHING logged - worse
         // than logging without a reason. cancel() and updateLocation() already resolve up front.
         $changeReason = $this->resolveChangeReason($request, self::CHANGE_GUEST_VISIBLE);
+
+        if (($validated['status'] ?? null) === 'confirmed'
+            && array_key_exists('amount_paid', $validated)
+            && in_array($booking->status, ['checked-in', 'completed'], true)) {
+            unset($validated['status']);
+        }
 
         $slotFieldsTouched = array_intersect_key($validated, array_flip(['participants', 'booking_date', 'booking_time', 'package_id'])) !== []
             || (isset($validated['status']) && $booking->status === 'cancelled' && $validated['status'] !== 'cancelled');
@@ -1696,6 +1706,7 @@ class BookingController extends Controller
             $validated = array_merge($validated, $overlapOverride);
         }
 
+        $previousLocationId = (int) $booking->location_id;
         $originalValues = $booking->only([
             'status', 'payment_status', 'total_amount', 'amount_paid', 'discount_amount',
             'applied_fees', 'booking_date', 'booking_time', 'participants', 'duration', 'duration_unit',
@@ -1988,11 +1999,67 @@ class BookingController extends Controller
             ]);
         }
 
-        return response()->json([
+        if ((int) $booking->location_id !== $previousLocationId) {
+            try {
+                app(\App\Services\VisitFollowUpService::class)->visitMoved(\App\Models\VisitFollowUp::VISIT_BOOKING, (int) $booking->id, (int) $booking->location_id);
+            } catch (\Throwable $e) {
+                Log::warning('Booking follow-up emails could not follow the location change', ['booking_id' => $booking->id, 'error' => $e->getMessage()]);
+            }
+        }
+
+        $followUp = $this->followUpAfterStatusChange($booking, $originalValues['status'] ?? null, $request);
+
+        return response()->json(array_filter([
             'success' => true,
             'message' => 'Booking updated successfully',
             'data' => $booking,
-        ]);
+            'follow_up' => $followUp,
+        ], fn ($value) => $value !== null));
+    }
+
+    private function followUpAfterRestore(Booking $booking): void
+    {
+        try {
+            if ($booking->status !== 'completed' || !request()->user() instanceof User || $this->denyForeignRecord($booking, 'booking') !== null) {
+                return;
+            }
+
+            app(\App\Services\VisitFollowUpService::class)->visitRestored(\App\Models\VisitFollowUp::VISIT_BOOKING, (int) $booking->id, request()->user());
+        } catch (\Throwable $e) {
+            Log::warning('Booking follow-up emails could not be restored', ['booking_id' => $booking->id, 'error' => $e->getMessage()]);
+        }
+    }
+
+    private function followUpAfterStatusChange(Booking $booking, ?string $previousStatus, ?Request $request = null): ?array
+    {
+        try {
+            $user = ($request ?? request())->user();
+
+            if (!$user instanceof User || $this->denyForeignRecord($booking, 'booking') !== null) {
+                return null;
+            }
+
+            $followUps = app(\App\Services\VisitFollowUpService::class);
+
+            if ($booking->status === 'completed' && $previousStatus !== 'completed') {
+                return $followUps->bookingCompleted($booking, $user);
+            }
+
+            if ($previousStatus === 'completed' && $booking->status !== 'completed') {
+                $followUps->visitReopened(\App\Models\VisitFollowUp::VISIT_BOOKING, (int) $booking->id, $user);
+            }
+
+            if ($previousStatus === 'completed' && $booking->status === 'completed') {
+                return $followUps->bookerChanged($booking, $user);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('Booking follow-up emails could not be handled', [
+                'booking_id' => $booking->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        return null;
     }
 
     public function cancel(Request $request, Booking $booking): JsonResponse
@@ -2177,6 +2244,10 @@ class BookingController extends Controller
 
     public function complete(Booking $booking): JsonResponse
     {
+        if ($denied = $this->denyForeignRecord($booking, 'booking')) {
+            return $denied;
+        }
+
         if ($booking->status !== 'checked-in') {
             return response()->json([
                 'success' => false,
@@ -2224,11 +2295,14 @@ class BookingController extends Controller
             reason: $changeReason
         );
 
-        return response()->json([
+        $followUp = $this->followUpAfterStatusChange($booking, $previousStatus);
+
+        return response()->json(array_filter([
             'success' => true,
             'message' => 'Booking completed successfully',
             'data' => $booking,
-        ]);
+            'follow_up' => $followUp,
+        ], fn ($value) => $value !== null));
     }
 
     public function updateLocation(Request $request, Booking $booking): JsonResponse
@@ -2377,6 +2451,12 @@ class BookingController extends Controller
             ], 409);
         }
 
+        try {
+            app(\App\Services\VisitFollowUpService::class)->visitMoved(\App\Models\VisitFollowUp::VISIT_BOOKING, (int) $booking->id, $newLocationId);
+        } catch (\Throwable $e) {
+            Log::warning('Booking follow-up emails could not follow the location change', ['booking_id' => $booking->id, 'error' => $e->getMessage()]);
+        }
+
         ActivityLog::log(
             'booking.location_changed',
             'booking',
@@ -2407,6 +2487,10 @@ class BookingController extends Controller
 
     public function updateStatus(Request $request, Booking $booking): JsonResponse
     {
+        if ($denied = $this->denyForeignRecord($booking, 'booking')) {
+            return $denied;
+        }
+
         $validated = $request->validate([
             'status' => ['required', Rule::in(['pending', 'confirmed', 'checked-in', 'completed', 'cancelled'])],
         ]);
@@ -2569,11 +2653,14 @@ class BookingController extends Controller
             reason: $changeReason,
         );
 
-        return response()->json([
+        $followUp = $this->followUpAfterStatusChange($booking, $previousStatus, $request);
+
+        return response()->json(array_filter([
             'success' => true,
             'message' => 'Booking status updated successfully',
             'data' => $booking,
-        ]);
+            'follow_up' => $followUp,
+        ], fn ($value) => $value !== null));
     }
 
         public function updatePaymentStatus(Request $request, Booking $booking): JsonResponse
@@ -3665,6 +3752,7 @@ class BookingController extends Controller
 
         $booking->restore();
         $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
+        $this->followUpAfterRestore($booking);
 
         try {
             $gcalService = new GoogleCalendarService($booking->location_id);
@@ -3784,6 +3872,7 @@ class BookingController extends Controller
             }
 
             $booking->restore();
+            $this->followUpAfterRestore($booking);
             $restoredCount++;
 
             try {

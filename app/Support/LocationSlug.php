@@ -25,6 +25,7 @@ class LocationSlug
         'edit-attraction',
         'events',
         'fee-supports',
+        'feedback',
         'home',
         'location-change-requests',
         'login',

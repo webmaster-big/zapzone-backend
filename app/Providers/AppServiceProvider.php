@@ -114,6 +114,8 @@ class AppServiceProvider extends ServiceProvider
         // Image streaming: a rotating slideshow plus several phones downloading at once.
         RateLimiter::for('photo-media', fn (Request $request) => Limit::perMinute(1200)->by($key('media', $request)));
 
+        RateLimiter::for('visit-feedback', fn (Request $request) => Limit::perMinute(30)->by('visit-feedback:' . $request->ip()));
+
         RateLimiter::for('escape-room-kiosk', fn (Request $request) => Limit::perMinute(240)->by($key('escape-kiosk', $request)));
         RateLimiter::for('escape-room-submit', fn (Request $request) => Limit::perMinute(60)->by($key('escape-submit', $request)));
 

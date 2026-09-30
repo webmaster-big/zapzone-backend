@@ -69,6 +69,19 @@ class GmailApiService
                 $htmlBody = $this->processInlineImages($htmlBody, $inlineImages);
             }
 
+            foreach ($attachments as $index => $attachment) {
+                if (isset($attachment['data'], $attachment['content_id'])) {
+                    $inlineImages[] = [
+                        'content_id' => $attachment['content_id'],
+                        'data' => $attachment['data'],
+                        'mime_type' => $attachment['mime_type'] ?? 'image/jpeg',
+                        'filename' => $attachment['filename'] ?? 'image.jpg',
+                    ];
+                    unset($attachments[$index]);
+                }
+            }
+            $attachments = array_values($attachments);
+
             $message = $this->createMessage(
                 config('gmail.sender_email', 'bookings@zap-zone.com'),
                 $to,
@@ -196,10 +209,17 @@ class GmailApiService
         $to = $headerSafe($to);
         $subject = $headerSafe($subject);
 
-        $emailContent = "From: {$fromName} <{$from}>\r\n";
+        $encoded = static fn (string $value) => preg_match('/[^\x20-\x7E]/', $value)
+            ? mb_encode_mimeheader($value, 'UTF-8', 'B', "\r\n ")
+            : $value;
+        $displayName = preg_match('/[^\x20-\x7E]/', $fromName)
+            ? $encoded($fromName)
+            : (preg_match('/[()<>\[\]:;@\\\\,."]/', $fromName) ? '"' . addcslashes($fromName, '"\\') . '"' : $fromName);
+
+        $emailContent = "From: {$displayName} <{$from}>\r\n";
         $emailContent .= "To: {$to}\r\n";
         $emailContent .= "Reply-To: {$from}\r\n";
-        $emailContent .= "Subject: {$subject}\r\n";
+        $emailContent .= "Subject: " . $encoded($subject) . "\r\n";
 
         foreach ($extraHeaders as $headerName => $headerValue) {
             $headerName = $headerSafe($headerName);

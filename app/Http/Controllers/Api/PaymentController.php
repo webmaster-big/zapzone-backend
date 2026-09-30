@@ -2344,7 +2344,7 @@ class PaymentController extends Controller
                                     'payment_status' => $totalPaid >= $payable->total_amount ? 'paid' : 'partial',
                                     'payment_method' => 'authorize.net',
                                     'transaction_id' => $transactionId,
-                                    'status' => 'confirmed',
+                                    'status' => in_array($payable->status, ['checked-in', 'completed'], true) ? $payable->status : 'confirmed',
                                 ]);
 
                                 try {
@@ -2368,7 +2368,7 @@ class PaymentController extends Controller
                                     'amount_paid' => $totalPaid,
                                     'payment_method' => 'authorize.net',
                                     'transaction_id' => $transactionId,
-                                    'status' => AttractionPurchase::STATUS_CONFIRMED,
+                                    'status' => $payable->status === AttractionPurchase::STATUS_CHECKED_IN ? $payable->status : AttractionPurchase::STATUS_CONFIRMED,
                                 ]);
                             }
                         } elseif ($payment->payable_type === Payment::TYPE_EVENT_PURCHASE) {
@@ -2383,7 +2383,7 @@ class PaymentController extends Controller
                                     'payment_method' => 'authorize.net',
                                     'transaction_id' => $transactionId,
                                     'payment_status' => $totalPaid >= $payable->total_amount ? 'paid' : 'partial',
-                                    'status' => 'confirmed',
+                                    'status' => in_array($payable->status, ['checked-in', 'completed'], true) ? $payable->status : 'confirmed',
                                 ]);
                             }
                         } elseif ($payment->payable_type === Payment::TYPE_TICKET_ORDER) {

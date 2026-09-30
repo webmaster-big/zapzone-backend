@@ -294,9 +294,18 @@ class EscapeRoomWorkflowTest extends TestCase
     {
         return collect(app('mail.manager')->mailer('array')->getSymfonyTransport()->messages())
             ->map(fn ($sent) => $sent->getOriginalMessage())
-            ->filter(fn ($email) => str_contains((string) $email->getSubject(), 'group photo'))
+            ->filter(fn ($email) => str_contains((string) $email->getSubject(), 'Thanks for playing'))
             ->values()
             ->all();
+    }
+
+    private function thanksForPlaying(): \App\Models\EmailNotification
+    {
+        \Database\Seeders\DefaultEmailNotificationSeeder::seedForCompany($this->company);
+
+        return \App\Models\EmailNotification::where('company_id', $this->company->id)
+            ->where('default_key', \App\Models\EmailNotification::DEFAULT_THANKS_FOR_PLAYING)
+            ->firstOrFail();
     }
 
     private function recipients(): array
@@ -1189,29 +1198,12 @@ class EscapeRoomWorkflowTest extends TestCase
 
     public function test_the_escape_room_email_always_shows_the_groups_time(): void
     {
-        $manager = $this->makeUser('location_manager', $this->location, 'manager');
-        $template = PhotoMessageTemplate::forCompany($this->company->id, PhotoMessageTemplate::KIND_ESCAPE_ROOM);
+        $notification = $this->thanksForPlaying();
 
-        $this->actingAs($manager, 'sanctum')->putJson("/api/photo-templates/{$template->id}", [
-            'email_subject' => 'Your group photo',
-            'email_body' => '<p>Hi {{first_name}}</p>',
-            'sms_body' => 'Photo',
-        ])->assertStatus(422)->assertJsonValidationErrors(['email_body']);
-
-        $this->actingAs($manager, 'sanctum')->putJson("/api/photo-templates/{$template->id}", [
-            'email_subject' => 'Your group photo',
-            'email_body' => '<p>Hi {{first_name}}, your time was {{completion_time}}.</p>',
-            'sms_body' => 'Photo',
+        $this->actingAs($this->admin, 'sanctum')->putJson("/api/email-notifications/{$notification->id}", [
+            'subject' => 'Thanks for playing {{activity_name}}',
+            'body' => '<p>Hi {{customer_first_name}}</p>',
         ])->assertOk();
-
-        $standard = PhotoMessageTemplate::forCompany($this->company->id, PhotoMessageTemplate::KIND_IMMEDIATE);
-        $this->actingAs($manager, 'sanctum')->putJson("/api/photo-templates/{$standard->id}", [
-            'email_subject' => 'Your photos',
-            'email_body' => '<p>Hi {{first_name}}</p>',
-            'sms_body' => 'Photo',
-        ])->assertOk();
-
-        PhotoMessageTemplate::whereKey($template->id)->update(['email_body' => '<p>Hi {{first_name}}</p>']);
 
         $this->signed($this->morgue, '14:00', 'Avery', 'avery@example.test');
         $game = $this->openGame($this->morgue, '14:00');
@@ -2891,8 +2883,7 @@ class EscapeRoomWorkflowTest extends TestCase
 
     public function test_a_custom_wording_that_lost_the_time_gets_it_back_before_the_sign_off(): void
     {
-        PhotoMessageTemplate::forCompany($this->company->id, PhotoMessageTemplate::KIND_ESCAPE_ROOM)
-            ->update(['email_body' => '<p>Hi {{first_name}}</p><p>Thanks for coming!</p><p>The Team</p>']);
+        $this->thanksForPlaying()->update(['body' => '<p>Hi {{first_name}}</p><p>Thanks for coming!</p><p>The Team</p>']);
 
         $this->signed($this->morgue, '14:00', 'Avery', 'avery@example.test');
         $game = $this->openGame($this->morgue, '14:00');
@@ -3374,10 +3365,11 @@ class EscapeRoomWorkflowTest extends TestCase
         $this->assertNotNull($avery->fresh()->checked_in_at);
         $this->assertSame($game['id'], $avery->fresh()->escape_room_session_id);
         $this->assertTrue($detail['completed_without_photo']);
-        $this->assertFalse($detail['can_send_new']);
+        $this->assertTrue($detail['can_send_new']);
+        $this->assertSame(1, $detail['counts']['new_players']);
         $this->assertFalse($detail['can_resend']);
         $this->assertFalse($detail['can_complete_without_photo']);
-        $this->assertSame('The result was recorded without a group photo, so there is no photo to send.', $detail['send_blocker']);
+        $this->assertNull($detail['send_blocker']);
         $this->assertSame('finished', $this->daySlots('The Morgue')['14:00']['status']);
         $this->assertDatabaseHas('activity_logs', ['action' => 'escape_room_session_completed_without_photo', 'entity_id' => $game['id']]);
 

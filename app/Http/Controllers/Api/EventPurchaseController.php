@@ -622,6 +622,10 @@ class EventPurchaseController extends Controller
 
     public function update(Request $request, EventPurchase $eventPurchase): JsonResponse
     {
+        if ($denied = $this->denyForeignRecord($eventPurchase, 'purchase')) {
+            return $denied;
+        }
+
         try {
             $validated = $request->validate([
                 'guest_name' => 'nullable|string|max:255',
@@ -820,11 +824,14 @@ class EventPurchaseController extends Controller
                 $eventPurchase->addOns()->sync($syncData);
             }
 
-            return response()->json([
+            $followUp = $this->followUpAfterStatusChange($eventPurchase->fresh(), $originalStatus, $request);
+
+            return response()->json(array_filter([
                 'success' => true,
                 'message' => 'Event purchase updated successfully',
                 'data' => $eventPurchase->fresh()->load(['event:id,name', 'customer:id,first_name,last_name,email', 'location:id,name', 'addOns']),
-            ]);
+                'follow_up' => $followUp,
+            ], fn ($value) => $value !== null));
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json(['message' => 'Validation failed', 'errors' => $e->errors()], 422);
         } catch (\RuntimeException $e) {
@@ -932,8 +939,12 @@ class EventPurchaseController extends Controller
         }
     }
 
-    public function cancel(EventPurchase $eventPurchase): JsonResponse
+    public function cancel(Request $request, EventPurchase $eventPurchase): JsonResponse
     {
+        if ($denied = $this->denyForeignRecord($eventPurchase, 'purchase')) {
+            return $denied;
+        }
+
         if ($eventPurchase->ticket_order_id !== null) {
             return response()->json([
                 'success' => false,
@@ -942,11 +953,14 @@ class EventPurchaseController extends Controller
         }
 
         $wasCancelled = $eventPurchase->status === 'cancelled';
+        $previousStatus = $eventPurchase->status;
 
         $eventPurchase->update([
             'status' => 'cancelled',
             'cancelled_at' => now(),
         ]);
+
+        $this->followUpAfterStatusChange($eventPurchase, $previousStatus, $request);
 
         if (!$wasCancelled) {
             app(MembershipBenefitService::class)->reverseForRedeemable($eventPurchase, 'purchase_cancelled');
@@ -977,6 +991,10 @@ class EventPurchaseController extends Controller
 
     public function updateStatus(Request $request, EventPurchase $eventPurchase): JsonResponse
     {
+        if ($denied = $this->denyForeignRecord($eventPurchase, 'purchase')) {
+            return $denied;
+        }
+
         if ($eventPurchase->ticket_order_id !== null) {
             return response()->json([
                 'success' => false,
@@ -1049,7 +1067,63 @@ class EventPurchaseController extends Controller
             }
         }
 
-        return response()->json($eventPurchase->fresh());
+        $followUp = $this->followUpAfterStatusChange($eventPurchase->fresh(), $originalStatus, $request);
+        $fresh = $eventPurchase->fresh();
+
+        if ($fresh && $followUp !== null) {
+            $fresh->setAttribute('follow_up', $followUp);
+        }
+
+        return response()->json($fresh);
+    }
+
+    private function followUpAfterRestore(EventPurchase $purchase): void
+    {
+        try {
+            if ($purchase->status !== 'completed' || !request()->user() instanceof \App\Models\User || $this->denyForeignRecord($purchase, 'purchase') !== null) {
+                return;
+            }
+
+            app(\App\Services\VisitFollowUpService::class)->visitRestored(\App\Models\VisitFollowUp::VISIT_EVENT_PURCHASE, (int) $purchase->id, request()->user());
+        } catch (\Throwable $e) {
+            Log::warning('Event purchase follow-up emails could not be restored', ['event_purchase_id' => $purchase->id, 'error' => $e->getMessage()]);
+        }
+    }
+
+    private function followUpAfterStatusChange(?EventPurchase $purchase, ?string $previousStatus, Request $request): ?array
+    {
+        if (!$purchase) {
+            return null;
+        }
+
+        try {
+            $user = $request->user();
+
+            if (!$user instanceof \App\Models\User || $this->denyForeignRecord($purchase, 'purchase') !== null) {
+                return null;
+            }
+
+            $followUps = app(\App\Services\VisitFollowUpService::class);
+
+            if ($purchase->status === 'completed' && $previousStatus !== 'completed') {
+                return $followUps->eventPurchaseCompleted($purchase, $user);
+            }
+
+            if ($previousStatus === 'completed' && $purchase->status !== 'completed') {
+                $followUps->visitReopened(\App\Models\VisitFollowUp::VISIT_EVENT_PURCHASE, (int) $purchase->id, $user);
+            }
+
+            if ($previousStatus === 'completed' && $purchase->status === 'completed') {
+                return $followUps->bookerChanged($purchase, $user);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('Event purchase follow-up emails could not be handled', [
+                'event_purchase_id' => $purchase->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        return null;
     }
 
     public function verifyByReference(Request $request, string $reference): JsonResponse
@@ -1372,6 +1446,7 @@ class EventPurchaseController extends Controller
         }
 
         $purchase->restore();
+        $this->followUpAfterRestore($purchase);
         $purchase->load(['event', 'customer', 'location:id,name', 'addOns']);
 
         ActivityLog::log(
@@ -1418,6 +1493,7 @@ class EventPurchaseController extends Controller
             }
 
             $purchase->restore();
+            $this->followUpAfterRestore($purchase);
             $restoredCount++;
         }
 

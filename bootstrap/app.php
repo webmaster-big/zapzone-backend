@@ -49,6 +49,8 @@ return Application::configure(basePath: dirname(__DIR__))
 
         // Cancel unpaid pay-on-arrival orders whose last visit day passed over a week ago.
         $schedule->command('orders:expire-stale')->dailyAt('04:45')->withoutOverlapping(30);
+
+        $schedule->command('visits:send-follow-ups')->everyFifteenMinutes()->withoutOverlapping(10);
     })
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->use([

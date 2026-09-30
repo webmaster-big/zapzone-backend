@@ -14,8 +14,10 @@ use App\Models\Photo;
 use App\Models\PhotoDelivery;
 use App\Models\PhotoSession;
 use App\Models\User;
+use App\Models\VisitFollowUp;
 use App\Models\Waiver;
 use App\Models\WaiverTemplate;
+use App\Support\CompletedVisit;
 use App\Support\EscapeRoomException;
 use App\Support\OperatingDay;
 use Illuminate\Database\QueryException;
@@ -575,6 +577,8 @@ class EscapeRoomSessionService
                 continue;
             }
 
+            $this->followUpPlayers(fn (VisitFollowUpService $followUps) => $followUps->waiverLeftGame((int) $from, (int) $waiver->id));
+
             ActivityLog::log(
                 'escape_room_waiver_followed_booking',
                 'photos',
@@ -621,6 +625,7 @@ class EscapeRoomSessionService
             }
 
             $released++;
+            $this->followUpPlayers(fn (VisitFollowUpService $followUps) => $followUps->waiverLeftGame((int) $from, (int) $waiver->id));
 
             ActivityLog::log(
                 'escape_room_waiver_released_deleted_booking',
@@ -639,9 +644,17 @@ class EscapeRoomSessionService
 
     public function wasSent(Waiver $waiver): bool
     {
-        return PhotoDelivery::where('waiver_id', $waiver->id)
+        if (PhotoDelivery::where('waiver_id', $waiver->id)
             ->where('kind', PhotoDelivery::KIND_ESCAPE_ROOM)
             ->where('status', '!=', PhotoDelivery::STATUS_CANCELED)
+            ->exists()) {
+            return true;
+        }
+
+        return VisitFollowUp::isAvailable() && VisitFollowUp::where('visit_type', VisitFollowUp::VISIT_ESCAPE_ROOM_GAME)
+            ->where('waiver_id', $waiver->id)
+            ->where('kind', VisitFollowUp::KIND_THANKS)
+            ->whereIn('status', [VisitFollowUp::STATUS_SENT, VisitFollowUp::STATUS_SENDING])
             ->exists();
     }
 
@@ -818,7 +831,7 @@ class EscapeRoomSessionService
         });
     }
 
-    public function complete(EscapeRoomSession $session, bool $escaped, ?int $seconds, User $user, bool $withoutPhoto = false): EscapeRoomSession
+    public function complete(EscapeRoomSession $session, bool $escaped, ?int $seconds, User $user, bool $withoutPhoto = false, bool $emailPlayers = false): EscapeRoomSession
     {
         if ($session->isCompleted()) {
             throw new EscapeRoomException('This game is already complete and its photo has been sent.', 409);
@@ -829,10 +842,21 @@ class EscapeRoomSessionService
         }
 
         if ($withoutPhoto) {
-            return $this->completeWithoutPhoto($session, $escaped, $seconds, $user);
+            if ($emailPlayers) {
+                $this->assertFollowUpEmailIsOn($session, 'Untick "Email the players" to record the result only.');
+            }
+
+            return $this->completeWithoutPhoto($session, $escaped, $seconds, $user, $emailPlayers);
+        }
+
+        $session->loadMissing('location');
+
+        if ($session->location && $session->dateKey() > $this->today($session->location)) {
+            throw new EscapeRoomException('This game is on a later day. Complete it after it has been played.');
         }
 
         $photoSession = $this->readyPhotoSession($session);
+        $this->assertThanksEmailIsOn($session, 'Switch it on there, or record the result only.');
 
         if (!$this->deliveries->emailAvailable()) {
             throw new EscapeRoomException('Email is not switched on for this site yet, so the photo cannot be sent. Ask your administrator to enable it.');
@@ -888,6 +912,7 @@ class EscapeRoomSessionService
         $this->allowLongSend();
         $sent = $this->deliveries->sendEscapeRoomDeliveries($photoSession->fresh(), $result['deliveries']);
         $session = $session->fresh(['package:id,name']);
+        $this->followUpPlayers(fn (VisitFollowUpService $followUps) => $followUps->gameCompleted($session, $this->waiversById($result['waiver_ids']), $user));
 
         ActivityLog::log(
             'escape_room_session_completed',
@@ -918,7 +943,7 @@ class EscapeRoomSessionService
         return $session;
     }
 
-    protected function completeWithoutPhoto(EscapeRoomSession $session, bool $escaped, ?int $seconds, User $user): EscapeRoomSession
+    protected function completeWithoutPhoto(EscapeRoomSession $session, bool $escaped, ?int $seconds, User $user, bool $emailPlayers = false): EscapeRoomSession
     {
         $waiverIds = DB::transaction(function () use ($session, $escaped, $seconds, $user) {
             $locked = EscapeRoomSession::whereKey($session->id)->lockForUpdate()->first();
@@ -958,11 +983,17 @@ class EscapeRoomSessionService
 
         $session = $session->fresh(['package:id,name']);
 
+        if ($emailPlayers) {
+            $this->followUpPlayers(fn (VisitFollowUpService $followUps) => $followUps->gameCompleted($session, $this->waiversById($waiverIds), $user, true));
+        }
+
         ActivityLog::log(
             'escape_room_session_completed_without_photo',
             'photos',
             sprintf(
-                'Recorded the result of %s at %s (%s) without a group photo. No email was sent.',
+                $emailPlayers
+                    ? 'Recorded the result of %s at %s (%s) without a group photo and started the players\' follow-up emails.'
+                    : 'Recorded the result of %s at %s (%s) without a group photo. No email was sent.',
                 $session->package?->name ?? 'an escape room',
                 $this->timeLabel($session->timeKey()),
                 $session->completionLabel()
@@ -975,16 +1006,122 @@ class EscapeRoomSessionService
                 'waiver_ids' => $waiverIds,
                 'escaped' => $escaped,
                 'completion_seconds' => $escaped ? $seconds : null,
+                'emailed_players' => $emailPlayers,
             ]
         );
 
         return $session;
     }
 
+    public function assertThanksEmailIsOn(EscapeRoomSession $session, string $hint): void
+    {
+        $visit = CompletedVisit::fromGame($session);
+
+        if ($visit && app(VisitFollowUpService::class)->thanksEmailFor($visit) === null) {
+            throw new EscapeRoomException('The Thanks for Playing email is switched off in Email Notifications, so nothing can be emailed to the players. ' . $hint);
+        }
+    }
+
+    public function assertFollowUpEmailIsOn(EscapeRoomSession $session, string $hint): void
+    {
+        $visit = CompletedVisit::fromGame($session);
+        $followUps = app(VisitFollowUpService::class);
+
+        if (!$followUps->isAvailable()) {
+            throw new EscapeRoomException('Follow-up emails are not set up on this site yet, so nothing can be emailed to the players. ' . $hint);
+        }
+
+        if ($visit && $followUps->thanksEmailFor($visit) === null && $followUps->reviewEmailFor($visit) === null) {
+            throw new EscapeRoomException('The Thanks for Playing and Review Request emails are both switched off in Email Notifications, so nothing can be emailed to the players. ' . $hint);
+        }
+    }
+
+    protected function thanksEmailIsOn(EscapeRoomSession $session): bool
+    {
+        $visit = CompletedVisit::fromGame($session);
+
+        return !$visit || app(VisitFollowUpService::class)->thanksEmailFor($visit) !== null;
+    }
+
+    protected function completedWithoutPhoto(EscapeRoomSession $session): bool
+    {
+        if (!$session->isCompleted()) {
+            return false;
+        }
+
+        return !$session->photo_session_id || !PhotoDelivery::where('photo_session_id', $session->photo_session_id)
+            ->where('kind', PhotoDelivery::KIND_ESCAPE_ROOM)
+            ->exists();
+    }
+
+    public function emailPlayersWithoutPhoto(EscapeRoomSession $session, User $user): EscapeRoomSession
+    {
+        $this->assertFollowUpEmailIsOn($session, '');
+
+        if (!$this->deliveries->emailAvailable()) {
+            throw new EscapeRoomException('Email is not switched on for this site yet, so nothing can be emailed. Ask your administrator to enable it.');
+        }
+
+        $waiverIds = DB::transaction(function () use ($session, $user) {
+            $locked = EscapeRoomSession::whereKey($session->id)->lockForUpdate()->first();
+            $rows = VisitFollowUp::forVisit(VisitFollowUp::VISIT_ESCAPE_ROOM_GAME, (int) $session->id)->get(['waiver_id', 'recipient_email']);
+            $contacted = $rows->pluck('waiver_id')->filter()->map(fn ($id) => (int) $id)->all();
+            $contactedEmails = $rows->pluck('recipient_email')->all();
+            $players = $this->membership($locked)['included']
+                ->filter(fn (Waiver $waiver) => $this->deliveries->validEmail($waiver->adult_email)
+                    && !in_array((int) $waiver->id, $contacted, true)
+                    && !in_array(\App\Models\FollowUpOptOut::normalize($waiver->adult_email), $contactedEmails, true))
+                ->unique(fn (Waiver $waiver) => \App\Models\FollowUpOptOut::normalize($waiver->adult_email))
+                ->values();
+
+            if ($players->isEmpty()) {
+                throw new EscapeRoomException('Every player in this game with an email address has already been emailed.', 409);
+            }
+
+            $this->pinToGame($players, $locked);
+            $this->checkInPlayers($players, $user);
+
+            return $players->pluck('id')->all();
+        });
+
+        $this->followUpPlayers(fn (VisitFollowUpService $followUps) => $followUps->gameCompleted($session, $this->waiversById($waiverIds), $user, true));
+
+        ActivityLog::log(
+            'escape_room_session_emailed_without_photo',
+            'photos',
+            sprintf('Started the follow-up emails for %d more player(s) of game #%d, which was recorded without a group photo', count($waiverIds), $session->id),
+            $user->id,
+            $session->location_id,
+            'escape_room_session',
+            $session->id,
+            ['waiver_ids' => $waiverIds]
+        );
+
+        return $session->fresh();
+    }
+
+    protected function waiversById(array $ids): Collection
+    {
+        return $ids === [] ? collect() : Waiver::withoutHeavyColumns()->whereIn('id', $ids)->get();
+    }
+
+    protected function followUpPlayers(callable $action): void
+    {
+        try {
+            $action(app(VisitFollowUpService::class));
+        } catch (\Throwable $e) {
+            Log::warning('Escape-room follow-up emails could not be scheduled', ['error' => $e->getMessage()]);
+        }
+    }
+
     public function sendToNewPlayers(EscapeRoomSession $session, User $user): EscapeRoomSession
     {
         if (!$session->isCompleted()) {
             throw new EscapeRoomException('Complete the game first. That sends the photo to everyone who has signed.');
+        }
+
+        if ($this->completedWithoutPhoto($session)) {
+            return $this->emailPlayersWithoutPhoto($session, $user);
         }
 
         $photoSession = $this->readyPhotoSession($session);
@@ -996,6 +1133,8 @@ class EscapeRoomSessionService
         if (!$this->deliveries->emailAvailable()) {
             throw new EscapeRoomException('Email is not switched on for this site yet, so the photo cannot be sent. Ask your administrator to enable it.');
         }
+
+        $this->assertThanksEmailIsOn($session, 'Switch it on there to send the photo.');
 
         $stuck = $this->claimStuckDeliveries($photoSession);
 
@@ -1023,6 +1162,7 @@ class EscapeRoomSessionService
 
         $this->allowLongSend();
         $sent = $this->deliveries->sendEscapeRoomDeliveries($photoSession->fresh(), array_merge($stuck, $result['deliveries']));
+        $this->followUpPlayers(fn (VisitFollowUpService $followUps) => $followUps->gamePlayersAdded($session, $this->waiversById($result['waiver_ids']), $user));
 
         ActivityLog::log(
             'escape_room_session_sent_to_new',
@@ -1160,6 +1300,8 @@ class EscapeRoomSessionService
             throw new EscapeRoomException('Email is not switched on for this site yet, so the photo cannot be sent. Ask your administrator to enable it.');
         }
 
+        $this->assertThanksEmailIsOn($session, 'Switch it on there to send the photo.');
+
         $lastSent = PhotoDelivery::where('photo_session_id', $photoSession->id)
             ->where('waiver_id', $waiver->id)
             ->where('kind', PhotoDelivery::KIND_ESCAPE_ROOM)
@@ -1200,6 +1342,7 @@ class EscapeRoomSessionService
 
         $this->allowLongSend();
         $this->deliveries->sendEscapeRoomDeliveries($photoSession->fresh(), [$delivery]);
+        $this->followUpPlayers(fn (VisitFollowUpService $followUps) => $followUps->gamePlayerRedirected($session, $waiver, $destination, $user));
 
         ActivityLog::log(
             'escape_room_photo_resent',
@@ -1272,7 +1415,7 @@ class EscapeRoomSessionService
         }
     }
 
-    public function bookingGameSummary(Booking $booking): ?array
+    public function bookingGameSummary(Booking $booking, bool $withReviews = true): ?array
     {
         if (!$this->isEnabled()) {
             return null;
@@ -1319,6 +1462,7 @@ class EscapeRoomSessionService
             'sent' => count($this->sentWaiverIds($photoSession)),
             'booking_cancelled' => $booking->status === 'cancelled',
             'kiosk_url' => $this->gameCheckInUrl($booking->location, (int) $room->id, $date, $time),
+            'reviews' => $session && $withReviews ? $this->reviewCounts((int) $session->id) : null,
         ];
     }
 
@@ -1409,6 +1553,8 @@ class EscapeRoomSessionService
             return $previous;
         });
 
+        $this->followUpPlayers(fn (VisitFollowUpService $followUps) => $followUps->waiverLeftGame((int) $session->id, (int) $waiver->id));
+
         ActivityLog::log(
             'escape_room_waiver_removed',
             'photos',
@@ -1476,6 +1622,8 @@ class EscapeRoomSessionService
 
             return $previous;
         });
+
+        $this->followUpPlayers(fn (VisitFollowUpService $followUps) => $followUps->waiverLeftGame((int) $from->id, (int) $waiver->id));
 
         ActivityLog::log(
             'escape_room_waiver_moved',
@@ -1870,8 +2018,12 @@ class EscapeRoomSessionService
             ->get();
 
         $bookingRefs = $bookings->pluck('reference_number', 'id');
+        $followUp = $this->followUpSummary($session);
+        $thanksOn = (bool) ($followUp['thanks_email']['active'] ?? true);
+        $reviewOn = (bool) ($followUp['review_email']['active'] ?? false);
+        $followUpsReady = (bool) ($followUp['available'] ?? false) && ($thanksOn || $reviewOn);
 
-        $present = function (Waiver $waiver) use ($sentIds, $deliveriesByWaiver, $bookingRefs) {
+        $present = function (Waiver $waiver) use ($sentIds, $deliveriesByWaiver, $bookingRefs, $followUp) {
             $delivery = $deliveriesByWaiver->get($waiver->id)?->last();
             $hasEmail = $this->deliveries->validEmail($waiver->adult_email);
 
@@ -1889,7 +2041,8 @@ class EscapeRoomSessionService
                     : null,
                 'is_sign_in' => $waiver->isEscapeRoomSignIn(),
                 'signed_at' => $waiver->submitted_at?->toIso8601String(),
-                'sent' => in_array((int) $waiver->id, $sentIds, true),
+                'sent' => in_array((int) $waiver->id, $sentIds, true)
+                    || in_array($followUp['thanks_by_waiver'][$waiver->id]['status'] ?? null, [VisitFollowUp::STATUS_SENT, VisitFollowUp::STATUS_SENDING], true),
                 'delivery' => $delivery ? [
                     'id' => $delivery->id,
                     'status' => $delivery->status,
@@ -1899,12 +2052,25 @@ class EscapeRoomSessionService
                     'error' => $delivery->error,
                 ] : null,
                 'excluded_reason' => $waiver->getAttribute('escape_room_excluded_reason'),
+                'thanks_email' => $followUp['thanks_by_waiver'][$waiver->id]
+                    ?? ($hasEmail ? $followUp['thanks_by_email'][\App\Models\FollowUpOptOut::normalize($waiver->adult_email)] ?? null : null),
+                'review' => $followUp['reviews_by_waiver'][$waiver->id]
+                    ?? ($hasEmail ? $followUp['reviews_by_email'][\App\Models\FollowUpOptOut::normalize($waiver->adult_email)] ?? null : null),
             ];
         };
 
         $included = $membership['included']->map($present)->values();
         $excluded = $membership['excluded']->map($present)->values();
-        $newPlayers = $included->filter(fn ($row) => !$row['sent'] && $row['has_email'])->count();
+        $completedWithoutPhoto = $session->isCompleted() && $deliveriesByWaiver->isEmpty();
+        $newPlayers = $completedWithoutPhoto
+            ? $membership['included']
+                ->filter(fn (Waiver $waiver) => $this->deliveries->validEmail($waiver->adult_email))
+                ->reject(fn (Waiver $waiver) => isset($followUp['thanks_by_waiver'][$waiver->id]) || isset($followUp['reviews_by_waiver'][$waiver->id])
+                    || isset($followUp['thanks_by_email'][\App\Models\FollowUpOptOut::normalize($waiver->adult_email)])
+                    || isset($followUp['reviews_by_email'][\App\Models\FollowUpOptOut::normalize($waiver->adult_email)]))
+                ->unique(fn (Waiver $waiver) => \App\Models\FollowUpOptOut::normalize($waiver->adult_email))
+                ->count()
+            : $included->filter(fn ($row) => !$row['sent'] && $row['has_email'])->count();
         $primaryDeliveries = $deliveriesByWaiver->flatten()
             ->whereNull('duplicate_of_id')
             ->where('status', '!=', PhotoDelivery::STATUS_CANCELED)
@@ -1918,14 +2084,17 @@ class EscapeRoomSessionService
             && $photoSession->accessIsActive()
             && $photoSession->photos()->ready()->exists();
         $sendBlocker = null;
-        $completedWithoutPhoto = $session->isCompleted() && $deliveriesByWaiver->isEmpty();
 
         if ($completedWithoutPhoto) {
-            $sendBlocker = 'The result was recorded without a group photo, so there is no photo to send.';
+            $sendBlocker = !$followUpsReady
+                ? 'The result was recorded without a group photo, and the follow-up emails are switched off in Email Notifications.'
+                : null;
         } elseif ($session->isCompleted() && !$photoAvailable) {
             $sendBlocker = $photoSession && $photoSession->purged_at === null && $photoSession->photos()->ready()->exists()
                 ? 'The photo link for this game has expired, so the photo cannot be sent to more players.'
                 : "This game's photo has been removed, so it cannot be sent to more players.";
+        } elseif ($session->isCompleted() && !$thanksOn) {
+            $sendBlocker = 'The Thanks for Playing email is switched off in Email Notifications, so the photo cannot be sent to more players or resent.';
         }
 
         $blockers = [];
@@ -1939,6 +2108,12 @@ class EscapeRoomSessionService
         }
         if (!$this->deliveries->emailAvailable()) {
             $blockers[] = 'Email is not switched on for this site yet.';
+        }
+        if (!$thanksOn) {
+            $blockers[] = 'The Thanks for Playing email is switched off in Email Notifications.';
+        }
+        if ($location && $session->dateKey() > $this->today($location)) {
+            $blockers[] = 'This game is on a later day. Complete it after it has been played.';
         }
 
         return [
@@ -1990,13 +2165,18 @@ class EscapeRoomSessionService
                 'sending' => $primaryDeliveries->where('status', PhotoDelivery::STATUS_QUEUED)->count(),
                 'stuck' => $stuckCount,
                 'new_players' => $newPlayers,
+                'thanks_sent' => $included->filter(fn ($row) => ($row['thanks_email']['status'] ?? null) === VisitFollowUp::STATUS_SENT)->count(),
+                'thanks_failed' => $included->filter(fn ($row) => ($row['thanks_email']['status'] ?? null) === VisitFollowUp::STATUS_FAILED)->count(),
                 'excluded' => $excluded->count(),
                 'unsigned' => $pending->count(),
             ],
             'photo_session' => $photoSession ? $this->presentSession($photoSession) : null,
             'can_complete' => !$session->isCompleted() && $blockers === [],
-            'can_send_new' => $session->isCompleted() && !$completedWithoutPhoto && $photoAvailable && ($newPlayers > 0 || $stuckCount > 0) && $this->deliveries->emailAvailable(),
-            'can_resend' => $session->isCompleted() && !$completedWithoutPhoto && $photoAvailable && $this->deliveries->emailAvailable(),
+            'can_send_new' => $completedWithoutPhoto
+                ? $followUpsReady && $newPlayers > 0 && $this->deliveries->emailAvailable()
+                : $session->isCompleted() && $photoAvailable && ($newPlayers > 0 || $stuckCount > 0) && $this->deliveries->emailAvailable() && $thanksOn,
+            'can_email_players' => $followUpsReady && $this->deliveries->emailAvailable(),
+            'can_resend' => $session->isCompleted() && !$completedWithoutPhoto && $photoAvailable && $this->deliveries->emailAvailable() && $thanksOn,
             'can_complete_without_photo' => !$session->isCompleted()
                 && (!$location || $session->dateKey() <= $this->today($location))
                 && (!$photoSession || !$photoSession->photos()->exists())
@@ -2012,6 +2192,29 @@ class EscapeRoomSessionService
                 'declined' => $membership['included']->filter(fn (Waiver $waiver) => $waiver->photo_video_consent === false)->count(),
                 'not_asked' => $membership['included']->filter(fn (Waiver $waiver) => $waiver->photo_video_consent === null)->count(),
             ],
+            'follow_up' => collect($followUp)->except(['thanks_by_waiver', 'reviews_by_waiver', 'thanks_by_email', 'reviews_by_email'])->all(),
         ];
+    }
+
+    protected function reviewCounts(int $sessionId): ?array
+    {
+        try {
+            return app(VisitFollowUpService::class)->gameReviewCounts($sessionId);
+        } catch (\Throwable $e) {
+            Log::warning('Escape-room review counts could not be built', ['escape_room_session_id' => $sessionId, 'error' => $e->getMessage()]);
+
+            return null;
+        }
+    }
+
+    protected function followUpSummary(EscapeRoomSession $session): array
+    {
+        try {
+            return app(VisitFollowUpService::class)->gameSummary($session);
+        } catch (\Throwable $e) {
+            Log::warning('Escape-room follow-up summary could not be built', ['escape_room_session_id' => $session->id, 'error' => $e->getMessage()]);
+
+            return ['available' => false, 'thanks_email' => ['active' => true], 'review_email' => ['active' => false], 'thanks_by_waiver' => [], 'reviews_by_waiver' => [], 'thanks_by_email' => [], 'reviews_by_email' => [], 'reviews' => null];
+        }
     }
 }

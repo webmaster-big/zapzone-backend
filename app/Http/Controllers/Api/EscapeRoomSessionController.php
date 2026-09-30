@@ -146,6 +146,7 @@ class EscapeRoomSessionController extends Controller
             'escaped' => ['required', 'boolean'],
             'completion_time' => ['nullable', 'string', 'max:12'],
             'without_photo' => ['nullable', 'boolean'],
+            'email_players' => ['nullable', 'boolean'],
         ]);
 
         $escaped = (bool) $validated['escaped'];
@@ -155,7 +156,14 @@ class EscapeRoomSessionController extends Controller
             return $this->fail('Enter the time the group finished in minutes and seconds, for example 47:12.', 'completion_time');
         }
 
-        return $this->attempt(fn () => $this->service->complete($escapeRoomSession, $escaped, $seconds, $this->user($request), (bool) ($validated['without_photo'] ?? false)));
+        return $this->attempt(fn () => $this->service->complete(
+            $escapeRoomSession,
+            $escaped,
+            $seconds,
+            $this->user($request),
+            (bool) ($validated['without_photo'] ?? false),
+            (bool) ($validated['email_players'] ?? false)
+        ));
     }
 
     public function bookingGame(Request $request, \App\Models\Booking $booking): JsonResponse

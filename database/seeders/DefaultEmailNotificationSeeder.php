@@ -408,7 +408,81 @@ class DefaultEmailNotificationSeeder extends Seeder
                 'subject' => 'End of Day Sales Report - {{report_date}}',
                 'body' => self::getEndOfDaySalesReportBody(),
             ],
+            [
+                'default_key' => EmailNotification::DEFAULT_THANKS_FOR_PLAYING,
+                'name' => 'Thanks for Playing (Customer)',
+                'description' => 'Sent to the guests of a visit once staff mark it complete: Complete & Send on the escape-room game screen, or setting a party booking or event purchase to Completed. Shows the group photo and finish time when the visit has them, plus the return-visit promo code chosen below. Copy it to give one location, brand or activity its own version: the most specific active copy is the one sent.',
+                'trigger_type' => EmailNotification::TRIGGER_VISIT_COMPLETED,
+                'entity_type' => EmailNotification::ENTITY_ALL,
+                'entity_ids' => [],
+                'recipient_types' => [EmailNotification::RECIPIENT_CUSTOMER],
+                'custom_emails' => [],
+                'include_qr_code' => false,
+                'subject' => 'Thanks for playing {{activity_name}}!',
+                'body' => self::getThanksForPlayingBody(),
+            ],
+            [
+                'default_key' => EmailNotification::DEFAULT_REVIEW_REQUEST,
+                'name' => 'Review Request (Customer)',
+                'description' => 'Sent automatically a set number of hours after staff mark a visit complete, asking the guest to rate it and, where the location has a review link, to leave a public review. Each guest is asked at most once every 30 days, never between 8 PM and 9 AM, and can unsubscribe.',
+                'trigger_type' => EmailNotification::TRIGGER_VISIT_FOLLOWUP,
+                'entity_type' => EmailNotification::ENTITY_ALL,
+                'entity_ids' => [],
+                'recipient_types' => [EmailNotification::RECIPIENT_CUSTOMER],
+                'custom_emails' => [],
+                'include_qr_code' => false,
+                'send_after_hours' => EmailNotification::REVIEW_REQUEST_DEFAULT_HOURS,
+                'subject' => 'How was {{activity_name}}, {{customer_first_name}}?',
+                'body' => self::getReviewRequestBody(),
+            ],
         ];
+    }
+
+    protected static function getThanksForPlayingBody(): string
+    {
+        return <<<'HTML'
+<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; color: #374151;">
+    <div style="background-color: #1e40af; color: #ffffff; padding: 24px 32px; border-radius: 8px 8px 0 0; text-align: center;">
+        <h1 style="margin: 0 0 8px 0; font-size: 22px; font-weight: 600;">Thanks for Playing!</h1>
+        <p style="margin: 0; font-size: 14px; opacity: 0.9;">{{activity_name}} &middot; {{visit_when}}</p>
+    </div>
+    <div style="background-color: #ffffff; padding: 32px; border: 1px solid #e5e7eb; border-top: none;">
+        <p style="margin: 0 0 16px 0; font-size: 14px; line-height: 1.6;">Hi {{customer_first_name}},</p>
+        <p style="margin: 0 0 8px 0; font-size: 14px; line-height: 1.6;">Thank you for spending time with us at {{location_name}}. We hope you had a blast at {{activity_name}}!</p>
+        {{game_result_section}}
+        {{group_photo_section}}
+        {{promo_section}}
+        <p style="margin: 24px 0 16px 0; font-size: 14px; line-height: 1.6;">We would love to see you again soon.</p>
+        <p style="margin: 0; font-size: 14px; line-height: 1.6;">See you next time,<br><strong>{{location_name}}</strong><br>{{location_phone}}</p>
+    </div>
+    <div style="padding: 16px 32px; text-align: center; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px; background: #f9fafb;">
+        <p style="color: #9ca3af; font-size: 12px; margin: 0;">&copy; {{current_year}} {{company_name}}. All rights reserved.</p>
+    </div>
+</div>
+HTML;
+    }
+
+    protected static function getReviewRequestBody(): string
+    {
+        return <<<'HTML'
+<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; color: #374151;">
+    <div style="background-color: #059669; color: #ffffff; padding: 24px 32px; border-radius: 8px 8px 0 0; text-align: center;">
+        <h1 style="margin: 0 0 8px 0; font-size: 22px; font-weight: 600;">How Did We Do?</h1>
+        <p style="margin: 0; font-size: 14px; opacity: 0.9;">{{activity_name}} &middot; {{visit_when}}</p>
+    </div>
+    <div style="background-color: #ffffff; padding: 32px; border: 1px solid #e5e7eb; border-top: none;">
+        <p style="margin: 0 0 16px 0; font-size: 14px; line-height: 1.6;">Hi {{customer_first_name}},</p>
+        <p style="margin: 0 0 8px 0; font-size: 14px; line-height: 1.6;">Thanks again for visiting {{location_name}} on {{visit_date}}. Would you take a few seconds to tell us how {{activity_name}} went? Your feedback goes straight to our team.</p>
+        {{rating_section}}
+        {{review_section}}
+        <p style="margin: 24px 0 0 0; font-size: 14px; line-height: 1.6;">Thank you,<br><strong>{{location_name}}</strong><br>{{location_phone}}</p>
+    </div>
+    <div style="padding: 16px 32px; text-align: center; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px; background: #f9fafb;">
+        <p style="color: #9ca3af; font-size: 12px; margin: 0 0 6px 0;">&copy; {{current_year}} {{company_name}}. All rights reserved.</p>
+        <p style="color: #9ca3af; font-size: 11px; margin: 0;">Don&#039;t want review requests? <a href="{{opt_out_link}}" style="color: #6b7280;">Unsubscribe</a>.</p>
+    </div>
+</div>
+HTML;
     }
 
     protected static function getWaiverLinkCustomerBody(): string

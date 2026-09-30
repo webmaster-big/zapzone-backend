@@ -16,6 +16,21 @@ class Booking extends Model
 
     protected static function booted(): void
     {
+        static::updated(function (Booking $booking) {
+            if (!$booking->wasChanged('status') || $booking->getOriginal('status') !== 'completed' || $booking->status === 'completed') {
+                return;
+            }
+
+            try {
+                app(\App\Services\VisitFollowUpService::class)->visitReopened(\App\Models\VisitFollowUp::VISIT_BOOKING, (int) $booking->id, auth()->user() instanceof \App\Models\User ? auth()->user() : null);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('Follow-up emails could not be stopped for a booking taken out of Completed', [
+                    'booking_id' => $booking->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        });
+
         static::forceDeleting(function (Booking $booking) {
             try {
                 app(\App\Services\EscapeRoomSessionService::class)->releaseDeletedBooking((int) $booking->id);

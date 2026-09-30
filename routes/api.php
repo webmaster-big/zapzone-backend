@@ -100,6 +100,12 @@ Route::post('waivers/bulk/{manageToken}/recipients/{recipientId}/resend', [Waive
 
 Route::post('client-errors', [ClientErrorController::class, 'store'])->middleware('throttle:client-errors');
 
+Route::middleware('throttle:visit-feedback')->group(function () {
+    Route::get('visit-feedback/{token}', [\App\Http\Controllers\Api\VisitFeedbackController::class, 'show']);
+    Route::post('visit-feedback/{token}', [\App\Http\Controllers\Api\VisitFeedbackController::class, 'rate']);
+    Route::post('visit-feedback/{token}/unsubscribe', [\App\Http\Controllers\Api\VisitFeedbackController::class, 'unsubscribe']);
+});
+
 // --- Public photo flows (passcode-protected devices and token-addressed customer pages, no auth) ---
 Route::prefix('photos')->group(function () {
     Route::post('kiosk/{locationId}/unlock',   [PhotoPublicController::class, 'kioskUnlock'])->whereNumber('locationId')->middleware('throttle:photo-unlock');
@@ -645,7 +651,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/{contact}/remove-tag', [ContactController::class, 'removeTag']);
     });
 
-    Route::prefix('email-notifications')->group(function () {
+    Route::prefix('email-notifications')->middleware('staff')->group(function () {
         Route::get('/', [EmailNotificationController::class, 'index']);
         Route::post('/', [EmailNotificationController::class, 'store']);
         Route::get('/variables', [EmailNotificationController::class, 'getVariables']);
@@ -666,6 +672,14 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/{emailNotification}/reset-default', [EmailNotificationController::class, 'resetDefault']);
         Route::get('/{emailNotification}/logs', [EmailNotificationController::class, 'getLogs']);
         Route::post('/{emailNotification}/logs/{logId}/resend', [EmailNotificationController::class, 'resendLog']);
+    });
+
+    Route::prefix('visit-follow-ups')->middleware('staff')->group(function () {
+        Route::get('visit', [\App\Http\Controllers\Api\VisitFollowUpController::class, 'visit']);
+        Route::get('ratings', [\App\Http\Controllers\Api\VisitFollowUpController::class, 'ratings']);
+        Route::post('send-thanks', [\App\Http\Controllers\Api\VisitFollowUpController::class, 'sendThanks']);
+        Route::post('{visitFollowUp}/send-now', [\App\Http\Controllers\Api\VisitFollowUpController::class, 'sendNow'])->whereNumber('visitFollowUp');
+        Route::post('{visitFollowUp}/cancel', [\App\Http\Controllers\Api\VisitFollowUpController::class, 'cancel'])->whereNumber('visitFollowUp');
     });
 
     Route::prefix('sms-notifications')->group(function () {
@@ -690,11 +704,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('event-purchases/verify/{reference}', [EventPurchaseController::class, 'verifyByReference'])
         ->middleware(['staff', 'throttle:60,1']);
     Route::get('event-purchases/trashed', [EventPurchaseController::class, 'trashed']);
-    Route::post('event-purchases/bulk-restore', [EventPurchaseController::class, 'bulkRestore']);
-    Route::apiResource('event-purchases', EventPurchaseController::class)->except(['store']);
-    Route::patch('event-purchases/{eventPurchase}/cancel', [EventPurchaseController::class, 'cancel']);
+    Route::post('event-purchases/bulk-restore', [EventPurchaseController::class, 'bulkRestore'])->middleware('staff');
+    Route::apiResource('event-purchases', EventPurchaseController::class)->except(['store', 'update']);
+    Route::match(['put', 'patch'], 'event-purchases/{eventPurchase}', [EventPurchaseController::class, 'update'])->middleware('staff');
+    Route::patch('event-purchases/{eventPurchase}/cancel', [EventPurchaseController::class, 'cancel'])->middleware('staff');
     Route::patch('event-purchases/{eventPurchase}/status', [EventPurchaseController::class, 'updateStatus'])->middleware('staff');
-    Route::post('event-purchases/{id}/restore', [EventPurchaseController::class, 'restore']);
+    Route::post('event-purchases/{id}/restore', [EventPurchaseController::class, 'restore'])->middleware('staff');
 
     Route::prefix('google-calendar')->middleware('staff')->group(function () {
         Route::get('/connections', [GoogleCalendarController::class, 'connections']);

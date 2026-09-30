@@ -804,7 +804,7 @@ HTML;
         ]);
     }
 
-    protected function buildCommonVariables(?Location $location = null, ?Company $company = null): array
+    public function buildCommonVariables(?Location $location = null, ?Company $company = null): array
     {
         return [
             'current_date' => now()->format('F j, Y'),
@@ -1023,7 +1023,7 @@ HTML;
         ]);
     }
 
-    protected function replaceVariables(string $content, array $variables): string
+    public function replaceVariables(string $content, array $variables): string
     {
         foreach ($variables as $key => $value) {
             $safeValue = $value ?? '';
@@ -1037,7 +1037,7 @@ HTML;
         return $content;
     }
 
-    protected function generateHtmlEmail(string $body): string
+    public function generateHtmlEmail(string $body): string
     {
         return <<<HTML
 <!DOCTYPE html>
@@ -1053,7 +1053,7 @@ HTML;
 HTML;
     }
 
-    protected function sendEmail(string $to, string $subject, string $htmlBody, array $variables, array $attachments = []): void
+    public function sendEmail(string $to, string $subject, string $htmlBody, array $variables, array $attachments = []): void
     {
         $useGmailApi = config('gmail.enabled', false) &&
             (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
@@ -1074,7 +1074,15 @@ HTML;
                     ->from(config('mail.from.address'), $variables['company_name'] ?? config('mail.from.name'));
 
                 foreach ($attachments as $attachment) {
-                    if (isset($attachment['data'])) {
+                    if (isset($attachment['data'], $attachment['content_id'])) {
+                        $message->getSymfonyMessage()->addPart(
+                            (new \Symfony\Component\Mime\Part\DataPart(
+                                base64_decode($attachment['data']),
+                                $attachment['filename'] ?? 'image.jpg',
+                                $attachment['mime_type'] ?? 'image/jpeg'
+                            ))->asInline()->setContentId($attachment['content_id'])
+                        );
+                    } elseif (isset($attachment['data'])) {
                         $message->attachData(
                             base64_decode($attachment['data']),
                             $attachment['filename'] ?? 'attachment',
@@ -1465,6 +1473,60 @@ HTML;
                 'Breakdown' => [
                     'location_breakdown_rows' => 'HTML table rows: per-location breakdown',
                     'category_breakdown_rows' => 'HTML table rows: per-category breakdown',
+                ],
+            ],
+            'visit_completed' => [
+                'Guest' => [
+                    'customer_name' => 'Guest full name',
+                    'customer_first_name' => 'Guest first name',
+                    'customer_email' => 'Guest email',
+                ],
+                'Visit' => [
+                    'activity_name' => 'What they did: the package, escape room or event name',
+                    'visit_date' => 'Visit date',
+                    'visit_time' => 'Visit start time',
+                    'visit_when' => 'Date and time together, e.g. "October 3, 2026 at 2:00 PM"',
+                    'booking_reference' => 'Booking or purchase reference (blank for escape-room walk-ins)',
+                ],
+                'Escape room result' => [
+                    'game_result_section' => 'Styled result box; empty when the visit was not an escape-room game',
+                    'escape_result' => 'Result sentence, e.g. "Your group escaped in 47:12!"',
+                    'completion_time' => 'Finish time, e.g. 47:12, or "Did not escape"',
+                    'room_name' => 'Escape room name (empty for other visits)',
+                ],
+                'Group photo' => [
+                    'group_photo_section' => 'The group photo with a download button; empty when there is no photo',
+                    'photo_link' => 'Link to view and download the photos',
+                    'photos_line' => 'Sentence saying the photos are attached',
+                    'expires_on' => 'Date the photo link stops working',
+                ],
+                'Return-visit offer' => [
+                    'promo_section' => 'Styled coupon box with the chosen promo code; empty when no code is chosen, it cannot be used, or the guest unsubscribed. Added automatically if you leave it out',
+                    'promo_code' => 'The promo code. A paragraph that uses it is left out when there is no code',
+                    'promo_offer' => 'What it is worth, e.g. "20% off"',
+                    'promo_description' => 'The promo code description',
+                    'promo_terms' => 'Where it works, e.g. "Valid on Laser Tag at Brighton only."; empty when it works everywhere',
+                    'promo_expires' => '"Valid until ..." or empty',
+                    'opt_out_link' => 'Unsubscribe link for offers (added automatically when the email carries a code)',
+                ],
+            ],
+            'visit_followup' => [
+                'Guest' => [
+                    'customer_name' => 'Guest full name',
+                    'customer_first_name' => 'Guest first name',
+                ],
+                'Visit' => [
+                    'activity_name' => 'What they did: the package, escape room or event name',
+                    'visit_date' => 'Visit date',
+                    'visit_time' => 'Visit start time',
+                    'visit_when' => 'Date and time together, e.g. "October 3, 2026 at 2:00 PM"',
+                ],
+                'Rating and review' => [
+                    'rating_section' => 'Five tappable stars that record the guest rating',
+                    'rating_link' => 'Link to the rating page',
+                    'review_section' => 'A "Leave a review" button; empty when there is no review link',
+                    'review_link' => 'The public review link set on this email, or else on the location',
+                    'opt_out_link' => 'Unsubscribe link (added automatically if you leave it out)',
                 ],
             ],
             'common' => [

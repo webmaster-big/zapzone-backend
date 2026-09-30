@@ -121,7 +121,7 @@ class CustomerBookingWaiverController extends Controller
             return null;
         }
 
-        $summary = $this->escapeRooms->bookingGameSummary($booking);
+        $summary = $this->escapeRooms->bookingGameSummary($booking, false);
 
         if (!$summary) {
             return null;
