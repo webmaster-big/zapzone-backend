@@ -44,7 +44,7 @@ class NotificationController extends Controller
         }
 
         $perPage = $request->get('per_page', 15);
-        $notifications = $query->orderBy('created_at', 'desc')->paginate($perPage);
+        $notifications = $query->orderBy('created_at', 'desc')->orderBy('id', 'desc')->paginate($perPage);
 
         return response()->json([
             'success' => true,

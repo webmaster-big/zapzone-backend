@@ -126,6 +126,8 @@ class AttractionPurchaseController extends Controller
             $query->orderBy($sortBy, $sortOrder);
         }
 
+        $query->orderBy('attraction_purchases.id', $sortOrder);
+
         $perPage = min($request->get('per_page', 15), 100); // Max 100 items per page
         $purchases = $query->paginate($perPage);
 

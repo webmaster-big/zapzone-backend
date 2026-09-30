@@ -209,7 +209,7 @@ class CheckoutConcernController extends Controller
             });
         }
 
-        $concerns = $query->orderByDesc('created_at')->paginate($request->get('per_page', 20));
+        $concerns = $query->orderByDesc('created_at')->orderByDesc('id')->paginate($request->get('per_page', 20));
 
         return response()->json([
             'success' => true,

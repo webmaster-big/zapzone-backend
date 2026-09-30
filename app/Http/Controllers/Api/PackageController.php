@@ -61,6 +61,8 @@ class PackageController extends Controller
             $query->orderBy('id', 'desc');
         }
 
+        $query->orderBy('packages.id', 'desc');
+
         $perPage = min($request->get('per_page', 15), 50); // Max 50 items per page for better performance
         $packages = $query->paginate($perPage);
 

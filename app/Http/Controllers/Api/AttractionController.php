@@ -62,6 +62,8 @@ class AttractionController extends Controller
             $query->orderBy($sortBy, $sortOrder);
         }
 
+        $query->orderBy('attractions.id');
+
         $perPage = min($request->get('per_page', 15), 100); // Max 100 items per page
         $attractions = $query->paginate($perPage);
 

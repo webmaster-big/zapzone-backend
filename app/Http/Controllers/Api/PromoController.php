@@ -76,6 +76,10 @@ class PromoController extends Controller
             }
         }
 
+        if ($request->boolean('exclude_batches')) {
+            $query->whereNull('batch_id');
+        }
+
         if ($request->has('search')) {
             $search = $request->search;
             $query->where(function ($q) use ($search) {
@@ -91,6 +95,8 @@ class PromoController extends Controller
         if (in_array($sortBy, ['code', 'name', 'type', 'value', 'start_date', 'end_date', 'created_at'])) {
             $query->orderBy($sortBy, $sortOrder);
         }
+
+        $query->orderBy('promos.id', 'desc');
 
         $perPage = $request->get('per_page', 15);
         $promos = $query->paginate($perPage);

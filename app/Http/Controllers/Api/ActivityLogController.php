@@ -46,6 +46,13 @@ class ActivityLogController extends Controller
             $query->byAction($request->action);
         }
 
+        if ($request->filled('user_role')) {
+            $roles = is_array($request->user_role) ? $request->user_role : explode(',', $request->user_role);
+            $query->whereHas('user', function ($q) use ($roles) {
+                $q->whereIn('role', $roles);
+            });
+        }
+
         DateRange::apply($query, 'created_at', $request->date_from, $request->date_to);
         DateRange::apply($query, 'created_at', $request->start_date, $request->end_date);
 
@@ -67,6 +74,8 @@ class ActivityLogController extends Controller
         if (in_array($sortBy, ['created_at', 'action', 'category', 'user_id', 'location_id'])) {
             $query->orderBy($sortBy, $sortOrder);
         }
+
+        $query->orderBy('id', strtolower((string) $sortOrder) === 'asc' ? 'asc' : 'desc');
 
         $perPage = min($request->get('per_page', 15), 100);
         $logs = $query->paginate($perPage);

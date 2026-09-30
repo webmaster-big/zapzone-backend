@@ -79,10 +79,13 @@ class WaiverReportController extends Controller
         $this->applyAuthScope($q, $request);
         $this->applyDateRange($q, $request);
 
-        $items = $q->orderBy('selected_date')->limit(1000)->get();
+        $total = (clone $q)->count();
+        $items = $q->orderBy('selected_date')->orderBy('id')->limit(1000)->get();
 
         return [
             'count' => $items->count(),
+            'total' => $total,
+            'truncated' => $total > 1000,
             'items' => $items->map(fn (Waiver $w) => [
                 'id' => $w->id,
                 'name' => $w->adult_full_name,
