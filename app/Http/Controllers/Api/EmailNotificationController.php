@@ -434,6 +434,13 @@ class EmailNotificationController extends Controller
             ], 404);
         }
 
+        if ($emailNotification->is_default && !$emailNotification->isVisitTrigger()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Built-in emails cannot be duplicated. Edit this one directly instead.',
+            ], 422);
+        }
+
         $newNotification = $emailNotification->replicate();
 
         if ($emailNotification->isVisitTrigger() && !in_array((string) $user->role, ['company_admin', 'admin'], true)) {
@@ -449,12 +456,16 @@ class EmailNotificationController extends Controller
 
         $newNotification->name = $emailNotification->name . ' (Copy)';
         $newNotification->is_active = false;
-        $newNotification->subject = $emailNotification->getEffectiveSubject();
-        $newNotification->body = $emailNotification->getEffectiveBody();
-        $newNotification->is_default = false;
-        $newNotification->default_key = null;
-        $newNotification->default_subject = null;
-        $newNotification->default_body = null;
+
+        if ($emailNotification->is_default) {
+            $newNotification->subject = $emailNotification->getEffectiveSubject();
+            $newNotification->body = $emailNotification->getEffectiveBody();
+            $newNotification->is_default = false;
+            $newNotification->default_key = null;
+            $newNotification->default_subject = null;
+            $newNotification->default_body = null;
+        }
+
         $newNotification->save();
 
         $newNotification->load(['company', 'location', 'template']);

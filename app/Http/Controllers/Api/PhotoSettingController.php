@@ -220,15 +220,19 @@ class PhotoSettingController extends Controller
                 ->where('default_key', \App\Models\EmailNotification::DEFAULT_THANKS_FOR_PLAYING)
                 ->first(['id', 'name', 'is_active'])
             : null;
-        $roomsWithoutEmail = null;
+        $coverage = null;
 
         if ($authUser?->company_id) {
             try {
-                $roomsWithoutEmail = app(\App\Services\VisitFollowUpService::class)->escapeRoomsWithoutThanks((int) $authUser->company_id);
+                $coverage = app(\App\Services\VisitFollowUpService::class)->escapeRoomThanksCoverage((int) $authUser->company_id);
             } catch (\Throwable $e) {
                 \Illuminate\Support\Facades\Log::warning('Escape-room email coverage could not be checked', ['error' => $e->getMessage()]);
             }
         }
+
+        $roomsWithoutEmail = $coverage === null ? null : collect($coverage)->whereNull('notification')->pluck('label')->values()->all();
+        $covering = collect($coverage ?? [])->pluck('notification')->filter()->unique('id')->values();
+        $shownEmail = $covering->count() === 1 ? $covering->first() : $thanksEmail;
 
         return response()->json([
             'success' => true,
@@ -239,11 +243,18 @@ class PhotoSettingController extends Controller
                     ->mapWithKeys(fn (string $kind) => [$kind => PhotoMessageTemplate::variablesFor($kind)])
                     ->all(),
                 'kinds' => $kinds,
-                'escape_room_email' => $thanksEmail ? [
-                    'id' => $thanksEmail->id,
-                    'name' => $thanksEmail->name,
-                    'is_active' => $roomsWithoutEmail === null ? (bool) $thanksEmail->is_active : $roomsWithoutEmail === [],
+                'escape_room_email' => $shownEmail ? [
+                    'id' => $shownEmail->id,
+                    'name' => $shownEmail->name,
+                    'is_active' => $roomsWithoutEmail === null ? (bool) $shownEmail->is_active : $roomsWithoutEmail === [],
                     'rooms_without_email' => $roomsWithoutEmail ?? [],
+                    'emails' => $covering->count() > 1
+                        ? $covering->map(fn ($email) => [
+                            'id' => $email->id,
+                            'name' => $email->name,
+                            'rooms' => collect($coverage)->filter(fn (array $room) => $room['notification']?->id === $email->id)->pluck('label')->values()->all(),
+                        ])->all()
+                        : [],
                 ] : null,
             ],
         ]);

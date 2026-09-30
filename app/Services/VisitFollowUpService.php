@@ -257,8 +257,14 @@ class VisitFollowUpService
             ->update(['location_id' => $locationId]);
     }
 
-    public function bookerChanged(Booking|EventPurchase $subject, ?User $user = null): ?array
+    public static function bookerIdentity(Booking|EventPurchase $subject): array
     {
+        return [(int) $subject->customer_id, FollowUpOptOut::normalize($subject->guest_email)];
+    }
+
+    public function bookerChanged(Booking|EventPurchase $subject, ?User $user = null, bool $addressChanged = false): ?array
+    {
+        $since = now()->startOfSecond();
         $subject = $subject->fresh() ?? $subject;
 
         if (!$this->isAvailable() || $subject->status !== 'completed') {
@@ -276,13 +282,36 @@ class VisitFollowUpService
         }
 
         $current = $this->bookerRecipient($subject);
+        $renamed = 0;
+
+        if ($current) {
+            $waiting = VisitFollowUp::forVisit($visit->type, $visit->id())
+                ->whereIn('status', [VisitFollowUp::STATUS_SCHEDULED, VisitFollowUp::STATUS_FAILED])
+                ->where('recipient_email', $current['email'])
+                ->get();
+
+            foreach ($waiting as $row) {
+                $fields = $this->bookerFields($current, $row);
+
+                if ($fields['recipient_name'] !== $row->recipient_name || (int) $fields['customer_id'] !== (int) $row->customer_id) {
+                    $renamed += VisitFollowUp::whereKey($row->id)
+                        ->whereIn('status', [VisitFollowUp::STATUS_SCHEDULED, VisitFollowUp::STATUS_FAILED])
+                        ->update($fields + ['updated_at' => now()]);
+                }
+            }
+        }
+
         $stale = VisitFollowUp::forVisit($visit->type, $visit->id())
             ->whereIn('status', [VisitFollowUp::STATUS_SCHEDULED, VisitFollowUp::STATUS_FAILED])
             ->when($current, fn ($query) => $query->where('recipient_email', '!=', $current['email']))
             ->get();
 
         if ($stale->isEmpty()) {
-            return null;
+            $restored = $current && $addressChanged && $this->restoreRecipient($visit, $current, $user);
+
+            return $renamed > 0 || $restored || ($current && $addressChanged && $this->nothingSentTo($visit, $current))
+                ? $this->summaryFor($visit->type, $visit->id(), $since)
+                : null;
         }
 
         $reviewDue = null;
@@ -315,6 +344,10 @@ class VisitFollowUpService
             );
         }
 
+        if ($current && $addressChanged) {
+            $this->restoreRecipient($visit, $current, $user);
+        }
+
         ActivityLog::log(
             'visit_follow_up_recipient_changed',
             'email',
@@ -325,7 +358,63 @@ class VisitFollowUpService
             $visit->id()
         );
 
-        return $this->summaryFor($visit->type, $visit->id());
+        return $this->summaryFor($visit->type, $visit->id(), $since);
+    }
+
+    protected function restoreRecipient(CompletedVisit $visit, array $current, ?User $user): bool
+    {
+        $canceled = VisitFollowUp::forVisit($visit->type, $visit->id())
+            ->where('recipient_email', $current['email'])
+            ->where('status', VisitFollowUp::STATUS_CANCELED)
+            ->where('reason', VisitFollowUp::REASON_RECIPIENT_CHANGED)
+            ->get()
+            ->keyBy('kind');
+        $settled = VisitFollowUp::forVisit($visit->type, $visit->id())
+            ->where('recipient_email', '!=', $current['email'])
+            ->where(fn ($query) => $query->whereIn('status', [VisitFollowUp::STATUS_SENT, VisitFollowUp::STATUS_SENDING])->orWhereNotNull('rating'))
+            ->pluck('kind')
+            ->unique()
+            ->all();
+        $canceled = $canceled->reject(fn (VisitFollowUp $row, string $kind) => in_array($kind, $settled, true));
+
+        if ($canceled->isEmpty()) {
+            return false;
+        }
+
+        $held = $this->visitDateProblem($visit);
+        $restored = false;
+
+        if ($canceled->has(VisitFollowUp::KIND_THANKS) && ($thanks = $this->thanksEmailFor($visit))) {
+            foreach ($this->createRows($visit, VisitFollowUp::KIND_THANKS, [$current], $thanks, now(), $user, $held) as $row) {
+                $restored = true;
+
+                if ($row->status === VisitFollowUp::STATUS_SCHEDULED) {
+                    $this->send($row);
+                }
+            }
+        }
+
+        if ($canceled->has(VisitFollowUp::KIND_REVIEW) && ($review = $this->reviewEmailFor($visit))) {
+            $due = $canceled->get(VisitFollowUp::KIND_REVIEW)->due_at;
+            $restored = $this->createRows(
+                $visit,
+                VisitFollowUp::KIND_REVIEW,
+                [$current],
+                $review,
+                $due && $due->isFuture() ? $due : $this->reviewDueAt($review, $visit->location, now()),
+                $user,
+                $held
+            ) !== [] || $restored;
+        }
+
+        return $restored;
+    }
+
+    protected function nothingSentTo(CompletedVisit $visit, array $current): bool
+    {
+        return $this->thanksEmailFor($visit) !== null
+            && $this->visitDateProblem($visit) === null
+            && !VisitFollowUp::forVisit($visit->type, $visit->id())->where('recipient_email', $current['email'])->exists();
     }
 
     public function completeVisit(CompletedVisit $visit, array $recipients, ?User $user, bool $force = false): void
@@ -927,7 +1016,7 @@ class VisitFollowUpService
 
             [$player, $problem] = $this->gamePlayer($row, $visit);
 
-            if ($player && (int) $player->id !== (int) $row->waiver_id) {
+            if ($player) {
                 $row->forceFill($this->playerFields($player, $row));
             }
 
@@ -940,14 +1029,26 @@ class VisitFollowUpService
 
         $current = $this->bookerRecipient($visit->subject);
 
-        return $current !== null && $current['email'] === $row->recipient_email
-            ? null
-            : [
-                'reason' => VisitFollowUp::REASON_RECIPIENT_CHANGED,
-                'error' => $current
-                    ? 'The guest\'s email address was changed, so this email was not sent to the old address.'
-                    : 'The email address was removed from this visit.',
-            ];
+        if ($current !== null && $current['email'] === $row->recipient_email) {
+            $row->forceFill($this->bookerFields($current, $row));
+
+            return null;
+        }
+
+        return [
+            'reason' => VisitFollowUp::REASON_RECIPIENT_CHANGED,
+            'error' => $current
+                ? 'The guest\'s email address was changed, so this email was not sent to the old address.'
+                : 'The email address was removed from this visit.',
+        ];
+    }
+
+    protected function bookerFields(array $current, VisitFollowUp $row): array
+    {
+        return [
+            'customer_id' => $current['customer_id'] ?? null,
+            'recipient_name' => mb_substr(trim((string) ($current['name'] ?? '')), 0, 190) ?: $row->recipient_name,
+        ];
     }
 
     protected function playerFields(Waiver $waiver, VisitFollowUp $row): array
@@ -1150,7 +1251,8 @@ class VisitFollowUpService
     public function cancel(VisitFollowUp $row, User $user): VisitFollowUp
     {
         $canceled = VisitFollowUp::whereKey($row->id)
-            ->where('status', VisitFollowUp::STATUS_SCHEDULED)
+            ->where(fn ($query) => $query->where('status', VisitFollowUp::STATUS_SCHEDULED)
+                ->orWhere(fn ($failed) => $failed->where('status', VisitFollowUp::STATUS_FAILED)->where('attempts', '<', VisitFollowUp::MAX_ATTEMPTS)))
             ->update([
                 'status' => VisitFollowUp::STATUS_CANCELED,
                 'error' => 'Canceled by staff.',
@@ -1275,15 +1377,20 @@ class VisitFollowUpService
         $reviews = $rows->where('kind', VisitFollowUp::KIND_REVIEW);
         $thanks = $visit ? $this->thanksEmailFor($visit) : null;
         $review = $visit ? $this->reviewEmailFor($visit) : null;
+        $live = fn (VisitFollowUp $row) => $row->rating !== null
+            || in_array($row->status, [VisitFollowUp::STATUS_SCHEDULED, VisitFollowUp::STATUS_SENDING, VisitFollowUp::STATUS_SENT, VisitFollowUp::STATUS_FAILED], true);
+        $byWaiver = fn (Collection $kindRows) => $kindRows->whereNotNull('waiver_id')
+            ->sortBy('id')
+            ->groupBy('waiver_id')
+            ->map(fn (Collection $group) => ($group->last($live) ?? $group->last())->toStaffArray())
+            ->all();
 
         return [
             'available' => $this->isAvailable(),
             'thanks_email' => $this->notificationInfo($thanks, $visit, EmailNotification::DEFAULT_THANKS_FOR_PLAYING),
             'review_email' => $this->notificationInfo($review, $visit, EmailNotification::DEFAULT_REVIEW_REQUEST),
-            'thanks_by_waiver' => $rows->where('kind', VisitFollowUp::KIND_THANKS)->whereNotNull('waiver_id')
-                ->keyBy('waiver_id')->map->toStaffArray()->all(),
-            'reviews_by_waiver' => $reviews->whereNotNull('waiver_id')
-                ->sortBy('id')->keyBy('waiver_id')->map->toStaffArray()->all(),
+            'thanks_by_waiver' => $byWaiver($rows->where('kind', VisitFollowUp::KIND_THANKS)),
+            'reviews_by_waiver' => $byWaiver($reviews),
             'thanks_by_email' => $rows->where('kind', VisitFollowUp::KIND_THANKS)
                 ->sortBy('id')->keyBy('recipient_email')->map->toStaffArray()->all(),
             'reviews_by_email' => $reviews->sortBy('id')->keyBy('recipient_email')->map->toStaffArray()->all(),
@@ -1356,6 +1463,13 @@ class VisitFollowUpService
 
     public function escapeRoomsWithoutThanks(int $companyId): ?array
     {
+        $coverage = $this->escapeRoomThanksCoverage($companyId);
+
+        return $coverage === null ? null : collect($coverage)->whereNull('notification')->pluck('label')->values()->all();
+    }
+
+    public function escapeRoomThanksCoverage(int $companyId): ?array
+    {
         if (!Package::supportsEscapeRoomFlag()) {
             return null;
         }
@@ -1371,7 +1485,7 @@ class VisitFollowUpService
         }
 
         return $rooms
-            ->filter(function (Package $room) use ($companyId) {
+            ->map(function (Package $room) use ($companyId) {
                 $booking = new Booking(['package_id' => $room->id, 'location_id' => $room->location_id]);
                 $booking->setRelation('package', $room);
                 $booking->setRelation('location', $room->location);
@@ -1388,9 +1502,11 @@ class VisitFollowUpService
                     null
                 );
 
-                return EmailNotification::resolveForVisit($visit, EmailNotification::TRIGGER_VISIT_COMPLETED) === null;
+                return [
+                    'label' => trim($room->name . ($room->location?->name ? ' (' . $room->location->name . ')' : '')),
+                    'notification' => EmailNotification::resolveForVisit($visit, EmailNotification::TRIGGER_VISIT_COMPLETED),
+                ];
             })
-            ->map(fn (Package $room) => trim($room->name . ($room->location?->name ? ' (' . $room->location->name . ')' : '')))
             ->values()
             ->all();
     }

@@ -777,6 +777,7 @@ class EventPurchaseController extends Controller
             $originalDate = optional($eventPurchase->purchase_date)->format('Y-m-d');
             $originalTime = $eventPurchase->purchase_time;
             $originalStatus = $eventPurchase->status;
+            $previousBooker = \App\Services\VisitFollowUpService::bookerIdentity($eventPurchase);
 
             if (isset($validated['status'])) {
                 switch ($validated['status']) {
@@ -824,7 +825,8 @@ class EventPurchaseController extends Controller
                 $eventPurchase->addOns()->sync($syncData);
             }
 
-            $followUp = $this->followUpAfterStatusChange($eventPurchase->fresh(), $originalStatus, $request);
+            $saved = $eventPurchase->fresh();
+            $followUp = $this->followUpAfterStatusChange($saved, $originalStatus, $request, $saved !== null && \App\Services\VisitFollowUpService::bookerIdentity($saved) !== $previousBooker);
 
             return response()->json(array_filter([
                 'success' => true,
@@ -1090,7 +1092,7 @@ class EventPurchaseController extends Controller
         }
     }
 
-    private function followUpAfterStatusChange(?EventPurchase $purchase, ?string $previousStatus, Request $request): ?array
+    private function followUpAfterStatusChange(?EventPurchase $purchase, ?string $previousStatus, Request $request, bool $addressChanged = false): ?array
     {
         if (!$purchase) {
             return null;
@@ -1114,7 +1116,7 @@ class EventPurchaseController extends Controller
             }
 
             if ($previousStatus === 'completed' && $purchase->status === 'completed') {
-                return $followUps->bookerChanged($purchase, $user);
+                return $followUps->bookerChanged($purchase, $user, $addressChanged);
             }
         } catch (\Throwable $e) {
             Log::warning('Event purchase follow-up emails could not be handled', [

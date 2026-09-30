@@ -863,6 +863,10 @@ class VisitFollowUpTest extends TestCase
 
         $this->travel(11)->minutes();
         $this->artisan('visits:send-follow-ups')->assertSuccessful();
+        $this->assertSame(VisitFollowUp::STATUS_FAILED, $row->fresh()->status);
+
+        $this->travel(5)->minutes();
+        $this->artisan('visits:send-follow-ups')->assertSuccessful();
         $this->assertSame(VisitFollowUp::STATUS_SENT, $row->fresh()->status);
         $this->assertCount(1, $this->emailsTo('jordan@example.test'));
 
@@ -2325,5 +2329,236 @@ class VisitFollowUpTest extends TestCase
         $this->withGroupPhoto($game['id']);
         $this->completeGame($game['id'])->assertOk();
         $this->assertSame('Escape room copy', $this->emailsTo('avery@example.test')[0]->getSubject());
+    }
+
+    public function test_a_failed_email_that_is_still_retrying_can_be_canceled_by_staff(): void
+    {
+        $this->failMail();
+        $this->completeBooking($this->makeBooking($this->party, 'stopme@example.test'))->assertOk()
+            ->assertJsonPath('follow_up.thanks.0.status', VisitFollowUp::STATUS_FAILED);
+        $thanks = VisitFollowUp::where('kind', VisitFollowUp::KIND_THANKS)->sole();
+        $this->workingMail();
+
+        $this->actingAs($this->attendant, 'sanctum')->postJson("/api/visit-follow-ups/{$thanks->id}/cancel")->assertOk();
+        $this->assertSame(VisitFollowUp::STATUS_CANCELED, $thanks->fresh()->status);
+        $this->assertSame(VisitFollowUp::REASON_STAFF, $thanks->fresh()->reason);
+
+        $this->travel(20)->minutes();
+        $this->artisan('visits:send-follow-ups')->assertSuccessful();
+        $this->assertSame([], $this->emailsTo('stopme@example.test'));
+
+        $thanks->forceFill(['status' => VisitFollowUp::STATUS_FAILED, 'attempts' => VisitFollowUp::MAX_ATTEMPTS, 'reason' => null])->save();
+        $this->actingAs($this->attendant, 'sanctum')->postJson("/api/visit-follow-ups/{$thanks->id}/cancel")->assertStatus(422);
+    }
+
+    public function test_failed_sends_are_retried_over_hours_not_minutes(): void
+    {
+        $this->failMail();
+        $this->completeBooking($this->makeBooking($this->party, 'outage@example.test'))->assertOk();
+        $thanks = VisitFollowUp::where('kind', VisitFollowUp::KIND_THANKS)->sole();
+
+        $this->travel(16)->minutes();
+        $this->artisan('visits:send-follow-ups')->assertSuccessful();
+        $this->assertSame(2, $thanks->fresh()->attempts);
+        $this->assertSame(VisitFollowUp::STATUS_FAILED, $thanks->fresh()->status);
+
+        $this->workingMail();
+        $this->travel(60)->minutes();
+        $this->artisan('visits:send-follow-ups')->assertSuccessful();
+        $this->assertSame(VisitFollowUp::STATUS_FAILED, $thanks->fresh()->status);
+        $this->assertSame([], $this->emailsTo('outage@example.test'));
+
+        $this->travel(61)->minutes();
+        $this->artisan('visits:send-follow-ups')->assertSuccessful();
+        $this->assertSame(VisitFollowUp::STATUS_SENT, $thanks->fresh()->status);
+        $this->assertCount(1, $this->emailsTo('outage@example.test'));
+    }
+
+    public function test_a_corrected_guest_name_reaches_the_waiting_review_request(): void
+    {
+        $booking = $this->makeBooking($this->party, 'named@example.test');
+        $booking->update(['guest_name' => 'Jonh Smith']);
+        $this->completeBooking($booking)->assertOk();
+        $this->assertSame('Jonh Smith', $this->reviewRows()->sole()->recipient_name);
+
+        $this->actingAs($this->attendant, 'sanctum')
+            ->putJson("/api/bookings/{$booking->id}", ['guest_name' => 'John Smith', 'change_reason' => 'Name typo'])
+            ->assertOk();
+        $this->assertSame('John Smith', $this->reviewRows()->sole()->recipient_name);
+
+        $booking->fresh()->forceFill(['guest_name' => 'Johnny Smith'])->save();
+        $this->travelTo(Carbon::parse('2026-10-04 14:00:00', 'America/Detroit'));
+        $this->clearEmails();
+        $this->artisan('visits:send-follow-ups')->assertSuccessful();
+
+        $email = $this->emailsTo('named@example.test')[0];
+        $this->assertStringContainsString('Johnny', $email->getSubject());
+        $this->assertSame('Johnny Smith', $this->reviewRows()->sole()->recipient_name);
+    }
+
+    public function test_an_email_removed_and_added_back_brings_its_review_back(): void
+    {
+        $booking = $this->makeBooking($this->party, 'back@example.test');
+        $this->completeBooking($booking)->assertOk();
+        $review = $this->reviewRows()->sole();
+        $due = $review->due_at->toIso8601String();
+
+        $this->actingAs($this->attendant, 'sanctum')->putJson("/api/bookings/{$booking->id}", ['guest_email' => null, 'change_reason' => 'Wrong address'])->assertOk();
+        $this->assertSame(VisitFollowUp::REASON_RECIPIENT_CHANGED, $review->fresh()->reason);
+
+        $this->actingAs($this->attendant, 'sanctum')->putJson("/api/bookings/{$booking->id}", ['guest_email' => 'back@example.test', 'change_reason' => 'It was right'])->assertOk()
+            ->assertJsonPath('follow_up.reviews.0.status', VisitFollowUp::STATUS_SCHEDULED);
+        $this->assertSame(VisitFollowUp::STATUS_SCHEDULED, $review->fresh()->status);
+        $this->assertSame($due, $review->fresh()->due_at->toIso8601String());
+        $this->assertCount(1, $this->emailsTo('back@example.test'));
+    }
+
+    public function test_adding_an_email_to_a_completed_visit_tells_staff_nothing_went_out(): void
+    {
+        $booking = $this->makeBooking($this->party, 'placeholder@example.test');
+        $booking->update(['guest_email' => null]);
+        $this->completeBooking($booking)->assertOk();
+        $this->assertSame(0, VisitFollowUp::count());
+
+        $this->actingAs($this->attendant, 'sanctum')->putJson("/api/bookings/{$booking->id}", ['guest_email' => 'late@example.test', 'change_reason' => 'Got the email'])->assertOk()
+            ->assertJsonPath('follow_up.can_send_thanks', true)
+            ->assertJsonPath('follow_up.thanks', []);
+        $this->assertSame([], $this->emailsTo('late@example.test'));
+        $this->assertSame(0, VisitFollowUp::count());
+    }
+
+    public function test_the_game_screen_shows_the_live_review_after_a_photo_goes_back_to_the_first_address(): void
+    {
+        $avery = $this->signed($this->morgue, '14:00', 'Avery', 'avery@example.test');
+        $game = $this->openGame($this->morgue, '14:00');
+        $this->withGroupPhoto($game['id']);
+        $this->completeGame($game['id'])->assertOk();
+        $original = $this->reviewRows()->firstWhere('recipient_email', 'avery@example.test');
+
+        foreach (['avery@work.test', 'avery@example.test'] as $address) {
+            $this->actingAs($this->attendant, 'sanctum')
+                ->postJson("/api/escape-rooms/sessions/{$game['id']}/waivers/{$avery->id}/resend", ['email' => $address])
+                ->assertOk();
+        }
+
+        $this->assertSame(VisitFollowUp::STATUS_SCHEDULED, $original->fresh()->status);
+        $player = collect($this->actingAs($this->attendant, 'sanctum')->getJson("/api/escape-rooms/sessions/{$game['id']}")->assertOk()->json('data.players'))
+            ->firstWhere('waiver_id', $avery->id);
+        $this->assertSame($original->id, $player['review']['id']);
+        $this->assertSame(VisitFollowUp::STATUS_SCHEDULED, $player['review']['status']);
+    }
+
+    public function test_duplicating_a_non_follow_up_notification_keeps_its_old_behaviour(): void
+    {
+        $report = EmailNotification::where('company_id', $this->company->id)
+            ->where('default_key', EmailNotification::DEFAULT_END_OF_DAY_SALES_REPORT)
+            ->firstOrFail();
+
+        $this->actingAs($this->admin, 'sanctum')->postJson("/api/email-notifications/{$report->id}/duplicate")
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'Built-in emails cannot be duplicated. Edit this one directly instead.');
+        $this->assertSame(1, EmailNotification::where('trigger_type', EmailNotification::TRIGGER_END_OF_DAY_SALES_REPORT)->count());
+
+        $custom = $this->actingAs($this->admin, 'sanctum')->postJson('/api/email-notifications', [
+            'name' => 'Staff booking alert',
+            'trigger_type' => EmailNotification::TRIGGER_BOOKING_CREATED,
+            'entity_type' => EmailNotification::ENTITY_PACKAGE,
+            'subject' => 'New booking {{booking_reference}}',
+            'body' => '<p>New booking</p>',
+            'recipient_types' => ['staff'],
+        ])->assertCreated()->json('data.id');
+        $copy = EmailNotification::findOrFail($this->actingAs($this->admin, 'sanctum')->postJson("/api/email-notifications/{$custom}/duplicate")->assertOk()->json('data.id'));
+        $this->assertSame('New booking {{booking_reference}}', $copy->subject);
+        $this->assertNull($copy->default_key);
+        $this->assertFalse((bool) $copy->is_active);
+
+        $thanksCopy = $this->copyOf($this->thanks(), []);
+        $this->assertNull($thanksCopy->default_key);
+        $this->assertFalse((bool) $thanksCopy->is_default);
+        $this->assertSame($this->thanks()->getEffectiveSubject(), $thanksCopy->subject);
+    }
+
+    public function test_photo_settings_point_at_the_email_escape_rooms_really_use(): void
+    {
+        $copy = $this->copyOf($this->thanks(), ['subject' => 'Escape Room Zone thanks you', 'activity_filter' => EmailNotification::ACTIVITY_ESCAPE_ROOM]);
+
+        $data = $this->actingAs($this->admin, 'sanctum')->getJson('/api/photo-templates')->assertOk()->json('data.escape_room_email');
+        $this->assertSame($copy->id, $data['id']);
+        $this->assertSame([], $data['emails']);
+
+        $this->copyOf($this->thanks(), ['subject' => 'Morgue only', 'entity_type' => EmailNotification::ENTITY_PACKAGE, 'entity_ids' => [$this->morgue->id]]);
+        $other = $this->makePackage('The Vault', $this->location, true);
+        $data = $this->actingAs($this->admin, 'sanctum')->getJson('/api/photo-templates')->assertOk()->json('data.escape_room_email');
+        $this->assertCount(2, $data['emails']);
+        $this->assertSame(['The Vault (Waterford)'], collect($data['emails'])->firstWhere('id', $copy->id)['rooms']);
+        $this->assertNotNull($other);
+    }
+
+    public function test_a_thanks_that_never_went_out_follows_the_address_back_in_the_same_save(): void
+    {
+        $this->failMail();
+        $booking = $this->makeBooking($this->party, 'right@example.test');
+        $this->completeBooking($booking)->assertOk()->assertJsonPath('follow_up.thanks.0.status', VisitFollowUp::STATUS_FAILED);
+        $this->workingMail();
+
+        $this->actingAs($this->attendant, 'sanctum')->putJson("/api/bookings/{$booking->id}", ['guest_email' => 'wrong@example.test', 'change_reason' => 'Typo?'])->assertOk();
+        $this->actingAs($this->attendant, 'sanctum')->putJson("/api/bookings/{$booking->id}", ['guest_email' => 'right@example.test', 'change_reason' => 'It was right'])->assertOk()
+            ->assertJsonPath('follow_up.thanks.0.sent_in_this_action', true);
+
+        $this->assertCount(1, $this->emailsTo('right@example.test'));
+        $this->assertSame([], $this->emailsTo('wrong@example.test'));
+        $this->assertSame(VisitFollowUp::STATUS_SCHEDULED, $this->reviewRows()->firstWhere('recipient_email', 'right@example.test')->status);
+
+        $this->clearEmails();
+        $this->actingAs($this->attendant, 'sanctum')->putJson("/api/bookings/{$booking->id}", ['notes' => 'Balloons', 'change_reason' => 'Notes'])->assertOk();
+        $this->assertSame([], $this->followUpEmails());
+    }
+
+    public function test_an_unrelated_edit_never_restores_or_sends_anything(): void
+    {
+        $booking = $this->makeBooking($this->party, 'kept@example.test');
+        $this->completeBooking($booking)->assertOk();
+        $thanks = VisitFollowUp::where('kind', VisitFollowUp::KIND_THANKS)->sole();
+        $thanks->forceFill(['status' => VisitFollowUp::STATUS_CANCELED, 'reason' => VisitFollowUp::REASON_RECIPIENT_CHANGED, 'sent_at' => null])->save();
+        $this->clearEmails();
+
+        $this->actingAs($this->attendant, 'sanctum')->putJson("/api/bookings/{$booking->id}", ['notes' => 'Cake at 3', 'change_reason' => 'Notes'])->assertOk();
+        $this->assertSame([], $this->followUpEmails());
+        $this->assertSame(VisitFollowUp::STATUS_CANCELED, $thanks->fresh()->status);
+
+        $untouched = $this->makeBooking($this->party, 'old@example.test');
+        $untouched->forceFill(['status' => 'completed'])->save();
+        $response = $this->actingAs($this->attendant, 'sanctum')->putJson("/api/bookings/{$untouched->id}", ['notes' => 'Old visit', 'change_reason' => 'Notes'])->assertOk();
+        $this->assertNull($response->json('follow_up'));
+    }
+
+    public function test_a_corrected_name_on_an_event_purchase_reaches_its_review(): void
+    {
+        $purchase = $this->makeEventPurchase('riley@example.test');
+        $this->actingAs($this->attendant, 'sanctum')->patchJson("/api/event-purchases/{$purchase->id}/status", ['status' => 'completed'])->assertOk();
+        $this->actingAs($this->attendant, 'sanctum')->putJson("/api/event-purchases/{$purchase->id}", ['guest_name' => 'Riley Glowworm'])->assertOk();
+
+        $review = VisitFollowUp::where('visit_type', VisitFollowUp::VISIT_EVENT_PURCHASE)->where('kind', VisitFollowUp::KIND_REVIEW)->sole();
+        $this->assertSame('Riley Glowworm', $review->recipient_name);
+        $this->assertSame(VisitFollowUp::STATUS_SCHEDULED, $review->status);
+    }
+
+    public function test_an_address_changed_back_is_not_asked_again_after_the_other_address_got_the_email(): void
+    {
+        $booking = $this->makeBooking($this->party, 'first@example.test');
+        $this->completeBooking($booking)->assertOk();
+        $this->actingAs($this->attendant, 'sanctum')->putJson("/api/bookings/{$booking->id}", ['guest_email' => 'second@example.test', 'change_reason' => 'New address'])->assertOk();
+
+        $this->travelTo(Carbon::parse('2026-10-04 14:00:00', 'America/Detroit'));
+        $this->artisan('visits:send-follow-ups')->assertSuccessful();
+        $this->assertSame(VisitFollowUp::STATUS_SENT, $this->reviewRows()->firstWhere('recipient_email', 'second@example.test')->status);
+
+        $this->clearEmails();
+        $this->actingAs($this->attendant, 'sanctum')->putJson("/api/bookings/{$booking->id}", ['guest_email' => 'first@example.test', 'change_reason' => 'Back again'])->assertOk();
+        $this->assertSame(VisitFollowUp::STATUS_CANCELED, $this->reviewRows()->firstWhere('recipient_email', 'first@example.test')->status);
+
+        $this->travelTo(Carbon::parse('2026-10-05 15:00:00', 'America/Detroit'));
+        $this->artisan('visits:send-follow-ups')->assertSuccessful();
+        $this->assertSame([], $this->followUpEmails());
     }
 }

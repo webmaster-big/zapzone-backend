@@ -1707,6 +1707,7 @@ class BookingController extends Controller
         }
 
         $previousLocationId = (int) $booking->location_id;
+        $previousBooker = \App\Services\VisitFollowUpService::bookerIdentity($booking);
         $originalValues = $booking->only([
             'status', 'payment_status', 'total_amount', 'amount_paid', 'discount_amount',
             'applied_fees', 'booking_date', 'booking_time', 'participants', 'duration', 'duration_unit',
@@ -2007,7 +2008,7 @@ class BookingController extends Controller
             }
         }
 
-        $followUp = $this->followUpAfterStatusChange($booking, $originalValues['status'] ?? null, $request);
+        $followUp = $this->followUpAfterStatusChange($booking, $originalValues['status'] ?? null, $request, \App\Services\VisitFollowUpService::bookerIdentity($booking) !== $previousBooker);
 
         return response()->json(array_filter([
             'success' => true,
@@ -2030,7 +2031,7 @@ class BookingController extends Controller
         }
     }
 
-    private function followUpAfterStatusChange(Booking $booking, ?string $previousStatus, ?Request $request = null): ?array
+    private function followUpAfterStatusChange(Booking $booking, ?string $previousStatus, ?Request $request = null, bool $addressChanged = false): ?array
     {
         try {
             $user = ($request ?? request())->user();
@@ -2050,7 +2051,7 @@ class BookingController extends Controller
             }
 
             if ($previousStatus === 'completed' && $booking->status === 'completed') {
-                return $followUps->bookerChanged($booking, $user);
+                return $followUps->bookerChanged($booking, $user, $addressChanged);
             }
         } catch (\Throwable $e) {
             Log::warning('Booking follow-up emails could not be handled', [

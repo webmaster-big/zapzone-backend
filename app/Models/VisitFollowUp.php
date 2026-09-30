@@ -27,6 +27,11 @@ class VisitFollowUp extends Model
 
     public const MAX_ATTEMPTS = 3;
 
+    public const RETRY_BACKOFF_MINUTES = [
+        1 => 15,
+        2 => 120,
+    ];
+
     public const REASON_REOPENED = 'reopened';
     public const REASON_SWITCHED_OFF = 'switched_off';
     public const REASON_VISIT_DATE = 'visit_date';
@@ -115,7 +120,13 @@ class VisitFollowUp extends Model
     {
         return $query->where('status', self::STATUS_FAILED)
             ->where('attempts', '<', self::MAX_ATTEMPTS)
-            ->where('updated_at', '<=', now()->subMinutes(10));
+            ->where(function ($query) {
+                $query->where('attempts', '<', 1)->where('updated_at', '<=', now()->subMinutes(self::RETRY_BACKOFF_MINUTES[1]));
+
+                foreach (self::RETRY_BACKOFF_MINUTES as $attempts => $minutes) {
+                    $query->orWhere(fn ($inner) => $inner->where('attempts', $attempts)->where('updated_at', '<=', now()->subMinutes($minutes)));
+                }
+            });
     }
 
     public function scopeStillContacting($query)
