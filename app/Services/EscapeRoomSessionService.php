@@ -1064,7 +1064,7 @@ class EscapeRoomSessionService
 
         $waiverIds = DB::transaction(function () use ($session, $user) {
             $locked = EscapeRoomSession::whereKey($session->id)->lockForUpdate()->first();
-            $rows = VisitFollowUp::forVisit(VisitFollowUp::VISIT_ESCAPE_ROOM_GAME, (int) $session->id)->get(['waiver_id', 'recipient_email']);
+            $rows = VisitFollowUp::forVisit(VisitFollowUp::VISIT_ESCAPE_ROOM_GAME, (int) $session->id)->stillContacting()->get(['waiver_id', 'recipient_email']);
             $contacted = $rows->pluck('waiver_id')->filter()->map(fn ($id) => (int) $id)->all();
             $contactedEmails = $rows->pluck('recipient_email')->all();
             $players = $this->membership($locked)['included']
@@ -2065,9 +2065,8 @@ class EscapeRoomSessionService
         $newPlayers = $completedWithoutPhoto
             ? $membership['included']
                 ->filter(fn (Waiver $waiver) => $this->deliveries->validEmail($waiver->adult_email))
-                ->reject(fn (Waiver $waiver) => isset($followUp['thanks_by_waiver'][$waiver->id]) || isset($followUp['reviews_by_waiver'][$waiver->id])
-                    || isset($followUp['thanks_by_email'][\App\Models\FollowUpOptOut::normalize($waiver->adult_email)])
-                    || isset($followUp['reviews_by_email'][\App\Models\FollowUpOptOut::normalize($waiver->adult_email)]))
+                ->reject(fn (Waiver $waiver) => in_array((int) $waiver->id, $followUp['contacted_waiver_ids'] ?? [], true)
+                    || in_array(\App\Models\FollowUpOptOut::normalize($waiver->adult_email), $followUp['contacted_emails'] ?? [], true))
                 ->unique(fn (Waiver $waiver) => \App\Models\FollowUpOptOut::normalize($waiver->adult_email))
                 ->count()
             : $included->filter(fn ($row) => !$row['sent'] && $row['has_email'])->count();
@@ -2192,7 +2191,7 @@ class EscapeRoomSessionService
                 'declined' => $membership['included']->filter(fn (Waiver $waiver) => $waiver->photo_video_consent === false)->count(),
                 'not_asked' => $membership['included']->filter(fn (Waiver $waiver) => $waiver->photo_video_consent === null)->count(),
             ],
-            'follow_up' => collect($followUp)->except(['thanks_by_waiver', 'reviews_by_waiver', 'thanks_by_email', 'reviews_by_email'])->all(),
+            'follow_up' => collect($followUp)->except(['thanks_by_waiver', 'reviews_by_waiver', 'thanks_by_email', 'reviews_by_email', 'contacted_waiver_ids', 'contacted_emails'])->all(),
         ];
     }
 
@@ -2214,7 +2213,7 @@ class EscapeRoomSessionService
         } catch (\Throwable $e) {
             Log::warning('Escape-room follow-up summary could not be built', ['escape_room_session_id' => $session->id, 'error' => $e->getMessage()]);
 
-            return ['available' => false, 'thanks_email' => ['active' => true], 'review_email' => ['active' => false], 'thanks_by_waiver' => [], 'reviews_by_waiver' => [], 'thanks_by_email' => [], 'reviews_by_email' => [], 'reviews' => null];
+            return ['available' => false, 'thanks_email' => ['active' => true], 'review_email' => ['active' => false], 'thanks_by_waiver' => [], 'reviews_by_waiver' => [], 'thanks_by_email' => [], 'reviews_by_email' => [], 'contacted_waiver_ids' => [], 'contacted_emails' => [], 'reviews' => null];
         }
     }
 }

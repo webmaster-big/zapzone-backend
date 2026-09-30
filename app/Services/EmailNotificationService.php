@@ -1486,7 +1486,7 @@ HTML;
                     'visit_date' => 'Visit date',
                     'visit_time' => 'Visit start time',
                     'visit_when' => 'Date and time together, e.g. "October 3, 2026 at 2:00 PM"',
-                    'booking_reference' => 'Booking or purchase reference (blank for escape-room walk-ins)',
+                    'booking_reference' => 'Booking or purchase reference (blank for escape-room games, which are emailed from the game screen)',
                 ],
                 'Escape room result' => [
                     'game_result_section' => 'Styled result box; empty when the visit was not an escape-room game',
@@ -1497,7 +1497,7 @@ HTML;
                 'Group photo' => [
                     'group_photo_section' => 'The group photo with a download button; empty when there is no photo',
                     'photo_link' => 'Link to view and download the photos',
-                    'photos_line' => 'Sentence saying the photos are attached',
+                    'photos_line' => 'Sentence saying the photos are in this email',
                     'expires_on' => 'Date the photo link stops working',
                 ],
                 'Return-visit offer' => [

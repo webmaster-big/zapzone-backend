@@ -553,7 +553,7 @@ class VisitFollowUpTest extends TestCase
         $this->assertMatchesRegularExpression('/<img src="cid:group-photo-\d+-[a-z0-9]+@zapzone"/', $html);
 
         $parts = collect($sent[0]->getAttachments());
-        $this->assertCount(2, $parts);
+        $this->assertCount(1, $parts);
         $this->assertSame(1, $parts->filter(fn ($part) => $part->getDisposition() === 'inline')->count());
 
         $this->assertCount(2, $this->followUpEmails());
@@ -1672,6 +1672,10 @@ class VisitFollowUpTest extends TestCase
         $this->assertStringContainsString('PREVIEWME', $preview['html']);
         $this->assertStringNotContainsString('Your result', $preview['html']);
         $this->assertStringContainsString("Don&#039;t want offers like this?", $preview['html']);
+
+        $default = $this->actingAs($this->admin, 'sanctum')->postJson("/api/email-notifications/{$this->thanks()->id}/preview")->assertOk()->json('data');
+        $this->assertStringContainsString('Your group photo is in this email.', $default['html']);
+        $this->assertStringNotContainsString('is attached', $default['html']);
     }
 
     private function failMail(): void
@@ -1975,5 +1979,351 @@ class VisitFollowUpTest extends TestCase
 
         $this->artisan('visits:send-follow-ups')->assertSuccessful();
         $this->assertCount(1, $this->emailsTo('second@example.test'));
+    }
+
+    public function test_players_of_a_cancelled_escape_room_booking_are_not_asked_for_a_review(): void
+    {
+        $booking = $this->makeBooking($this->morgue, 'booker@example.test', 'checked-in', '14:00');
+        $avery = $this->signed($this->morgue, '14:00', 'Avery', 'avery@example.test');
+        $this->assertSame($booking->id, (int) $avery->fresh()->booking_id);
+        $game = $this->openGame($this->morgue, '14:00');
+        $this->withGroupPhoto($game['id']);
+        $this->completeGame($game['id'])->assertOk();
+        $review = $this->reviewRows()->firstWhere('recipient_email', 'avery@example.test');
+        $this->assertSame(VisitFollowUp::STATUS_SCHEDULED, $review->status);
+
+        $booking->fresh()->update(['status' => 'cancelled', 'payment_status' => 'refunded']);
+        $this->actingAs($this->attendant, 'sanctum')
+            ->postJson("/api/visit-follow-ups/{$review->id}/send-now")
+            ->assertStatus(422)
+            ->assertJsonPath('message', "The player's booking was cancelled, so this email was not sent.");
+        $this->assertSame(VisitFollowUp::STATUS_CANCELED, $review->fresh()->status);
+        $this->assertSame(VisitFollowUp::REASON_LEFT_GAME, $review->fresh()->reason);
+        $this->assertStringContainsString('booking was cancelled', $review->fresh()->error);
+
+        $this->actingAs($this->attendant, 'sanctum')
+            ->postJson("/api/visit-follow-ups/{$review->id}/send-now")
+            ->assertStatus(422)
+            ->assertJsonPath('message', "This player's booking was cancelled or deleted, so this email cannot be sent.");
+
+        $this->clearEmails();
+        $this->travelTo(Carbon::parse('2026-10-04 14:00:00', 'America/Detroit'));
+        $this->artisan('visits:send-follow-ups')->assertSuccessful();
+        $this->assertSame([], array_filter($this->emailsTo('avery@example.test'), fn ($email) => str_starts_with((string) $email->getSubject(), 'How was')));
+    }
+
+    public function test_a_game_review_follows_the_email_when_a_duplicate_waiver_goes(): void
+    {
+        $this->thanks()->update(['is_active' => false]);
+        $first = $this->signed($this->morgue, '15:00', 'Pat', 'family@example.test');
+        $second = $this->signed($this->morgue, '15:00', 'Pat', 'Family@example.test');
+        $third = $this->signed($this->morgue, '15:00', 'Sam', 'family@example.test');
+        $game = $this->openGame($this->morgue, '15:00');
+        $this->completeGame($game['id'], ['without_photo' => true, 'email_players' => true])->assertOk();
+        $review = $this->reviewRows()->sole();
+        $this->assertSame($first->id, (int) $review->waiver_id);
+
+        $this->actingAs($this->attendant, 'sanctum')
+            ->postJson("/api/escape-rooms/sessions/{$game['id']}/waivers/{$first->id}/remove")
+            ->assertOk();
+        $this->assertSame(VisitFollowUp::STATUS_SCHEDULED, $review->fresh()->status);
+        $this->assertSame($second->id, (int) $review->fresh()->waiver_id);
+
+        $second->fresh()->delete();
+        $this->assertSame((int) $game['id'], (int) $third->fresh()->escape_room_session_id);
+
+        $this->travelTo(Carbon::parse('2026-10-04 16:00:00', 'America/Detroit'));
+        $this->artisan('visits:send-follow-ups')->assertSuccessful();
+        $this->assertSame(VisitFollowUp::STATUS_SENT, $review->fresh()->status);
+        $this->assertSame($third->id, (int) $review->fresh()->waiver_id);
+        $this->assertSame('Sam Player', $review->fresh()->recipient_name);
+        $sent = $this->emailsTo('family@example.test');
+        $this->assertCount(1, $sent);
+        $this->assertStringContainsString('Sam', $sent[0]->getSubject());
+        $this->assertStringNotContainsString('Pat', $sent[0]->getSubject());
+    }
+
+    public function test_a_review_moved_to_a_player_still_in_the_game_greets_that_player(): void
+    {
+        $this->thanks()->update(['is_active' => false]);
+        $pat = $this->signed($this->morgue, '15:00', 'Pat', 'family@example.test');
+        $sam = $this->signed($this->morgue, '15:00', 'Sam', 'family@example.test');
+        $game = $this->openGame($this->morgue, '15:00');
+        $this->completeGame($game['id'], ['without_photo' => true, 'email_players' => true])->assertOk();
+        $review = $this->reviewRows()->sole();
+        $this->assertSame('Pat Player', $review->recipient_name);
+
+        $this->actingAs($this->attendant, 'sanctum')
+            ->postJson("/api/escape-rooms/sessions/{$game['id']}/waivers/{$pat->id}/move", ['package_id' => $this->morgue->id, 'time' => '16:00'])
+            ->assertOk();
+
+        $this->assertSame($sam->id, (int) $review->fresh()->waiver_id);
+        $this->assertSame('Sam Player', $review->fresh()->recipient_name);
+    }
+
+    public function test_a_review_brought_back_for_a_new_player_with_the_same_email_points_at_that_player(): void
+    {
+        $this->thanks()->update(['is_active' => false]);
+        $first = $this->signed($this->morgue, '15:00', 'Pat', 'family@example.test');
+        $later = $this->signed($this->morgue, '16:00', 'Sam', 'family@example.test');
+        $game = $this->openGame($this->morgue, '15:00');
+        $this->completeGame($game['id'], ['without_photo' => true, 'email_players' => true])->assertOk();
+
+        $this->actingAs($this->attendant, 'sanctum')
+            ->postJson("/api/escape-rooms/sessions/{$game['id']}/waivers/{$first->id}/remove")
+            ->assertOk();
+        $review = $this->reviewRows()->sole();
+        $this->assertSame(VisitFollowUp::REASON_LEFT_GAME, $review->reason);
+
+        $this->actingAs($this->attendant, 'sanctum')
+            ->postJson("/api/escape-rooms/sessions/{$later->fresh()->escape_room_session_id}/waivers/{$later->id}/move", ['package_id' => $this->morgue->id, 'time' => '15:00'])
+            ->assertOk();
+        $this->actingAs($this->attendant, 'sanctum')->postJson("/api/escape-rooms/sessions/{$game['id']}/send-new")->assertOk();
+
+        $this->assertSame(VisitFollowUp::STATUS_SCHEDULED, $review->fresh()->status);
+        $this->assertSame($later->id, (int) $review->fresh()->waiver_id);
+        $this->assertSame('Sam Player', $review->fresh()->recipient_name);
+    }
+
+    public function test_a_player_moved_out_of_a_game_and_back_can_be_emailed_again(): void
+    {
+        $this->thanks()->update(['is_active' => false]);
+        $walkIn = $this->signed($this->morgue, '15:00', 'Jordan', 'walkin@example.test');
+        $casey = $this->signed($this->morgue, '15:00', 'Casey', 'casey@example.test');
+        $game = $this->openGame($this->morgue, '15:00');
+        $this->completeGame($game['id'], ['without_photo' => true, 'email_players' => true])->assertOk();
+
+        foreach ([$walkIn, $casey] as $waiver) {
+            $this->actingAs($this->attendant, 'sanctum')
+                ->postJson("/api/escape-rooms/sessions/{$game['id']}/waivers/{$waiver->id}/move", ['package_id' => $this->morgue->id, 'time' => '16:00'])
+                ->assertOk();
+        }
+
+        $walkInReview = $this->reviewRows()->firstWhere('recipient_email', 'walkin@example.test');
+        $this->assertSame(VisitFollowUp::REASON_LEFT_GAME, $walkInReview->reason);
+        $this->actingAs($this->attendant, 'sanctum')->postJson("/api/visit-follow-ups/{$walkInReview->id}/send-now")->assertStatus(422);
+
+        foreach ([$walkIn, $casey] as $waiver) {
+            $this->actingAs($this->attendant, 'sanctum')
+                ->postJson("/api/escape-rooms/sessions/{$waiver->fresh()->escape_room_session_id}/waivers/{$waiver->id}/move", ['package_id' => $this->morgue->id, 'time' => '15:00'])
+                ->assertOk();
+        }
+
+        $this->actingAs($this->attendant, 'sanctum')->getJson("/api/escape-rooms/sessions/{$game['id']}")
+            ->assertOk()
+            ->assertJsonPath('data.counts.new_players', 2)
+            ->assertJsonPath('data.can_send_new', true);
+
+        $this->actingAs($this->attendant, 'sanctum')->postJson("/api/visit-follow-ups/{$walkInReview->id}/send-now")->assertOk();
+        $this->assertSame(VisitFollowUp::STATUS_SENT, $walkInReview->fresh()->status);
+        $this->assertCount(1, $this->emailsTo('walkin@example.test'));
+
+        $this->actingAs($this->attendant, 'sanctum')->postJson("/api/escape-rooms/sessions/{$game['id']}/send-new")->assertOk();
+        $caseyReview = $this->reviewRows()->firstWhere('recipient_email', 'casey@example.test');
+        $this->assertSame(VisitFollowUp::STATUS_SCHEDULED, $caseyReview->status);
+        $this->assertNull($caseyReview->reason);
+        $this->actingAs($this->attendant, 'sanctum')->postJson("/api/escape-rooms/sessions/{$game['id']}/send-new")->assertStatus(409);
+    }
+
+    public function test_the_thirty_day_rule_is_measured_from_when_the_review_would_go_out(): void
+    {
+        $this->completeBooking($this->makeBooking($this->party, 'regular@example.test'))->assertOk();
+        $this->travelTo(Carbon::parse('2026-10-04 14:00:00', 'America/Detroit'));
+        $this->artisan('visits:send-follow-ups')->assertSuccessful();
+        $this->assertSame(VisitFollowUp::STATUS_SENT, $this->reviewRows()->first()->status);
+
+        $this->travelTo(Carbon::parse('2026-11-03 13:30:00', 'America/Detroit'));
+        $this->completeBooking($this->makeBooking($this->party, 'regular@example.test'))->assertOk();
+        $this->assertSame(VisitFollowUp::STATUS_SCHEDULED, $this->reviewRows()->last()->status);
+
+        $this->clearEmails();
+        $this->travelTo(Carbon::parse('2026-11-04 13:45:00', 'America/Detroit'));
+        $this->artisan('visits:send-follow-ups')->assertSuccessful();
+        $this->assertSame(VisitFollowUp::STATUS_SENT, $this->reviewRows()->last()->fresh()->status);
+    }
+
+    public function test_a_lone_blank_review_link_is_dropped_and_no_line_is_too_long_to_send(): void
+    {
+        $this->location->update(['review_url' => null]);
+        $this->copyOf($this->review(), [
+            'body' => '<p>Hi {{customer_first_name}}</p><p>Loved it? <a href="{{review_link}}">Review us on Google</a></p><p>See you soon</p>',
+        ]);
+
+        $this->completeBooking($this->makeBooking($this->party, 'lone@example.test'))->assertOk();
+        $this->travelTo(Carbon::parse('2026-10-04 14:00:00', 'America/Detroit'));
+        $this->clearEmails();
+        $this->artisan('visits:send-follow-ups')->assertSuccessful();
+
+        $html = $this->emailsTo('lone@example.test')[0]->getHtmlBody();
+        $this->assertStringNotContainsString('Review us on Google', $html);
+        $this->assertStringNotContainsString('href=""', $html);
+        $this->assertStringContainsString('See you soon', $html);
+        $this->assertStringContainsString('/feedback/', $html);
+        $this->assertLessThan(998, max(array_map('strlen', preg_split('/\r?\n/', $html))));
+    }
+
+    public function test_the_group_photo_is_attached_when_a_custom_email_has_no_place_for_it(): void
+    {
+        $this->copyOf($this->thanks(), [
+            'body' => '<p>Hi {{customer_first_name}}</p><p><a href="{{photo_link}}">See your photos</a></p>',
+            'activity_filter' => EmailNotification::ACTIVITY_ESCAPE_ROOM,
+        ]);
+        $this->signed($this->morgue, '14:00', 'Avery', 'avery@example.test');
+        $game = $this->openGame($this->morgue, '14:00');
+        $this->withGroupPhoto($game['id']);
+        $this->completeGame($game['id'])->assertOk();
+
+        $email = $this->emailsTo('avery@example.test')[0];
+        $this->assertStringNotContainsString('cid:', $email->getHtmlBody());
+        $parts = collect($email->getAttachments());
+        $this->assertCount(1, $parts);
+        $this->assertSame('attachment', $parts->first()->getDisposition());
+    }
+
+    public function test_an_admin_with_a_home_location_can_make_an_email_for_every_location(): void
+    {
+        $created = $this->actingAs($this->admin, 'sanctum')->postJson('/api/email-notifications', [
+            'name' => 'Thanks everywhere',
+            'trigger_type' => EmailNotification::TRIGGER_VISIT_COMPLETED,
+            'entity_type' => EmailNotification::ENTITY_PACKAGE,
+            'location_id' => null,
+            'subject' => 'Thanks from every location',
+            'body' => '<p>Thanks {{customer_first_name}}</p>',
+            'recipient_types' => ['customer'],
+        ])->assertCreated()->assertJsonPath('data.location_id', null);
+
+        $names = collect($this->actingAs($this->admin, 'sanctum')->getJson('/api/email-notifications/entities?entity_type=package')->assertOk()->json('data'))->pluck('name');
+        $this->assertTrue($names->contains('Birthday Party'));
+        $this->assertTrue($names->contains('Brighton Party'));
+        $this->assertFalse(collect($this->actingAs($this->attendant, 'sanctum')->getJson('/api/email-notifications/entities?entity_type=package')->assertOk()->json('data'))->pluck('name')->contains('Brighton Party'));
+
+        $this->completeBooking($this->makeBooking($this->otherParty, 'brighton@example.test'), $this->otherAttendant)->assertOk();
+        $this->assertSame('Thanks from every location', $this->emailsTo('brighton@example.test')[0]->getSubject());
+
+        $id = $created->json('data.id');
+        $this->actingAs($this->admin, 'sanctum')->putJson("/api/email-notifications/{$id}", ['location_id' => $this->location->id])->assertOk()->assertJsonPath('data.location_id', $this->location->id);
+        $this->actingAs($this->admin, 'sanctum')->putJson("/api/email-notifications/{$id}", ['location_id' => null])->assertOk()->assertJsonPath('data.location_id', null);
+    }
+
+    public function test_staff_alerts_are_closed_to_customers_and_to_other_locations(): void
+    {
+        $alert = Notification::create([
+            'location_id' => $this->location->id,
+            'type' => 'customer',
+            'priority' => 'high',
+            'title' => 'Low rating from a guest',
+            'message' => 'Jordan rated Birthday Party 1 out of 5. "Too loud"',
+            'status' => 'unread',
+        ]);
+        $token = $this->customerToken();
+
+        $this->withToken($token)->getJson('/api/notifications?type=customer')->assertForbidden();
+        $this->withToken($token)->deleteJson('/api/notifications/clear-all?location_id=' . $this->location->id)->assertForbidden();
+        $this->withToken($token)->patchJson("/api/notifications/{$alert->id}/mark-as-read")->assertForbidden();
+        $this->app['auth']->forgetGuards();
+
+        $this->actingAs($this->otherAttendant, 'sanctum')->patchJson("/api/notifications/{$alert->id}/mark-as-read")->assertForbidden();
+        $this->actingAs($this->otherAttendant, 'sanctum')->deleteJson('/api/notifications/clear-all?location_id=' . $this->location->id)->assertForbidden();
+        $this->assertSame([], collect($this->actingAs($this->otherAttendant, 'sanctum')->getJson('/api/notifications')->assertOk()->json('data.notifications'))->pluck('id')->all());
+
+        $this->assertSame([$alert->id], collect($this->actingAs($this->attendant, 'sanctum')->getJson('/api/notifications')->assertOk()->json('data.notifications'))->pluck('id')->all());
+        $this->actingAs($this->attendant, 'sanctum')->patchJson("/api/notifications/{$alert->id}/mark-as-read")->assertOk();
+        $this->assertSame('read', $alert->fresh()->status);
+    }
+
+    public function test_a_guest_marked_inactive_in_contacts_gets_no_offer_or_review_request(): void
+    {
+        $this->choosePromo($this->makePromo(['code' => 'NOTFORYOU']))->assertOk();
+        $booking = $this->makeBooking($this->party, 'quiet@example.test');
+        \App\Models\Contact::updateOrCreate(['company_id' => $this->company->id, 'email' => 'quiet@example.test'], ['status' => 'inactive']);
+
+        $this->completeBooking($booking)->assertOk();
+
+        $html = $this->emailsTo('quiet@example.test')[0]->getHtmlBody();
+        $this->assertStringNotContainsString('NOTFORYOU', $html);
+        $review = $this->reviewRows()->sole();
+        $this->assertSame(VisitFollowUp::STATUS_SKIPPED, $review->status);
+        $this->assertSame(VisitFollowUp::REASON_OPTED_OUT, $review->reason);
+        $this->assertStringContainsString('inactive in Contacts', $review->error);
+        $this->assertSame(0, FollowUpOptOut::count());
+    }
+
+    public function test_every_staff_completion_path_sends_the_thanks_email(): void
+    {
+        $viaComplete = $this->makeBooking($this->party, 'viacomplete@example.test');
+        $this->actingAs($this->attendant, 'sanctum')
+            ->patchJson("/api/bookings/{$viaComplete->id}/complete", ['change_reason' => 'Done'])
+            ->assertOk()
+            ->assertJsonPath('follow_up.thanks.0.status', VisitFollowUp::STATUS_SENT);
+        $this->assertCount(1, $this->emailsTo('viacomplete@example.test'));
+
+        $viaStatus = $this->makeBooking($this->party, 'viastatus@example.test');
+        $this->actingAs($this->attendant, 'sanctum')
+            ->patchJson("/api/bookings/{$viaStatus->id}/status", ['status' => 'completed', 'change_reason' => 'Done'])
+            ->assertOk()
+            ->assertJsonPath('follow_up.thanks.0.status', VisitFollowUp::STATUS_SENT);
+        $this->assertCount(1, $this->emailsTo('viastatus@example.test'));
+
+        $purchase = $this->makeEventPurchase('viaedit@example.test');
+        $this->actingAs($this->attendant, 'sanctum')
+            ->putJson("/api/event-purchases/{$purchase->id}", ['status' => 'completed'])
+            ->assertOk()
+            ->assertJsonPath('follow_up.thanks.0.status', VisitFollowUp::STATUS_SENT);
+        $this->assertCount(1, $this->emailsTo('viaedit@example.test'));
+
+        $this->actingAs($this->attendant, 'sanctum')
+            ->putJson("/api/event-purchases/{$purchase->id}", ['guest_email' => 'fixed@example.test'])
+            ->assertOk();
+        $reviews = VisitFollowUp::where('visit_type', VisitFollowUp::VISIT_EVENT_PURCHASE)->where('kind', 'review')->get();
+        $this->assertSame(VisitFollowUp::REASON_RECIPIENT_CHANGED, $reviews->firstWhere('recipient_email', 'viaedit@example.test')->reason);
+        $this->assertSame(VisitFollowUp::STATUS_SCHEDULED, $reviews->firstWhere('recipient_email', 'fixed@example.test')->status);
+    }
+
+    public function test_a_payment_never_moves_a_visit_out_of_checked_in_or_completed(): void
+    {
+        $this->assertSame('confirmed', Booking::statusAfterPayment(null));
+        $this->assertSame('confirmed', Booking::statusAfterPayment('pending'));
+        $this->assertSame('confirmed', Booking::statusAfterPayment('confirmed'));
+        $this->assertSame('checked-in', Booking::statusAfterPayment('checked-in'));
+        $this->assertSame('completed', Booking::statusAfterPayment('completed'));
+    }
+
+    public function test_the_follow_up_sender_runs_every_fifteen_minutes(): void
+    {
+        $this->artisan('schedule:list')->assertSuccessful();
+        $event = collect(app(\Illuminate\Console\Scheduling\Schedule::class)->events())
+            ->first(fn ($event) => str_contains((string) $event->command, 'visits:send-follow-ups'));
+
+        $this->assertNotNull($event);
+        $this->assertSame('*/15 * * * *', $event->expression);
+        $this->assertTrue($event->withoutOverlapping);
+    }
+
+    public function test_the_most_specific_copy_wins_and_the_newest_breaks_a_tie(): void
+    {
+        $older = $this->copyOf($this->thanks(), ['subject' => 'Older copy']);
+        $this->copyOf($this->thanks(), ['subject' => 'Newer copy']);
+        $this->completeBooking($this->makeBooking($this->party, 'tie@example.test'))->assertOk();
+        $this->assertSame('Newer copy', $this->emailsTo('tie@example.test')[0]->getSubject());
+        $older->delete();
+
+        $this->copyOf($this->thanks(), ['subject' => 'Waterford copy', 'location_id' => $this->location->id]);
+        $this->copyOf($this->thanks(), ['subject' => 'Package copy', 'entity_type' => EmailNotification::ENTITY_PACKAGE]);
+        $this->copyOf($this->thanks(), ['subject' => 'Escape room copy', 'activity_filter' => EmailNotification::ACTIVITY_ESCAPE_ROOM]);
+
+        $this->completeBooking($this->makeBooking($this->party, 'party@example.test'))->assertOk();
+        $this->assertSame('Package copy', $this->emailsTo('party@example.test')[0]->getSubject());
+
+        $this->completeBooking($this->makeBooking($this->otherParty, 'brighton@example.test'), $this->otherAttendant)->assertOk();
+        $this->assertSame('Package copy', $this->emailsTo('brighton@example.test')[0]->getSubject());
+        $this->copyOf($this->thanks(), ['subject' => 'Waterford package copy', 'location_id' => $this->location->id, 'entity_type' => EmailNotification::ENTITY_PACKAGE]);
+        $this->completeBooking($this->makeBooking($this->party, 'party2@example.test'))->assertOk();
+        $this->assertSame('Waterford package copy', $this->emailsTo('party2@example.test')[0]->getSubject());
+
+        $this->signed($this->morgue, '14:00', 'Avery', 'avery@example.test');
+        $game = $this->openGame($this->morgue, '14:00');
+        $this->withGroupPhoto($game['id']);
+        $this->completeGame($game['id'])->assertOk();
+        $this->assertSame('Escape room copy', $this->emailsTo('avery@example.test')[0]->getSubject());
     }
 }

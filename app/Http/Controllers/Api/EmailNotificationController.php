@@ -174,7 +174,9 @@ class EmailNotificationController extends Controller
 
             $notification = EmailNotification::create([
                 'company_id' => $user->company_id,
-                'location_id' => $validated['location_id'] ?? $user->location_id,
+                'location_id' => in_array($user->role, ['company_admin', 'admin'], true) && array_key_exists('location_id', $validated)
+                    ? $validated['location_id']
+                    : ($validated['location_id'] ?? $user->location_id),
                 'name' => $validated['name'],
                 'description' => $validated['description'] ?? null,
                 'trigger_type' => $validated['trigger_type'],
@@ -469,6 +471,7 @@ class EmailNotificationController extends Controller
         $user = Auth::user();
         $entityType = $request->input('entity_type', 'package');
         $locationId = $request->input('location_id');
+        $homeLocationId = in_array($user->role, ['company_admin', 'admin'], true) ? null : $user->location_id;
         $inCompany = fn ($query) => $query->whereHas('location', fn ($location) => $location->where('company_id', $user->company_id));
 
         if ($entityType === 'package') {
@@ -476,8 +479,8 @@ class EmailNotificationController extends Controller
 
             if ($locationId) {
                 $query->where('location_id', $locationId);
-            } elseif ($user->location_id) {
-                $query->where('location_id', $user->location_id);
+            } elseif ($homeLocationId) {
+                $query->where('location_id', $homeLocationId);
             }
 
             $columns = ['id', 'name', 'location_id', 'is_active'];
@@ -494,8 +497,8 @@ class EmailNotificationController extends Controller
 
             if ($locationId) {
                 $query->where('location_id', $locationId);
-            } elseif ($user->location_id) {
-                $query->where('location_id', $user->location_id);
+            } elseif ($homeLocationId) {
+                $query->where('location_id', $homeLocationId);
             }
 
             $entities = $query->select('id', 'name', 'location_id', 'is_active')
@@ -507,8 +510,8 @@ class EmailNotificationController extends Controller
 
             if ($locationId) {
                 $query->where('location_id', $locationId);
-            } elseif ($user->location_id) {
-                $query->where('location_id', $user->location_id);
+            } elseif ($homeLocationId) {
+                $query->where('location_id', $homeLocationId);
             }
 
             $entities = $query->select('id', 'name', 'location_id', 'is_active')

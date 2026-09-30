@@ -123,6 +123,11 @@ class Booking extends Model
         'cancelled_at' => 'datetime',
     ];
 
+    public static function statusAfterPayment(?string $current): string
+    {
+        return in_array($current, ['checked-in', 'completed'], true) ? $current : 'confirmed';
+    }
+
     public function customer(): BelongsTo
     {
         return $this->belongsTo(Customer::class);

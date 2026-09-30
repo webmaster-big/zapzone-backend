@@ -118,6 +118,18 @@ class VisitFollowUp extends Model
             ->where('updated_at', '<=', now()->subMinutes(10));
     }
 
+    public function scopeStillContacting($query)
+    {
+        return $query->where(fn ($query) => $query->where('status', '!=', self::STATUS_CANCELED)
+            ->orWhereNull('reason')
+            ->orWhere('reason', '!=', self::REASON_LEFT_GAME));
+    }
+
+    public function leftGame(): bool
+    {
+        return $this->status === self::STATUS_CANCELED && $this->reason === self::REASON_LEFT_GAME;
+    }
+
     public function gaveUp(): bool
     {
         return $this->status === self::STATUS_FAILED && $this->attempts >= self::MAX_ATTEMPTS;

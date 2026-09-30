@@ -2875,10 +2875,11 @@ class EscapeRoomWorkflowTest extends TestCase
         $email = $this->sentPhotoEmails()[0];
         $html = $email->getHtmlBody();
         $this->assertStringContainsString('escape this time. Come back and try again!', $html);
-        $this->assertStringContainsString('Your 2 group photos are attached.', $html);
+        $this->assertStringContainsString('Your 2 group photos are in this email.', $html);
         $this->assertStringContainsString('2485559000', $html);
         $this->assertStringNotContainsString('noreply', $html);
         $this->assertCount(2, $email->getAttachments());
+        $this->assertSame(1, collect($email->getAttachments())->filter(fn ($part) => $part->getDisposition() === 'inline')->count());
     }
 
     public function test_a_custom_wording_that_lost_the_time_gets_it_back_before_the_sign_off(): void

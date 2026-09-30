@@ -212,11 +212,17 @@ class GmailApiService
         $encoded = static fn (string $value) => preg_match('/[^\x20-\x7E]/', $value)
             ? mb_encode_mimeheader($value, 'UTF-8', 'B', "\r\n ")
             : $value;
-        $displayName = preg_match('/[^\x20-\x7E]/', $fromName)
-            ? $encoded($fromName)
-            : (preg_match('/[()<>\[\]:;@\\\\,."]/', $fromName) ? '"' . addcslashes($fromName, '"\\') . '"' : $fromName);
 
-        $emailContent = "From: {$displayName} <{$from}>\r\n";
+        try {
+            $fromHeader = (new \Symfony\Component\Mime\Header\MailboxHeader('From', new \Symfony\Component\Mime\Address($from, $fromName)))->toString();
+        } catch (\Throwable) {
+            $displayName = preg_match('/[^\x20-\x7E]/', $fromName)
+                ? $encoded($fromName)
+                : (preg_match('/[()<>\[\]:;@\\\\,."]/', $fromName) ? '"' . addcslashes($fromName, '"\\') . '"' : $fromName);
+            $fromHeader = "From: {$displayName} <{$from}>";
+        }
+
+        $emailContent = $fromHeader . "\r\n";
         $emailContent .= "To: {$to}\r\n";
         $emailContent .= "Reply-To: {$from}\r\n";
         $emailContent .= "Subject: " . $encoded($subject) . "\r\n";

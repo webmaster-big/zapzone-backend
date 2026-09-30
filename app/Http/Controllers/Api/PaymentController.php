@@ -2344,7 +2344,7 @@ class PaymentController extends Controller
                                     'payment_status' => $totalPaid >= $payable->total_amount ? 'paid' : 'partial',
                                     'payment_method' => 'authorize.net',
                                     'transaction_id' => $transactionId,
-                                    'status' => in_array($payable->status, ['checked-in', 'completed'], true) ? $payable->status : 'confirmed',
+                                    'status' => Booking::statusAfterPayment($payable->status),
                                 ]);
 
                                 try {
@@ -2383,7 +2383,7 @@ class PaymentController extends Controller
                                     'payment_method' => 'authorize.net',
                                     'transaction_id' => $transactionId,
                                     'payment_status' => $totalPaid >= $payable->total_amount ? 'paid' : 'partial',
-                                    'status' => in_array($payable->status, ['checked-in', 'completed'], true) ? $payable->status : 'confirmed',
+                                    'status' => Booking::statusAfterPayment($payable->status),
                                 ]);
                             }
                         } elseif ($payment->payable_type === Payment::TYPE_TICKET_ORDER) {

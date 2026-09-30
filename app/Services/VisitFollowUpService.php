@@ -51,8 +51,6 @@ class VisitFollowUpService
 
     public const LOW_RATING = 2;
 
-    public const INLINE_PREVIEW_EDGE = 1000;
-
     public const PROMO_ALERT_DAYS = 7;
 
     public const OPT_OUT_PREFIX = 'u.';
@@ -505,15 +503,38 @@ class VisitFollowUpService
             return 0;
         }
 
-        return VisitFollowUp::forVisit(VisitFollowUp::VISIT_ESCAPE_ROOM_GAME, $gameId)
+        $rows = VisitFollowUp::forVisit(VisitFollowUp::VISIT_ESCAPE_ROOM_GAME, $gameId)
             ->where('waiver_id', $waiverId)
             ->whereIn('status', [VisitFollowUp::STATUS_SCHEDULED, VisitFollowUp::STATUS_FAILED])
-            ->update([
-                'status' => VisitFollowUp::STATUS_CANCELED,
-                'error' => 'The player was taken out of this game, so this email was not sent.',
-                'reason' => VisitFollowUp::REASON_LEFT_GAME,
-                'updated_at' => now(),
-            ]);
+            ->get();
+
+        if ($rows->isEmpty()) {
+            return 0;
+        }
+
+        $stayers = Waiver::where('escape_room_session_id', $gameId)
+            ->where('status', Waiver::STATUS_COMPLETED)
+            ->whereKeyNot($waiverId)
+            ->get(['id', 'adult_email', 'adult_first_name', 'adult_last_name', 'customer_id']);
+        $canceled = 0;
+
+        foreach ($rows as $row) {
+            $stayer = $stayers->first(fn (Waiver $waiver) => FollowUpOptOut::normalize($waiver->adult_email) === $row->recipient_email);
+            $changed = VisitFollowUp::whereKey($row->id)
+                ->whereIn('status', [VisitFollowUp::STATUS_SCHEDULED, VisitFollowUp::STATUS_FAILED])
+                ->update($stayer
+                    ? $this->playerFields($stayer, $row) + ['updated_at' => now()]
+                    : [
+                        'status' => VisitFollowUp::STATUS_CANCELED,
+                        'error' => 'The player was taken out of this game, so this email was not sent.',
+                        'reason' => VisitFollowUp::REASON_LEFT_GAME,
+                        'updated_at' => now(),
+                    ]);
+
+            $canceled += $stayer ? 0 : $changed;
+        }
+
+        return $canceled;
     }
 
     public function visitRestored(string $visitType, int $visitId, ?User $user): ?array
@@ -670,7 +691,7 @@ class VisitFollowUpService
             }
 
             $block = $held ?? ($kind === VisitFollowUp::KIND_REVIEW
-                ? $this->reviewBlock($visit->companyId, $email, $existing?->id, $recipient['waiver_id'] ?? $existing?->waiver_id)
+                ? $this->reviewBlock($visit->companyId, $email, $existing?->id, $recipient['waiver_id'] ?? $existing?->waiver_id, $dueAt)
                 : null);
 
             $fields = [
@@ -686,7 +707,13 @@ class VisitFollowUpService
                 $revived = VisitFollowUp::whereKey($existing->id)
                     ->where('status', $existing->status)
                     ->where('attempts', $existing->attempts)
-                    ->update($fields + ['attempts' => 0, 'updated_at' => now()]);
+                    ->update($fields + [
+                        'waiver_id' => $recipient['waiver_id'] ?? $existing->waiver_id,
+                        'customer_id' => array_key_exists('customer_id', $recipient) ? $recipient['customer_id'] : $existing->customer_id,
+                        'recipient_name' => mb_substr((string) ($recipient['name'] ?? ''), 0, 190) ?: $existing->recipient_name,
+                        'attempts' => 0,
+                        'updated_at' => now(),
+                    ]);
 
                 if ($revived === 1) {
                     $rows[] = $existing->fresh();
@@ -717,7 +744,7 @@ class VisitFollowUpService
         return $rows;
     }
 
-    public function reviewBlock(int $companyId, string $email, ?int $exceptId = null, ?int $waiverId = null): ?array
+    public function reviewBlock(int $companyId, string $email, ?int $exceptId = null, ?int $waiverId = null, ?Carbon $at = null): ?array
     {
         if ($block = $this->marketingBlock($companyId, $email, $waiverId)) {
             return $block;
@@ -730,7 +757,7 @@ class VisitFollowUpService
 
         $recent = (clone $others)
             ->where('status', VisitFollowUp::STATUS_SENT)
-            ->where('sent_at', '>=', now()->subDays(self::REVIEW_REPEAT_DAYS))
+            ->where('sent_at', '>=', ($at && $at->isFuture() ? $at : now())->copy()->subDays(self::REVIEW_REPEAT_DAYS))
             ->orderByDesc('sent_at')
             ->first();
 
@@ -898,11 +925,17 @@ class VisitFollowUpService
                 return null;
             }
 
-            $gameId = Waiver::whereKey($row->waiver_id)->value('escape_room_session_id');
+            [$player, $problem] = $this->gamePlayer($row, $visit);
 
-            return (int) $gameId === (int) $visit->id()
-                ? null
-                : ['reason' => VisitFollowUp::REASON_LEFT_GAME, 'error' => 'The player was taken out of this game, so this email was not sent.'];
+            if ($player && (int) $player->id !== (int) $row->waiver_id) {
+                $row->forceFill($this->playerFields($player, $row));
+            }
+
+            return $player ? null : ['reason' => VisitFollowUp::REASON_LEFT_GAME, 'error' => match ($problem) {
+                'booking_cancelled' => "The player's booking was cancelled, so this email was not sent.",
+                'booking_deleted' => "The player's booking was deleted, so this email was not sent.",
+                default => 'The player was taken out of this game, so this email was not sent.',
+            }];
         }
 
         $current = $this->bookerRecipient($visit->subject);
@@ -915,6 +948,37 @@ class VisitFollowUpService
                     ? 'The guest\'s email address was changed, so this email was not sent to the old address.'
                     : 'The email address was removed from this visit.',
             ];
+    }
+
+    protected function playerFields(Waiver $waiver, VisitFollowUp $row): array
+    {
+        return [
+            'waiver_id' => $waiver->id,
+            'customer_id' => $waiver->customer_id,
+            'recipient_name' => mb_substr(trim(($waiver->adult_first_name ?? '') . ' ' . ($waiver->adult_last_name ?? '')), 0, 190) ?: $row->recipient_name,
+        ];
+    }
+
+    protected function gamePlayer(VisitFollowUp $row, CompletedVisit $visit): array
+    {
+        $candidates = Waiver::withoutHeavyColumns()
+            ->with('booking:id,status')
+            ->where('escape_room_session_id', $visit->id())
+            ->where('status', Waiver::STATUS_COMPLETED)
+            ->get()
+            ->filter(fn (Waiver $waiver) => (int) $waiver->id === (int) $row->waiver_id
+                || FollowUpOptOut::normalize($waiver->adult_email) === $row->recipient_email)
+            ->sortByDesc(fn (Waiver $waiver) => (int) $waiver->id === (int) $row->waiver_id ? 1 : 0)
+            ->values();
+        $bookingProblem = fn (Waiver $waiver) => !$waiver->booking_id ? null
+            : (!$waiver->booking ? 'booking_deleted' : ($waiver->booking->status === 'cancelled' ? 'booking_cancelled' : null));
+        $player = $candidates->first(fn (Waiver $waiver) => $bookingProblem($waiver) === null);
+
+        if ($player) {
+            return [$player, null];
+        }
+
+        return [null, $candidates->isEmpty() ? 'left' : $bookingProblem($candidates->first())];
     }
 
     public function openLog(EmailNotification $notification, string $email, $notifiable): ?EmailNotificationLog
@@ -1006,7 +1070,14 @@ class VisitFollowUpService
         }
 
         if ($row->reason === VisitFollowUp::REASON_LEFT_GAME) {
-            throw new \DomainException('This player was taken out of the game, so this email cannot be sent.');
+            $visit = CompletedVisit::find($row->visit_type, (int) $row->visit_id);
+            [$player, $problem] = $visit && $visit->isGame() ? $this->gamePlayer($row, $visit) : [null, 'left'];
+
+            if (!$player) {
+                throw new \DomainException($problem === 'left'
+                    ? 'This player is not in the game any more, so this email cannot be sent.'
+                    : "This player's booking was cancelled or deleted, so this email cannot be sent.");
+            }
         }
 
         $heldForDate = $row->reason === VisitFollowUp::REASON_VISIT_DATE;
@@ -1216,6 +1287,8 @@ class VisitFollowUpService
             'thanks_by_email' => $rows->where('kind', VisitFollowUp::KIND_THANKS)
                 ->sortBy('id')->keyBy('recipient_email')->map->toStaffArray()->all(),
             'reviews_by_email' => $reviews->sortBy('id')->keyBy('recipient_email')->map->toStaffArray()->all(),
+            'contacted_waiver_ids' => $rows->reject->leftGame()->pluck('waiver_id')->filter()->map(fn ($id) => (int) $id)->unique()->values()->all(),
+            'contacted_emails' => $rows->reject->leftGame()->pluck('recipient_email')->unique()->values()->all(),
             'reviews' => self::reviewCounts($reviews),
         ];
     }
@@ -1564,10 +1637,18 @@ class VisitFollowUpService
             'subject' => $subject,
             'body' => $rendered,
             'html' => $this->emails->generateHtmlEmail($rendered),
-            'attachments' => array_values(array_filter(
-                $attachments,
-                fn (array $attachment) => empty($attachment['content_id']) || str_contains($rendered, 'cid:' . $attachment['content_id'])
-            )),
+            'attachments' => array_values(array_filter(array_map(function (array $attachment) use ($rendered) {
+                $fallback = !empty($attachment['fallback_attachment']);
+                unset($attachment['fallback_attachment']);
+
+                if (empty($attachment['content_id']) || str_contains($rendered, 'cid:' . $attachment['content_id'])) {
+                    return $attachment;
+                }
+
+                unset($attachment['content_id']);
+
+                return $fallback ? $attachment : null;
+            }, $attachments))),
             'variables' => $text,
         ];
     }
@@ -1617,20 +1698,7 @@ class VisitFollowUpService
     public static function dropEmptyBlocks(string $body, array $text): string
     {
         $optional = array_intersect_key($text, array_flip(self::OPTIONAL_TEXT));
-        $filled = fn (string $name) => trim((string) ($optional[$name] ?? '')) !== '';
-        $companions = [
-            'promo_code' => ['promo_offer', 'promo_name', 'promo_description', 'promo_expires', 'promo_terms'],
-            'photo_link' => ['photos_line', 'expires_on'],
-            'rating_link' => ['review_link', 'opt_out_link'],
-            'escape_result' => ['completion_time'],
-        ];
         $empty = array_keys(array_filter($optional, fn ($value) => trim((string) $value) === ''));
-
-        foreach ($companions as $main => $secondary) {
-            if ($filled($main)) {
-                $empty = array_diff($empty, $secondary);
-            }
-        }
 
         if ($empty === []) {
             return $body;
@@ -1750,8 +1818,8 @@ class VisitFollowUpService
             'expires_on' => $variables['expires_on'] ?? '',
             'photo_count' => (string) count($attachments),
             'photos_line' => count($attachments) > 1
-                ? 'Your ' . count($attachments) . ' group photos are attached. You can also view and download them here:'
-                : 'Your group photo is attached. You can also view and download it here:',
+                ? 'Your ' . count($attachments) . ' group photos are in this email. You can also view and download them here:'
+                : 'Your group photo is in this email. You can also view and download it here:',
         ];
 
         if ($attachments === []) {
@@ -1759,48 +1827,13 @@ class VisitFollowUpService
         }
 
         $cid = 'group-photo-' . $session->id . '-' . Str::lower(Str::random(10)) . '@zapzone';
-        $preview = $this->inlinePreview(base64_decode($attachments[0]['data']));
-
-        if ($preview !== null) {
-            $attachments[] = [
-                'data' => $preview,
-                'filename' => 'group-photo-preview.jpg',
-                'mime_type' => 'image/jpeg',
-                'content_id' => $cid,
-            ];
-        }
+        $attachments[0] += ['content_id' => $cid, 'fallback_attachment' => true];
 
         return [
             $text,
-            self::photoLinkHtml($text['photo_link'], $text['expires_on'], $preview !== null ? $cid : null, 'View and download your photos', $text['photos_line']),
+            self::photoLinkHtml($text['photo_link'], $text['expires_on'], $cid, 'View and download your photos', $text['photos_line']),
             $attachments,
         ];
-    }
-
-    protected function inlinePreview(string $bytes): ?string
-    {
-        if ($bytes === '' || !function_exists('imagecreatefromstring')) {
-            return null;
-        }
-
-        $image = @imagecreatefromstring($bytes);
-
-        if (!$image) {
-            return null;
-        }
-
-        $width = imagesx($image);
-        $height = imagesy($image);
-        $scale = min(1, self::INLINE_PREVIEW_EDGE / max(1, $width, $height));
-        $target = $scale < 1
-            ? imagescale($image, max(1, (int) round($width * $scale)), max(1, (int) round($height * $scale)))
-            : $image;
-
-        ob_start();
-        $written = imagejpeg($target, null, 80);
-        $jpeg = ob_get_clean();
-
-        return $written && $jpeg ? base64_encode($jpeg) : null;
     }
 
     protected function ensureEssentials(string $body, EmailNotification $notification, array $html, array $text = []): string
@@ -1972,13 +2005,17 @@ HTML;
 
         foreach ([1, 2, 3, 4, 5] as $stars) {
             $link = e($linkFor($stars));
-            $cells .= '<td style="padding: 0 4px; text-align: center;"><a href="' . $link . '" title="' . $stars . ' out of 5" style="display: block; text-decoration: none; font-size: 34px; line-height: 1; color: #f59e0b;">&#9733;</a><span style="display: block; margin-top: 4px; font-size: 11px; color: #6b7280;">' . $stars . '</span></td>';
+            $cells .= "\n        " . '<td style="padding: 0 4px; text-align: center;">'
+                . "\n            " . '<a href="' . $link . '" title="' . $stars . ' out of 5" style="display: block; text-decoration: none; font-size: 34px; line-height: 1; color: #f59e0b;">&#9733;</a>'
+                . "\n            " . '<span style="display: block; margin-top: 4px; font-size: 11px; color: #6b7280;">' . $stars . '</span>'
+                . "\n        " . '</td>';
         }
 
         return <<<HTML
 <div style="margin: 24px 0; text-align: center;">
     <p style="margin: 0 0 12px 0; font-size: 15px; font-weight: 600; color: #111827;">How would you rate {$activity}?</p>
-    <table role="presentation" align="center" cellpadding="0" cellspacing="0" style="margin: 0 auto;"><tr>{$cells}</tr></table>
+    <table role="presentation" align="center" cellpadding="0" cellspacing="0" style="margin: 0 auto;"><tr>{$cells}
+    </tr></table>
     <p style="margin: 10px 0 0 0; font-size: 12px; color: #6b7280;">Tap a star: 1 is poor, 5 is amazing.</p>
 </div>
 HTML;
@@ -2025,11 +2062,11 @@ HTML;
             'visit_date' => now($tz)->format('F j, Y'),
             'visit_time' => '3:00 PM',
             'visit_when' => now($tz)->format('F j, Y') . ' at 3:00 PM',
-            'booking_reference' => 'BK-SAMPLE',
+            'booking_reference' => $isGame ? '' : 'BK-SAMPLE',
             'completion_time' => $isGame ? '47:12' : '',
             'escape_result' => $isGame ? 'Your group escaped in 47:12!' : '',
             'photo_link' => rtrim((string) config('app.frontend_url'), '/') . '/photos/sample-link',
-            'photos_line' => 'Your group photo is attached. You can also view and download it here:',
+            'photos_line' => 'Your group photo is in this email. You can also view and download it here:',
             'photo_count' => '1',
             'expires_on' => now($tz)->addDays(PhotoSession::ACCESS_VALID_DAYS)->format('M j, Y'),
             'promo_code' => '',

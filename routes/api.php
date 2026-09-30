@@ -585,10 +585,12 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::apiResource('activity-logs', ActivityLogController::class)->only(['index', 'store', 'show'])->middleware('staff');
 
-    Route::patch('notifications/mark-all-as-read', [NotificationController::class, 'markAllAsRead']);
-    Route::delete('notifications/clear-all', [NotificationController::class, 'clearAll']);
-    Route::patch('notifications/{notification}/mark-as-read', [NotificationController::class, 'markAsRead']);
-    Route::apiResource('notifications', NotificationController::class);
+    Route::middleware('staff')->group(function () {
+        Route::patch('notifications/mark-all-as-read', [NotificationController::class, 'markAllAsRead']);
+        Route::delete('notifications/clear-all', [NotificationController::class, 'clearAll']);
+        Route::patch('notifications/{notification}/mark-as-read', [NotificationController::class, 'markAsRead']);
+        Route::apiResource('notifications', NotificationController::class);
+    });
 
     Route::apiResource('customer-notifications', CustomerNotificationController::class);
     Route::patch('customer-notifications/{customerNotification}/mark-as-read', [CustomerNotificationController::class, 'markAsRead']);
