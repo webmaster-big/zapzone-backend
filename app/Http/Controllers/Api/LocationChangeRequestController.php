@@ -237,6 +237,12 @@ class LocationChangeRequestController extends Controller
                     'review_notes' => $reviewNotes,
                 ]);
             });
+
+            try {
+                app(\App\Services\VisitFollowUpService::class)->visitMoved(\App\Models\VisitFollowUp::VISIT_BOOKING, (int) $booking->id, (int) $newLocationId);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('Booking follow-up emails could not follow the approved move', ['booking_id' => $booking->id, 'error' => $e->getMessage()]);
+            }
         } catch (QueryException $e) {
             Log::warning('Location change approval failed', ['request_id' => $locationChangeRequest->id, 'error' => $e->getMessage()]);
             return response()->json([

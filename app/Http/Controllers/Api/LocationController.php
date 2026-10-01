@@ -114,10 +114,17 @@ class LocationController extends Controller
             'zip_code' => 'required|string|max:20',
             'phone' => 'required|string|max:20',
             'email' => 'required|email|unique:locations',
+            'review_url' => 'sometimes|nullable|url:http,https|max:500',
             'logo_path' => 'sometimes|nullable|string|max:28311552',
             'timezone' => 'string|max:50',
             'is_active' => 'boolean',
+        ], [
+            'review_url.url' => 'Enter the full review link, starting with https://',
         ]);
+
+        if (!\App\Support\SchemaSupport::hasColumn('locations', 'review_url')) {
+            unset($validated['review_url']);
+        }
 
         if (array_key_exists('logo_path', $validated) && $validated['logo_path'] !== null) {
             try {
@@ -204,10 +211,17 @@ class LocationController extends Controller
             'zip_code' => 'sometimes|string|max:20',
             'phone' => 'sometimes|string|max:20',
             'email' => 'sometimes|email|unique:locations,email,' . $location->id,
+            'review_url' => 'sometimes|nullable|url:http,https|max:500',
             'logo_path' => 'sometimes|nullable|string|max:28311552',
             'timezone' => 'sometimes|string|max:50',
             'is_active' => 'boolean',
+        ], [
+            'review_url.url' => 'Enter the full review link, starting with https://',
         ]);
+
+        if (!\App\Support\SchemaSupport::hasColumn('locations', 'review_url')) {
+            unset($validated['review_url']);
+        }
 
         if (array_key_exists('logo_path', $validated)) {
             try {
@@ -226,7 +240,7 @@ class LocationController extends Controller
             $previousLogoPath = $location->logo_path;
         }
 
-        $trackFields = ['name', 'slug', 'address', 'city', 'state', 'zip_code', 'latitude', 'longitude', 'phone', 'email', 'logo_path', 'timezone', 'is_active'];
+        $trackFields = ['name', 'slug', 'address', 'city', 'state', 'zip_code', 'latitude', 'longitude', 'phone', 'email', 'review_url', 'logo_path', 'timezone', 'is_active'];
         $oldValues = array_intersect_key($location->toArray(), array_flip($trackFields));
 
         // A coordinate typed in by a person is recorded as manual, so the geocoder's own

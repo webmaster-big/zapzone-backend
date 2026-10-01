@@ -91,6 +91,13 @@ class PhotoDeliveryService
      */
     public function sendTest(Location $location, string $channel, string $destination, string $kind = PhotoMessageTemplate::KIND_IMMEDIATE): array
     {
+        if ($kind === PhotoMessageTemplate::KIND_ESCAPE_ROOM) {
+            return [
+                'success' => false,
+                'message' => 'Escape-room games now send the Thanks for Playing email. Edit it and send a test from Email Notifications.',
+            ];
+        }
+
         $location->loadMissing('company');
         $template = PhotoMessageTemplate::forCompany($location->company_id, $kind);
         $tz = OperatingDay::timezoneFor($location);
@@ -491,36 +498,38 @@ class PhotoDeliveryService
             return false;
         }
 
-        $template = PhotoMessageTemplate::forCompany($session->company_id, $this->templateKind($delivery->kind));
-        $variables = $this->variables($session, $delivery);
         $isEscapeRoom = $delivery->kind === PhotoDelivery::KIND_ESCAPE_ROOM;
-        $bodyVariables = $isEscapeRoom
-            ? array_map(fn ($value) => e((string) $value), $variables)
-            : $variables;
+        $emailLog = null;
 
         try {
-            if ($delivery->channel === PhotoDelivery::CHANNEL_EMAIL) {
-                $htmlBody = $template->render('email_body', $bodyVariables);
+            if ($isEscapeRoom && $delivery->channel === PhotoDelivery::CHANNEL_EMAIL) {
+                $followUps = app(VisitFollowUpService::class);
+                $built = $followUps->gamePhotoEmail($session, $delivery);
+                $emailLog = $followUps->openLog($built['notification'], $delivery->destination, $session->linkedEscapeRoomSession());
 
-                if ($isEscapeRoom
-                    && !str_contains((string) $template->email_body, '{{completion_time}}')
-                    && !str_contains((string) $template->email_body, '{{escape_result}}')
-                    && ($bodyVariables['escape_result'] ?? '') !== '') {
-                    $line = '<p><strong>' . $bodyVariables['escape_result'] . '</strong></p>';
-                    $lastParagraph = strripos($htmlBody, '<p');
-                    $htmlBody = $lastParagraph !== false && $lastParagraph > 0
-                        ? substr($htmlBody, 0, $lastParagraph) . $line . "\n" . substr($htmlBody, $lastParagraph)
-                        : $htmlBody . "\n" . $line;
-                }
+                $this->sendEmail(
+                    $delivery->destination,
+                    $built['subject'],
+                    $built['html'],
+                    $built['from_name'],
+                    $built['attachments']
+                );
+
+                $emailLog?->markAsSent();
+            } elseif ($delivery->channel === PhotoDelivery::CHANNEL_EMAIL) {
+                $template = PhotoMessageTemplate::forCompany($session->company_id, $this->templateKind($delivery->kind));
+                $variables = $this->variables($session, $delivery);
 
                 $this->sendEmail(
                     $delivery->destination,
                     $template->render('email_subject', $variables),
-                    $this->wrapHtml($htmlBody),
-                    $variables['business_name'],
-                    $isEscapeRoom ? $this->photoAttachments($session, $variables['room_name'] ?? '') : []
+                    $this->wrapHtml($template->render('email_body', $variables)),
+                    $variables['business_name']
                 );
             } else {
+                $template = PhotoMessageTemplate::forCompany($session->company_id, $this->templateKind($delivery->kind));
+                $variables = $this->variables($session, $delivery);
+
                 $body = trim($template->render('sms_body', $variables));
 
                 if ($body === '') {
@@ -541,6 +550,8 @@ class PhotoDeliveryService
 
             return true;
         } catch (\Throwable $e) {
+            $emailLog?->markAsFailed(mb_substr($e->getMessage(), 0, 1000));
+
             $delivery->update([
                 'status' => PhotoDelivery::STATUS_FAILED,
                 'attempts' => $delivery->attempts + 1,
@@ -692,7 +703,7 @@ class PhotoDeliveryService
         ];
     }
 
-    protected function photoAttachments(PhotoSession $session, string $roomName): array
+    public function photoAttachments(PhotoSession $session, string $roomName): array
     {
         $disk = \Illuminate\Support\Facades\Storage::disk(PhotoProcessingService::DISK);
         $slug = \Illuminate\Support\Str::slug($roomName) ?: 'group';
@@ -753,6 +764,18 @@ class PhotoDeliveryService
                 ->from(config('mail.from.address'), $fromName ?: config('mail.from.name'));
 
             foreach ($attachments as $attachment) {
+                if (isset($attachment['content_id'])) {
+                    $message->getSymfonyMessage()->addPart(
+                        (new \Symfony\Component\Mime\Part\DataPart(
+                            base64_decode($attachment['data']),
+                            $attachment['filename'],
+                            $attachment['mime_type']
+                        ))->asInline()->setContentId($attachment['content_id'])
+                    );
+
+                    continue;
+                }
+
                 $message->attachData(
                     base64_decode($attachment['data']),
                     $attachment['filename'],

@@ -13,6 +13,24 @@ class EventPurchase extends Model
 {
     use HasFactory, SoftDeletes;
 
+    protected static function booted(): void
+    {
+        static::updated(function (EventPurchase $purchase) {
+            if (!$purchase->wasChanged('status') || $purchase->getOriginal('status') !== 'completed' || $purchase->status === 'completed') {
+                return;
+            }
+
+            try {
+                app(\App\Services\VisitFollowUpService::class)->visitReopened(\App\Models\VisitFollowUp::VISIT_EVENT_PURCHASE, (int) $purchase->id, auth()->user() instanceof \App\Models\User ? auth()->user() : null);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('Follow-up emails could not be stopped for an event purchase taken out of Completed', [
+                    'event_purchase_id' => $purchase->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        });
+    }
+
     protected $fillable = [
         'ticket_order_id',
         'line_position',

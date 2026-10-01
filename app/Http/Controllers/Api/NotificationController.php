@@ -21,6 +21,11 @@ class NotificationController extends Controller
 
         $this->applyAuthScope($query, $request);
 
+        if ($companyId = $this->resolveAuthUser($request)?->company_id) {
+            $query->where(fn ($scoped) => $scoped->whereNull('location_id')
+                ->orWhereHas('location', fn ($location) => $location->where('company_id', $companyId)));
+        }
+
         if ($request->has('location_id')) {
             $query->byLocation($request->location_id);
         }
@@ -73,6 +78,12 @@ class NotificationController extends Controller
             'metadata' => 'nullable|array',
         ]);
 
+        $location = $this->scopedLocation($request, $validated['location_id']);
+
+        if ($location instanceof JsonResponse) {
+            return $location;
+        }
+
         $validated['status'] = 'unread';
 
         $notification = Notification::create($validated);
@@ -87,12 +98,20 @@ class NotificationController extends Controller
 
     public function show(Notification $notification): JsonResponse
     {
+        if ($denied = $this->denyForeignRecord($notification, 'notification')) {
+            return $denied;
+        }
+
         $notification->load('location');
         return response()->json(['success' => true, 'data' => $notification]);
     }
 
     public function markAsRead(Notification $notification): JsonResponse
     {
+        if ($denied = $this->denyForeignRecord($notification, 'notification')) {
+            return $denied;
+        }
+
         $notification->update([
             'status' => 'read',
             'read_at' => now()
@@ -110,6 +129,12 @@ class NotificationController extends Controller
         $validated = $request->validate([
             'location_id' => 'required|exists:locations,id',
         ]);
+
+        $location = $this->scopedLocation($request, $validated['location_id']);
+
+        if ($location instanceof JsonResponse) {
+            return $location;
+        }
 
         $count = Notification::where('location_id', $validated['location_id'])
             ->where('status', 'unread')
@@ -134,6 +159,12 @@ class NotificationController extends Controller
             'location_id' => 'required|exists:locations,id',
             'status' => ['nullable', Rule::in(['read', 'unread', 'archived'])],
         ]);
+
+        $location = $this->scopedLocation($request, $validated['location_id']);
+
+        if ($location instanceof JsonResponse) {
+            return $location;
+        }
 
         $query = Notification::where('location_id', $validated['location_id']);
 
@@ -175,6 +206,10 @@ class NotificationController extends Controller
     public function destroy($id): JsonResponse
     {
         $notification = Notification::findOrFail($id);
+
+        if ($denied = $this->denyForeignRecord($notification, 'notification')) {
+            return $denied;
+        }
 
         $user = User::findOrFail(auth()->id());
 
@@ -219,6 +254,10 @@ class NotificationController extends Controller
             'status' => ['sometimes', Rule::in(['unread', 'read', 'archived'])],
             'priority' => ['sometimes', Rule::in(['low', 'medium', 'high', 'urgent'])],
         ]);
+
+        if ($denied = $this->denyForeignRecord($notification, 'notification')) {
+            return $denied;
+        }
 
         if (isset($validated['status']) && $validated['status'] === 'read' && $notification->status !== 'read') {
             $validated['read_at'] = now();

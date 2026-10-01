@@ -70,6 +70,11 @@ class PromoController extends Controller
             $query->where('type', $request->type);
         }
 
+        if ($request->boolean('shared_only')) {
+            $query->whereNull('batch_id')
+                ->where(fn ($q) => $q->whereNull('code_mode')->orWhere('code_mode', '!=', 'unique'));
+        }
+
         if ($request->has('only_valid')) {
             if ($request->boolean('only_valid')) {
                 $query->valid();
@@ -423,21 +428,7 @@ class PromoController extends Controller
 
     protected function promoBelongsToCompany(Promo $promo, int $companyId): bool
     {
-        $creatorCompanyId = $promo->creator?->company_id;
-
-        if ($creatorCompanyId !== null) {
-            return (int) $creatorCompanyId === $companyId;
-        }
-
-        $targets = Promo::normalizeIds($promo->location_ids);
-
-        if ($targets === null) {
-            return false;
-        }
-
-        $companyLocationIds = Location::where('company_id', $companyId)->pluck('id')->map(fn ($id) => (int) $id)->all();
-
-        return array_diff($targets, $companyLocationIds) === [];
+        return $promo->belongsToCompany($companyId);
     }
 
     protected function locationIdsForActor(Request $request, ?array $requested): ?array

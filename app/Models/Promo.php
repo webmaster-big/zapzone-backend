@@ -91,6 +91,43 @@ class Promo extends Model
         return $this->start_date === null || $this->start_date->startOfDay()->lte(now()->startOfDay());
     }
 
+    public function belongsToCompany(int $companyId): bool
+    {
+        $creatorCompanyId = $this->creator?->company_id;
+
+        if ($creatorCompanyId !== null) {
+            return (int) $creatorCompanyId === $companyId;
+        }
+
+        $targets = self::normalizeIds($this->location_ids);
+
+        if ($targets === null) {
+            return false;
+        }
+
+        $companyLocationIds = Location::where('company_id', $companyId)->pluck('id')->map(fn ($id) => (int) $id)->all();
+
+        return array_diff($targets, $companyLocationIds) === [];
+    }
+
+    public function offerLabel(): string
+    {
+        $value = (float) $this->value;
+
+        if ($this->type === 'percentage') {
+            $number = fmod($value, 1.0) === 0.0 ? (string) (int) $value : rtrim(rtrim(number_format($value, 2, '.', ''), '0'), '.');
+
+            return $number . '% off';
+        }
+
+        return '$' . (fmod($value, 1.0) === 0.0 ? number_format($value, 0) : number_format($value, 2)) . ' off';
+    }
+
+    public function isUsedUp(): bool
+    {
+        return $this->usage_limit_total && $this->current_usage >= $this->usage_limit_total;
+    }
+
     public function isValid(): bool
     {
         return $this->status === 'active' &&

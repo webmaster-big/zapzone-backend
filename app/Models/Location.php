@@ -25,6 +25,7 @@ class Location extends Model
         'longitude',
         'phone',
         'email',
+        'review_url',
         'logo_path',
         'timezone',
         'is_active',

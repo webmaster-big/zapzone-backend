@@ -89,6 +89,21 @@ class EmailNotification extends Model
     const TRIGGER_CHECKOUT_ABANDONED = 'checkout_abandoned';
     const TRIGGER_CALL_TO_BOOK_REQUESTED = 'call_to_book_requested';
 
+    const TRIGGER_VISIT_COMPLETED = 'visit_completed';
+    const TRIGGER_VISIT_FOLLOWUP = 'visit_followup';
+
+    const VISIT_TRIGGERS = [self::TRIGGER_VISIT_COMPLETED, self::TRIGGER_VISIT_FOLLOWUP];
+
+    const DEFAULT_THANKS_FOR_PLAYING = 'thanks_for_playing_customer';
+    const DEFAULT_REVIEW_REQUEST = 'review_request_customer';
+
+    const REVIEW_REQUEST_DEFAULT_HOURS = 24;
+
+    const ACTIVITY_ESCAPE_ROOM = 'escape_room';
+    const ACTIVITY_NOT_ESCAPE_ROOM = 'not_escape_room';
+
+    const ACTIVITY_FILTERS = [self::ACTIVITY_ESCAPE_ROOM, self::ACTIVITY_NOT_ESCAPE_ROOM];
+
     const ENTITY_PACKAGE = 'package';
     const ENTITY_ATTRACTION = 'attraction';
     const ENTITY_EVENT = 'event';
@@ -110,6 +125,10 @@ class EmailNotification extends Model
         'entity_type',
         'entity_ids',
         'email_template_id',
+        'promo_id',
+        'from_name',
+        'review_url',
+        'activity_filter',
         'subject',
         'default_subject',
         'body',
@@ -153,6 +172,106 @@ class EmailNotification extends Model
     public function logs(): HasMany
     {
         return $this->hasMany(EmailNotificationLog::class);
+    }
+
+    public function promo(): BelongsTo
+    {
+        return $this->belongsTo(Promo::class);
+    }
+
+    public static function supportsPromo(): bool
+    {
+        return \App\Support\SchemaSupport::hasColumn('email_notifications', 'promo_id');
+    }
+
+    public static function supportsFollowUpSettings(): bool
+    {
+        return \App\Support\SchemaSupport::hasColumn('email_notifications', 'activity_filter');
+    }
+
+    public function coversActivity(\App\Support\CompletedVisit $visit): bool
+    {
+        return match ($this->activityFilter()) {
+            self::ACTIVITY_ESCAPE_ROOM => $visit->isEscapeRoom(),
+            self::ACTIVITY_NOT_ESCAPE_ROOM => !$visit->isEscapeRoom(),
+            default => true,
+        };
+    }
+
+    public function isVisitTrigger(): bool
+    {
+        return in_array($this->trigger_type, self::VISIT_TRIGGERS, true);
+    }
+
+    public static function resolveForVisit(\App\Support\CompletedVisit $visit, string $triggerType): ?self
+    {
+        return self::active()
+            ->forTrigger($triggerType)
+            ->where('company_id', $visit->companyId)
+            ->where(function ($query) use ($visit) {
+                $query->whereNull('location_id')->orWhere('location_id', $visit->locationId());
+            })
+            ->whereIn('entity_type', [self::ENTITY_ALL, $visit->entityType])
+            ->get()
+            ->filter(fn (self $notification) => ($notification->entity_type === self::ENTITY_ALL
+                || $notification->appliesToEntity($visit->entityId))
+                && $notification->coversActivity($visit))
+            ->sort(fn (self $a, self $b) => self::visitOrder($a, $b))
+            ->first();
+    }
+
+    public static function visitOrder(self $a, self $b): int
+    {
+        return [$b->visitSpecificity(), (int) $a->is_default, $b->id]
+            <=> [$a->visitSpecificity(), (int) $b->is_default, $a->id];
+    }
+
+    public function visitScopeOverlaps(self $other): bool
+    {
+        $filters = [$this->activityFilter(), $other->activityFilter()];
+
+        return ($this->location_id === null || $other->location_id === null || (int) $this->location_id === (int) $other->location_id)
+            && ($this->entity_type === self::ENTITY_ALL || $other->entity_type === self::ENTITY_ALL || $this->entity_type === $other->entity_type)
+            && ($this->entity_type !== $other->entity_type || empty($this->entity_ids) || empty($other->entity_ids)
+                || array_intersect(array_map('intval', $this->entity_ids), array_map('intval', $other->entity_ids)) !== [])
+            && ($filters[0] === null || $filters[1] === null || $filters[0] === $filters[1]);
+    }
+
+    public function visitScopeCovers(self $other): bool
+    {
+        $filter = $this->activityFilter();
+
+        return ($this->location_id === null || (int) $this->location_id === (int) $other->location_id)
+            && ($this->entity_type === self::ENTITY_ALL || ($this->entity_type === $other->entity_type
+                && (empty($this->entity_ids) || (!empty($other->entity_ids)
+                    && array_diff(array_map('intval', $other->entity_ids), array_map('intval', $this->entity_ids)) === []))))
+            && ($filter === null || $filter === $other->activityFilter());
+    }
+
+    public function activityFilter(): ?string
+    {
+        return self::supportsFollowUpSettings() && in_array($this->activity_filter, self::ACTIVITY_FILTERS, true)
+            ? $this->activity_filter
+            : null;
+    }
+
+    public function visitSpecificity(): int
+    {
+        $score = $this->location_id !== null ? 1 : 0;
+
+        if ($this->entity_type !== self::ENTITY_ALL) {
+            $score += 2;
+
+            if (!empty($this->entity_ids)) {
+                $score += 8;
+            }
+        }
+
+        if ($this->activityFilter() !== null) {
+            $score += 4;
+        }
+
+        return $score;
     }
 
     public function scopeActive($query)
@@ -277,6 +396,8 @@ class EmailNotification extends Model
             self::DEFAULT_WAIVER_BULK_CHAPERONE => 'Bulk Waiver Invite (Chaperone)',
             self::DEFAULT_WAIVER_PARENT_INVITE => 'Waiver Invite (Parent/Guardian)',
             self::DEFAULT_END_OF_DAY_SALES_REPORT => 'End of Day Sales Report',
+            self::DEFAULT_THANKS_FOR_PLAYING => 'Thanks for Playing (Customer)',
+            self::DEFAULT_REVIEW_REQUEST => 'Review Request (Customer)',
         ];
     }
 
@@ -442,9 +563,9 @@ class EmailNotification extends Model
                 self::TRIGGER_BOOKING_RESCHEDULED => 'Booking Rescheduled',
                 self::TRIGGER_BOOKING_CANCELLED => 'Booking Cancelled',
                 self::TRIGGER_BOOKING_CHECKED_IN => 'Booking Checked In',
-                self::TRIGGER_BOOKING_COMPLETED => 'Booking Completed',
+                self::TRIGGER_BOOKING_COMPLETED => 'Booking Completed (never sent, use Visit Completed)',
                 self::TRIGGER_BOOKING_REMINDER => 'Booking Reminder (Before)',
-                self::TRIGGER_BOOKING_FOLLOWUP => 'Booking Follow-up (After)',
+                self::TRIGGER_BOOKING_FOLLOWUP => 'Booking Follow-up (never sent, use Visit Follow-up)',
                 self::TRIGGER_BOOKING_NO_SHOW => 'Booking No-Show',
             ],
             'payment' => [
@@ -458,11 +579,11 @@ class EmailNotification extends Model
                 self::TRIGGER_PURCHASE_CREATED => 'Purchase Created',
                 self::TRIGGER_PURCHASE_CONFIRMED => 'Purchase Confirmed',
                 self::TRIGGER_PURCHASE_CANCELLED => 'Purchase Cancelled',
-                self::TRIGGER_PURCHASE_COMPLETED => 'Purchase Completed',
+                self::TRIGGER_PURCHASE_COMPLETED => 'Purchase Completed (never sent)',
                 self::TRIGGER_PURCHASE_CHECKED_IN => 'Purchase Checked In',
                 self::TRIGGER_PURCHASE_REFUNDED => 'Purchase Refunded',
                 self::TRIGGER_PURCHASE_REMINDER => 'Purchase Reminder',
-                self::TRIGGER_PURCHASE_FOLLOWUP => 'Purchase Follow-up',
+                self::TRIGGER_PURCHASE_FOLLOWUP => 'Purchase Follow-up (never sent, use Visit Follow-up)',
             ],
             'event' => [
                 self::TRIGGER_EVENT_CONFIRMED => 'Event Confirmed',
@@ -488,6 +609,10 @@ class EmailNotification extends Model
             ],
             'report' => [
                 self::TRIGGER_END_OF_DAY_SALES_REPORT => 'End of Day Sales Report',
+            ],
+            'visit' => [
+                self::TRIGGER_VISIT_COMPLETED => 'Visit Completed: Thanks for Playing (when staff mark it complete)',
+                self::TRIGGER_VISIT_FOLLOWUP => 'Visit Follow-up: Review Request (hours after completion)',
             ],
         ];
     }
@@ -526,6 +651,7 @@ class EmailNotification extends Model
         return in_array($this->trigger_type, [
             self::TRIGGER_BOOKING_FOLLOWUP,
             self::TRIGGER_PURCHASE_FOLLOWUP,
+            self::TRIGGER_VISIT_FOLLOWUP,
         ]);
     }
 
