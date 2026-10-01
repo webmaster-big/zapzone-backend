@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\PageView;
 use App\Models\VisitorIdentity;
 use Carbon\Carbon;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -25,6 +26,7 @@ class VisitorTrackingController extends Controller
             'email' => ['nullable', 'email', 'max:190'],
             'location_id' => ['nullable', 'integer', 'exists:locations,id'],
             'visitor_id' => ['nullable', 'string', 'max:64'],
+            'sms_consent' => ['nullable', 'boolean'],
         ], [
             'name.required' => 'Please tell us your name.',
             'phone.required' => 'Please give us a phone number.',
@@ -62,7 +64,13 @@ class VisitorTrackingController extends Controller
                 $values['location_id'] = $validated['location_id'];
             }
 
-            $identity = VisitorIdentity::updateOrCreate(['visitor_id' => $visitorId], $values);
+            $consentGiven = isset($validated['sms_consent']) ? (bool) $validated['sms_consent'] : null;
+
+            try {
+                $identity = $this->saveVisitorIdentity($visitorId, $values, $consentGiven);
+            } catch (UniqueConstraintViolationException) {
+                $identity = $this->saveVisitorIdentity($visitorId, $values, $consentGiven);
+            }
 
             Log::info('Visitor identified', [
                 'visitor_identity_id' => $identity->id,
@@ -70,6 +78,7 @@ class VisitorTrackingController extends Controller
                 'name' => $identity->name,
                 'phone' => $identity->phone,
                 'location_id' => $identity->location_id,
+                'sms_consent' => (bool) $identity->sms_consent,
                 'was_new' => $identity->wasRecentlyCreated,
             ]);
         } catch (\Throwable $e) {
@@ -83,6 +92,26 @@ class VisitorTrackingController extends Controller
         }
 
         return response()->json(['success' => true, 'data' => ['recorded' => true]], 201);
+    }
+
+    private function saveVisitorIdentity(string $visitorId, array $values, ?bool $consentGiven): VisitorIdentity
+    {
+        $identity = VisitorIdentity::firstOrNew(['visitor_id' => $visitorId]);
+        $phoneChanged = $identity->exists
+            && preg_replace('/\D+/', '', (string) $identity->phone) !== preg_replace('/\D+/', '', $values['phone']);
+        $identity->fill($values);
+
+        if ($consentGiven === true && (!$identity->sms_consent || !$identity->sms_consent_at || $phoneChanged)) {
+            $identity->sms_consent = true;
+            $identity->sms_consent_at = now();
+        } elseif ($consentGiven === false || ($consentGiven === null && $phoneChanged)) {
+            $identity->sms_consent = false;
+            $identity->sms_consent_at = null;
+        }
+
+        $identity->save();
+
+        return $identity;
     }
 
     public function sessions(Request $request): JsonResponse
@@ -314,6 +343,10 @@ class VisitorTrackingController extends Controller
                     'name' => $identity->name,
                     'phone' => $identity->phone,
                     'email' => $identity->email,
+                    'sms_consent' => (bool) $identity->sms_consent,
+                    'sms_consent_label' => $identity->sms_consent && $identity->sms_consent_at
+                        ? $identity->sms_consent_at->format('M j, Y g:i A')
+                        : null,
                 ] : null,
                 'device' => [
                     'device_type' => $first->device_type,
@@ -406,6 +439,7 @@ class VisitorTrackingController extends Controller
             ->selectRaw('MAX(vi.name) as guest_name')
             ->selectRaw('MAX(vi.phone) as guest_phone')
             ->selectRaw('MAX(vi.email) as guest_email')
+            ->selectRaw('MAX(vi.sms_consent) as guest_sms_consent')
             ->selectRaw('MAX(pv.device_type) as device_type')
             ->selectRaw('MAX(pv.browser) as browser')
             ->groupBy('pv.visitor_id', DB::raw('DATE(pv.created_at)'))
@@ -597,6 +631,7 @@ class VisitorTrackingController extends Controller
             'guest_name' => $row->guest_name,
             'guest_phone' => $row->guest_phone,
             'guest_email' => $row->guest_email,
+            'guest_sms_consent' => (bool) ($row->guest_sms_consent ?? false),
             'first_seen_label' => $firstSeen->format('g:i A'),
             'last_seen_label' => $lastSeen->format('g:i A'),
             'page_views' => (int) $row->page_views,
