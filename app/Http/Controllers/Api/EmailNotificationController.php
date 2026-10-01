@@ -1304,7 +1304,8 @@ HTML;
 
         if (array_key_exists('entity_ids', $validated) && $entityIds !== [] && in_array($entityType, [EmailNotification::ENTITY_PACKAGE, EmailNotification::ENTITY_EVENT], true)) {
             $model = $entityType === EmailNotification::ENTITY_EVENT ? \App\Models\Event::class : Package::class;
-            $owned = $model::whereIn('id', $entityIds)
+            $owned = $model::withTrashed()
+                ->whereIn('id', $entityIds)
                 ->whereHas('location', fn ($location) => $location->where('company_id', $user?->company_id))
                 ->count();
 

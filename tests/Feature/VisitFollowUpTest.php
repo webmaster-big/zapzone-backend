@@ -2561,4 +2561,40 @@ class VisitFollowUpTest extends TestCase
         $this->artisan('visits:send-follow-ups')->assertSuccessful();
         $this->assertSame([], $this->followUpEmails());
     }
+
+    public function test_a_targeted_email_can_still_be_edited_after_one_of_its_packages_is_deleted(): void
+    {
+        $copy = $this->copyOf($this->thanks(), [
+            'entity_type' => EmailNotification::ENTITY_PACKAGE,
+            'entity_ids' => [$this->morgue->id, $this->party->id],
+            'subject' => 'Targeted thanks',
+        ]);
+        $this->party->delete();
+
+        $this->actingAs($this->admin, 'sanctum')->putJson("/api/email-notifications/{$copy->id}", [
+            'entity_type' => EmailNotification::ENTITY_PACKAGE,
+            'entity_ids' => [$this->morgue->id, $this->party->id],
+            'promo_id' => $this->makePromo(['code' => 'STILLWORKS'])->id,
+        ])->assertOk();
+
+        $this->actingAs($this->admin, 'sanctum')->putJson("/api/email-notifications/{$copy->id}", [
+            'entity_type' => EmailNotification::ENTITY_PACKAGE,
+            'entity_ids' => [$this->morgue->id, $this->otherParty->id],
+        ])->assertOk();
+
+        $stranger = Package::create([
+            'location_id' => Location::create([
+                'company_id' => Company::create(['company_name' => 'Other Co', 'email' => 'other@co.test', 'phone' => '5550000000', 'address' => '1 Elsewhere'])->id,
+                'name' => 'Elsewhere', 'address' => '1 Elsewhere', 'city' => 'Elsewhere', 'state' => 'MI', 'zip_code' => '48000',
+                'phone' => '5550000001', 'email' => 'elsewhere@co.test', 'timezone' => 'America/Detroit', 'is_active' => true,
+            ])->id,
+            'name' => 'Not ours', 'description' => 'x', 'category' => 'Adventure', 'price' => 10, 'pricing_type' => 'base',
+            'min_participants' => 1, 'max_participants' => 4, 'duration' => 60, 'duration_unit' => 'minutes', 'is_active' => true,
+        ]);
+        $stranger->delete();
+        $this->actingAs($this->admin, 'sanctum')->putJson("/api/email-notifications/{$copy->id}", [
+            'entity_type' => EmailNotification::ENTITY_PACKAGE,
+            'entity_ids' => [$this->morgue->id, $stranger->id],
+        ])->assertStatus(422)->assertJsonValidationErrors(['entity_ids']);
+    }
 }
