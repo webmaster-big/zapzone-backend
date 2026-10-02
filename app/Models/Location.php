@@ -29,10 +29,12 @@ class Location extends Model
         'logo_path',
         'timezone',
         'is_active',
+        'show_on_main_page',
     ];
 
     protected $casts = [
         'is_active' => 'boolean',
+        'show_on_main_page' => 'boolean',
         'latitude' => 'float',
         'longitude' => 'float',
         'geocoded_at' => 'datetime',

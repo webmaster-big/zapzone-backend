@@ -63,7 +63,7 @@ class LocationController extends Controller
                 // Coordinates arrived in a later migration than the endpoint. Asking for a column
                 // that does not exist yet is a fatal query on MySQL, which would take the whole
                 // storefront down in the window between code deploying and migrations running.
-                foreach (['latitude', 'longitude', 'logo_path'] as $optional) {
+                foreach (['latitude', 'longitude', 'logo_path', 'show_on_main_page'] as $optional) {
                     if (Schema::hasColumn('locations', $optional)) {
                         $columns[] = $optional;
                     }
@@ -118,12 +118,17 @@ class LocationController extends Controller
             'logo_path' => 'sometimes|nullable|string|max:28311552',
             'timezone' => 'string|max:50',
             'is_active' => 'boolean',
+            'show_on_main_page' => 'sometimes|required|boolean',
         ], [
             'review_url.url' => 'Enter the full review link, starting with https://',
         ]);
 
         if (!\App\Support\SchemaSupport::hasColumn('locations', 'review_url')) {
             unset($validated['review_url']);
+        }
+
+        if (!\App\Support\SchemaSupport::hasColumn('locations', 'show_on_main_page')) {
+            unset($validated['show_on_main_page']);
         }
 
         if (array_key_exists('logo_path', $validated) && $validated['logo_path'] !== null) {
@@ -215,12 +220,17 @@ class LocationController extends Controller
             'logo_path' => 'sometimes|nullable|string|max:28311552',
             'timezone' => 'sometimes|string|max:50',
             'is_active' => 'boolean',
+            'show_on_main_page' => 'sometimes|required|boolean',
         ], [
             'review_url.url' => 'Enter the full review link, starting with https://',
         ]);
 
         if (!\App\Support\SchemaSupport::hasColumn('locations', 'review_url')) {
             unset($validated['review_url']);
+        }
+
+        if (!\App\Support\SchemaSupport::hasColumn('locations', 'show_on_main_page')) {
+            unset($validated['show_on_main_page']);
         }
 
         if (array_key_exists('logo_path', $validated)) {
@@ -240,7 +250,7 @@ class LocationController extends Controller
             $previousLogoPath = $location->logo_path;
         }
 
-        $trackFields = ['name', 'slug', 'address', 'city', 'state', 'zip_code', 'latitude', 'longitude', 'phone', 'email', 'review_url', 'logo_path', 'timezone', 'is_active'];
+        $trackFields = ['name', 'slug', 'address', 'city', 'state', 'zip_code', 'latitude', 'longitude', 'phone', 'email', 'review_url', 'logo_path', 'timezone', 'is_active', 'show_on_main_page'];
         $oldValues = array_intersect_key($location->toArray(), array_flip($trackFields));
 
         // A coordinate typed in by a person is recorded as manual, so the geocoder's own
