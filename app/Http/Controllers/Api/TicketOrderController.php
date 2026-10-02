@@ -98,6 +98,10 @@ class TicketOrderController extends Controller
             ], 422);
         }
 
+        if (\App\Support\OnlineBookingGate::closedFor($staff, \App\Support\OnlineBookingGate::cartLocationIds($validated['items']))) {
+            return \App\Support\OnlineBookingGate::refusal();
+        }
+
         try {
             // Resolved before the order exists so a missing required answer stops the
             // purchase instead of leaving an order that has to be cleaned up.

@@ -471,6 +471,10 @@ class BookingController extends Controller
             }
         }
 
+        if (\App\Support\OnlineBookingGate::closedFor($request->user('sanctum'), [$validated['location_id']])) {
+            return \App\Support\OnlineBookingGate::refusal();
+        }
+
         $bookingDate = Carbon::parse($validated['booking_date'])->toDateString();
         $bookingTime = $validated['booking_time'];
         $bookingLocationId = (int) $validated['location_id'];
