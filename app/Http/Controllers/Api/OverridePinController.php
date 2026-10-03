@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\ActivityLog;
 use App\Models\User;
+use App\Services\StaffPinService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -41,33 +42,27 @@ class OverridePinController extends Controller
             return response()->json(['success' => false, 'message' => 'Only managers can hold an override PIN.'], 403);
         }
 
+        $pins = app(StaffPinService::class);
+        $length = $pins->pinLength();
+
         $validated = $request->validate([
-            'pin' => ['required', 'string', 'regex:/^\d{4,6}$/'],
+            'pin' => ['required', 'string', 'regex:' . $pins->pinRule()],
             'current_password' => ['required', 'string'],
         ], [
-            'pin.regex' => 'The PIN must be 4 to 6 digits.',
+            'pin.regex' => 'The PIN must be ' . $length . ' digits.',
         ]);
 
         if (! Hash::check($validated['current_password'], $user->password)) {
             return response()->json(['success' => false, 'message' => 'That password is not right.'], 422);
         }
 
-        $user->forceFill([
-            'override_pin' => Hash::make($validated['pin']),
-            'override_pin_set_at' => now(),
-        ])->save();
+        try {
+            $pins->setPin($user, $validated['pin'], $user);
+        } catch (\RuntimeException $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+        }
 
-        ActivityLog::log(
-            'override_pin_set',
-            'security',
-            ActivityLog::describeActor($user) . ' set their overlap override PIN',
-            $user->getKey(),
-            $user->location_id,
-            'user',
-            $user->getKey()
-        );
-
-        return response()->json(['success' => true, 'message' => 'Override PIN saved.']);
+        return response()->json(['success' => true, 'message' => 'PIN saved.']);
     }
 
     /** Whether the signed-in user holds a PIN, so the UI can prompt them to set one. */
@@ -79,8 +74,8 @@ class OverridePinController extends Controller
             'success' => true,
             'data' => [
                 'can_hold_pin' => $user && in_array($user->role, self::APPROVER_ROLES, true),
-                'has_pin' => (bool) ($user?->override_pin),
-                'set_at' => $user?->override_pin_set_at,
+                'has_pin' => (bool) ($user?->pin_hash),
+                'set_at' => $user?->pin_set_at,
             ],
         ]);
     }
@@ -92,7 +87,7 @@ class OverridePinController extends Controller
     public function verify(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'pin' => ['required', 'string', 'regex:/^\d{4,6}$/'],
+            'pin' => ['required', 'string', 'regex:' . app(StaffPinService::class)->pinRule()],
             'location_id' => ['required', 'integer', 'exists:locations,id'],
             'reason' => ['nullable', 'string', 'max:500'],
         ]);
@@ -215,7 +210,7 @@ class OverridePinController extends Controller
         try {
             return User::query()
                 ->whereIn('role', self::APPROVER_ROLES)
-                ->whereNotNull('override_pin')
+                ->whereNotNull('pin_hash')
                 ->where(function ($query) use ($locationId) {
                     $query->whereIn('role', ['company_admin', 'admin'])
                         ->orWhere('location_id', $locationId);
@@ -233,22 +228,37 @@ class OverridePinController extends Controller
 
     private function findApprover(string $pin, int $locationId): ?User
     {
-        $candidates = User::query()
+        $companyId = \App\Models\Location::query()->whereKey($locationId)->value('company_id');
+
+        if (! $companyId) {
+            return null;
+        }
+
+        $pins = app(StaffPinService::class);
+
+        if (! $pins->isConfigured()) {
+            return $pins->matchAmong($this->approverCandidates($locationId), $pin);
+        }
+
+        [$result, $user] = $pins->resolve((int) $companyId, $pin, $locationId);
+
+        if ($result !== StaffPinService::RESULT_OK || ! $user) {
+            return null;
+        }
+
+        return in_array((string) $user->role, self::APPROVER_ROLES, true) ? $user : null;
+    }
+
+    private function approverCandidates(int $locationId)
+    {
+        return User::query()
             ->whereIn('role', self::APPROVER_ROLES)
-            ->whereNotNull('override_pin')
-            // a company admin covers every venue; a location manager only their own
+            ->whereNotNull('pin_hash')
+            ->where('status', 'active')
             ->where(function ($query) use ($locationId) {
                 $query->whereIn('role', ['company_admin', 'admin'])
                     ->orWhere('location_id', $locationId);
             })
-            ->get(['id', 'first_name', 'last_name', 'name', 'email', 'role', 'location_id', 'override_pin']);
-
-        foreach ($candidates as $candidate) {
-            if (Hash::check($pin, $candidate->override_pin)) {
-                return $candidate;
-            }
-        }
-
-        return null;
+            ->get();
     }
 }

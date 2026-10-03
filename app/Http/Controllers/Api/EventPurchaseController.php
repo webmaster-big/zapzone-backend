@@ -199,6 +199,10 @@ class EventPurchaseController extends Controller
                 $validated['location_id'] = $event->location_id;
             }
 
+            if (\App\Support\OnlineBookingGate::closedFor($request->user('sanctum'), [$event->location_id])) {
+                return \App\Support\OnlineBookingGate::refusal();
+            }
+
             if (!$event->isDateValid($validated['purchase_date'])) {
                 return response()->json(['message' => 'Selected date is not available for this event'], 422);
             }

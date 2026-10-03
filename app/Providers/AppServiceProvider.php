@@ -62,6 +62,7 @@ class AppServiceProvider extends ServiceProvider
         $this->registerWaiverAdRateLimiters();
         $this->registerGiftCardRateLimiter();
         $this->registerCustomFieldRateLimiter();
+        $this->registerStaffPinRateLimiters();
     }
 
     /**
@@ -72,6 +73,34 @@ class AppServiceProvider extends ServiceProvider
      * guest with a multi-line cart could spend their own payment's allowance just by
      * opening the payment step.
      */
+    private function registerStaffPinRateLimiters(): void
+    {
+        $terminalKey = function (Request $request): string {
+            $presented = trim((string) $request->header(\App\Http\Middleware\EnsureStaffTerminal::HEADER, ''));
+
+            return $presented !== '' ? substr(hash('sha256', $presented), 0, 32) : 'ip:' . $request->ip();
+        };
+
+        RateLimiter::for('staff-pin-unlock', fn (Request $request) => [
+            Limit::perMinute(8)->by('pin:unlock:m:' . $terminalKey($request)),
+            Limit::perHour(40)->by('pin:unlock:h:' . $terminalKey($request)),
+            Limit::perMinute(30)->by('pin:unlock:ip:' . $request->ip()),
+        ]);
+
+        RateLimiter::for('staff-pin-context', fn (Request $request) => [
+            Limit::perMinute(60)->by('pin:ctx:' . $terminalKey($request)),
+        ]);
+
+        RateLimiter::for('staff-pin-elevate', fn (Request $request) => [
+            Limit::perMinute(6)->by('pin:elevate:m:' . $terminalKey($request)),
+            Limit::perHour(30)->by('pin:elevate:h:' . $terminalKey($request)),
+        ]);
+
+        RateLimiter::for('staff-pin-manage', fn (Request $request) => [
+            Limit::perMinute(20)->by('pin:manage:' . ($request->user()?->id ?? $request->ip())),
+        ]);
+    }
+
     private function registerCustomFieldRateLimiter(): void
     {
         RateLimiter::for('custom-fields', function (Request $request) {

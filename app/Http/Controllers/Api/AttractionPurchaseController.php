@@ -354,6 +354,10 @@ class AttractionPurchaseController extends Controller
         $attractionModel = Attraction::find($validated['attraction_id']);
         $attractionLocationId = $attractionModel?->location_id;
 
+        if (\App\Support\OnlineBookingGate::closedFor($request->user('sanctum'), [$attractionLocationId])) {
+            return \App\Support\OnlineBookingGate::refusal();
+        }
+
         $checkoutActor = $request->user('sanctum');
         $checkoutMembership = app(MembershipBenefitService::class)->membershipForCheckout(
             $validated['membership_id'] ?? null,

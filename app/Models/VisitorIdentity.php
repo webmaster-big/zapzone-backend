@@ -14,10 +14,14 @@ class VisitorIdentity extends Model
         'email',
         'customer_id',
         'location_id',
+        'sms_consent',
+        'sms_consent_at',
         'last_seen_at',
     ];
 
     protected $casts = [
+        'sms_consent' => 'boolean',
+        'sms_consent_at' => 'datetime',
         'last_seen_at' => 'datetime',
     ];
 

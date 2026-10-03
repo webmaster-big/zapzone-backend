@@ -40,6 +40,9 @@ class User extends Authenticatable
         'remember_token',
         // the override PIN is a credential: it must never reach a response
         'override_pin',
+        'pin_hash',
+        'pin_lookup',
+        'pin_lookup_v',
     ];
 
     protected function casts(): array
@@ -48,10 +51,32 @@ class User extends Authenticatable
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
             'override_pin_set_at' => 'datetime',
+            'pin_set_at' => 'datetime',
+            'pin_locked_until' => 'datetime',
             'assigned_areas' => 'array',
             'hire_date' => 'date',
             'last_login' => 'datetime',
         ];
+    }
+
+    public function staffTerminals()
+    {
+        return $this->hasMany(StaffTerminal::class, 'enrolled_by_user_id');
+    }
+
+    public function hasPin(): bool
+    {
+        return $this->pin_hash !== null;
+    }
+
+    public function pinIsLocked(): bool
+    {
+        return $this->pin_locked_until !== null && $this->pin_locked_until->isFuture();
+    }
+
+    public function scopeWithPin($query)
+    {
+        return $query->whereNotNull('pin_hash');
     }
 
     public function getNameAttribute(): string

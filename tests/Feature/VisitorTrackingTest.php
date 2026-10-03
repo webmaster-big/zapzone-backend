@@ -7,6 +7,7 @@ use App\Models\Location;
 use App\Models\PageView;
 use App\Models\User;
 use App\Models\VisitorIdentity;
+use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
@@ -94,6 +95,224 @@ class VisitorTrackingTest extends TestCase
             'phone' => '12345',
             'visitor_id' => 'visitor-abc',
         ])->assertStatus(422);
+    }
+
+    public function test_a_guest_who_ticks_the_text_box_is_recorded_as_consenting(): void
+    {
+        $this->travelTo(Carbon::parse('2026-08-25 10:00:00'));
+
+        $this->postJson('/api/analytics/identify', [
+            'name' => 'Clark Raven',
+            'phone' => '(810) 555-0101',
+            'visitor_id' => 'visitor-abc',
+            'sms_consent' => true,
+        ])->assertStatus(201)->assertJsonPath('data.recorded', true);
+
+        $identity = VisitorIdentity::where('visitor_id', 'visitor-abc')->first();
+        $this->assertTrue($identity->sms_consent);
+        $this->assertSame('2026-08-25 10:00:00', $identity->sms_consent_at->toDateTimeString());
+    }
+
+    public function test_a_guest_who_leaves_the_text_box_unticked_has_not_consented(): void
+    {
+        $this->postJson('/api/analytics/identify', [
+            'name' => 'Clark Raven',
+            'phone' => '8105550101',
+            'visitor_id' => 'visitor-abc',
+            'sms_consent' => false,
+        ])->assertStatus(201);
+
+        $this->postJson('/api/analytics/identify', [
+            'name' => 'Jamie Rivera',
+            'phone' => '8105550102',
+            'visitor_id' => 'visitor-xyz',
+        ])->assertStatus(201);
+
+        foreach (['visitor-abc', 'visitor-xyz'] as $visitorId) {
+            $identity = VisitorIdentity::where('visitor_id', $visitorId)->first();
+            $this->assertFalse($identity->sms_consent);
+            $this->assertNull($identity->sms_consent_at);
+        }
+    }
+
+    public function test_identifying_again_without_an_answer_keeps_the_earlier_consent(): void
+    {
+        $this->travelTo(Carbon::parse('2026-08-25 10:00:00'));
+        $this->postJson('/api/analytics/identify', [
+            'name' => 'Clark Raven',
+            'phone' => '(810) 555-0101',
+            'visitor_id' => 'visitor-abc',
+            'sms_consent' => true,
+        ])->assertStatus(201);
+
+        $this->travelTo(Carbon::parse('2026-08-26 09:00:00'));
+        $this->postJson('/api/analytics/identify', [
+            'name' => 'Clark Raven',
+            'phone' => '810-555-0101',
+            'visitor_id' => 'visitor-abc',
+        ])->assertStatus(201);
+
+        $identity = VisitorIdentity::where('visitor_id', 'visitor-abc')->first();
+        $this->assertTrue($identity->sms_consent);
+        $this->assertSame('2026-08-25 10:00:00', $identity->sms_consent_at->toDateTimeString());
+    }
+
+    public function test_agreeing_again_keeps_the_time_consent_was_first_given(): void
+    {
+        $this->travelTo(Carbon::parse('2026-08-25 10:00:00'));
+        $payload = [
+            'name' => 'Clark Raven',
+            'phone' => '8105550101',
+            'visitor_id' => 'visitor-abc',
+            'sms_consent' => true,
+        ];
+        $this->postJson('/api/analytics/identify', $payload)->assertStatus(201);
+
+        $this->travelTo(Carbon::parse('2026-08-26 09:00:00'));
+        $this->postJson('/api/analytics/identify', $payload)->assertStatus(201);
+
+        $identity = VisitorIdentity::where('visitor_id', 'visitor-abc')->first();
+        $this->assertSame('2026-08-25 10:00:00', $identity->sms_consent_at->toDateTimeString());
+    }
+
+    public function test_consent_does_not_carry_over_to_a_different_phone_number(): void
+    {
+        $this->postJson('/api/analytics/identify', [
+            'name' => 'Clark Raven',
+            'phone' => '8105550101',
+            'visitor_id' => 'visitor-abc',
+            'sms_consent' => true,
+        ])->assertStatus(201);
+
+        $this->postJson('/api/analytics/identify', [
+            'name' => 'Clark Raven',
+            'phone' => '8105550199',
+            'visitor_id' => 'visitor-abc',
+        ])->assertStatus(201);
+
+        $identity = VisitorIdentity::where('visitor_id', 'visitor-abc')->first();
+        $this->assertSame('8105550199', $identity->phone);
+        $this->assertFalse($identity->sms_consent);
+        $this->assertNull($identity->sms_consent_at);
+    }
+
+    public function test_agreeing_for_a_new_phone_number_restarts_the_consent_time(): void
+    {
+        $this->travelTo(Carbon::parse('2026-08-25 10:00:00'));
+        $this->postJson('/api/analytics/identify', [
+            'name' => 'Clark Raven',
+            'phone' => '8105550101',
+            'visitor_id' => 'visitor-abc',
+            'sms_consent' => true,
+        ])->assertStatus(201);
+
+        $this->travelTo(Carbon::parse('2026-08-26 09:00:00'));
+        $this->postJson('/api/analytics/identify', [
+            'name' => 'Clark Raven',
+            'phone' => '8105550199',
+            'visitor_id' => 'visitor-abc',
+            'sms_consent' => true,
+        ])->assertStatus(201);
+
+        $identity = VisitorIdentity::where('visitor_id', 'visitor-abc')->first();
+        $this->assertTrue($identity->sms_consent);
+        $this->assertSame('2026-08-26 09:00:00', $identity->sms_consent_at->toDateTimeString());
+    }
+
+    public function test_unticking_the_text_box_withdraws_consent(): void
+    {
+        $payload = [
+            'name' => 'Clark Raven',
+            'phone' => '8105550101',
+            'visitor_id' => 'visitor-abc',
+        ];
+        $this->postJson('/api/analytics/identify', $payload + ['sms_consent' => true])->assertStatus(201);
+        $this->postJson('/api/analytics/identify', $payload + ['sms_consent' => false])->assertStatus(201);
+
+        $identity = VisitorIdentity::where('visitor_id', 'visitor-abc')->first();
+        $this->assertFalse($identity->sms_consent);
+        $this->assertNull($identity->sms_consent_at);
+    }
+
+    public function test_two_first_identifies_at_once_still_record_the_guest(): void
+    {
+        $raced = false;
+        VisitorIdentity::creating(function () use (&$raced) {
+            if ($raced) {
+                return;
+            }
+            $raced = true;
+            DB::table('visitor_identities')->insert([
+                'visitor_id' => 'visitor-abc',
+                'name' => 'Clark Raven',
+                'phone' => '8105550101',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        });
+
+        $this->postJson('/api/analytics/identify', [
+            'name' => 'Clark Raven',
+            'phone' => '8105550101',
+            'visitor_id' => 'visitor-abc',
+            'sms_consent' => true,
+        ])->assertStatus(201)->assertJsonPath('data.recorded', true);
+
+        $this->assertTrue($raced);
+        $this->assertSame(1, VisitorIdentity::count());
+        $this->assertTrue(VisitorIdentity::first()->sms_consent);
+    }
+
+    public function test_identify_rejects_a_consent_answer_that_is_not_yes_or_no(): void
+    {
+        $this->postJson('/api/analytics/identify', [
+            'name' => 'Clark Raven',
+            'phone' => '8105550101',
+            'visitor_id' => 'visitor-abc',
+            'sms_consent' => 'maybe',
+        ])->assertStatus(422)->assertJsonValidationErrors('sms_consent');
+
+        $this->assertSame(0, VisitorIdentity::count());
+    }
+
+    public function test_text_consent_appears_on_the_session_row_and_timeline(): void
+    {
+        $this->trackView('visitor-abc', '/brighton', '2026-08-25 10:00:00');
+        $this->trackView('visitor-xyz', '/brighton', '2026-08-25 12:00:00');
+        VisitorIdentity::create([
+            'visitor_id' => 'visitor-abc',
+            'name' => 'Clark Raven',
+            'phone' => '8105550101',
+            'sms_consent' => true,
+            'sms_consent_at' => '2026-08-25 10:00:00',
+        ]);
+        VisitorIdentity::create([
+            'visitor_id' => 'visitor-xyz',
+            'name' => 'Jamie Rivera',
+            'phone' => '8105550102',
+        ]);
+
+        $sessions = collect(
+            $this->actingAs($this->admin, 'sanctum')->getJson('/api/visitor-sessions')->json('data.sessions')
+        )->keyBy('visitor_id');
+
+        $this->assertTrue($sessions['visitor-abc']['guest_sms_consent']);
+        $this->assertFalse($sessions['visitor-xyz']['guest_sms_consent']);
+
+        $guest = $this->actingAs($this->admin, 'sanctum')
+            ->getJson('/api/visitor-sessions/detail?visitor_id=visitor-abc&date=2026-08-25')
+            ->assertStatus(200)
+            ->json('data.guest');
+
+        $this->assertTrue($guest['sms_consent']);
+        $this->assertSame('Aug 25, 2026 10:00 AM', $guest['sms_consent_label']);
+
+        $exported = collect(
+            $this->actingAs($this->admin, 'sanctum')->getJson('/api/visitor-sessions/export')->json('data.sessions')
+        )->keyBy('visitor_id');
+
+        $this->assertTrue($exported['visitor-abc']['guest_sms_consent']);
+        $this->assertFalse($exported['visitor-xyz']['guest_sms_consent']);
     }
 
     public function test_sessions_group_one_visitor_day_per_row(): void

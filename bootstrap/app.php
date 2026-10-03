@@ -16,6 +16,7 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withSchedule(function (Schedule $schedule): void {
         // Send booking reminders daily at 9:00 AM
+        $schedule->command('sanctum:prune-expired --hours=24')->daily();
         $schedule->command('bookings:send-reminders')->dailyAt('09:00')->withoutOverlapping(10);
 
         // Prune raw page-view rows older than 365 days nightly (keeps conversions).
@@ -33,6 +34,8 @@ return Application::configure(basePath: dirname(__DIR__))
 
         // Send photo links that staff scheduled for 9:00 AM the next day in the location's time zone.
         $schedule->command('photos:send-scheduled')->everyFifteenMinutes()->withoutOverlapping(10);
+
+        $schedule->command('photos:check-text-delivery')->everyFiveMinutes()->withoutOverlapping(10)->runInBackground();
 
         // Close each location's slideshow queue at the 6:00 AM operating-day cutoff and open the next one.
         $schedule->command('photos:roll-queues')->hourly()->withoutOverlapping(10);
@@ -64,6 +67,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->alias([
             'photo.staff' => \App\Http\Middleware\EnsurePhotoStaff::class,
             'staff' => \App\Http\Middleware\EnsureStaff::class,
+            'staff.terminal' => \App\Http\Middleware\EnsureStaffTerminal::class,
         ]);
 
         $middleware->validateCsrfTokens(except: [

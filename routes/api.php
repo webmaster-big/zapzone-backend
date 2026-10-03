@@ -247,6 +247,13 @@ Route::prefix('mobile')->group(function () {
     Route::get('packages/{packageId}/availability', [MobileAvailabilityController::class, 'getPackageAvailability']);
 });
 
+Route::prefix('staff-pin')->group(function () {
+    Route::get('terminal-context', [\App\Http\Controllers\Api\StaffTerminalController::class, 'context'])
+        ->middleware('throttle:staff-pin-context');
+    Route::post('unlock', [\App\Http\Controllers\Api\StaffPinController::class, 'unlock'])
+        ->middleware(['staff.terminal', 'throttle:staff-pin-unlock']);
+});
+
 Route::middleware('auth:sanctum')->group(function () {
     Route::get('/user', function (Request $request) {
         return $request->user();
@@ -265,6 +272,23 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('override-pin', [\App\Http\Controllers\Api\OverridePinController::class, 'show']);
         Route::post('override-pin', [\App\Http\Controllers\Api\OverridePinController::class, 'store']);
         Route::post('override-pin/verify', [\App\Http\Controllers\Api\OverridePinController::class, 'verify']);
+
+        Route::get('staff-pin/status', [\App\Http\Controllers\Api\StaffPinController::class, 'status']);
+        Route::post('staff-pin/lock', [\App\Http\Controllers\Api\StaffPinController::class, 'lock']);
+        Route::post('staff-pin/self', [\App\Http\Controllers\Api\StaffPinController::class, 'setOwn'])
+            ->middleware('throttle:staff-pin-manage');
+
+        Route::middleware(['staff:company_admin|location_manager', 'throttle:staff-pin-manage'])->group(function () {
+            Route::get('staff-pin/roster', [\App\Http\Controllers\Api\StaffPinController::class, 'roster']);
+            Route::post('staff-pin/users/{user}', [\App\Http\Controllers\Api\StaffPinController::class, 'issue']);
+            Route::delete('staff-pin/users/{user}', [\App\Http\Controllers\Api\StaffPinController::class, 'clear']);
+            Route::post('staff-pin/users/{user}/unlock', [\App\Http\Controllers\Api\StaffPinController::class, 'unlockAccount']);
+
+            Route::get('staff-terminals', [\App\Http\Controllers\Api\StaffTerminalController::class, 'index']);
+            Route::post('staff-terminals', [\App\Http\Controllers\Api\StaffTerminalController::class, 'store']);
+            Route::patch('staff-terminals/{staffTerminal}', [\App\Http\Controllers\Api\StaffTerminalController::class, 'update']);
+            Route::delete('staff-terminals/{staffTerminal}', [\App\Http\Controllers\Api\StaffTerminalController::class, 'destroy']);
+        });
 
         Route::get('custom-fields', [\App\Http\Controllers\Api\CustomFieldController::class, 'index']);
         Route::get('custom-fields/{customField}', [\App\Http\Controllers\Api\CustomFieldController::class, 'show']);
