@@ -9,9 +9,33 @@ use net\authorize\api\controller as AnetController;
 
 class AuthorizeNetGateway
 {
+    public const NO_ANSWER_MESSAGE = "We couldn't get an answer from the card processor, so we can't tell whether your card was charged. Please call us before trying again so you are not charged twice.";
+
     public function execute(AnetController\base\ApiOperationBase $controller, string $environment)
     {
         return $controller->executeWithApiResponse($environment);
+    }
+
+    public function answered($response): bool
+    {
+        return $response !== null && $response->getMessages() !== null;
+    }
+
+    public function reportNoAnswer(?int $locationId, float $amount, string $what, string $reference, array $context = []): void
+    {
+        Log::error('CHARGE_OUTCOME_UNKNOWN: Authorize.Net did not answer a card charge', $context + [
+            'location_id' => $locationId,
+            'amount' => $amount,
+            'what' => $what,
+            'reference' => $reference,
+        ]);
+
+        $this->alertStaff(
+            $locationId,
+            'Card payment needs checking in Authorize.Net',
+            'Authorize.Net did not answer a card payment of $' . number_format($amount, 2) . " for {$what}, so the customer was told it did not go through. Check Authorize.Net for a charge with reference {$reference} and refund it if one went through.",
+            $context + ['amount' => $amount, 'reference' => $reference, 'reason' => 'no_gateway_answer']
+        );
     }
 
     public function isApproved(?AnetAPI\TransactionResponseType $transaction, float $requestedAmount): bool

@@ -21,6 +21,15 @@ class AttractionPurchase extends Model
     {
         static::forceDeleting(function (AttractionPurchase $purchase) {
             try {
+                app(\App\Services\MembershipBenefitService::class)->reverseForRedeemable($purchase, 'checkout_deleted');
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('Membership benefit uses could not be returned for a deleted attraction purchase', [
+                    'attraction_purchase_id' => $purchase->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
+            try {
                 Waiver::discardUnsignedPlaceholdersFor('attraction_purchase_id', (int) $purchase->id);
             } catch (\Throwable $e) {
                 \Illuminate\Support\Facades\Log::warning('Unsigned waivers could not be removed with a deleted attraction purchase', [
@@ -163,7 +172,7 @@ class AttractionPurchase extends Model
                 ->where('status', '!=', self::STATUS_PENDING)
                 ->orWhereNull('payment_method')
                 ->orWhere('payment_method', '!=', 'authorize.net')
-                ->orWhere('amount_paid', '>', 0));
+                ->orWhereHas('payments', fn ($paid) => $paid->where('status', 'completed')));
     }
 
     public function scopeByLocation($query, $locationId)

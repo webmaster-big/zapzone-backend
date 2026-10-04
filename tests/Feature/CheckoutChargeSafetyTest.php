@@ -7,6 +7,7 @@ use App\Models\AttractionPurchase;
 use App\Models\AuthorizeNetAccount;
 use App\Models\Booking;
 use App\Models\Company;
+use App\Models\Customer;
 use App\Models\Event;
 use App\Models\EventPurchase;
 use App\Models\Location;
@@ -18,10 +19,12 @@ use App\Models\User;
 use App\Models\Waiver;
 use App\Models\WaiverTemplate;
 use App\Services\AuthorizeNetCharger;
+use App\Services\EmailNotificationService;
 use App\Services\Payments\AuthorizeNetGateway;
 use App\Services\WaiverService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Routing\Middleware\ThrottleRequests;
+use Illuminate\Support\Facades\Cache;
 use net\authorize\api\contract\v1 as AnetAPI;
 use net\authorize\api\controller as AnetController;
 use Tests\TestCase;
@@ -318,7 +321,7 @@ class CheckoutChargeSafetyTest extends TestCase
 
         $insisted = $this->postJson('/api/bookings', $this->bookingPayload($this->roomOne, ['book_another' => true]));
         $this->assertSame(409, $insisted->status(), 'the space is taken by the first booking');
-        $this->assertNotSame($first->id, $insisted->json('data.id'), 'a paid booking must never be handed back to be charged again');
+        $this->assertStringContainsString('taken', (string) $insisted->json('message'), 'the space is refused, never handed back to be charged again');
 
         $this->assertSame(1, Booking::count());
         $this->assertSame(1, Payment::count());
@@ -336,7 +339,6 @@ class CheckoutChargeSafetyTest extends TestCase
 
         $this->assertSame(1, Booking::count());
         $this->assertSame(1, Payment::count());
-        $this->assertCount(1, $this->gateway->sent);
     }
 
     public function test_an_identical_retry_of_an_unpaid_checkout_reuses_its_booking(): void
@@ -385,7 +387,9 @@ class CheckoutChargeSafetyTest extends TestCase
         $booking = $this->bookAndPay($this->roomOne, '60200000001');
 
         $this->deleteJson("/api/bookings/{$booking->id}/force-delete")->assertStatus(403);
-        $this->deleteJson("/api/bookings/{$booking->id}")->assertStatus(403);
+        $this->deleteJson("/api/bookings/{$booking->id}")
+            ->assertStatus(403)
+            ->assertJsonPath('message', 'Only an unpaid pending booking can be removed this way.');
 
         $this->assertNotNull(Booking::find($booking->id), 'the paid booking stays in the bookings list');
     }
@@ -923,10 +927,12 @@ class CheckoutChargeSafetyTest extends TestCase
             'payment_method' => 'authorize.net',
         ])->assertSuccessful();
         $orderId = (int) ($order->json('data.id') ?? $order->json('id'));
+        $cartWaiver = Waiver::where('event_id', $event->id)->where('adult_email', 'cart@example.com')->firstOrFail();
 
         $this->deleteJson("/api/ticket-orders/{$orderId}/rollback")->assertSuccessful();
 
         $this->assertFalse(Waiver::withTrashed()->findOrFail($otherWaiver->id)->trashed(), "another guest's waiver for the same event and day survives");
+        $this->assertTrue(Waiver::withTrashed()->findOrFail($cartWaiver->id)->trashed(), "the cart guest's own unsigned waiver goes with the order");
     }
 
     public function test_a_changed_retry_while_the_first_attempt_may_still_be_charging_is_asked_to_wait(): void
@@ -1090,6 +1096,7 @@ class CheckoutChargeSafetyTest extends TestCase
     {
         $tomorrow = now()->addDay()->toDateString();
         $bookingId = $this->createBooking($this->roomOne, ['booking_date' => $tomorrow]);
+        $this->recordPayment(Payment::TYPE_BOOKING, $bookingId, 40.00);
         Booking::findOrFail($bookingId)->update(['amount_paid' => 40]);
 
         $this->artisan('bookings:send-reminders')->assertSuccessful();
@@ -1225,6 +1232,858 @@ class CheckoutChargeSafetyTest extends TestCase
 
         $this->assertSame(2, EventPurchase::count());
     }
+    private function customer(string $email): Customer
+    {
+        return Customer::create([
+            'first_name' => 'Pat',
+            'last_name' => 'Customer',
+            'email' => $email,
+            'phone' => '7345550000',
+            'password' => bcrypt('secret-password'),
+            'status' => 'active',
+        ]);
+    }
+
+    private function chargeLock(int $payableId, string $type = Payment::TYPE_BOOKING): \Illuminate\Contracts\Cache\Lock
+    {
+        return Cache::lock('payable-charge:' . $type . ':' . $payableId, 180);
+    }
+
+    private function qrPayload(array $overrides = []): array
+    {
+        return array_merge(['qr_code' => 'data:image/png;base64,' . base64_encode("\x89PNG test")], $overrides);
+    }
+
+    public function test_a_second_charge_while_the_first_is_still_running_does_not_reach_the_gateway(): void
+    {
+        config(['checkout.charge_lock_wait_seconds' => 0]);
+        $bookingId = $this->createBooking($this->roomOne);
+        $firstCharge = $this->chargeLock($bookingId);
+        $this->assertTrue($firstCharge->get());
+
+        $this->postJson('/api/payments/charge', $this->chargePayload($bookingId))
+            ->assertStatus(409)
+            ->assertJsonPath('error_code', 'CHARGE_IN_PROGRESS');
+
+        $this->assertSame([], $this->gateway->sent, 'the second charge never reaches the card processor');
+        $this->assertTrue(Booking::whereKey($bookingId)->exists(), 'the booking the first charge is paying for is left alone');
+
+        $firstCharge->release();
+    }
+
+    public function test_the_charge_lock_is_let_go_after_a_charge_succeeds_or_fails(): void
+    {
+        $paid = $this->bookAndPay($this->roomOne, '60200000040');
+        $afterSuccess = $this->chargeLock($paid->id);
+        $this->assertTrue($afterSuccess->get(), 'a finished charge leaves the booking free to be charged again');
+        $afterSuccess->release();
+
+        $declinedId = $this->createBooking($this->roomTwo, ['guest_email' => 'declined@example.com']);
+        $this->gateway->replies[] = $this->declineReply();
+        $this->postJson('/api/payments/charge', $this->chargePayload($declinedId))->assertStatus(400);
+
+        $afterDecline = $this->chargeLock($declinedId);
+        $this->assertTrue($afterDecline->get(), 'a declined charge leaves nothing locked');
+        $afterDecline->release();
+    }
+
+    public function test_an_approved_charge_that_cannot_be_saved_is_voided_and_not_booked(): void
+    {
+        $bookingId = $this->createBooking($this->roomOne);
+        Payment::creating(function () {
+            throw new \RuntimeException('The payments table is unavailable');
+        });
+
+        $this->gateway->replies[] = $this->transactionReply('1', '60200000041');
+        $this->gateway->replies[] = $this->voidReply('Ok');
+
+        $this->postJson('/api/payments/charge', $this->chargePayload($bookingId))
+            ->assertStatus(500)
+            ->assertJsonPath('success', false)
+            ->assertJsonPath('error_code', 'PAYMENT_NOT_RECORDED');
+
+        $this->assertSame('voidTransaction', $this->gateway->sent[1]['transaction_type']);
+        $this->assertSame('60200000041', $this->gateway->sent[1]['ref_trans_id']);
+        $this->assertFalse(Booking::withTrashed()->whereKey($bookingId)->exists(), 'the unpaid checkout is rolled back');
+        $this->assertSame(0, Notification::where('title', 'Card payment needs action in Authorize.Net')->count(), 'a charge that was voided needs no staff action');
+    }
+
+    public function test_an_approved_charge_that_cannot_be_saved_or_voided_alerts_staff(): void
+    {
+        $bookingId = $this->createBooking($this->roomOne);
+        Payment::creating(function () {
+            throw new \RuntimeException('The payments table is unavailable');
+        });
+
+        $this->gateway->replies[] = $this->transactionReply('1', '60200000042');
+        $this->gateway->replies[] = $this->voidReply('Error');
+
+        $response = $this->postJson('/api/payments/charge', $this->chargePayload($bookingId))
+            ->assertStatus(500)
+            ->assertJsonPath('error_code', 'PAYMENT_NOT_RECORDED');
+
+        $this->assertStringContainsString('will refund', $response->json('message'));
+        $alert = Notification::where('title', 'Card payment needs action in Authorize.Net')->firstOrFail();
+        $this->assertSame('payment_not_recorded', $alert->metadata['reason']);
+        $this->assertSame('60200000042', $alert->metadata['transaction_id']);
+    }
+
+    public function test_a_charge_saved_just_before_a_later_error_is_reported_as_paid_and_never_voided(): void
+    {
+        $bookingId = $this->createBooking($this->roomOne);
+        Payment::created(function () {
+            throw new \RuntimeException('A listener failed after the payment was saved');
+        });
+
+        $this->gateway->replies[] = $this->transactionReply('1', '60200000043');
+
+        $this->postJson('/api/payments/charge', $this->chargePayload($bookingId))
+            ->assertOk()
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('transaction_id', '60200000043');
+
+        $this->assertCount(1, $this->gateway->sent, 'a payment that was saved is never voided');
+        $this->assertSame(1, Payment::where('transaction_id', '60200000043')->count());
+        $this->assertTrue(Booking::whereKey($bookingId)->exists(), 'the paid booking is kept');
+    }
+
+    public function test_a_failure_updating_the_booking_after_the_payment_is_saved_still_reports_paid(): void
+    {
+        $bookingId = $this->createBooking($this->roomOne);
+        Booking::updating(function () {
+            throw new \RuntimeException('The booking could not be updated');
+        });
+
+        $this->gateway->replies[] = $this->transactionReply('1', '60200000044');
+
+        $this->postJson('/api/payments/charge', $this->chargePayload($bookingId))
+            ->assertOk()
+            ->assertJsonPath('success', true);
+
+        $this->assertCount(1, $this->gateway->sent);
+        $this->assertSame(1, Payment::where('payable_id', $bookingId)->where('status', 'completed')->count());
+        $this->assertTrue(Booking::whereKey($bookingId)->exists());
+    }
+
+    public function test_a_pending_checkout_marked_paid_without_any_payment_gets_no_visit_reminder(): void
+    {
+        $tomorrow = now()->addDay()->toDateString();
+        $bookingId = $this->createBooking($this->roomOne, ['booking_date' => $tomorrow]);
+        Booking::findOrFail($bookingId)->update(['amount_paid' => 109.04]);
+
+        $this->artisan('bookings:send-reminders')->assertSuccessful();
+
+        $this->assertFalse((bool) Booking::findOrFail($bookingId)->reminder_sent, 'an amount typed onto a checkout that never took a payment is not money');
+    }
+
+    public function test_a_guest_cannot_send_a_confirmation_for_an_unpaid_booking_through_the_qr_route(): void
+    {
+        $bookingId = $this->createBooking($this->roomOne);
+        $this->mock(EmailNotificationService::class, fn ($mock) => $mock->shouldNotReceive('triggerBookingNotification'));
+
+        $this->postJson("/api/bookings/{$bookingId}/qrcode", $this->qrPayload())
+            ->assertOk()
+            ->assertJsonPath('data.email_sent', false);
+
+        $this->assertNotEmpty(Booking::findOrFail($bookingId)->qr_code_path, 'the QR code itself is still stored');
+    }
+
+    public function test_a_guest_cannot_replace_a_bookings_qr_code_or_resend_its_confirmation(): void
+    {
+        $booking = $this->bookAndPay($this->roomOne, '60200000045');
+        $booking->update(['qr_code_path' => 'qrcodes/original.png']);
+        $this->mock(EmailNotificationService::class, fn ($mock) => $mock->shouldNotReceive('triggerBookingNotification'));
+
+        $this->postJson("/api/bookings/{$booking->id}/qrcode", $this->qrPayload())
+            ->assertOk()
+            ->assertJsonPath('message', 'QR code already stored')
+            ->assertJsonPath('data.email_sent', false);
+
+        $this->assertSame('qrcodes/original.png', $booking->fresh()->qr_code_path);
+    }
+
+    public function test_a_guest_cannot_use_the_qr_route_on_an_old_booking(): void
+    {
+        $booking = $this->bookAndPay($this->roomOne, '60200000046');
+        Booking::whereKey($booking->id)->update(['created_at' => now()->subDays(3)]);
+        $this->mock(EmailNotificationService::class, fn ($mock) => $mock->shouldNotReceive('triggerBookingNotification'));
+
+        $this->postJson("/api/bookings/{$booking->id}/qrcode", $this->qrPayload())
+            ->assertOk()
+            ->assertJsonPath('data.email_sent', false);
+
+        $this->assertNull($booking->fresh()->qr_code_path);
+    }
+
+    public function test_a_confirmed_booking_without_a_qr_code_still_gets_its_confirmation(): void
+    {
+        $booking = $this->bookAndPay($this->roomOne, '60200000047');
+        $this->mock(EmailNotificationService::class, fn ($mock) => $mock->shouldReceive('triggerBookingNotification')->once());
+
+        $this->postJson("/api/bookings/{$booking->id}/qrcode", $this->qrPayload())
+            ->assertOk()
+            ->assertJsonPath('data.email_sent', true);
+    }
+
+    public function test_staff_can_still_send_a_confirmation_for_a_pay_later_booking(): void
+    {
+        $staff = $this->staff();
+        $bookingId = (int) $this->actingAs($staff, 'sanctum')
+            ->postJson('/api/bookings', $this->bookingPayload($this->roomOne, ['payment_method' => 'paylater', 'amount_paid' => 0]))
+            ->assertStatus(201)
+            ->json('data.id');
+        $this->mock(EmailNotificationService::class, fn ($mock) => $mock->shouldReceive('triggerBookingNotification')->once());
+
+        $this->actingAs($staff, 'sanctum')
+            ->postJson("/api/bookings/{$bookingId}/qrcode", $this->qrPayload())
+            ->assertOk()
+            ->assertJsonPath('data.email_sent', true);
+    }
+
+    public function test_the_customer_booking_list_needs_a_login_and_shows_customers_only_their_own(): void
+    {
+        $mine = $this->createBooking($this->roomOne, ['guest_email' => 'pat@example.com', 'guest_name' => 'Pat Customer']);
+        $this->createBooking($this->roomTwo, ['guest_email' => 'someone@example.com', 'guest_name' => 'Someone Else']);
+
+        $this->getJson('/api/customers/bookings')->assertStatus(401);
+        $this->getJson('/api/customers/bookings?guest_email=someone@example.com')->assertStatus(401);
+
+        $this->withHeader('Authorization', 'Bearer ' . $this->customer('pat@example.com')->createToken('portal')->plainTextToken);
+
+        $this->assertSame([$mine], collect($this->getJson('/api/customers/bookings')->assertOk()->json('data.bookings'))->pluck('id')->all());
+        $this->assertSame([], $this->getJson('/api/customers/bookings?guest_email=someone@example.com')->assertOk()->json('data.bookings'), 'a customer cannot look another guest up by email');
+    }
+
+    public function test_the_customer_purchase_lists_need_a_login_and_show_customers_only_their_own(): void
+    {
+        $attraction = Attraction::create([
+            'location_id' => $this->location->id,
+            'name' => 'Axe Throwing',
+            'description' => 'Throw axes',
+            'category' => 'Activities',
+            'price' => 20,
+            'duration' => 30,
+            'max_capacity' => 20,
+            'status' => 'active',
+        ]);
+        $attractionPayload = fn (string $email) => [
+            'attraction_id' => $attraction->id,
+            'guest_name' => 'Axe Guest',
+            'guest_email' => $email,
+            'quantity' => 1,
+            'total_amount' => 20,
+            'amount_paid' => 0,
+            'payment_method' => 'authorize.net',
+            'purchase_date' => now()->toDateString(),
+            'scheduled_date' => now()->addDay()->toDateString(),
+            'scheduled_time' => '18:00',
+        ];
+        $myAttraction = (int) $this->postJson('/api/attraction-purchases', $attractionPayload('pat@example.com'))->assertStatus(201)->json('data.id');
+        $this->postJson('/api/attraction-purchases', $attractionPayload('someone@example.com'))->assertStatus(201);
+
+        $event = $this->glowNight();
+        $mine = $this->postJson('/api/event-purchases', $this->eventPurchasePayload($event, 'pat@example.com'))->assertSuccessful();
+        $myEvent = (int) ($mine->json('data.id') ?? $mine->json('id'));
+        $this->postJson('/api/event-purchases', $this->eventPurchasePayload($event, 'someone@example.com'))->assertSuccessful();
+
+        $this->getJson('/api/attraction-purchases/customer')->assertStatus(401);
+        $this->getJson('/api/event-purchases/customer?guest_email=someone@example.com')->assertStatus(401);
+
+        $this->withHeader('Authorization', 'Bearer ' . $this->customer('pat@example.com')->createToken('portal')->plainTextToken);
+
+        $this->assertSame([$myAttraction], collect($this->getJson('/api/attraction-purchases/customer?guest_email=pat@example.com')->assertOk()->json('data.purchases'))->pluck('id')->all());
+        $this->assertSame([], $this->getJson('/api/attraction-purchases/customer?guest_email=someone@example.com')->assertOk()->json('data.purchases'));
+        $this->assertSame([$myEvent], collect($this->getJson('/api/event-purchases/customer?guest_email=pat@example.com')->assertOk()->json('data.purchases'))->pluck('id')->all());
+        $this->assertSame([], $this->getJson('/api/event-purchases/customer?guest_email=someone@example.com')->assertOk()->json('data.purchases'));
+    }
+
+    public function test_staff_can_still_look_any_guest_up_in_the_customer_lists(): void
+    {
+        $theirs = $this->createBooking($this->roomTwo, ['guest_email' => 'someone@example.com', 'guest_name' => 'Someone Else']);
+
+        $this->actingAs($this->staff(), 'sanctum');
+
+        $this->assertSame([$theirs], collect($this->getJson('/api/customers/bookings?guest_email=someone@example.com')->assertOk()->json('data.bookings'))->pluck('id')->all());
+        $this->getJson('/api/attraction-purchases/customer')->assertOk();
+        $this->getJson('/api/event-purchases/customer')->assertOk();
+    }
+
+    public function test_a_waiver_left_behind_by_a_deleted_checkout_gets_no_reminder(): void
+    {
+        $this->defaultWaiverTemplate();
+        $tomorrow = now()->addDay()->toDateString();
+        $paid = $this->bookAndPay($this->roomOne, '60200000050', ['booking_date' => $tomorrow]);
+        $paidWaiver = Waiver::where('booking_id', $paid->id)->firstOrFail();
+
+        $orphan = $this->copyOfWaiver($paidWaiver, ['booking_id' => null, 'adult_email' => 'gone@example.com']);
+        $assigned = $this->copyOfWaiver($paidWaiver, ['booking_id' => null, 'adult_email' => 'assigned@example.com', 'is_manager_assigned' => true]);
+        $kiosk = $this->copyOfWaiver($paidWaiver, ['booking_id' => null, 'adult_email' => 'kiosk@example.com', 'source' => Waiver::SOURCE_KIOSK]);
+
+        $due = app(WaiverService::class)->dueForReminder(48)->pluck('id');
+
+        $this->assertTrue($due->contains($paidWaiver->id), 'the paid booking keeps its reminder');
+        $this->assertFalse($due->contains($orphan->id), 'a checkout placeholder whose booking is gone is not reminded');
+        $this->assertTrue($due->contains($assigned->id), 'a waiver a manager sent is still reminded');
+        $this->assertTrue($due->contains($kiosk->id), 'a waiver started at the kiosk is still reminded');
+    }
+
+    public function test_releasing_an_abandoned_attempt_is_written_to_the_activity_log(): void
+    {
+        $firstId = $this->createBooking($this->roomOne, ['checkout_key' => 'attempt-logged']);
+        $this->travel(3)->minutes();
+
+        $this->postJson('/api/bookings', $this->bookingPayload($this->roomOne, ['checkout_key' => 'attempt-logged', 'participants' => 3]))
+            ->assertStatus(201);
+
+        $this->assertTrue(\App\Models\ActivityLog::where('action', 'Booking Force Deleted (Abandoned Checkout)')->where('entity_id', $firstId)->exists());
+    }
+
+    public function test_a_pay_later_booking_is_never_released_by_a_changed_retry(): void
+    {
+        $staff = $this->staff();
+        $firstId = (int) $this->actingAs($staff, 'sanctum')
+            ->postJson('/api/bookings', $this->bookingPayload($this->roomOne, ['checkout_key' => 'desk-attempt', 'payment_method' => 'paylater', 'amount_paid' => 0]))
+            ->assertStatus(201)
+            ->json('data.id');
+        $this->travel(3)->minutes();
+
+        $this->actingAs($staff, 'sanctum')
+            ->postJson('/api/bookings', $this->bookingPayload($this->roomTwo, ['checkout_key' => 'desk-attempt', 'payment_method' => 'paylater', 'amount_paid' => 0, 'participants' => 3]))
+            ->assertStatus(201);
+
+        $this->assertNotNull(Booking::find($firstId), 'a pay-later reservation is not an abandoned card checkout');
+    }
+
+    public function test_a_gift_card_charge_with_no_answer_alerts_staff_and_says_the_outcome_is_unknown(): void
+    {
+        $this->gateway->replies[] = FakeAuthorizeNetGateway::NO_ANSWER;
+
+        $result = app(AuthorizeNetCharger::class)->charge(
+            $this->account,
+            25.00,
+            ['dataDescriptor' => 'COMMON.ACCEPT.INAPP.PAYMENT', 'dataValue' => 'opaque-token'],
+            ['first_name' => 'Gift', 'last_name' => 'Buyer', 'email' => 'buyer@example.com'],
+            'GC2',
+            'GC2',
+            'Zap Zone gift card'
+        );
+
+        $this->assertFalse($result['success']);
+        $this->assertSame(AuthorizeNetGateway::NO_ANSWER_MESSAGE, $result['error']);
+        $alert = Notification::where('title', 'Card payment needs checking in Authorize.Net')->firstOrFail();
+        $this->assertSame('no_gateway_answer', $alert->metadata['reason']);
+        $this->assertSame('GC2', $alert->metadata['reference']);
+    }
+
+    public function test_a_saved_card_charge_with_no_answer_alerts_staff(): void
+    {
+        $this->gateway->replies[] = FakeAuthorizeNetGateway::NO_ANSWER;
+
+        $result = app(\App\Services\AuthorizeNetProfileService::class)->chargeProfile($this->account, '900100', '900200', 30.00, 'MB1-1', 'Membership renewal - Explorer');
+
+        $this->assertFalse($result['success']);
+        $this->assertSame(AuthorizeNetGateway::NO_ANSWER_MESSAGE, $result['error']);
+        $this->assertSame('no_gateway_answer', Notification::where('title', 'Card payment needs checking in Authorize.Net')->firstOrFail()->metadata['reason']);
+    }
+
+    public function test_a_declined_online_membership_purchase_sends_no_payment_failed_notice(): void
+    {
+        $plan = \App\Models\MembershipPlan::create([
+            'company_id' => $this->company->id,
+            'location_id' => $this->location->id,
+            'name' => 'Local Explorer',
+            'slug' => 'local-explorer',
+            'tier' => 'basic',
+            'price' => 29.99,
+            'billing_cycle' => 'monthly',
+            'is_active' => true,
+        ]);
+        $token = $this->customer('member@example.com')->createToken('portal')->plainTextToken;
+        $this->gateway->replies[] = $this->declineReply();
+
+        $this->withHeader('Authorization', 'Bearer ' . $token)
+            ->postJson('/api/memberships/purchase', [
+                'membership_plan_id' => $plan->id,
+                'home_location_id' => $this->location->id,
+                'opaque_data' => ['dataDescriptor' => 'COMMON.ACCEPT.INAPP.PAYMENT', 'dataValue' => 'opaque-token'],
+                'terms_accepted' => true,
+                'recurring_billing_authorized' => true,
+            ])
+            ->assertStatus(402);
+
+        $this->assertSame(0, \App\Models\MembershipPayment::count(), 'no failed payment is recorded, so no "update your payment method" notice goes out');
+        $this->assertSame(0, \App\Models\Membership::count());
+    }
+
+    public function test_a_cancelled_event_checkout_leaves_an_older_waiver_it_picked_up_alone(): void
+    {
+        $this->defaultWaiverTemplate();
+        $event = $this->glowNight();
+        $customer = $this->customer('pat@example.com');
+        $this->withHeader('Authorization', 'Bearer ' . $customer->createToken('portal')->plainTextToken);
+
+        $earlier = $this->postJson('/api/event-purchases', $this->eventPurchasePayload($event, 'pat@example.com', ['customer_id' => $customer->id, 'quantity' => 2, 'total_amount' => 30]))->assertSuccessful();
+        $earlierWaiver = $this->eventPurchaseWaiver((int) ($earlier->json('data.id') ?? $earlier->json('id')));
+        Waiver::whereKey($earlierWaiver->id)->update(['event_purchase_id' => null, 'created_at' => now()->subHour()]);
+
+        $later = $this->postJson('/api/event-purchases', $this->eventPurchasePayload($event, 'pat@example.com', ['customer_id' => $customer->id]))->assertSuccessful();
+        $laterId = (int) ($later->json('data.id') ?? $later->json('id'));
+        $this->assertSame($laterId, (int) Waiver::findOrFail($earlierWaiver->id)->event_purchase_id, 'the new checkout picked up the older waiver');
+
+        $this->deleteJson("/api/event-purchases/{$laterId}/force-delete")->assertOk();
+
+        $kept = Waiver::find($earlierWaiver->id);
+        $this->assertNotNull($kept, 'a waiver the cancelled checkout did not create is left alone');
+        $this->assertSame(Waiver::STATUS_PENDING, $kept->status);
+    }
+
+    public function test_a_checkout_without_a_staff_login_cannot_mark_itself_paid_at_the_venue(): void
+    {
+        $booking = $this->postJson('/api/bookings', $this->bookingPayload($this->roomOne, ['payment_method' => 'in-store', 'amount_paid' => 109.04]))
+            ->assertStatus(201);
+        $this->assertSame('paylater', $booking->json('data.payment_method'));
+        $this->assertSame('pending', $booking->json('data.status'));
+        $this->assertEquals(0, (float) $booking->json('data.amount_paid'));
+
+        $attraction = Attraction::create([
+            'location_id' => $this->location->id,
+            'name' => 'Axe Throwing',
+            'description' => 'Throw axes',
+            'category' => 'Activities',
+            'price' => 20,
+            'duration' => 30,
+            'max_capacity' => 20,
+            'status' => 'active',
+        ]);
+        $purchase = $this->postJson('/api/attraction-purchases', [
+            'attraction_id' => $attraction->id,
+            'guest_name' => 'Axe Guest',
+            'guest_email' => 'axes@example.com',
+            'quantity' => 1,
+            'total_amount' => 20,
+            'amount_paid' => 20,
+            'payment_method' => 'card',
+            'purchase_date' => now()->toDateString(),
+            'scheduled_date' => now()->addDay()->toDateString(),
+            'scheduled_time' => '18:00',
+        ])->assertStatus(201);
+        $this->assertSame('paylater', $purchase->json('data.payment_method'));
+        $this->assertSame('pending', $purchase->json('data.status'));
+        $this->assertEquals(0, (float) $purchase->json('data.amount_paid'));
+
+        $eventPurchase = $this->postJson('/api/event-purchases', $this->eventPurchasePayload($this->glowNight(), 'event@example.com', ['payment_method' => 'in-store', 'amount_paid' => 15]))
+            ->assertSuccessful();
+        $eventId = (int) ($eventPurchase->json('data.id') ?? $eventPurchase->json('id'));
+        $stored = EventPurchase::findOrFail($eventId);
+        $this->assertSame('paylater', $stored->payment_method);
+        $this->assertSame('pending', $stored->status);
+        $this->assertEquals(0, (float) $stored->amount_paid);
+    }
+
+    public function test_staff_can_still_record_a_payment_taken_at_the_venue(): void
+    {
+        $booking = $this->actingAs($this->staff(), 'sanctum')
+            ->postJson('/api/bookings', $this->bookingPayload($this->roomOne, ['payment_method' => 'in-store', 'amount_paid' => 109.04]))
+            ->assertStatus(201);
+
+        $this->assertSame('in-store', $booking->json('data.payment_method'));
+        $this->assertSame('confirmed', $booking->json('data.status'));
+    }
+
+    public function test_a_keyed_retry_of_a_cancelled_booking_books_again_instead_of_showing_it_as_confirmed(): void
+    {
+        $cancelled = $this->bookAndPay($this->roomOne, '60200000060', ['checkout_key' => 'cancelled-attempt']);
+        $cancelled->update(['status' => 'cancelled']);
+
+        $retryId = (int) $this->postJson('/api/bookings', $this->bookingPayload($this->roomTwo, ['checkout_key' => 'cancelled-attempt']))
+            ->assertStatus(201)
+            ->json('data.id');
+
+        $this->assertNotSame($cancelled->id, $retryId);
+    }
+
+    public function test_a_deleted_checkout_gives_back_the_membership_benefit_it_used(): void
+    {
+        $customer = $this->customer('member@example.com');
+        $plan = \App\Models\MembershipPlan::create([
+            'company_id' => $this->company->id,
+            'location_id' => $this->location->id,
+            'name' => 'Local Explorer',
+            'slug' => 'local-explorer',
+            'tier' => 'basic',
+            'price' => 29.99,
+            'billing_cycle' => 'monthly',
+            'is_active' => true,
+        ]);
+        $membership = \App\Models\Membership::create([
+            'customer_id' => $customer->id,
+            'membership_plan_id' => $plan->id,
+            'home_location_id' => $this->location->id,
+            'status' => 'active',
+            'billing_amount' => $plan->price,
+        ]);
+        $bookingId = $this->createBooking($this->roomOne);
+        $redemption = \App\Models\MembershipBenefitRedemption::create([
+            'membership_id' => $membership->id,
+            'customer_id' => $customer->id,
+            'location_id' => $this->location->id,
+            'benefit_type' => 'free_visit',
+            'value_mode' => 'count',
+            'value_applied' => 1,
+            'redeemable_type' => Booking::findOrFail($bookingId)->getMorphClass(),
+            'redeemable_id' => $bookingId,
+        ]);
+
+        $this->deleteJson("/api/bookings/{$bookingId}/force-delete")->assertOk();
+
+        $this->assertNotNull($redemption->fresh()->reversed_at, 'the member gets the benefit back when the checkout never happened');
+        $this->assertSame('checkout_deleted', $redemption->fresh()->reversal_reason);
+    }
+
+    public function test_a_booking_cancelled_or_trashed_while_its_card_was_being_charged_has_the_charge_voided(): void
+    {
+        $cancelledId = $this->createBooking($this->roomOne);
+        $this->gateway->duringNextCall = fn () => Booking::findOrFail($cancelledId)->update(['status' => 'cancelled']);
+        $this->gateway->replies[] = $this->transactionReply('1', '60200000070');
+        $this->gateway->replies[] = $this->voidReply('Ok');
+
+        $this->postJson('/api/payments/charge', $this->chargePayload($cancelledId))
+            ->assertStatus(409)
+            ->assertJsonPath('error_code', 'PAYABLE_REMOVED');
+        $this->assertSame('voidTransaction', $this->gateway->sent[1]['transaction_type']);
+        $this->assertSame('60200000070', $this->gateway->sent[1]['ref_trans_id']);
+
+        $trashedId = $this->createBooking($this->roomTwo, ['guest_email' => 'trashed@example.com']);
+        $this->gateway->duringNextCall = fn () => Booking::findOrFail($trashedId)->delete();
+        $this->gateway->replies[] = $this->transactionReply('1', '60200000071');
+        $this->gateway->replies[] = $this->voidReply('Ok');
+
+        $this->postJson('/api/payments/charge', $this->chargePayload($trashedId))
+            ->assertStatus(409)
+            ->assertJsonPath('error_code', 'PAYABLE_REMOVED');
+        $this->assertSame('voidTransaction', $this->gateway->sent[3]['transaction_type']);
+        $this->assertSame(0, Payment::count());
+    }
+
+    public function test_an_approved_answer_that_is_only_part_of_a_split_payment_is_refused(): void
+    {
+        $bookingId = $this->createBooking($this->roomOne);
+        $reply = $this->transactionReply('1', '60200000072');
+        $reply->getTransactionResponse()->setSplitTenderId('900002');
+        $this->gateway->replies[] = $reply;
+        $this->gateway->replies[] = $this->voidReply('Ok');
+
+        $this->postJson('/api/payments/charge', $this->chargePayload($bookingId))
+            ->assertStatus(400)
+            ->assertJsonPath('error_code', 'PAYMENT_NOT_APPROVED');
+
+        $this->assertSame('900002', $this->gateway->sent[1]['split_tender_id']);
+        $this->assertSame(0, Payment::count());
+    }
+
+    public function test_the_public_rollback_cannot_remove_a_paid_attraction_or_event_purchase(): void
+    {
+        $attraction = Attraction::create([
+            'location_id' => $this->location->id,
+            'name' => 'Axe Throwing',
+            'description' => 'Throw axes',
+            'category' => 'Activities',
+            'price' => 20,
+            'duration' => 30,
+            'max_capacity' => 20,
+            'status' => 'active',
+        ]);
+        $attractionId = (int) $this->postJson('/api/attraction-purchases', [
+            'attraction_id' => $attraction->id,
+            'guest_name' => 'Axe Guest',
+            'guest_email' => 'axes@example.com',
+            'quantity' => 1,
+            'total_amount' => 20,
+            'amount_paid' => 0,
+            'payment_method' => 'authorize.net',
+            'purchase_date' => now()->toDateString(),
+            'scheduled_date' => now()->addDay()->toDateString(),
+            'scheduled_time' => '18:00',
+        ])->assertStatus(201)->json('data.id');
+        $this->recordPayment(Payment::TYPE_ATTRACTION_PURCHASE, $attractionId, 20.00);
+
+        $this->deleteJson("/api/attraction-purchases/{$attractionId}/force-delete")->assertStatus(403);
+        $this->assertNotNull(AttractionPurchase::find($attractionId));
+
+        $event = $this->postJson('/api/event-purchases', $this->eventPurchasePayload($this->glowNight(), 'event@example.com'))->assertSuccessful();
+        $eventId = (int) ($event->json('data.id') ?? $event->json('id'));
+        $this->recordPayment(Payment::TYPE_EVENT_PURCHASE, $eventId, 15.00);
+
+        $this->deleteJson("/api/event-purchases/{$eventId}/force-delete")->assertStatus(403);
+        $this->assertNotNull(EventPurchase::find($eventId));
+    }
+
+    private function axeThrowing(): Attraction
+    {
+        return Attraction::create([
+            'location_id' => $this->location->id,
+            'name' => 'Axe Throwing',
+            'description' => 'Throw axes',
+            'category' => 'Activities',
+            'price' => 20,
+            'duration' => 30,
+            'max_capacity' => 20,
+            'status' => 'active',
+        ]);
+    }
+
+    private function attractionPayload(Attraction $attraction, string $email, array $overrides = []): array
+    {
+        return array_merge([
+            'attraction_id' => $attraction->id,
+            'guest_name' => 'Axe Guest',
+            'guest_email' => $email,
+            'quantity' => 1,
+            'total_amount' => 20,
+            'amount_paid' => 0,
+            'payment_method' => 'authorize.net',
+            'purchase_date' => now()->toDateString(),
+            'scheduled_date' => now()->addDay()->toDateString(),
+            'scheduled_time' => '18:00',
+        ], $overrides);
+    }
+
+    public function test_retrying_a_paid_attraction_checkout_with_its_key_shows_it_instead_of_charging_again(): void
+    {
+        $attraction = $this->axeThrowing();
+        $payload = $this->attractionPayload($attraction, 'axes@example.com', ['checkout_key' => 'axe-attempt']);
+        $firstId = (int) $this->postJson('/api/attraction-purchases', $payload)->assertStatus(201)->json('data.id');
+        $this->gateway->replies[] = $this->transactionReply('1', '60200000080');
+        $this->postJson('/api/payments/charge', $this->chargePayload($firstId, 20.00, Payment::TYPE_ATTRACTION_PURCHASE))->assertOk();
+
+        $this->postJson('/api/attraction-purchases', $payload)
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'ALREADY_PURCHASED')
+            ->assertJsonPath('data.id', $firstId);
+
+        $this->assertSame(1, AttractionPurchase::count());
+        $this->assertSame(1, Payment::count());
+    }
+
+    public function test_a_stale_attraction_key_on_the_next_guest_starts_a_new_purchase(): void
+    {
+        $attraction = $this->axeThrowing();
+        $firstId = (int) $this->postJson('/api/attraction-purchases', $this->attractionPayload($attraction, 'first@example.com', ['checkout_key' => 'kiosk-key']))->assertStatus(201)->json('data.id');
+        $this->gateway->replies[] = $this->transactionReply('1', '60200000081');
+        $this->postJson('/api/payments/charge', $this->chargePayload($firstId, 20.00, Payment::TYPE_ATTRACTION_PURCHASE))->assertOk();
+
+        $this->postJson('/api/attraction-purchases', $this->attractionPayload($attraction, 'next@example.com', ['checkout_key' => 'kiosk-key']))
+            ->assertStatus(201);
+
+        $this->assertSame(2, AttractionPurchase::count());
+    }
+
+    public function test_retrying_a_paid_event_checkout_with_its_key_shows_it_instead_of_charging_again(): void
+    {
+        $event = $this->glowNight();
+        $payload = $this->eventPurchasePayload($event, 'event@example.com', ['checkout_key' => 'event-attempt']);
+        $first = $this->postJson('/api/event-purchases', $payload)->assertSuccessful();
+        $firstId = (int) ($first->json('data.id') ?? $first->json('id'));
+        $this->gateway->replies[] = $this->transactionReply('1', '60200000082');
+        $this->postJson('/api/payments/charge', $this->chargePayload($firstId, 15.00, Payment::TYPE_EVENT_PURCHASE))->assertOk();
+
+        $this->postJson('/api/event-purchases', $payload)
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'ALREADY_PURCHASED')
+            ->assertJsonPath('data.id', $firstId);
+
+        $this->assertSame(1, EventPurchase::count());
+        $this->assertSame(1, Payment::count());
+    }
+
+    public function test_retrying_a_paid_cart_order_with_its_key_shows_it_instead_of_charging_again(): void
+    {
+        $event = $this->glowNight();
+        $eventDate = $event->start_date instanceof \DateTimeInterface ? $event->start_date->format('Y-m-d') : (string) $event->start_date;
+        $payload = [
+            'items' => [['type' => 'event', 'id' => $event->id, 'quantity' => 1, 'scheduled_date' => $eventDate, 'scheduled_time' => '18:00']],
+            'guest_name' => 'Cart Guest',
+            'guest_email' => 'cart@example.com',
+            'payment_method' => 'authorize.net',
+            'checkout_key' => 'cart-attempt',
+        ];
+        $order = $this->postJson('/api/ticket-orders', $payload)->assertSuccessful();
+        $orderId = (int) ($order->json('data.id') ?? $order->json('id'));
+        $orderModel = \App\Models\TicketOrder::findOrFail($orderId);
+        $this->gateway->replies[] = $this->transactionReply('1', '60200000090');
+        $this->postJson('/api/payments/charge', $this->chargePayload($orderId, (float) $orderModel->total_amount, Payment::TYPE_TICKET_ORDER))->assertOk();
+
+        $this->postJson('/api/ticket-orders', $payload)
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'ALREADY_PURCHASED')
+            ->assertJsonPath('data.id', $orderId);
+
+        $this->assertSame(1, \App\Models\TicketOrder::count());
+        $this->assertSame(1, Payment::count());
+    }
+
+    public function test_a_logged_in_customer_cannot_place_a_cart_order_marked_paid_at_the_venue(): void
+    {
+        $event = $this->glowNight();
+        $eventDate = $event->start_date instanceof \DateTimeInterface ? $event->start_date->format('Y-m-d') : (string) $event->start_date;
+        $this->withHeader('Authorization', 'Bearer ' . $this->customer('pat@example.com')->createToken('portal')->plainTextToken);
+
+        $this->postJson('/api/ticket-orders', [
+            'items' => [['type' => 'event', 'id' => $event->id, 'quantity' => 1, 'scheduled_date' => $eventDate, 'scheduled_time' => '18:00']],
+            'guest_name' => 'Pat Customer',
+            'guest_email' => 'pat@example.com',
+            'payment_method' => 'in-store',
+        ])->assertStatus(422);
+
+        $this->assertSame(0, \App\Models\TicketOrder::count());
+    }
+
+    public function test_waiver_reminders_skip_unpaid_attraction_and_event_checkouts_but_keep_paid_ones(): void
+    {
+        $this->defaultWaiverTemplate();
+        $attraction = $this->axeThrowing();
+        $tomorrow = now()->addDay()->toDateString();
+
+        $unpaidId = (int) $this->postJson('/api/attraction-purchases', $this->attractionPayload($attraction, 'unpaid@example.com', ['scheduled_date' => $tomorrow]))->assertStatus(201)->json('data.id');
+        $paidId = (int) $this->postJson('/api/attraction-purchases', $this->attractionPayload($attraction, 'paid@example.com', ['scheduled_date' => $tomorrow, 'scheduled_time' => '19:00']))->assertStatus(201)->json('data.id');
+        $this->gateway->replies[] = $this->transactionReply('1', '60200000100');
+        $this->postJson('/api/payments/charge', $this->chargePayload($paidId, 20.00, Payment::TYPE_ATTRACTION_PURCHASE))->assertOk();
+
+        $event = $this->glowNight();
+        $unpaidEvent = $this->postJson('/api/event-purchases', $this->eventPurchasePayload($event, 'unpaid-event@example.com'))->assertSuccessful();
+        $unpaidEventId = (int) ($unpaidEvent->json('data.id') ?? $unpaidEvent->json('id'));
+        $paidEvent = $this->postJson('/api/event-purchases', $this->eventPurchasePayload($event, 'paid-event@example.com', ['purchase_time' => '19:00']))->assertSuccessful();
+        $paidEventId = (int) ($paidEvent->json('data.id') ?? $paidEvent->json('id'));
+        $this->gateway->replies[] = $this->transactionReply('1', '60200000101');
+        $this->postJson('/api/payments/charge', $this->chargePayload($paidEventId, 15.00, Payment::TYPE_EVENT_PURCHASE))->assertOk();
+
+        $unpaidWaiver = Waiver::where('attraction_purchase_id', $unpaidId)->firstOrFail();
+        $paidWaiver = Waiver::where('attraction_purchase_id', $paidId)->firstOrFail();
+        $unpaidEventWaiver = $this->eventPurchaseWaiver($unpaidEventId);
+        $paidEventWaiver = $this->eventPurchaseWaiver($paidEventId);
+
+        $due = app(WaiverService::class)->dueForReminder(48)->pluck('id');
+
+        $this->assertFalse($due->contains($unpaidWaiver->id), 'an attraction checkout that was never paid is not reminded');
+        $this->assertTrue($due->contains($paidWaiver->id), 'a paid attraction purchase is still reminded');
+        $this->assertFalse($due->contains($unpaidEventWaiver->id), 'an event checkout that was never paid is not reminded');
+        $this->assertTrue($due->contains($paidEventWaiver->id), 'a paid event purchase is still reminded');
+    }
+
+    public function test_an_identical_keyed_retry_of_an_unpaid_checkout_reuses_its_booking(): void
+    {
+        $payload = $this->bookingPayload($this->roomOne, ['checkout_key' => 'resend-attempt']);
+        $firstId = (int) $this->postJson('/api/bookings', $payload)->assertStatus(201)->json('data.id');
+
+        $this->postJson('/api/bookings', $payload)
+            ->assertOk()
+            ->assertJsonPath('message', 'Booking already exists')
+            ->assertJsonPath('data.id', $firstId);
+
+        $this->assertSame(1, Booking::count());
+    }
+
+    public function test_a_logged_in_customer_booking_the_same_time_again_is_asked_first(): void
+    {
+        $customer = $this->customer('pat@example.com');
+        $this->withHeader('Authorization', 'Bearer ' . $customer->createToken('portal')->plainTextToken);
+        $this->bookAndPay($this->roomOne, '60200000102', ['customer_id' => $customer->id, 'guest_email' => 'pat@example.com']);
+
+        $this->postJson('/api/bookings', $this->bookingPayload($this->roomTwo, ['customer_id' => $customer->id, 'guest_email' => 'pat@example.com', 'checkout_key' => 'second-room']))
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'BOOKED_SAME_TIME');
+    }
+
+    public function test_a_keyed_retry_with_corrected_details_after_the_first_went_through_asks_before_booking_again(): void
+    {
+        $this->bookAndPay($this->roomOne, '60200000103', ['checkout_key' => 'typo-attempt', 'guest_email' => 'pat@gmial.com']);
+
+        $this->postJson('/api/bookings', $this->bookingPayload($this->roomTwo, ['checkout_key' => 'typo-attempt', 'guest_email' => 'pat@gmail.com']))
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'BOOKED_SAME_TIME')
+            ->assertJsonMissingPath('reference_number');
+
+        $this->postJson('/api/bookings', $this->bookingPayload($this->roomTwo, ['checkout_key' => 'typo-attempt', 'guest_email' => 'pat@gmail.com', 'book_another' => true]))
+            ->assertStatus(201);
+        $this->assertSame(2, Booking::count());
+    }
+
+    public function test_a_keyed_retry_with_changed_notes_is_not_treated_as_the_same_unpaid_attempt(): void
+    {
+        $firstId = $this->createBooking($this->roomOne, ['checkout_key' => 'notes-attempt', 'notes' => 'Birthday']);
+
+        $this->postJson('/api/bookings', $this->bookingPayload($this->roomOne, ['checkout_key' => 'notes-attempt', 'notes' => 'Anniversary']))
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'ATTEMPT_IN_PROGRESS');
+
+        $this->assertSame('Birthday', Booking::findOrFail($firstId)->notes);
+    }
+
+    public function test_releasing_an_abandoned_attempt_gives_its_gift_card_money_back(): void
+    {
+        $card = \App\Models\GiftCard::create([
+            'code' => 'GIFTTEST0001',
+            'type' => 'fixed',
+            'initial_value' => 50,
+            'balance' => 50,
+            'max_usage' => 5,
+            'status' => 'active',
+            'location_id' => $this->location->id,
+            'created_by' => $this->staff()->id,
+        ]);
+        $firstId = $this->createBooking($this->roomOne, ['checkout_key' => 'gift-attempt', 'gift_card_code' => 'GIFTTEST0001']);
+        $this->assertEqualsWithDelta(0.0, (float) $card->fresh()->balance, 0.001, 'the first attempt spent the card');
+        $this->travel(3)->minutes();
+
+        $this->postJson('/api/bookings', $this->bookingPayload($this->roomOne, ['checkout_key' => 'gift-attempt', 'participants' => 3]))
+            ->assertStatus(201);
+
+        $this->assertNull(Booking::withTrashed()->find($firstId));
+        $this->assertEqualsWithDelta(50.0, (float) $card->fresh()->balance, 0.001, 'the abandoned attempt gave the card its money back');
+    }
+
+    public function test_a_held_saved_card_charge_is_refused_and_released(): void
+    {
+        $this->gateway->replies[] = $this->transactionReply('4', '60200000104');
+        $this->gateway->replies[] = $this->heldUpdateReply('Ok');
+
+        $result = app(\App\Services\AuthorizeNetProfileService::class)->chargeProfile($this->account, '900100', '900200', 30.00, 'MB1-2', 'Membership renewal - Explorer');
+
+        $this->assertFalse($result['success']);
+        $this->assertSame('decline', $this->gateway->sent[1]['held_action']);
+        $this->assertSame('60200000104', $this->gateway->sent[1]['ref_trans_id']);
+    }
+
+    public function test_a_held_online_membership_charge_is_refused_and_released(): void
+    {
+        $plan = \App\Models\MembershipPlan::create([
+            'company_id' => $this->company->id,
+            'location_id' => $this->location->id,
+            'name' => 'Local Explorer',
+            'slug' => 'local-explorer',
+            'tier' => 'basic',
+            'price' => 29.99,
+            'billing_cycle' => 'monthly',
+            'is_active' => true,
+        ]);
+        $token = $this->customer('member@example.com')->createToken('portal')->plainTextToken;
+        $this->gateway->replies[] = $this->transactionReply('4', '60200000105');
+        $this->gateway->replies[] = $this->heldUpdateReply('Ok');
+
+        $this->withHeader('Authorization', 'Bearer ' . $token)
+            ->postJson('/api/memberships/purchase', [
+                'membership_plan_id' => $plan->id,
+                'home_location_id' => $this->location->id,
+                'opaque_data' => ['dataDescriptor' => 'COMMON.ACCEPT.INAPP.PAYMENT', 'dataValue' => 'opaque-token'],
+                'terms_accepted' => true,
+                'recurring_billing_authorized' => true,
+            ])
+            ->assertStatus(402);
+
+        $this->assertSame('decline', $this->gateway->sent[1]['held_action']);
+        $this->assertSame(0, \App\Models\Membership::count());
+    }
+
 }
 
 class FakeAuthorizeNetGateway extends AuthorizeNetGateway

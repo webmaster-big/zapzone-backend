@@ -672,18 +672,6 @@ class WaiverService
         ]);
     }
 
-    /** Create a pending waiver for an attraction purchase when a template applies. */
-    /**
-     * One waiver per visit day for a bulk order, not one per line.
-     *
-     * Creating a waiver per line looks harmless but is not: findDuplicate() matches on
-     * (template, date, person) and the shipped template's duplicate_rule is manager_only,
-     * so the guest signs the first and every later link answers 409 forever. Attaching a
-     * single waiver to the day's first line keeps every existing purchase-waiver lookup
-     * working unchanged.
-     *
-     * @return array<int, Waiver>
-     */
     private function existingEventDayWaiver(\App\Models\TicketOrder $order, array $group, string $day): ?Waiver
     {
         if (Waiver::supportsEventPurchaseId() && $group['first_event_line'] !== null) {
@@ -706,6 +694,18 @@ class WaiverService
         return null;
     }
 
+    /** Create a pending waiver for an attraction purchase when a template applies. */
+    /**
+     * One waiver per visit day for a bulk order, not one per line.
+     *
+     * Creating a waiver per line looks harmless but is not: findDuplicate() matches on
+     * (template, date, person) and the shipped template's duplicate_rule is manager_only,
+     * so the guest signs the first and every later link answers 409 forever. Attaching a
+     * single waiver to the day's first line keeps every existing purchase-waiver lookup
+     * working unchanged.
+     *
+     * @return array<int, Waiver>
+     */
     public function ensureForTicketOrder(\App\Models\TicketOrder $order): array
     {
         $order->loadMissing([
@@ -926,6 +926,15 @@ class WaiverService
             ->when(Waiver::supportsEventPurchaseId(), fn ($query) => $query->where(function ($q) {
                 $q->whereNull('event_purchase_id')->orWhereHas('eventPurchase', fn ($purchase) => $purchase->stillExpected());
             }))
+            ->where(function ($q) {
+                $q->where('source', '!=', Waiver::SOURCE_CONFIRMATION_EMAIL)
+                    ->orWhereNotNull('bulk_invite_id')
+                    ->orWhere('is_manager_assigned', true)
+                    ->orWhereNotNull('booking_id')
+                    ->orWhereNotNull('attraction_purchase_id')
+                    ->when(Waiver::supportsEventPurchaseId(), fn ($linked) => $linked->orWhereNotNull('event_purchase_id'))
+                    ->when(Waiver::supportsEscapeRoomSessionId(), fn ($linked) => $linked->orWhereNotNull('escape_room_session_id'));
+            })
             ->get();
     }
 

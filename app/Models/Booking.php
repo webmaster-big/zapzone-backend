@@ -33,6 +33,15 @@ class Booking extends Model
 
         static::forceDeleting(function (Booking $booking) {
             try {
+                app(\App\Services\MembershipBenefitService::class)->reverseForRedeemable($booking, 'checkout_deleted');
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('Membership benefit uses could not be returned for a deleted booking', [
+                    'booking_id' => $booking->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
+            try {
                 app(\App\Services\EscapeRoomSessionService::class)->releaseDeletedBooking((int) $booking->id);
             } catch (\Throwable $e) {
                 \Illuminate\Support\Facades\Log::warning('Escape-room players could not be released from a deleted booking', [
@@ -225,7 +234,7 @@ class Booking extends Model
                 ->orWhereNull('payment_method')
                 ->orWhere('payment_method', '!=', 'authorize.net')
                 ->orWhereNotNull('created_by')
-                ->orWhere('amount_paid', '>', 0));
+                ->orWhereHas('payments', fn ($paid) => $paid->where('status', 'completed')));
     }
 
     public function scopeByStatus($query, $status)

@@ -18,6 +18,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Validation\Rule;
 use Throwable;
 
@@ -79,7 +80,11 @@ class TicketOrderController extends Controller
             'custom_fields.*.id' => 'required_with:custom_fields|integer|min:1',
             'custom_fields.*.value' => 'nullable|boolean',
             'notes' => 'nullable|string|max:2000',
+            'checkout_key' => ['nullable', 'string', 'max:64', 'regex:/^[A-Za-z0-9-]+$/'],
         ]);
+
+        $checkoutKey = $validated['checkout_key'] ?? null;
+        unset($validated['checkout_key']);
 
         if (empty($validated['customer_id']) && empty($validated['guest_name']) && empty($validated['guest_email'])) {
             return response()->json([
@@ -90,12 +95,31 @@ class TicketOrderController extends Controller
 
         $staff = $request->user('sanctum');
         $method = $validated['payment_method'] ?? 'authorize.net';
+        $callerIsStaff = app(\App\Services\AddOnRuleService::class)->isStaff($staff);
 
-        if (!$staff && $method !== 'authorize.net') {
+        if (!$callerIsStaff && $method !== 'authorize.net') {
             return response()->json([
                 'success' => false,
                 'message' => 'Online orders are paid by card.',
             ], 422);
+        }
+
+        $earlierOrder = $checkoutKey ? $this->orderForCheckoutKey($checkoutKey) : null;
+
+        if ($earlierOrder && $this->isSameOrderCheckout($earlierOrder, $validated) && $this->orderWentThrough($earlierOrder)) {
+            Log::info('Repeat of a cart checkout that already went through refused', [
+                'existing_order_id' => $earlierOrder->id,
+                'checkout_key' => $checkoutKey,
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'code' => 'ALREADY_PURCHASED',
+                'message' => $callerIsStaff
+                    ? 'This order was already saved. Check it in Orders before taking payment again.'
+                    : 'This order already went through, so your card was not charged again. Please check your email for your tickets.',
+                'data' => $this->present($earlierOrder->load(['attractionPurchases.attraction', 'attractionPurchases.addOns', 'eventPurchases.event', 'eventPurchases.addOns', 'location'])),
+            ], 409);
         }
 
         if (\App\Support\OnlineBookingGate::closedFor($staff, \App\Support\OnlineBookingGate::cartLocationIds($validated['items']))) {
@@ -147,6 +171,8 @@ class TicketOrderController extends Controller
                 }
             });
 
+            $this->rememberOrderCheckoutKey($checkoutKey, $order);
+
             $qrToken = hash_hmac('sha256', $order->id . '|' . $order->reference_number, (string) config('app.key'));
 
             return response()->json([
@@ -165,6 +191,52 @@ class TicketOrderController extends Controller
 
             return response()->json(['success' => false, 'message' => 'We could not create this order. Please try again.'], 422);
         }
+    }
+
+    private function orderForCheckoutKey(string $checkoutKey): ?TicketOrder
+    {
+        try {
+            $orderId = Cache::get('order-checkout:' . $checkoutKey);
+        } catch (Throwable $e) {
+            Log::warning('Checkout key lookup failed', ['error' => $e->getMessage()]);
+
+            return null;
+        }
+
+        return $orderId ? TicketOrder::find($orderId) : null;
+    }
+
+    private function rememberOrderCheckoutKey(?string $checkoutKey, TicketOrder $order): void
+    {
+        if (! $checkoutKey) {
+            return;
+        }
+
+        try {
+            Cache::put('order-checkout:' . $checkoutKey, $order->id, now()->addDay());
+        } catch (Throwable $e) {
+            Log::warning('Checkout key could not be remembered', ['order_id' => $order->id, 'error' => $e->getMessage()]);
+        }
+    }
+
+    private function isSameOrderCheckout(TicketOrder $earlier, array $validated): bool
+    {
+        return (int) ($earlier->customer_id ?? 0) === (int) ($validated['customer_id'] ?? 0)
+            && strcasecmp(trim((string) $earlier->guest_email), trim((string) ($validated['guest_email'] ?? ''))) === 0;
+    }
+
+    private function orderWentThrough(TicketOrder $order): bool
+    {
+        if (in_array($order->status, [TicketOrder::STATUS_CANCELLED, TicketOrder::STATUS_REFUNDED], true)) {
+            return false;
+        }
+
+        return (float) $order->amount_paid > 0
+            || in_array($order->status, [TicketOrder::STATUS_CONFIRMED, TicketOrder::STATUS_CHECKED_IN], true)
+            || \App\Models\Payment::where('payable_type', \App\Models\Payment::TYPE_TICKET_ORDER)
+                ->where('payable_id', $order->id)
+                ->whereIn('status', ['completed', 'refunded'])
+                ->exists();
     }
 
     public function index(Request $request): JsonResponse

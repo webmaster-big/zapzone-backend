@@ -75,8 +75,11 @@ class MembershipController extends Controller
         Customer $customer,
         string $invoiceNumber,
         int $refId,
-        string $description
+        string $description,
+        ?int $alertLocationId = null
     ): array {
+        $sent = false;
+
         try {
             $merchantAuthentication = new AnetAPI\MerchantAuthenticationType();
             $merchantAuthentication->setName(trim($account->api_login_id));
@@ -114,12 +117,19 @@ class MembershipController extends Controller
 
             $gateway    = app(AuthorizeNetGateway::class);
             $controller = new AnetController\CreateTransactionController($apiRequest);
+            $sent       = true;
             $response   = $gateway->execute($controller, $environment);
+
+            if (! $gateway->answered($response)) {
+                $gateway->reportNoAnswer($account->location_id ?? $alertLocationId, $amount, $description, substr($invoiceNumber, 0, 20), ['ref_id' => 'MEM' . $refId]);
+
+                return ['success' => false, 'transaction_id' => null, 'card_last_four' => null, 'card_type' => null, 'error' => AuthorizeNetGateway::NO_ANSWER_MESSAGE];
+            }
 
             if ($response && $response->getMessages()?->getResultCode() === 'Ok') {
                 $tresponse = $response->getTransactionResponse();
                 if ($tresponse && $tresponse->getMessages() && ! $gateway->isApproved($tresponse, $amount)) {
-                    $gateway->refuseUnapproved($merchantAuthentication, $environment, $tresponse, $account->location_id, $amount, $description, ['ref_id' => 'MEM' . $refId]);
+                    $gateway->refuseUnapproved($merchantAuthentication, $environment, $tresponse, $account->location_id ?? $alertLocationId, $amount, $description, ['ref_id' => 'MEM' . $refId]);
 
                     return ['success' => false, 'transaction_id' => null, 'card_last_four' => null, 'card_type' => null, 'error' => 'Your card payment was not approved. Please try a different card.'];
                 }
@@ -148,6 +158,13 @@ class MembershipController extends Controller
             return ['success' => false, 'transaction_id' => null, 'card_last_four' => null, 'card_type' => null, 'error' => $errorMessage];
         } catch (\Exception $e) {
             Log::error('Membership charge exception', ['ref_id' => $refId, 'error' => $e->getMessage()]);
+
+            if ($sent) {
+                rescue(fn () => app(AuthorizeNetGateway::class)->reportNoAnswer($account->location_id ?? $alertLocationId, $amount, $description, substr($invoiceNumber, 0, 20), ['ref_id' => 'MEM' . $refId]), null, false);
+
+                return ['success' => false, 'transaction_id' => null, 'card_last_four' => null, 'card_type' => null, 'error' => AuthorizeNetGateway::NO_ANSWER_MESSAGE];
+            }
+
             return ['success' => false, 'transaction_id' => null, 'card_last_four' => null, 'card_type' => null, 'error' => 'Payment processing error.'];
         }
     }
@@ -455,7 +472,7 @@ class MembershipController extends Controller
 
             $result = $this->processAuthorizeNetCharge(
                 $account, $chargeAmount, $data['opaque_data'], $customer,
-                'MEM-' . $membership->id, $membership->id, "Membership: {$plan->name}"
+                'MEM-' . $membership->id, $membership->id, "Membership: {$plan->name}", $membership->home_location_id
             );
 
             if (! $result['success']) {
@@ -631,15 +648,15 @@ class MembershipController extends Controller
 
         $result = $this->processAuthorizeNetCharge(
             $account, (float) $plan->price, $data['opaque_data'], $customer,
-            'MEM-' . $membership->id, $membership->id, "Membership: {$plan->name}"
+            'MEM-' . $membership->id, $membership->id, "Membership: {$plan->name}", $membership->home_location_id
         );
 
         if (! $result['success']) {
-            $this->service->recordPayment($membership, [
-                'amount'         => $plan->price,
-                'status'         => 'failed',
-                'description'    => "Purchase failed: {$plan->name}",
-                'failure_reason' => $result['error'],
+            Log::warning('Online membership purchase not charged; the pending membership was removed', [
+                'membership_id' => $membership->id,
+                'customer_id' => $membership->customer_id,
+                'plan_id' => $plan->id,
+                'error' => $result['error'],
             ]);
             $membership->delete();
             return response()->json(['success' => false, 'message' => $result['error']], 402);
@@ -1541,6 +1558,8 @@ class MembershipController extends Controller
                 return response()->json(['success' => false, 'message' => 'Payment gateway not configured for this location.'], 503);
             }
 
+            $sent = false;
+
             try {
                 $merchantAuthentication = new AnetAPI\MerchantAuthenticationType();
                 $merchantAuthentication->setName(trim($account->api_login_id));
@@ -1571,12 +1590,19 @@ class MembershipController extends Controller
 
                 $gateway    = app(AuthorizeNetGateway::class);
                 $controller = new AnetController\CreateTransactionController($apiRequest);
+                $sent       = true;
                 $response   = $gateway->execute($controller, $environment);
+
+                if (! $gateway->answered($response)) {
+                    $gateway->reportNoAnswer($account->location_id ?? $membership->home_location_id, (float) $proratedDiff, "plan upgrade for membership {$membership->id}", substr('UPG-' . $membership->id, 0, 20), ['membership_id' => $membership->id]);
+
+                    return response()->json(['success' => false, 'message' => AuthorizeNetGateway::NO_ANSWER_MESSAGE], 402);
+                }
 
                 if ($response && $response->getMessages()?->getResultCode() === 'Ok') {
                     $tresponse = $response->getTransactionResponse();
                     if ($tresponse && $tresponse->getMessages() && ! $gateway->isApproved($tresponse, (float) $proratedDiff)) {
-                        $gateway->refuseUnapproved($merchantAuthentication, $environment, $tresponse, $account->location_id, (float) $proratedDiff, "plan upgrade for membership {$membership->id}", ['membership_id' => $membership->id]);
+                        $gateway->refuseUnapproved($merchantAuthentication, $environment, $tresponse, $account->location_id ?? $membership->home_location_id, (float) $proratedDiff, "plan upgrade for membership {$membership->id}", ['membership_id' => $membership->id]);
 
                         return response()->json(['success' => false, 'message' => 'Your card payment was not approved. Please try a different card.'], 402);
                     }
@@ -1609,6 +1635,13 @@ class MembershipController extends Controller
                 }
             } catch (\Exception $e) {
                 Log::error('Plan upgrade payment exception', ['membership_id' => $membership->id, 'error' => $e->getMessage()]);
+
+                if ($sent) {
+                    rescue(fn () => app(AuthorizeNetGateway::class)->reportNoAnswer($account->location_id ?? $membership->home_location_id, (float) $proratedDiff, "plan upgrade for membership {$membership->id}", substr('UPG-' . $membership->id, 0, 20), ['membership_id' => $membership->id]), null, false);
+
+                    return response()->json(['success' => false, 'message' => AuthorizeNetGateway::NO_ANSWER_MESSAGE], 500);
+                }
+
                 return response()->json(['success' => false, 'message' => 'Payment processing error.'], 500);
             }
         }

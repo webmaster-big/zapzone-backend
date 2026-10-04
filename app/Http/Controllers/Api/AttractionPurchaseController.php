@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Traits\RecordsPageAnalytics;
 use App\Http\Traits\ScopesByAuthUser;
+use App\Http\Traits\LimitsListingsToRequester;
 use App\Models\AttractionPurchase;
 use App\Models\AttractionPurchaseAddOn;
 use App\Models\Attraction;
@@ -30,6 +31,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Validation\Rule;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Cache;
 use Carbon\Carbon;
 
 class AttractionPurchaseController extends Controller
@@ -37,6 +39,7 @@ class AttractionPurchaseController extends Controller
     use \App\Http\Traits\ReversesGiftCards;
     use ScopesByAuthUser;
     use RecordsPageAnalytics;
+    use LimitsListingsToRequester;
 
     public function index(Request $request): JsonResponse
     {
@@ -191,6 +194,10 @@ class AttractionPurchaseController extends Controller
                 'payments:id,payable_id,payable_type,status,method,card_last_four,card_type,amount,currency,paid_at,created_at',
             ]);
 
+        if ($refusal = $this->limitListingToRequester($query, $request)) {
+            return $refusal;
+        }
+
         if ($request->has('guest_email')) {
             $guestEmail = $request->guest_email;
             $query->where(function ($q) use ($guestEmail) {
@@ -301,14 +308,49 @@ class AttractionPurchaseController extends Controller
             'custom_fields' => 'nullable|array|max:50',
             'custom_fields.*.id' => 'required_with:custom_fields|integer|min:1',
             'custom_fields.*.value' => 'nullable|boolean',
+            'checkout_key' => ['nullable', 'string', 'max:64', 'regex:/^[A-Za-z0-9-]+$/'],
         ]);
 
         $customFieldAnswers = $validated['custom_fields'] ?? null;
         unset($validated['custom_fields']);
 
+        $checkoutKey = $validated['checkout_key'] ?? null;
+        unset($validated['checkout_key']);
+
         $rules = app(\App\Services\AddOnRuleService::class);
         $isStaff = $rules->isStaff($request->user('sanctum'));
         $addOnLines = $rules->normalize($validated['additional_addons'] ?? [], 'addon_id', 'price_at_purchase');
+
+        if (! $isStaff && in_array($validated['payment_method'] ?? null, ['in-store', 'card'], true)) {
+            Log::warning('A checkout without a staff login asked to be recorded as paid at the venue; saved as pay later instead', [
+                'requested_payment_method' => $validated['payment_method'],
+                'attraction_id' => $validated['attraction_id'] ?? null,
+                'ip' => $request->ip(),
+            ]);
+            $validated['payment_method'] = 'paylater';
+        }
+
+        if (! $isStaff && ($validated['payment_method'] ?? 'paylater') === 'paylater') {
+            $validated['amount_paid'] = 0;
+        }
+
+        $earlierAttempt = $checkoutKey ? $this->purchaseForCheckoutKey($checkoutKey) : null;
+
+        if ($earlierAttempt && $this->isSamePurchaseCheckout($earlierAttempt, $validated) && $this->purchaseWentThrough($earlierAttempt)) {
+            Log::info('Repeat of an attraction checkout that already went through refused', [
+                'existing_purchase_id' => $earlierAttempt->id,
+                'checkout_key' => $checkoutKey,
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'code' => 'ALREADY_PURCHASED',
+                'message' => $isStaff
+                    ? 'This purchase was already saved. Check it in Purchases before taking payment again.'
+                    : 'This purchase already went through, so your card was not charged again. Please check your email for your receipt.',
+                'data' => $earlierAttempt->load(['attraction', 'customer', 'createdBy', 'addOns']),
+            ], 409);
+        }
 
         $duplicateTotal = (float) $validated['total_amount'];
         $duplicateTolerance = (float) config('checkout.total_tolerance', 0.05);
@@ -559,6 +601,8 @@ class AttractionPurchaseController extends Controller
 
         $purchase->load(['attraction', 'customer', 'createdBy', 'addOns']);
 
+        $this->rememberPurchaseCheckoutKey($checkoutKey, $purchase);
+
         app(PurchaseCompletionService::class)->completeAttractionPurchase($purchase, $validated);
 
         return response()->json([
@@ -566,6 +610,52 @@ class AttractionPurchaseController extends Controller
             'message' => 'Attraction purchase created successfully',
             'data' => $purchase,
         ], 201);
+    }
+
+    private function purchaseForCheckoutKey(string $checkoutKey): ?AttractionPurchase
+    {
+        try {
+            $purchaseId = Cache::get('attraction-checkout:' . $checkoutKey);
+        } catch (\Throwable $e) {
+            Log::warning('Checkout key lookup failed', ['error' => $e->getMessage()]);
+
+            return null;
+        }
+
+        return $purchaseId ? AttractionPurchase::find($purchaseId) : null;
+    }
+
+    private function rememberPurchaseCheckoutKey(?string $checkoutKey, AttractionPurchase $purchase): void
+    {
+        if (! $checkoutKey) {
+            return;
+        }
+
+        try {
+            Cache::put('attraction-checkout:' . $checkoutKey, $purchase->id, now()->addDay());
+        } catch (\Throwable $e) {
+            Log::warning('Checkout key could not be remembered', ['purchase_id' => $purchase->id, 'error' => $e->getMessage()]);
+        }
+    }
+
+    private function isSamePurchaseCheckout(AttractionPurchase $earlier, array $validated): bool
+    {
+        return (int) $earlier->attraction_id === (int) $validated['attraction_id']
+            && (int) ($earlier->customer_id ?? 0) === (int) ($validated['customer_id'] ?? 0)
+            && strcasecmp(trim((string) $earlier->guest_email), trim((string) ($validated['guest_email'] ?? ''))) === 0;
+    }
+
+    private function purchaseWentThrough(AttractionPurchase $purchase): bool
+    {
+        if (in_array($purchase->status, [AttractionPurchase::STATUS_CANCELLED, AttractionPurchase::STATUS_REFUNDED], true)) {
+            return false;
+        }
+
+        return in_array($purchase->status, [AttractionPurchase::STATUS_CONFIRMED, AttractionPurchase::STATUS_CHECKED_IN], true)
+            || \App\Models\Payment::where('payable_type', \App\Models\Payment::TYPE_ATTRACTION_PURCHASE)
+                ->where('payable_id', $purchase->id)
+                ->whereIn('status', ['completed', 'refunded'])
+                ->exists();
     }
 
     private function recordMembershipRedemptions(AttractionPurchase $purchase, array $validated): void

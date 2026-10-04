@@ -31,12 +31,21 @@ class EventPurchase extends Model
         });
 
         static::forceDeleting(function (EventPurchase $purchase) {
+            try {
+                app(\App\Services\MembershipBenefitService::class)->reverseForRedeemable($purchase, 'checkout_deleted');
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('Membership benefit uses could not be returned for a deleted event purchase', [
+                    'event_purchase_id' => $purchase->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
             if (!Waiver::supportsEventPurchaseId()) {
                 return;
             }
 
             try {
-                Waiver::discardUnsignedPlaceholdersFor('event_purchase_id', (int) $purchase->id);
+                Waiver::discardUnsignedPlaceholdersFor('event_purchase_id', (int) $purchase->id, $purchase->created_at);
             } catch (\Throwable $e) {
                 \Illuminate\Support\Facades\Log::warning('Unsigned waivers could not be removed with a deleted event purchase', [
                     'event_purchase_id' => $purchase->id,
@@ -140,7 +149,7 @@ class EventPurchase extends Model
                 ->where('status', '!=', 'pending')
                 ->orWhereNull('payment_method')
                 ->orWhere('payment_method', '!=', 'authorize.net')
-                ->orWhere('amount_paid', '>', 0));
+                ->orWhereHas('payments', fn ($paid) => $paid->where('status', 'completed')));
     }
 
     public function scopeByStatus($query, $status)

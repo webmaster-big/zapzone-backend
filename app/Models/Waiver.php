@@ -188,9 +188,10 @@ class Waiver extends Model
         return \App\Support\SchemaSupport::hasColumn('waivers', 'escape_room_session_id');
     }
 
-    public static function discardUnsignedPlaceholdersFor(string $linkColumn, int $id): void
+    public static function discardUnsignedPlaceholdersFor(string $linkColumn, int $id, ?\DateTimeInterface $createdSince = null): void
     {
         static::where($linkColumn, $id)
+            ->when($createdSince, fn ($query) => $query->where('created_at', '>=', $createdSince))
             ->where('status', self::STATUS_PENDING)
             ->where('source', self::SOURCE_CONFIRMATION_EMAIL)
             ->whereNull('bulk_invite_id')

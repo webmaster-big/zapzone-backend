@@ -113,6 +113,8 @@ class AuthorizeNetProfileService
         string $refId,
         string $description
     ): array {
+        $sent = false;
+
         try {
             $environment = $account->isProduction() ? ANetEnvironment::PRODUCTION : ANetEnvironment::SANDBOX;
 
@@ -140,9 +142,16 @@ class AuthorizeNetProfileService
 
             $gateway = app(AuthorizeNetGateway::class);
             $controller = new AnetController\CreateTransactionController($request);
+            $sent = true;
             $response = $gateway->execute($controller, $environment);
 
-            if ($response && $response->getMessages()?->getResultCode() === 'Ok') {
+            if (! $gateway->answered($response)) {
+                $gateway->reportNoAnswer($account->location_id, $amount, $description, substr($refId, 0, 20), ['ref_id' => $refId]);
+
+                return ['success' => false, 'transaction_id' => null, 'card_last_four' => null, 'card_type' => null, 'error' => AuthorizeNetGateway::NO_ANSWER_MESSAGE];
+            }
+
+            if ($response->getMessages()->getResultCode() === 'Ok') {
                 $tresponse = $response->getTransactionResponse();
                 if ($tresponse && $tresponse->getMessages() && ! $gateway->isApproved($tresponse, $amount)) {
                     $gateway->refuseUnapproved($merchantAuthentication, $environment, $tresponse, $account->location_id, $amount, $description, ['ref_id' => $refId]);
@@ -184,6 +193,12 @@ class AuthorizeNetProfileService
                 'exception' => $e::class,
                 'error' => $e->getMessage(),
             ]);
+
+            if ($sent) {
+                rescue(fn () => app(AuthorizeNetGateway::class)->reportNoAnswer($account->location_id, $amount, $description, substr($refId, 0, 20), ['ref_id' => $refId]), null, false);
+
+                return ['success' => false, 'transaction_id' => null, 'card_last_four' => null, 'card_type' => null, 'error' => AuthorizeNetGateway::NO_ANSWER_MESSAGE];
+            }
 
             return ['success' => false, 'transaction_id' => null, 'card_last_four' => null, 'card_type' => null, 'error' => 'Payment processing error.'];
         }

@@ -27,6 +27,8 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Support\Facades\Mail;
 use Barryvdh\DomPDF\Facade\Pdf;
 use App\Support\DateRange;
@@ -1963,6 +1965,57 @@ class PaymentController extends Controller
             'qr_code' => 'nullable|string', // Base64 encoded QR code for email attachment
         ]);
 
+        if (! $request->payable_id || ! $request->payable_type) {
+            return $this->processCharge($request);
+        }
+
+        try {
+            $chargeLock = Cache::lock('payable-charge:' . $request->payable_type . ':' . (int) $request->payable_id, 180);
+            $chargeLock->block((int) config('checkout.charge_lock_wait_seconds', 20));
+        } catch (LockTimeoutException $e) {
+            Log::warning('CHARGE_IN_PROGRESS: a second card charge for the same booking or purchase arrived while the first was still running', [
+                'payable_type' => $request->payable_type,
+                'payable_id' => $request->payable_id,
+                'amount' => (float) $request->amount,
+                'location_id' => $request->location_id,
+                'ip' => $request->ip(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'A payment for this is already being processed, so your card was not charged again. Please wait a moment and check your email before trying again.',
+                'error_code' => 'CHARGE_IN_PROGRESS',
+            ], 409);
+        } catch (\Throwable $e) {
+            Log::warning('Card charge lock unavailable, charging without it', [
+                'payable_type' => $request->payable_type,
+                'payable_id' => $request->payable_id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return $this->processCharge($request);
+        }
+
+        try {
+            return $this->processCharge($request);
+        } finally {
+            try {
+                $chargeLock->release();
+            } catch (\Throwable $e) {
+                Log::warning('Card charge lock could not be released', [
+                    'payable_type' => $request->payable_type,
+                    'payable_id' => $request->payable_id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+    }
+
+    private function processCharge(Request $request): JsonResponse
+    {
+        $approvedTransactionId = null;
+        $recordedPayment = null;
+
         try {
             if ($request->payable_id && $request->payable_type) {
                 $chargeLineOwner = null;
@@ -2279,6 +2332,8 @@ class PaymentController extends Controller
                         return $this->refuseUnapprovedCharge($request, $tresponse, $gateway, $merchantAuthentication, $environment);
                     }
 
+                    $approvedTransactionId = (string) $transactionId;
+
                     $cardLastFour = CardBrand::lastFour($tresponse->getAccountNumber());
                     $cardType = CardBrand::normalize($tresponse->getAccountType());
 
@@ -2323,6 +2378,8 @@ class PaymentController extends Controller
                                 ]
                             );
                         }
+
+                        $approvedTransactionId = null;
 
                         $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
 
@@ -2370,6 +2427,8 @@ class PaymentController extends Controller
                             );
                         }
 
+                        $approvedTransactionId = null;
+
                         return response()->json([
                             'success' => false,
                             'message' => $voided
@@ -2399,6 +2458,8 @@ class PaymentController extends Controller
                         'signature_image' => $request->signature_image ? $this->handleSignatureUpload($request->signature_image) : null,
                         'terms_accepted' => $request->boolean('terms_accepted', false),
                     ]);
+
+                    $recordedPayment = $payment;
 
                     $payable = null;
                     if ($payment->payable_id && $payment->payable_type) {
@@ -2953,12 +3014,69 @@ class PaymentController extends Controller
                 'message' => 'Payment configuration error. Please contact support.',
                 'error_code' => 'DECRYPTION_FAILED'
             ], 500);
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             Log::error('Payment processing exception', [
                 'error' => $e->getMessage(),
                 'location_id' => $request->location_id,
+                'approved_transaction_id' => $approvedTransactionId,
+                'payment_recorded' => $recordedPayment !== null,
                 'trace' => $e->getTraceAsString(),
             ]);
+
+            if ($approvedTransactionId !== null && $recordedPayment === null) {
+                $recordedPayment = rescue(fn () => Payment::where('transaction_id', $approvedTransactionId)->first(), null, false);
+            }
+
+            if ($recordedPayment !== null) {
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Payment processed successfully',
+                    'transaction_id' => $recordedPayment->transaction_id,
+                    'payment' => $recordedPayment,
+                    'email_sent' => false,
+                    'email_error' => null,
+                ]);
+            }
+
+            if ($approvedTransactionId !== null) {
+                $gateway = app(AuthorizeNetGateway::class);
+                $voided = $gateway->void($merchantAuthentication, $environment, $approvedTransactionId);
+
+                Log::error('CHARGE_NOT_RECORDED: an approved card payment could not be saved', [
+                    'transaction_id' => $approvedTransactionId,
+                    'voided' => $voided,
+                    'payable_type' => $request->payable_type,
+                    'payable_id' => $request->payable_id,
+                    'amount' => (float) $request->amount,
+                    'location_id' => $request->location_id,
+                ]);
+
+                if (! $voided) {
+                    $gateway->alertStaff(
+                        (int) $request->location_id,
+                        'Card payment needs action in Authorize.Net',
+                        "A card payment of $" . number_format((float) $request->amount, 2) . " (transaction {$approvedTransactionId}) was approved but could not be saved, and it could not be voided automatically. The guest was told it did not go through, so void or refund it in Authorize.Net.",
+                        [
+                            'transaction_id' => $approvedTransactionId,
+                            'amount' => (float) $request->amount,
+                            'payable_type' => $request->payable_type,
+                            'payable_id' => $request->payable_id,
+                            'guest_email' => $request->customer['email'] ?? null,
+                            'reason' => 'payment_not_recorded',
+                        ]
+                    );
+                }
+
+                $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
+
+                return response()->json([
+                    'success' => false,
+                    'message' => $voided
+                        ? 'Something went wrong while saving your payment, so it was cancelled and your card was not charged. Please try again.'
+                        : 'Something went wrong while saving your payment. We could not cancel the charge automatically, so our team has been alerted and will refund it. Please call us before trying again.',
+                    'error_code' => 'PAYMENT_NOT_RECORDED',
+                ], 500);
+            }
 
             $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
 
