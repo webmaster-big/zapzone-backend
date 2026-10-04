@@ -684,6 +684,28 @@ class WaiverService
      *
      * @return array<int, Waiver>
      */
+    private function existingEventDayWaiver(\App\Models\TicketOrder $order, array $group, string $day): ?Waiver
+    {
+        if (Waiver::supportsEventPurchaseId() && $group['first_event_line'] !== null) {
+            $linked = Waiver::where('event_purchase_id', $group['first_event_line']->id)->first();
+            if ($linked) {
+                return $linked;
+            }
+        }
+
+        $query = Waiver::where('event_id', $group['event_id'])->whereDate('selected_date', $day);
+
+        if ($order->customer_id) {
+            return $query->where('customer_id', $order->customer_id)->first();
+        }
+
+        if (!empty($order->customer_email)) {
+            return $query->whereNull('customer_id')->where('adult_email', $order->customer_email)->first();
+        }
+
+        return null;
+    }
+
     public function ensureForTicketOrder(\App\Models\TicketOrder $order): array
     {
         $order->loadMissing([
@@ -712,13 +734,14 @@ class WaiverService
 
             $key = $day instanceof \DateTimeInterface ? $day->format('Y-m-d') : (string) $day;
 
-            $byDay[$key] ??= ['attraction_ids' => [], 'event_id' => null, 'first_line' => null];
+            $byDay[$key] ??= ['attraction_ids' => [], 'event_id' => null, 'first_line' => null, 'first_event_line' => null];
 
             if ($line['type'] === 'attraction') {
                 $byDay[$key]['attraction_ids'][] = (int) $model->attraction_id;
                 $byDay[$key]['first_line'] ??= $model;
             } else {
                 $byDay[$key]['event_id'] ??= (int) $model->event_id;
+                $byDay[$key]['first_event_line'] ??= $model;
             }
         }
 
@@ -733,10 +756,7 @@ class WaiverService
 
             $existing = $firstLine !== null
                 ? Waiver::where('attraction_purchase_id', $firstLine->id)->first()
-                : Waiver::where('event_id', $group['event_id'])
-                    ->where('customer_id', $order->customer_id)
-                    ->whereDate('selected_date', $day)
-                    ->first();
+                : $this->existingEventDayWaiver($order, $group, $day);
 
             if ($existing) {
                 $created[] = $existing;
@@ -768,6 +788,9 @@ class WaiverService
                 $attributes['attraction_purchase_id'] = $firstLine->id;
             } else {
                 $attributes['event_id'] = $group['event_id'];
+                if (Waiver::supportsEventPurchaseId() && $group['first_event_line'] !== null) {
+                    $attributes['event_purchase_id'] = $group['first_event_line']->id;
+                }
             }
 
             $waiver = $this->createPending($template, $attributes);
@@ -895,8 +918,14 @@ class WaiverService
             ->whereHas('template', fn ($q) => $q->where('reminder_eligible', true))
             // a waiver tied to a booking only reminds while that booking still exists
             ->where(function ($q) {
-                $q->whereNull('booking_id')->orWhereHas('booking');
+                $q->whereNull('booking_id')->orWhereHas('booking', fn ($booking) => $booking->stillExpected());
             })
+            ->where(function ($q) {
+                $q->whereNull('attraction_purchase_id')->orWhereHas('attractionPurchase', fn ($purchase) => $purchase->stillExpected());
+            })
+            ->when(Waiver::supportsEventPurchaseId(), fn ($query) => $query->where(function ($q) {
+                $q->whereNull('event_purchase_id')->orWhereHas('eventPurchase', fn ($purchase) => $purchase->stillExpected());
+            }))
             ->get();
     }
 

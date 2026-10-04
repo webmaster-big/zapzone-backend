@@ -188,6 +188,20 @@ class Waiver extends Model
         return \App\Support\SchemaSupport::hasColumn('waivers', 'escape_room_session_id');
     }
 
+    public static function discardUnsignedPlaceholdersFor(string $linkColumn, int $id): void
+    {
+        static::where($linkColumn, $id)
+            ->where('status', self::STATUS_PENDING)
+            ->where('source', self::SOURCE_CONFIRMATION_EMAIL)
+            ->whereNull('bulk_invite_id')
+            ->where('is_manager_assigned', false)
+            ->get()
+            ->each(function (self $waiver) {
+                $waiver->update(['status' => self::STATUS_DELETED]);
+                $waiver->delete();
+            });
+    }
+
     public static function generateReference(): string
     {
         do {

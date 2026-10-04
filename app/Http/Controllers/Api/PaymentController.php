@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Traits\RecordsPageAnalytics;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Models\Payment;
+use App\Services\Payments\AuthorizeNetGateway;
 use App\Services\Payments\PayableLedger;
 use App\Models\TicketOrder;
 use App\Services\TicketOrderService;
@@ -1981,12 +1982,24 @@ class PaymentController extends Controller
                 }
 
                 $duePayable = match ($request->payable_type) {
-                    Payment::TYPE_BOOKING => Booking::find($request->payable_id),
-                    Payment::TYPE_ATTRACTION_PURCHASE => AttractionPurchase::find($request->payable_id),
-                    Payment::TYPE_EVENT_PURCHASE => EventPurchase::find($request->payable_id),
-                    Payment::TYPE_TICKET_ORDER => TicketOrder::find($request->payable_id),
+                    Payment::TYPE_BOOKING => Booking::withTrashed()->find($request->payable_id),
+                    Payment::TYPE_ATTRACTION_PURCHASE => AttractionPurchase::withTrashed()->find($request->payable_id),
+                    Payment::TYPE_EVENT_PURCHASE => EventPurchase::withTrashed()->find($request->payable_id),
+                    Payment::TYPE_TICKET_ORDER => TicketOrder::withTrashed()->find($request->payable_id),
                     default => null,
                 };
+
+                if (!$duePayable) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'This booking or purchase no longer exists, so your card was not charged. Please start again.',
+                        'error_code' => 'PAYABLE_NOT_FOUND',
+                    ], 422);
+                }
+
+                $settled = 0.0;
+                $due = null;
+                $tolerance = (float) config('checkout.total_tolerance', 0.05);
 
                 if ($duePayable) {
                     $payableLocationId = $request->payable_type === Payment::TYPE_ATTRACTION_PURCHASE
@@ -2026,7 +2039,6 @@ class PaymentController extends Controller
                         ->where('status', 'completed')
                         ->sum('amount');
                     $due = round((float) $duePayable->total_amount - $settled, 2);
-                    $tolerance = (float) config('checkout.total_tolerance', 0.05);
 
                     if ((float) $request->amount > $due + $tolerance) {
                         Log::warning('CHARGE_EXCEEDS_DUE: charge amount is more than the payable still owes', [
@@ -2071,6 +2083,26 @@ class PaymentController extends Controller
                         'payment' => $existingPayment,
                         'email_sent' => false,
                     ], 200);
+                }
+
+                if ($due !== null
+                    && $settled > 0
+                    && $due <= $tolerance
+                    && ! app(\App\Services\AddOnRuleService::class)->isStaff($request->user('sanctum'))) {
+                    Log::warning('ALREADY_PAID: refused a guest card charge on something already paid in full', [
+                        'payable_type' => $request->payable_type,
+                        'payable_id' => $request->payable_id,
+                        'charge_amount' => (float) $request->amount,
+                        'total_amount' => (float) $duePayable->total_amount,
+                        'settled_payments' => $settled,
+                        'ip' => $request->ip(),
+                    ]);
+
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'This is already paid in full, so your card was not charged again. Please check your email for your confirmation.',
+                        'error_code' => 'ALREADY_PAID',
+                    ], 409);
                 }
             }
 
@@ -2214,10 +2246,11 @@ class PaymentController extends Controller
             $apiRequest->setMerchantAuthentication($merchantAuthentication);
             $apiRequest->setTransactionRequest($transactionRequestType);
 
+            $gateway = app(AuthorizeNetGateway::class);
             $controller = new AnetController\CreateTransactionController($apiRequest);
-            $response = $controller->executeWithApiResponse($environment);
+            $response = $gateway->execute($controller, $environment);
 
-            if ($response != null && $response->getMessages()->getResultCode() == "Ok") {
+            if ($response != null && $response->getMessages()?->getResultCode() == "Ok") {
                 $tresponse = $response->getTransactionResponse();
 
                 if ($tresponse != null && $tresponse->getMessages() != null) {
@@ -2240,6 +2273,10 @@ class PaymentController extends Controller
                             'message' => 'Payment processing error: Invalid transaction ID received',
                             'error_code' => 'INVALID_TRANSACTION_ID',
                         ], 400);
+                    }
+
+                    if (! $gateway->isApproved($tresponse, (float) $request->amount)) {
+                        return $this->refuseUnapprovedCharge($request, $tresponse, $gateway, $merchantAuthentication, $environment);
                     }
 
                     $cardLastFour = CardBrand::lastFour($tresponse->getAccountNumber());
@@ -2267,28 +2304,24 @@ class PaymentController extends Controller
                             'customer_zip' => $request->customer['zip'] ?? 'not provided',
                         ]);
 
-                        try {
-                            $voidRequest = new AnetAPI\TransactionRequestType();
-                            $voidRequest->setTransactionType('voidTransaction');
-                            $voidRequest->setRefTransId($transactionId);
+                        if ($gateway->void($merchantAuthentication, $environment, (string) $transactionId)) {
+                            Log::info('AVS-failed transaction voided successfully', ['transaction_id' => $transactionId]);
+                        } else {
+                            Log::error('Failed to void AVS-failed transaction', ['transaction_id' => $transactionId]);
 
-                            $voidApiRequest = new AnetAPI\CreateTransactionRequest();
-                            $voidApiRequest->setMerchantAuthentication($merchantAuthentication);
-                            $voidApiRequest->setTransactionRequest($voidRequest);
-
-                            $voidController = new AnetController\CreateTransactionController($voidApiRequest);
-                            $voidResponse = $voidController->executeWithApiResponse($environment);
-
-                            if ($voidResponse != null && $voidResponse->getMessages()->getResultCode() == 'Ok') {
-                                Log::info('AVS-failed transaction voided successfully', ['transaction_id' => $transactionId]);
-                            } else {
-                                Log::error('Failed to void AVS-failed transaction', ['transaction_id' => $transactionId]);
-                            }
-                        } catch (\Exception $e) {
-                            Log::error('Exception voiding AVS-failed transaction', [
-                                'transaction_id' => $transactionId,
-                                'error' => $e->getMessage(),
-                            ]);
+                            $gateway->alertStaff(
+                                (int) $request->location_id,
+                                'Card payment needs action in Authorize.Net',
+                                "A card payment of $" . number_format((float) $request->amount, 2) . " (transaction {$transactionId}) was approved but failed the billing ZIP check, and it could not be voided automatically. The guest was told it did not go through, so void or refund it in Authorize.Net.",
+                                [
+                                    'transaction_id' => $transactionId,
+                                    'amount' => (float) $request->amount,
+                                    'payable_type' => $request->payable_type,
+                                    'payable_id' => $request->payable_id,
+                                    'guest_email' => $request->customer['email'] ?? null,
+                                    'reason' => 'avs_void_failed',
+                                ]
+                            );
                         }
 
                         $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
@@ -2307,6 +2340,43 @@ class PaymentController extends Controller
                             'avs_result_code' => $avsResultCode,
                             'location_id' => $request->location_id,
                         ]);
+                    }
+
+                    if ($request->payable_id && $request->payable_type && ! $this->payableCanStillBePaid((string) $request->payable_type, (int) $request->payable_id)) {
+                        $voided = $gateway->void($merchantAuthentication, $environment, (string) $transactionId);
+
+                        Log::error('CHARGE_FOR_REMOVED_PAYABLE: the booking or purchase was removed while the card was being charged', [
+                            'transaction_id' => $transactionId,
+                            'voided' => $voided,
+                            'payable_type' => $request->payable_type,
+                            'payable_id' => $request->payable_id,
+                            'amount' => (float) $request->amount,
+                            'location_id' => $request->location_id,
+                        ]);
+
+                        if (! $voided) {
+                            $gateway->alertStaff(
+                                (int) $request->location_id,
+                                'Card payment needs action in Authorize.Net',
+                                "A card payment of $" . number_format((float) $request->amount, 2) . " (transaction {$transactionId}) went through after its booking or purchase was removed, and it could not be voided automatically. The guest was told it did not go through, so void or refund it in Authorize.Net.",
+                                [
+                                    'transaction_id' => $transactionId,
+                                    'amount' => (float) $request->amount,
+                                    'payable_type' => $request->payable_type,
+                                    'payable_id' => $request->payable_id,
+                                    'guest_email' => $request->customer['email'] ?? null,
+                                    'reason' => 'payable_removed',
+                                ]
+                            );
+                        }
+
+                        return response()->json([
+                            'success' => false,
+                            'message' => $voided
+                                ? 'This booking or purchase was cancelled while your payment was going through, so the payment was cancelled too. Please start again.'
+                                : 'This booking or purchase was cancelled while your payment was going through. We could not cancel the payment automatically, so our team has been alerted and will refund it.',
+                            'error_code' => 'PAYABLE_REMOVED',
+                        ], 409);
                     }
 
                     $payment = Payment::create([
@@ -2415,6 +2485,8 @@ class PaymentController extends Controller
 
                     Log::info('Authorize.Net payment successful with customer data', [
                         'transaction_id' => $transactionId,
+                        'response_code' => $tresponse->getResponseCode(),
+                        'auth_code' => $tresponse->getAuthCode(),
                         'amount' => $request->amount,
                         'location_id' => $request->location_id,
                         'avs_result_code' => $avsResultCode,
@@ -2775,7 +2847,7 @@ class PaymentController extends Controller
                 } else {
                     $errorMessage = 'Transaction failed';
                     $errorCode = null;
-                    if ($tresponse->getErrors() != null) {
+                    if ($tresponse?->getErrors() != null) {
                         $errorCode = $tresponse->getErrors()[0]->getErrorCode();
                         $errorMessage = $tresponse->getErrors()[0]->getErrorText();
                     }
@@ -2785,7 +2857,7 @@ class PaymentController extends Controller
                         'error_code' => $errorCode,
                         'location_id' => $request->location_id,
                         'environment' => $account->environment,
-                        'response_code' => $tresponse->getResponseCode(),
+                        'response_code' => $tresponse?->getResponseCode(),
                     ]);
 
                     $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
@@ -2800,10 +2872,12 @@ class PaymentController extends Controller
                 $errorMessage = 'Unknown error';
                 $errorCode = null;
                 $allErrors = [];
-                if ($response != null) {
-                    $errorMessages = $response->getMessages()->getMessage();
-                    $errorCode = $errorMessages[0]->getCode();
-                    $errorMessage = $errorMessages[0]->getText();
+                $declinedTransaction = $response?->getTransactionResponse();
+                $transactionError = ($declinedTransaction?->getErrors() ?? [])[0] ?? null;
+                if ($response != null && $response->getMessages() != null) {
+                    $errorMessages = $response->getMessages()->getMessage() ?? [];
+                    $errorCode = ($errorMessages[0] ?? null)?->getCode();
+                    $errorMessage = ($errorMessages[0] ?? null)?->getText() ?? $errorMessage;
 
                     foreach ($errorMessages as $msg) {
                         $allErrors[] = [
@@ -2812,18 +2886,47 @@ class PaymentController extends Controller
                         ];
                     }
                 }
+                if ($transactionError?->getErrorText()) {
+                    $errorMessage = $transactionError->getErrorText();
+                }
+                $outcomeUnknown = $response === null || $response->getMessages() === null;
+                if ($outcomeUnknown) {
+                    $errorMessage = "We couldn't get an answer from the card processor, so we can't tell whether your card was charged. Nothing was booked. Please call us before trying again so you are not charged twice.";
+                }
 
-                Log::error('Authorize.Net API error', [
+                Log::error('Authorize.Net API error', $gateway->outcome($declinedTransaction) + [
                     'error' => $errorMessage,
                     'error_code' => $errorCode,
                     'all_errors' => $allErrors,
                     'location_id' => $request->location_id,
                     'environment' => $account->environment,
                     'account_id' => $account->id,
+                    'amount' => (float) $request->amount,
+                    'payable_type' => $request->payable_type,
+                    'payable_id' => $request->payable_id,
                     'response_null' => $response === null,
+                    'outcome_unknown' => $outcomeUnknown,
                     'is_auth_error' => $errorCode === 'E00007',
                     'suggestion' => $errorCode === 'E00007' ? 'Check if credentials match environment. Run test-connection endpoint.' : null,
                 ]);
+
+                if ($outcomeUnknown) {
+                    $gateway->alertStaff(
+                        (int) $request->location_id,
+                        'Card payment needs checking in Authorize.Net',
+                        "Authorize.Net did not answer a card payment of $" . number_format((float) $request->amount, 2)
+                            . ' for ' . trim(($request->customer['first_name'] ?? '') . ' ' . ($request->customer['last_name'] ?? '') . ' ' . ($request->customer['email'] ?? ''))
+                            . ', so it was not booked. Check Authorize.Net for a charge with invoice ' . substr((string) $request->order_id, 0, 20) . ' and refund it if one went through.',
+                        [
+                            'order_id' => substr((string) $request->order_id, 0, 20),
+                            'amount' => (float) $request->amount,
+                            'payable_type' => $request->payable_type,
+                            'payable_id' => $request->payable_id,
+                            'guest_email' => $request->customer['email'] ?? null,
+                            'reason' => 'no_gateway_answer',
+                        ]
+                    );
+                }
 
                 $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
 
@@ -2831,6 +2934,7 @@ class PaymentController extends Controller
                     'success' => false,
                     'message' => $errorMessage,
                     'error_code' => $errorCode,
+                    'transaction_error_code' => $transactionError?->getErrorCode(),
                     'environment' => $account->environment,
                     'help' => $errorCode === 'E00007' ? 'Authentication failed. Please verify your Authorize.Net credentials match the selected environment (sandbox/production).' : null,
                 ], 400);
@@ -2863,6 +2967,48 @@ class PaymentController extends Controller
                 'message' => 'Payment processing failed: ' . $e->getMessage()
             ], 500);
         }
+    }
+
+    private function payableCanStillBePaid(string $payableType, int $payableId): bool
+    {
+        $payable = match ($payableType) {
+            Payment::TYPE_BOOKING => Booking::withTrashed()->find($payableId),
+            Payment::TYPE_ATTRACTION_PURCHASE => AttractionPurchase::withTrashed()->find($payableId),
+            Payment::TYPE_EVENT_PURCHASE => EventPurchase::withTrashed()->find($payableId),
+            Payment::TYPE_TICKET_ORDER => TicketOrder::withTrashed()->find($payableId),
+            default => null,
+        };
+
+        return $payable !== null
+            && ! $payable->trashed()
+            && ! in_array((string) $payable->status, ['cancelled', 'refunded'], true);
+    }
+
+    private function refuseUnapprovedCharge(Request $request, AnetAPI\TransactionResponseType $tresponse, AuthorizeNetGateway $gateway, AnetAPI\MerchantAuthenticationType $merchantAuthentication, string $environment): JsonResponse
+    {
+        $guest = trim(($request->customer['first_name'] ?? '') . ' ' . ($request->customer['last_name'] ?? ''));
+
+        $gateway->refuseUnapproved(
+            $merchantAuthentication,
+            $environment,
+            $tresponse,
+            (int) $request->location_id,
+            (float) $request->amount,
+            $guest !== '' ? "checkout by {$guest}" : 'online checkout',
+            [
+                'payable_type' => $request->payable_type,
+                'payable_id' => $request->payable_id,
+                'guest_email' => $request->customer['email'] ?? null,
+            ]
+        );
+
+        $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
+
+        return response()->json([
+            'success' => false,
+            'message' => 'Your card payment was not approved, so nothing was booked. Please try a different card, or call us to book.',
+            'error_code' => 'PAYMENT_NOT_APPROVED',
+        ], 400);
     }
 
     private function forceDeletePayableOnFailure(?int $payableId, ?string $payableType): void
@@ -2916,7 +3062,19 @@ class PaymentController extends Controller
                 ? $payable->status === AttractionPurchase::STATUS_PENDING
                 : $payable->status === 'pending';
 
-            if ($isPending) {
+            $tookMoney = Payment::where('payable_type', $payableType)
+                ->where('payable_id', $payableId)
+                ->whereIn('status', ['completed', 'refunded'])
+                ->exists();
+
+            if ($isPending && $tookMoney) {
+                Log::warning('Kept a pending payable after a failed charge because it already has payments', [
+                    'payable_type' => $payableType,
+                    'payable_id' => $payableId,
+                ]);
+            }
+
+            if ($isPending && ! $tookMoney) {
                 $this->reverseGiftCardFor($payable, $payableType, 'payment_error_cleanup');
                 $payable->forceDelete();
                 Log::info('Force deleted pending entity after payment failure', [

@@ -40,6 +40,15 @@ class Booking extends Model
                     'error' => $e->getMessage(),
                 ]);
             }
+
+            try {
+                \App\Models\Waiver::discardUnsignedPlaceholdersFor('booking_id', (int) $booking->id);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('Unsigned waivers could not be removed with a deleted booking', [
+                    'booking_id' => $booking->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
         });
     }
 
@@ -206,6 +215,17 @@ class Booking extends Model
     public function internalNotes(): HasMany
     {
         return $this->hasMany(BookingInternalNote::class)->orderByDesc('created_at')->orderByDesc('id');
+    }
+
+    public function scopeStillExpected($query)
+    {
+        return $query->where('status', '!=', 'cancelled')
+            ->where(fn ($notAnUnpaidOnlineCheckout) => $notAnUnpaidOnlineCheckout
+                ->where('status', '!=', 'pending')
+                ->orWhereNull('payment_method')
+                ->orWhere('payment_method', '!=', 'authorize.net')
+                ->orWhereNotNull('created_by')
+                ->orWhere('amount_paid', '>', 0));
     }
 
     public function scopeByStatus($query, $status)

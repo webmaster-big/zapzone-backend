@@ -256,11 +256,18 @@ class EventPurchaseController extends Controller
                 }
             }
 
+            $duplicateTotal = (float) ($validated['total_amount'] ?? 0);
+            $duplicateTolerance = (float) config('checkout.total_tolerance', 0.05);
             $duplicateQuery = EventPurchase::where('event_id', $validated['event_id'])
                 ->where('purchase_date', $validated['purchase_date'])
                 ->where('purchase_time', $validated['purchase_time'])
                 ->where('quantity', $validated['quantity'])
-                ->where('status', 'pending');
+                ->where('status', 'pending')
+                ->whereNull('ticket_order_id')
+                ->where('payment_method', $validated['payment_method'] ?? 'paylater')
+                ->whereBetween('total_amount', [$duplicateTotal - $duplicateTolerance, $duplicateTotal + $duplicateTolerance])
+                ->where(fn ($unpaid) => $unpaid->where('amount_paid', 0)->orWhereNull('amount_paid'))
+                ->whereDoesntHave('payments', fn ($payments) => $payments->whereIn('status', ['completed', 'refunded']));
 
             if (!empty($validated['customer_id'])) {
                 $duplicateQuery->where('customer_id', $validated['customer_id']);
@@ -271,7 +278,9 @@ class EventPurchaseController extends Controller
             $requestCarriesCode = !empty($validated['gift_card_code']) || !empty($validated['gift_card_id'])
                 || !empty($validated['promo_code']) || !empty($validated['promo_id']);
 
-            $existingPending = $requestCarriesCode ? null : $duplicateQuery->first();
+            $eventBuyerIdentifiable = !empty($validated['customer_id']) || trim((string) ($validated['guest_email'] ?? '')) !== '';
+
+            $existingPending = ($requestCarriesCode || !$eventBuyerIdentifiable || !isset($validated['total_amount'])) ? null : $duplicateQuery->first();
             if ($existingPending) {
                 $existingPending->load(['event', 'customer', 'location:id,name', 'addOns']);
                 Log::info('Duplicate event purchase prevented (existing pending found)', [
@@ -869,6 +878,22 @@ class EventPurchaseController extends Controller
                 ], 422);
             }
 
+            if (!app(\App\Services\AddOnRuleService::class)->isStaff(request()->user('sanctum'))
+                && ($eventPurchase->status !== 'pending'
+                    || $eventPurchase->checked_in_at !== null
+                    || $eventPurchase->payments()->whereIn('status', ['completed', 'refunded'])->exists())) {
+                Log::warning('Public event purchase delete refused: only an unpaid pending purchase can be rolled back', [
+                    'id' => $eventPurchase->id,
+                    'status' => $eventPurchase->status,
+                    'ip' => request()->ip(),
+                ]);
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Only an unpaid pending purchase can be removed this way.',
+                ], 403);
+            }
+
             $userId = null;
             $user = null;
             try {
@@ -1309,6 +1334,13 @@ class EventPurchaseController extends Controller
                 return response()->json([
                     'success' => false,
                     'message' => 'This purchase belongs to an order. Roll back the order instead.',
+                ], 403);
+            }
+
+            if ($eventPurchase->payments()->whereIn('status', ['completed', 'refunded'])->exists()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This purchase has payments, so it cannot be removed this way.',
                 ], 403);
             }
 

@@ -390,11 +390,14 @@ class TicketOrderController extends Controller
                     ->delete();
             }
 
-            foreach ($order->eventPurchases as $eventLine) {
-                \App\Models\Waiver::where('event_id', $eventLine->event_id)
-                    ->where('customer_id', $order->customer_id)
-                    ->whereDate('selected_date', $eventLine->purchase_date)
+            $eventLineIds = $order->eventPurchases->pluck('id')->all();
+
+            if ($eventLineIds !== [] && \App\Models\Waiver::supportsEventPurchaseId()) {
+                \App\Models\Waiver::whereIn('event_purchase_id', $eventLineIds)
                     ->where('status', \App\Models\Waiver::STATUS_PENDING)
+                    ->where('source', \App\Models\Waiver::SOURCE_CONFIRMATION_EMAIL)
+                    ->whereNull('bulk_invite_id')
+                    ->where('is_manager_assigned', false)
                     ->delete();
             }
 

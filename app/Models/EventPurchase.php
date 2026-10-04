@@ -29,6 +29,21 @@ class EventPurchase extends Model
                 ]);
             }
         });
+
+        static::forceDeleting(function (EventPurchase $purchase) {
+            if (!Waiver::supportsEventPurchaseId()) {
+                return;
+            }
+
+            try {
+                Waiver::discardUnsignedPlaceholdersFor('event_purchase_id', (int) $purchase->id);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('Unsigned waivers could not be removed with a deleted event purchase', [
+                    'event_purchase_id' => $purchase->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        });
     }
 
     protected $fillable = [
@@ -116,6 +131,16 @@ class EventPurchase extends Model
     public function payments(): MorphMany
     {
         return $this->morphMany(Payment::class, 'payable');
+    }
+
+    public function scopeStillExpected($query)
+    {
+        return $query->whereNotIn('status', ['cancelled', 'refunded'])
+            ->where(fn ($notAnUnpaidOnlineCheckout) => $notAnUnpaidOnlineCheckout
+                ->where('status', '!=', 'pending')
+                ->orWhereNull('payment_method')
+                ->orWhere('payment_method', '!=', 'authorize.net')
+                ->orWhere('amount_paid', '>', 0));
     }
 
     public function scopeByStatus($query, $status)

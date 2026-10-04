@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Support\CardBrand;
 use App\Models\AuthorizeNetAccount;
+use App\Services\Payments\AuthorizeNetGateway;
 use Illuminate\Support\Facades\Log;
 use net\authorize\api\constants\ANetEnvironment;
 use net\authorize\api\contract\v1 as AnetAPI;
@@ -59,11 +60,17 @@ class AuthorizeNetCharger
             $apiRequest->setRefId(substr($refId, 0, 20));
             $apiRequest->setTransactionRequest($transactionRequest);
 
+            $gateway = app(AuthorizeNetGateway::class);
             $controller = new AnetController\CreateTransactionController($apiRequest);
-            $response = $controller->executeWithApiResponse($environment);
+            $response = $gateway->execute($controller, $environment);
 
-            if ($response && $response->getMessages()->getResultCode() === 'Ok') {
+            if ($response && $response->getMessages()?->getResultCode() === 'Ok') {
                 $tresponse = $response->getTransactionResponse();
+                if ($tresponse && $tresponse->getMessages() && ! $gateway->isApproved($tresponse, $amount)) {
+                    $gateway->refuseUnapproved($merchantAuthentication, $environment, $tresponse, $account->location_id, $amount, $description, ['ref_id' => $refId]);
+
+                    return ['success' => false, 'transaction_id' => null, 'card_last_four' => null, 'card_type' => null, 'error' => 'Your card payment was not approved. Please try a different card.', 'environment' => $account->environment];
+                }
                 if ($tresponse && $tresponse->getMessages()) {
                     return [
                         'success' => true,

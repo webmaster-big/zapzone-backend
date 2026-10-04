@@ -31,6 +31,7 @@ class SendBookingReminders extends Command
             ->where('booking_date', $tomorrow)
             ->where('reminder_sent', false)
             ->whereIn('status', ['confirmed', 'pending'])
+            ->stillExpected()
             ->get();
 
         $this->info("Found {$bookingsToRemind->count()} bookings to remind.");

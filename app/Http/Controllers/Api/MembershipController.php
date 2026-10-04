@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Support\CardBrand;
+use App\Services\Payments\AuthorizeNetGateway;
 use App\Http\Controllers\Controller;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Models\Customer;
@@ -111,11 +112,17 @@ class MembershipController extends Controller
             $apiRequest->setRefId('MEM' . $refId);
             $apiRequest->setTransactionRequest($transactionRequest);
 
+            $gateway    = app(AuthorizeNetGateway::class);
             $controller = new AnetController\CreateTransactionController($apiRequest);
-            $response   = $controller->executeWithApiResponse($environment);
+            $response   = $gateway->execute($controller, $environment);
 
-            if ($response && $response->getMessages()->getResultCode() === 'Ok') {
+            if ($response && $response->getMessages()?->getResultCode() === 'Ok') {
                 $tresponse = $response->getTransactionResponse();
+                if ($tresponse && $tresponse->getMessages() && ! $gateway->isApproved($tresponse, $amount)) {
+                    $gateway->refuseUnapproved($merchantAuthentication, $environment, $tresponse, $account->location_id, $amount, $description, ['ref_id' => 'MEM' . $refId]);
+
+                    return ['success' => false, 'transaction_id' => null, 'card_last_four' => null, 'card_type' => null, 'error' => 'Your card payment was not approved. Please try a different card.'];
+                }
                 if ($tresponse && $tresponse->getMessages()) {
                     return [
                         'success' => true,
@@ -1562,11 +1569,17 @@ class MembershipController extends Controller
                 $apiRequest->setRefId('UPG' . $membership->id);
                 $apiRequest->setTransactionRequest($transactionRequest);
 
+                $gateway    = app(AuthorizeNetGateway::class);
                 $controller = new AnetController\CreateTransactionController($apiRequest);
-                $response   = $controller->executeWithApiResponse($environment);
+                $response   = $gateway->execute($controller, $environment);
 
-                if ($response && $response->getMessages()->getResultCode() === 'Ok') {
+                if ($response && $response->getMessages()?->getResultCode() === 'Ok') {
                     $tresponse = $response->getTransactionResponse();
+                    if ($tresponse && $tresponse->getMessages() && ! $gateway->isApproved($tresponse, (float) $proratedDiff)) {
+                        $gateway->refuseUnapproved($merchantAuthentication, $environment, $tresponse, $account->location_id, (float) $proratedDiff, "plan upgrade for membership {$membership->id}", ['membership_id' => $membership->id]);
+
+                        return response()->json(['success' => false, 'message' => 'Your card payment was not approved. Please try a different card.'], 402);
+                    }
                     if ($tresponse && $tresponse->getMessages()) {
                         $this->rememberCard($membership, [
                             'card_last_four' => $tresponse->getAccountNumber(),

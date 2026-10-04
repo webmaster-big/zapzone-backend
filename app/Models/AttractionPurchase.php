@@ -17,6 +17,20 @@ class AttractionPurchase extends Model
     public const STATUS_CANCELLED = 'cancelled';
     public const STATUS_REFUNDED = 'refunded';
 
+    protected static function booted(): void
+    {
+        static::forceDeleting(function (AttractionPurchase $purchase) {
+            try {
+                Waiver::discardUnsignedPlaceholdersFor('attraction_purchase_id', (int) $purchase->id);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('Unsigned waivers could not be removed with a deleted attraction purchase', [
+                    'attraction_purchase_id' => $purchase->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        });
+    }
+
     public const STATUSES = [
         self::STATUS_PENDING,
         self::STATUS_CONFIRMED,
@@ -140,6 +154,16 @@ class AttractionPurchase extends Model
     public function payments(): MorphMany
     {
         return $this->morphMany(Payment::class, 'payable');
+    }
+
+    public function scopeStillExpected($query)
+    {
+        return $query->whereNotIn('status', [self::STATUS_CANCELLED, self::STATUS_REFUNDED])
+            ->where(fn ($notAnUnpaidOnlineCheckout) => $notAnUnpaidOnlineCheckout
+                ->where('status', '!=', self::STATUS_PENDING)
+                ->orWhereNull('payment_method')
+                ->orWhere('payment_method', '!=', 'authorize.net')
+                ->orWhere('amount_paid', '>', 0));
     }
 
     public function scopeByLocation($query, $locationId)

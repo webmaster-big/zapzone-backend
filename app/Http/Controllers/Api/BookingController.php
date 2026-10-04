@@ -60,6 +60,8 @@ class BookingController extends Controller
      */
     public const REDACTED_CHANGE_FIELDS = ['internal_notes', 'notes', 'special_requests'];
 
+    private const CHECKOUT_KEY_CACHE_PREFIX = 'booking-checkout:';
+
     private static function redactedChange($oldValue, $newValue): array
     {
         $describe = static function ($value): string {
@@ -416,10 +418,16 @@ class BookingController extends Controller
             'custom_fields' => 'nullable|array|max:50',
             'custom_fields.*.id' => 'required_with:custom_fields|integer|min:1',
             'custom_fields.*.value' => 'nullable|boolean',
+            'checkout_key' => ['nullable', 'string', 'max:64', 'regex:/^[A-Za-z0-9-]+$/'],
+            'book_another' => 'nullable|boolean',
         ]);
 
         $customFieldAnswers = $validated['custom_fields'] ?? null;
         unset($validated['custom_fields']);
+
+        $checkoutKey = $validated['checkout_key'] ?? null;
+        $bookAnother = (bool) ($validated['book_another'] ?? false);
+        unset($validated['checkout_key'], $validated['book_another']);
 
         $rules = app(\App\Services\AddOnRuleService::class);
         $isStaff = $rules->isStaff($request->user('sanctum'));
@@ -494,28 +502,48 @@ class BookingController extends Controller
             ], 422);
         }
 
-        $duplicateQuery = Booking::where('package_id', $validated['package_id'] ?? null)
-            ->where('booking_date', $validated['booking_date'])
-            ->where('booking_time', $validated['booking_time'])
-            ->whereIn('status', ['pending', 'confirmed']);
-
-        $duplicateIdentifiable = true;
-        if (!empty($validated['customer_id'])) {
-            $duplicateQuery->where('customer_id', $validated['customer_id']);
-        } elseif (!empty($validated['guest_email'])) {
-            $duplicateQuery->where('guest_email', $validated['guest_email']);
-        } else {
-            $duplicateIdentifiable = false;
-        }
-
         $requestCarriesCode = !empty($validated['gift_card_code']) || !empty($validated['gift_card_id'])
             || !empty($validated['promo_code']) || !empty($validated['promo_id']);
 
-        $existingPending = ($requestCarriesCode || !$duplicateIdentifiable) ? null : $duplicateQuery->first();
-        if ($existingPending) {
-            $existingPending->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
+        $earlierAttempt = ($requestCarriesCode && !$checkoutKey) ? null : $this->earlierAttempt($validated, $checkoutKey);
+
+        if ($earlierAttempt && $checkoutKey && !$this->isSameCheckout($earlierAttempt, $validated)) {
+            $earlierAttempt = null;
+        }
+
+        if ($earlierAttempt && $this->bookingWentThrough($earlierAttempt)) {
+            Log::info('Repeat of a checkout that already went through refused', [
+                'existing_booking_id' => $earlierAttempt->id,
+                'package_id' => $validated['package_id'] ?? null,
+                'checkout_key' => $checkoutKey,
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'code' => 'ALREADY_BOOKED',
+                'message' => $isStaff
+                    ? "This booking was already saved (reference {$earlierAttempt->reference_number}). Check it in Bookings before taking payment again."
+                    : "This booking already went through (reference {$earlierAttempt->reference_number}), so your card was not charged again. Please check your email for your confirmation.",
+                'reference_number' => $earlierAttempt->reference_number,
+                'booking_id' => $earlierAttempt->id,
+                'confirmation_pending' => $earlierAttempt->status === 'confirmed'
+                    && empty($earlierAttempt->qr_code_path)
+                    && !$this->bookingWasCharged($earlierAttempt),
+                'booking' => [
+                    'package_name' => $earlierAttempt->package?->name,
+                    'booking_date' => Carbon::parse($earlierAttempt->booking_date)->toDateString(),
+                    'booking_time' => Carbon::parse($earlierAttempt->booking_time)->format('H:i'),
+                    'participants' => (int) $earlierAttempt->participants,
+                    'total_amount' => (float) $earlierAttempt->total_amount,
+                    'amount_paid' => (float) $earlierAttempt->amount_paid,
+                ],
+            ], 409);
+        }
+
+        if ($earlierAttempt && !$requestCarriesCode && $this->isUnchangedRetryOf($earlierAttempt, $validated)) {
+            $earlierAttempt->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
             Log::info('Duplicate booking prevented (existing pending found)', [
-                'existing_booking_id' => $existingPending->id,
+                'existing_booking_id' => $earlierAttempt->id,
                 'package_id' => $validated['package_id'] ?? null,
                 'customer_id' => $validated['customer_id'] ?? null,
                 'guest_email' => $validated['guest_email'] ?? null,
@@ -523,8 +551,32 @@ class BookingController extends Controller
             return response()->json([
                 'success' => true,
                 'message' => 'Booking already exists',
-                'data' => $existingPending,
+                'data' => $earlierAttempt,
             ], 200);
+        }
+
+        if ($earlierAttempt && $checkoutKey && $earlierAttempt->status === 'pending' && !$this->bookingWasCharged($earlierAttempt)) {
+            if ($earlierAttempt->created_at && $earlierAttempt->created_at->gt(now()->subMinutes(2))) {
+                return response()->json([
+                    'success' => false,
+                    'code' => 'ATTEMPT_IN_PROGRESS',
+                    'message' => 'Your previous attempt is still being processed. Please wait a minute, check your email, and then try again.',
+                ], 409);
+            }
+
+            $this->releaseAbandonedAttempt($earlierAttempt);
+        }
+
+        $alreadyBooked = (!$isStaff && !$bookAnother) ? $this->paidBookingAtThisTime($validated) : null;
+        if ($alreadyBooked) {
+            $bookedWhen = Carbon::parse($alreadyBooked->booking_date)->format('M j') . ' at ' . Carbon::parse($alreadyBooked->booking_time)->format('g:i A');
+
+            return response()->json([
+                'success' => false,
+                'code' => 'BOOKED_SAME_TIME',
+                'message' => "You already have " . ($alreadyBooked->package?->name ?? 'this') . " booked for {$bookedWhen} (reference {$alreadyBooked->reference_number}). Do you want to book another one for the same time?",
+                'reference_number' => $alreadyBooked->reference_number,
+            ], 409);
         }
 
         $overlapOverride = [];
@@ -693,6 +745,10 @@ class BookingController extends Controller
             $validated['payment_method'] = 'paylater';
         }
 
+        if ($validated['payment_method'] === 'authorize.net') {
+            $validated['amount_paid'] = 0;
+        }
+
         $discountItems = [];
         if (!empty($validated['package_id'])) {
             $discountItems[] = ['type' => 'package', 'id' => (int) $validated['package_id']];
@@ -857,6 +913,8 @@ class BookingController extends Controller
         } catch (\RuntimeException $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
         }
+
+        $this->rememberCheckoutKey($checkoutKey, $booking);
 
         // Create a pending waiver if a template covers this booking's package/attractions,
         // so the confirmation email/SMS can include the {{waiver_link}}. Non-fatal.
@@ -1198,6 +1256,152 @@ class BookingController extends Controller
                 'limited' => $bookings->count() >= $limit,
             ],
         ]);
+    }
+
+    private function earlierAttempt(array $validated, ?string $checkoutKey): ?Booking
+    {
+        if ($checkoutKey) {
+            $keyedBookingId = $this->bookingIdForCheckoutKey($checkoutKey);
+
+            return $keyedBookingId ? Booking::with('package:id,name')->find($keyedBookingId) : null;
+        }
+
+        if (!empty($validated['customer_id'])) {
+            $identity = ['customer_id', $validated['customer_id']];
+        } elseif (!empty($validated['guest_email'])) {
+            $identity = ['guest_email', $validated['guest_email']];
+        } else {
+            return null;
+        }
+
+        $sameSlot = Booking::where('package_id', $validated['package_id'] ?? null)
+            ->where('booking_date', $validated['booking_date'])
+            ->where('booking_time', $validated['booking_time'])
+            ->where($identity[0], $identity[1])
+            ->where('status', 'pending');
+
+        if (!empty($validated['room_id'])) {
+            $sameSlot->where('room_id', $validated['room_id']);
+        } else {
+            $sameSlot->whereNull('room_id');
+        }
+
+        return $sameSlot->latest('id')->first();
+    }
+
+    private function isSameCheckout(Booking $earlier, array $validated): bool
+    {
+        return (int) $earlier->package_id === (int) ($validated['package_id'] ?? 0)
+            && (int) $earlier->location_id === (int) $validated['location_id']
+            && (int) ($earlier->customer_id ?? 0) === (int) ($validated['customer_id'] ?? 0)
+            && strcasecmp(trim((string) $earlier->guest_email), trim((string) ($validated['guest_email'] ?? ''))) === 0
+            && strcasecmp(trim((string) $earlier->guest_name), trim((string) ($validated['guest_name'] ?? ''))) === 0;
+    }
+
+    private function releaseAbandonedAttempt(Booking $booking): void
+    {
+        try {
+            $gcalService = new GoogleCalendarService($booking->location_id);
+            if ($gcalService->isConnected() && $booking->google_calendar_event_id) {
+                $gcalService->deleteEvent($booking);
+            }
+        } catch (\Exception $e) {
+            Log::warning('Google Calendar cleanup failed while releasing an abandoned checkout attempt', [
+                'booking_id' => $booking->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        $this->reverseGiftCardFor($booking, \App\Models\Payment::TYPE_BOOKING, 'payment_error_cleanup');
+
+        Log::info('Released an abandoned, uncharged checkout attempt so the same checkout can try again', [
+            'booking_id' => $booking->id,
+            'reference_number' => $booking->reference_number,
+        ]);
+
+        $booking->forceDelete();
+    }
+
+    private function bookingWentThrough(Booking $booking): bool
+    {
+        return in_array((string) $booking->status, ['confirmed', 'checked-in', 'completed'], true)
+            || $this->bookingWasCharged($booking);
+    }
+
+    private function isUnchangedRetryOf(Booking $earlier, array $validated): bool
+    {
+        return $earlier->status === 'pending'
+            && $earlier->created_at !== null
+            && $earlier->created_at->gt(now()->subMinutes(30))
+            && !$this->bookingWasCharged($earlier)
+            && (int) $earlier->package_id === (int) ($validated['package_id'] ?? 0)
+            && (int) $earlier->location_id === (int) $validated['location_id']
+            && Carbon::parse($earlier->booking_date)->toDateString() === Carbon::parse($validated['booking_date'])->toDateString()
+            && Carbon::parse($earlier->booking_time)->format('H:i') === Carbon::parse($validated['booking_time'])->format('H:i')
+            && (int) ($earlier->room_id ?? 0) === (int) ($validated['room_id'] ?? 0)
+            && (int) ($earlier->customer_id ?? 0) === (int) ($validated['customer_id'] ?? 0)
+            && strcasecmp((string) $earlier->guest_email, (string) ($validated['guest_email'] ?? '')) === 0
+            && (int) $earlier->participants === (int) $validated['participants']
+            && (string) $earlier->payment_method === (string) ($validated['payment_method'] ?? 'paylater')
+            && abs((float) $earlier->total_amount - (float) $validated['total_amount']) <= (float) config('checkout.total_tolerance', 0.05);
+    }
+
+    private function paidBookingAtThisTime(array $validated): ?Booking
+    {
+        if (!empty($validated['customer_id'])) {
+            $identity = ['customer_id', $validated['customer_id']];
+        } elseif (!empty($validated['guest_email'])) {
+            $identity = ['guest_email', $validated['guest_email']];
+        } else {
+            return null;
+        }
+
+        return Booking::with('package:id,name')
+            ->where('package_id', $validated['package_id'] ?? null)
+            ->where('booking_date', $validated['booking_date'])
+            ->where('booking_time', $validated['booking_time'])
+            ->where($identity[0], $identity[1])
+            ->where('status', '!=', 'cancelled')
+            ->where(function ($went) {
+                $went->whereIn('status', ['confirmed', 'checked-in'])
+                    ->orWhereHas('payments', fn ($payments) => $payments->where('status', 'completed'));
+            })
+            ->latest('id')
+            ->first();
+    }
+
+    private function bookingWasCharged(Booking $booking): bool
+    {
+        return \App\Models\Payment::where('payable_type', \App\Models\Payment::TYPE_BOOKING)
+            ->where('payable_id', $booking->id)
+            ->whereIn('status', ['completed', 'refunded'])
+            ->exists();
+    }
+
+    private function bookingIdForCheckoutKey(string $checkoutKey): ?int
+    {
+        try {
+            $bookingId = \Illuminate\Support\Facades\Cache::get(self::CHECKOUT_KEY_CACHE_PREFIX . $checkoutKey);
+
+            return $bookingId ? (int) $bookingId : null;
+        } catch (\Throwable $e) {
+            Log::warning('Checkout key lookup failed', ['error' => $e->getMessage()]);
+
+            return null;
+        }
+    }
+
+    private function rememberCheckoutKey(?string $checkoutKey, Booking $booking): void
+    {
+        if (!$checkoutKey) {
+            return;
+        }
+
+        try {
+            \Illuminate\Support\Facades\Cache::put(self::CHECKOUT_KEY_CACHE_PREFIX . $checkoutKey, $booking->id, now()->addDay());
+        } catch (\Throwable $e) {
+            Log::warning('Could not remember the checkout key for a booking', ['booking_id' => $booking->id, 'error' => $e->getMessage()]);
+        }
     }
 
     public function storeQrCode(Request $request, Booking $booking): JsonResponse
@@ -3181,6 +3385,20 @@ class BookingController extends Controller
                 ], 404);
             }
 
+            if (!app(\App\Services\AddOnRuleService::class)->isStaff(request()->user('sanctum'))
+                && ($booking->status !== 'pending' || $this->bookingWasCharged($booking))) {
+                Log::warning('Public booking delete refused: only an unpaid pending booking can be rolled back', [
+                    'id' => $booking->id,
+                    'status' => $booking->status,
+                    'ip' => request()->ip(),
+                ]);
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Only an unpaid pending booking can be removed this way.',
+                ], 403);
+            }
+
             // The unauthenticated checkout-rollback route also reaches this method;
             // reasonIsRequired() skips the requirement when there is no authenticated employee,
             // so rollback still works.
@@ -3938,6 +4156,15 @@ class BookingController extends Controller
                 return response()->json([
                     'success' => false,
                     'message' => 'Only pending bookings can be force deleted',
+                ], 403);
+            }
+
+            if ($this->bookingWasCharged($booking)) {
+                Log::warning('Public force delete refused: the booking has payments', ['id' => $booking->id, 'ip' => request()->ip()]);
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This booking has payments, so it cannot be removed this way.',
                 ], 403);
             }
 

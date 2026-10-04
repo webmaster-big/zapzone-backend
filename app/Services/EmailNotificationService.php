@@ -712,14 +712,38 @@ HTML;
     {
         $waiver = match ($type) {
             'booking' => Waiver::where('booking_id', $entity->id)->exceptEscapeRoomSignIns()->latest('id')->first(),
-            'event' => Waiver::where('event_id', $entity->event_id ?? null)
-                ->where('customer_id', $entity->customer_id ?? null)
-                ->latest('id')->first(),
+            'event' => $this->eventWaiverFor($entity),
             'purchase' => Waiver::where('attraction_purchase_id', $entity->id)->latest('id')->first(),
             default => null,
         };
 
         return $waiver?->signing_url ?? '';
+    }
+
+    private function eventWaiverFor($purchase): ?Waiver
+    {
+        if (Waiver::supportsEventPurchaseId() && !empty($purchase->id)) {
+            $linked = Waiver::where('event_purchase_id', $purchase->id)->latest('id')->first();
+            if ($linked) {
+                return $linked;
+            }
+        }
+
+        if (empty($purchase->event_id) || empty($purchase->purchase_date)) {
+            return null;
+        }
+
+        $query = Waiver::where('event_id', $purchase->event_id)->whereDate('selected_date', $purchase->purchase_date);
+
+        if (!empty($purchase->customer_id)) {
+            return $query->where('customer_id', $purchase->customer_id)->latest('id')->first();
+        }
+
+        if (!empty($purchase->guest_email)) {
+            return $query->whereNull('customer_id')->where('adult_email', $purchase->guest_email)->latest('id')->first();
+        }
+
+        return null;
     }
 
     /** Pre-rendered waiver call-to-action block embedded in confirmation emails. */

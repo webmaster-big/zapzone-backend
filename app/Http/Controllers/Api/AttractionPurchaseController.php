@@ -310,9 +310,23 @@ class AttractionPurchaseController extends Controller
         $isStaff = $rules->isStaff($request->user('sanctum'));
         $addOnLines = $rules->normalize($validated['additional_addons'] ?? [], 'addon_id', 'price_at_purchase');
 
+        $duplicateTotal = (float) $validated['total_amount'];
+        $duplicateTolerance = (float) config('checkout.total_tolerance', 0.05);
         $duplicateQuery = AttractionPurchase::where('attraction_id', $validated['attraction_id'])
             ->where('quantity', $validated['quantity'])
-            ->where('status', AttractionPurchase::STATUS_PENDING);
+            ->where('status', AttractionPurchase::STATUS_PENDING)
+            ->whereNull('ticket_order_id')
+            ->where('payment_method', $validated['payment_method'] ?? 'paylater')
+            ->whereBetween('total_amount', [$duplicateTotal - $duplicateTolerance, $duplicateTotal + $duplicateTolerance])
+            ->whereDoesntHave('payments', fn ($payments) => $payments->whereIn('status', ['completed', 'refunded']));
+
+        foreach (['scheduled_date', 'scheduled_time'] as $visitField) {
+            if (!empty($validated[$visitField])) {
+                $duplicateQuery->where($visitField, $validated[$visitField]);
+            } else {
+                $duplicateQuery->whereNull($visitField);
+            }
+        }
 
         if (!empty($validated['customer_id'])) {
             $duplicateQuery->where('customer_id', $validated['customer_id']);
@@ -347,6 +361,10 @@ class AttractionPurchaseController extends Controller
             $validated['status'] = AttractionPurchase::STATUS_CONFIRMED;
         } else {
             $validated['status'] = AttractionPurchase::STATUS_PENDING;
+        }
+
+        if ($validated['payment_method'] === 'authorize.net') {
+            $validated['amount_paid'] = 0;
         }
 
         $validated['created_by'] = auth()->id() ?? null;
@@ -977,6 +995,22 @@ class AttractionPurchaseController extends Controller
                     'success' => false,
                     'message' => 'This purchase belongs to order ' . $attractionPurchase->ticketOrder?->reference_number . ' and cannot be deleted on its own. Cancel or refund the whole order instead.',
                 ], 422);
+            }
+
+            if (!app(\App\Services\AddOnRuleService::class)->isStaff(request()->user('sanctum'))
+                && ($attractionPurchase->status !== AttractionPurchase::STATUS_PENDING
+                    || $attractionPurchase->checked_in_at !== null
+                    || $attractionPurchase->payments()->whereIn('status', ['completed', 'refunded'])->exists())) {
+                Log::warning('Public attraction purchase delete refused: only an unpaid pending purchase can be rolled back', [
+                    'id' => $attractionPurchase->id,
+                    'status' => $attractionPurchase->status,
+                    'ip' => request()->ip(),
+                ]);
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Only an unpaid pending purchase can be removed this way.',
+                ], 403);
             }
 
             $userId = null;
@@ -1774,6 +1808,13 @@ public function checkIn(Request $request, int $id): JsonResponse
                 return response()->json([
                     'success' => false,
                     'message' => 'This purchase belongs to an order. Roll back the order instead.',
+                ], 403);
+            }
+
+            if ($attractionPurchase->payments()->whereIn('status', ['completed', 'refunded'])->exists()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This purchase has payments, so it cannot be removed this way.',
                 ], 403);
             }
 
