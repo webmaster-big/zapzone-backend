@@ -200,8 +200,6 @@ Route::post('users', [UserController::class, 'store'])->middleware('throttle:10,
 Route::apiResource('package-time-slots', PackageTimeSlotController::class)->only(['index', 'store', 'show']); // include
 Route::get('package-time-slots/available-slots/{packageId}/{date}', [PackageTimeSlotController::class, 'getAvailableSlotsAuto']); // include
 
-Route::get('stream/bookings', [StreamController::class, 'bookingNotifications']); 
-Route::get('stream/attraction-purchases', [StreamController::class, 'attractionPurchaseNotifications']); 
 Route::get('stream/notifications', [StreamController::class, 'combinedNotifications']); 
 
 Route::post('shareable-tokens/check', [ShareableTokenController::class, 'check'])->middleware('throttle:30,1');
