@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Traits\RecordsPageAnalytics;
 use App\Http\Traits\ScopesByAuthUser;
+use App\Http\Traits\LimitsListingsToRequester;
 use App\Mail\EventPurchaseConfirmation;
 use App\Models\ActivityLog;
 use App\Models\Contact;
@@ -24,6 +25,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
@@ -33,6 +35,7 @@ class EventPurchaseController extends Controller
     use \App\Http\Traits\ReversesGiftCards;
     use ScopesByAuthUser;
     use RecordsPageAnalytics;
+    use LimitsListingsToRequester;
 
     public function index(Request $request): JsonResponse
     {
@@ -183,7 +186,11 @@ class EventPurchaseController extends Controller
                 'add_ons.*.add_on_id' => 'required_with:add_ons|exists:add_ons,id',
                 'add_ons.*.quantity' => 'required_with:add_ons|integer|min:1',
                 'add_ons.*.price_at_purchase' => 'required_with:add_ons|numeric|min:0',
+                'checkout_key' => ['nullable', 'string', 'max:64', 'regex:/^[A-Za-z0-9-]+$/'],
             ]);
+
+            $checkoutKey = $validated['checkout_key'] ?? null;
+            unset($validated['checkout_key']);
 
             $event = Event::findOrFail($validated['event_id']);
             if (!$event->is_active) {
@@ -256,11 +263,51 @@ class EventPurchaseController extends Controller
                 }
             }
 
+            $callerIsStaff = app(\App\Services\AddOnRuleService::class)->isStaff($request->user('sanctum'));
+
+            if (! $callerIsStaff && in_array($validated['payment_method'] ?? null, ['in-store', 'card'], true)) {
+                Log::warning('A checkout without a staff login asked to be recorded as paid at the venue; saved as pay later instead', [
+                    'requested_payment_method' => $validated['payment_method'],
+                    'event_id' => $validated['event_id'] ?? null,
+                    'ip' => $request->ip(),
+                ]);
+                $validated['payment_method'] = 'paylater';
+            }
+
+            if (! $callerIsStaff && ($validated['payment_method'] ?? 'paylater') === 'paylater') {
+                $validated['amount_paid'] = 0;
+            }
+
+            $earlierAttempt = $checkoutKey ? $this->purchaseForCheckoutKey($checkoutKey) : null;
+
+            if ($earlierAttempt && $this->isSamePurchaseCheckout($earlierAttempt, $validated) && $this->purchaseWentThrough($earlierAttempt)) {
+                Log::info('Repeat of an event checkout that already went through refused', [
+                    'existing_purchase_id' => $earlierAttempt->id,
+                    'checkout_key' => $checkoutKey,
+                ]);
+
+                return response()->json([
+                    'success' => false,
+                    'code' => 'ALREADY_PURCHASED',
+                    'message' => $callerIsStaff
+                        ? 'This purchase was already saved. Check it in Purchases before taking payment again.'
+                        : 'This purchase already went through, so your card was not charged again. Please check your email for your tickets.',
+                    'data' => $earlierAttempt->load(['event', 'customer', 'location:id,name', 'addOns']),
+                ], 409);
+            }
+
+            $duplicateTotal = (float) ($validated['total_amount'] ?? 0);
+            $duplicateTolerance = (float) config('checkout.total_tolerance', 0.05);
             $duplicateQuery = EventPurchase::where('event_id', $validated['event_id'])
                 ->where('purchase_date', $validated['purchase_date'])
                 ->where('purchase_time', $validated['purchase_time'])
                 ->where('quantity', $validated['quantity'])
-                ->where('status', 'pending');
+                ->where('status', 'pending')
+                ->whereNull('ticket_order_id')
+                ->where('payment_method', $validated['payment_method'] ?? 'paylater')
+                ->whereBetween('total_amount', [$duplicateTotal - $duplicateTolerance, $duplicateTotal + $duplicateTolerance])
+                ->where(fn ($unpaid) => $unpaid->where('amount_paid', 0)->orWhereNull('amount_paid'))
+                ->whereDoesntHave('payments', fn ($payments) => $payments->whereIn('status', ['completed', 'refunded']));
 
             if (!empty($validated['customer_id'])) {
                 $duplicateQuery->where('customer_id', $validated['customer_id']);
@@ -271,7 +318,9 @@ class EventPurchaseController extends Controller
             $requestCarriesCode = !empty($validated['gift_card_code']) || !empty($validated['gift_card_id'])
                 || !empty($validated['promo_code']) || !empty($validated['promo_id']);
 
-            $existingPending = $requestCarriesCode ? null : $duplicateQuery->first();
+            $eventBuyerIdentifiable = !empty($validated['customer_id']) || trim((string) ($validated['guest_email'] ?? '')) !== '';
+
+            $existingPending = ($requestCarriesCode || !$eventBuyerIdentifiable || !isset($validated['total_amount'])) ? null : $duplicateQuery->first();
             if ($existingPending) {
                 $existingPending->load(['event', 'customer', 'location:id,name', 'addOns']);
                 Log::info('Duplicate event purchase prevented (existing pending found)', [
@@ -420,6 +469,8 @@ class EventPurchaseController extends Controller
 
             $purchase->load(['event.location.company', 'customer', 'location:id,name', 'addOns']);
 
+            $this->rememberPurchaseCheckoutKey($checkoutKey, $purchase);
+
             // Create a pending waiver if a template covers this event, so the
             // confirmation can include the {{waiver_link}}. Non-fatal.
             try {
@@ -564,6 +615,52 @@ class EventPurchaseController extends Controller
             Log::error('Event purchase creation failed', ['error' => $e->getMessage()]);
             return response()->json(['message' => 'Failed to create event purchase. Please try again.'], 500);
         }
+    }
+
+    private function purchaseForCheckoutKey(string $checkoutKey): ?EventPurchase
+    {
+        try {
+            $purchaseId = Cache::get('event-checkout:' . $checkoutKey);
+        } catch (\Throwable $e) {
+            Log::warning('Checkout key lookup failed', ['error' => $e->getMessage()]);
+
+            return null;
+        }
+
+        return $purchaseId ? EventPurchase::find($purchaseId) : null;
+    }
+
+    private function rememberPurchaseCheckoutKey(?string $checkoutKey, EventPurchase $purchase): void
+    {
+        if (! $checkoutKey) {
+            return;
+        }
+
+        try {
+            Cache::put('event-checkout:' . $checkoutKey, $purchase->id, now()->addDay());
+        } catch (\Throwable $e) {
+            Log::warning('Checkout key could not be remembered', ['purchase_id' => $purchase->id, 'error' => $e->getMessage()]);
+        }
+    }
+
+    private function isSamePurchaseCheckout(EventPurchase $earlier, array $validated): bool
+    {
+        return (int) $earlier->event_id === (int) $validated['event_id']
+            && (int) ($earlier->customer_id ?? 0) === (int) ($validated['customer_id'] ?? 0)
+            && strcasecmp(trim((string) $earlier->guest_email), trim((string) ($validated['guest_email'] ?? ''))) === 0;
+    }
+
+    private function purchaseWentThrough(EventPurchase $purchase): bool
+    {
+        if (in_array((string) $purchase->status, ['cancelled', 'refunded'], true)) {
+            return false;
+        }
+
+        return in_array((string) $purchase->status, ['confirmed', 'checked-in', 'completed'], true)
+            || \App\Models\Payment::where('payable_type', \App\Models\Payment::TYPE_EVENT_PURCHASE)
+                ->where('payable_id', $purchase->id)
+                ->whereIn('status', ['completed', 'refunded'])
+                ->exists();
     }
 
     private function recordMembershipRedemptions(EventPurchase $purchase, array $validated): void
@@ -867,6 +964,22 @@ class EventPurchaseController extends Controller
                     'success' => false,
                     'message' => 'This purchase belongs to order ' . $eventPurchase->ticketOrder?->reference_number . ' and cannot be deleted on its own. Cancel or refund the whole order instead.',
                 ], 422);
+            }
+
+            if (!app(\App\Services\AddOnRuleService::class)->isStaff(request()->user('sanctum'))
+                && ($eventPurchase->status !== 'pending'
+                    || $eventPurchase->checked_in_at !== null
+                    || $eventPurchase->payments()->whereIn('status', ['completed', 'refunded'])->exists())) {
+                Log::warning('Public event purchase delete refused: only an unpaid pending purchase can be rolled back', [
+                    'id' => $eventPurchase->id,
+                    'status' => $eventPurchase->status,
+                    'ip' => request()->ip(),
+                ]);
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Only an unpaid pending purchase can be removed this way.',
+                ], 403);
             }
 
             $userId = null;
@@ -1200,6 +1313,10 @@ class EventPurchaseController extends Controller
                 'payments:id,payable_id,payable_type,status,method,card_last_four,card_type,amount,currency,paid_at,created_at',
             ]);
 
+        if ($refusal = $this->limitListingToRequester($query, $request)) {
+            return $refusal;
+        }
+
         if ($request->has('customer_id')) {
             $query->where('customer_id', $request->customer_id);
         }
@@ -1309,6 +1426,13 @@ class EventPurchaseController extends Controller
                 return response()->json([
                     'success' => false,
                     'message' => 'This purchase belongs to an order. Roll back the order instead.',
+                ], 403);
+            }
+
+            if ($eventPurchase->payments()->whereIn('status', ['completed', 'refunded'])->exists()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This purchase has payments, so it cannot be removed this way.',
                 ], 403);
             }
 
