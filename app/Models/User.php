@@ -11,6 +11,12 @@ class User extends Authenticatable
 {
     use HasFactory, Notifiable, HasApiTokens;
 
+    public const MULTI_LOCATION_ROLE = 'location_manager';
+
+    protected ?int $sessionHomeLocationId = null;
+
+    protected ?array $workLocationIdsMemo = null;
+
     protected $appends = [
         'name',
     ];
@@ -94,6 +100,124 @@ class User extends Authenticatable
         return $this->belongsTo(Location::class);
     }
 
+    public function locations()
+    {
+        return $this->belongsToMany(Location::class)->withTimestamps();
+    }
+
+    public static function tracksWorkLocations(): bool
+    {
+        static $known = null;
+
+        if ($known === null) {
+            try {
+                $known = \Illuminate\Support\Facades\Schema::hasTable('location_user');
+            } catch (\Throwable $e) {
+                $known = false;
+            }
+        }
+
+        return $known;
+    }
+
+    public function canHoldSeveralLocations(): bool
+    {
+        return (string) $this->role === self::MULTI_LOCATION_ROLE;
+    }
+
+    public function homeLocationId(): ?int
+    {
+        if ($this->sessionHomeLocationId !== null) {
+            return $this->sessionHomeLocationId;
+        }
+
+        return $this->location_id !== null ? (int) $this->location_id : null;
+    }
+
+    public function workLocationIds(): array
+    {
+        if ($this->workLocationIdsMemo !== null) {
+            return $this->workLocationIdsMemo;
+        }
+
+        $home = $this->homeLocationId();
+        $ids = $home !== null ? [$home] : [];
+
+        if ($this->canHoldSeveralLocations() && $this->getKey() !== null && self::tracksWorkLocations()) {
+            $assigned = $this->locations()
+                ->where('locations.is_active', true)
+                ->when($this->company_id, fn ($query) => $query->where('locations.company_id', $this->company_id))
+                ->pluck('locations.id')
+                ->map(fn ($id) => (int) $id)
+                ->all();
+
+            $ids = array_values(array_unique(array_merge($ids, $assigned)));
+        }
+
+        return $this->workLocationIdsMemo = $ids;
+    }
+
+    public function canWorkAt($locationId): bool
+    {
+        if ($locationId === null || $locationId === '' || ! is_numeric($locationId)) {
+            return false;
+        }
+
+        return in_array((int) $locationId, $this->workLocationIds(), true);
+    }
+
+    public function enterLocation(int $locationId): bool
+    {
+        if (! $this->canHoldSeveralLocations() || ! $this->canWorkAt($locationId)) {
+            return false;
+        }
+
+        $this->sessionHomeLocationId = $this->homeLocationId();
+        $this->setAttribute('location_id', $locationId);
+        $this->syncOriginalAttribute('location_id');
+        $this->unsetRelation('location');
+
+        return true;
+    }
+
+    public function workLocations()
+    {
+        $ids = $this->workLocationIds();
+
+        if ($ids === []) {
+            return collect();
+        }
+
+        $home = $this->homeLocationId();
+
+        return Location::query()
+            ->whereIn('id', $ids)
+            ->get(['id', 'company_id', 'name', 'slug', 'city', 'state', 'is_active'])
+            ->sortBy(fn (Location $location) => [(int) $location->id === $home ? 0 : 1, $location->name])
+            ->values();
+    }
+
+    public function locationAccessPayload(): array
+    {
+        return [
+            'home_location_id' => $this->homeLocationId(),
+            'work_locations' => $this->workLocations()
+                ->map(fn (Location $location) => [
+                    'id' => (int) $location->id,
+                    'name' => $location->name,
+                    'slug' => $location->slug,
+                    'city' => $location->city,
+                    'state' => $location->state,
+                ])
+                ->all(),
+        ];
+    }
+
+    public function forgetWorkLocations(): void
+    {
+        $this->workLocationIdsMemo = null;
+    }
+
     public function mobilePushDevices()
     {
         return $this->hasMany(MobilePushDevice::class);
@@ -117,5 +241,20 @@ class User extends Authenticatable
     public function scopeByLocation($query, $locationId)
     {
         return $query->where('location_id', $locationId);
+    }
+
+    public function scopeWorkingAt($query, $locationId)
+    {
+        if (! self::tracksWorkLocations()) {
+            return $query->where('users.location_id', $locationId);
+        }
+
+        return $query->where(function ($staff) use ($locationId) {
+            $staff->where('users.location_id', $locationId)
+                ->orWhere(function ($manager) use ($locationId) {
+                    $manager->where('users.role', self::MULTI_LOCATION_ROLE)
+                        ->whereHas('locations', fn ($location) => $location->where('locations.id', $locationId));
+                });
+        });
     }
 }

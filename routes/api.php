@@ -254,7 +254,11 @@ Route::prefix('staff-pin')->group(function () {
 
 Route::middleware('auth:sanctum')->group(function () {
     Route::get('/user', function (Request $request) {
-        return $request->user();
+        $user = $request->user();
+
+        return $user instanceof \App\Models\User
+            ? array_merge($user->toArray(), $user->locationAccessPayload())
+            : $user;
     });
 
     Route::post('logout', [ApiAuthController::class, 'logout']); // include
@@ -263,6 +267,9 @@ Route::middleware('auth:sanctum')->group(function () {
     // scoping for a non-staff principal, so these need the fail-closed staff gate.
     Route::middleware('staff')->group(function () {
         Route::get('targeting-options', [\App\Http\Controllers\Api\TargetingOptionController::class, 'index']);
+
+        Route::get('staff-locations', [\App\Http\Controllers\Api\StaffLocationController::class, 'index']);
+        Route::put('staff-locations/active', [\App\Http\Controllers\Api\StaffLocationController::class, 'activate']);
 
         // A manager's PIN approves a booking that overlaps something already in the space. Any
         // staff member may ASK (they are standing at the desk with the manager); only a manager's

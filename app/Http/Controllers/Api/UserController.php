@@ -29,7 +29,7 @@ class UserController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        $query = User::with(['company', 'location']);
+        $query = User::with($this->userRelations());
         $authUser = $request->user();
 
         if ($authUser) {
@@ -147,6 +147,19 @@ class UserController extends Controller
             }
         }
 
+        $workLocations = $this->requestedWorkLocations(
+            $request,
+            $staff,
+            null,
+            (string) $validated['role'],
+            !empty($validated['company_id']) ? (int) $validated['company_id'] : null,
+            !empty($validated['location_id']) ? (int) $validated['location_id'] : null
+        );
+
+        if ($workLocations instanceof JsonResponse) {
+            return $workLocations;
+        }
+
         try {
             $validated['profile_path'] = $this->normalizeProfilePath($validated['profile_path'] ?? null);
         } catch (\InvalidArgumentException $e) {
@@ -177,7 +190,8 @@ class UserController extends Controller
             return $user;
         });
 
-        $user->load(['company', 'location']);
+        $this->applyWorkLocations($user, $workLocations);
+        $user->load($this->userRelations());
 
         ActivityLog::log(
             action: 'User Created',
@@ -323,6 +337,99 @@ class UserController extends Controller
         }
 
         return null;
+    }
+
+    private function requestedWorkLocations(Request $request, ?User $actor, ?User $target, string $role, ?int $companyId, ?int $homeLocationId): array|JsonResponse|null
+    {
+        if (!$request->has('location_ids')) {
+            return null;
+        }
+
+        if (!User::tracksWorkLocations()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Managers cannot be given more than one location until the database update has run.',
+            ], 503);
+        }
+
+        $request->validate([
+            'location_ids' => 'present|nullable|array|max:100',
+            'location_ids.*' => 'integer|distinct',
+        ]);
+
+        $withoutHome = fn ($ids) => collect($ids)
+            ->map(fn ($id) => (int) $id)
+            ->filter(fn (int $id) => $id > 0 && $id !== $homeLocationId)
+            ->unique()
+            ->sort()
+            ->values()
+            ->all();
+
+        $extras = $withoutHome($request->input('location_ids') ?? []);
+        $current = $target ? $withoutHome($target->locations()->pluck('locations.id')) : [];
+
+        if ($extras === $current) {
+            return $extras;
+        }
+
+        if (!$actor || $actor->role !== 'company_admin') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Forbidden: only a company admin can choose which locations a manager can access',
+            ], 403);
+        }
+
+        if ($extras !== [] && $role !== User::MULTI_LOCATION_ROLE) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only location managers can be given more than one location.',
+                'errors' => ['location_ids' => ['Only location managers can be given more than one location.']],
+            ], 422);
+        }
+
+        if ($extras !== [] && $homeLocationId === null) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Choose a home location before adding more locations.',
+                'errors' => ['location_id' => ['Choose a home location before adding more locations.']],
+            ], 422);
+        }
+
+        if ($extras !== []) {
+            $found = Location::whereIn('id', $extras)
+                ->when($companyId, fn ($query) => $query->where('company_id', $companyId))
+                ->count();
+
+            if ($found !== count($extras)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'One or more of the selected locations does not belong to this company.',
+                    'errors' => ['location_ids' => ['One or more of the selected locations does not belong to this company.']],
+                ], 422);
+            }
+        }
+
+        return $extras;
+    }
+
+    private function userRelations(): array
+    {
+        return User::tracksWorkLocations() ? ['company', 'location', 'locations'] : ['company', 'location'];
+    }
+
+    private function applyWorkLocations(User $user, ?array $extras): void
+    {
+        if (!User::tracksWorkLocations()) {
+            return;
+        }
+
+        if ((string) $user->role !== User::MULTI_LOCATION_ROLE) {
+            $user->locations()->detach();
+        } elseif ($extras !== null) {
+            $user->locations()->sync($extras);
+        }
+
+        $user->forgetWorkLocations();
     }
 
     private function guardStaffCreate(User $staff, array &$validated): ?JsonResponse
@@ -493,7 +600,7 @@ class UserController extends Controller
             return $denied;
         }
 
-        $user->load(['company', 'location']);
+        $user->load($this->userRelations());
 
         return response()->json([
             'success' => true,
@@ -530,6 +637,21 @@ class UserController extends Controller
             return $denied;
         }
 
+        $homeLocationId = array_key_exists('location_id', $validated) ? $validated['location_id'] : $user->location_id;
+        $companyId = array_key_exists('company_id', $validated) ? $validated['company_id'] : $user->company_id;
+        $workLocations = $this->requestedWorkLocations(
+            $request,
+            $this->resolveStaffUser($request),
+            $user,
+            (string) ($validated['role'] ?? $user->role),
+            $companyId !== null ? (int) $companyId : null,
+            $homeLocationId !== null ? (int) $homeLocationId : null
+        );
+
+        if ($workLocations instanceof JsonResponse) {
+            return $workLocations;
+        }
+
         if (isset($validated['password'])) {
             $validated['password'] = Hash::make($validated['password']);
         }
@@ -546,7 +668,8 @@ class UserController extends Controller
         }
 
         $user->update($validated);
-        $user->load(['company', 'location']);
+        $this->applyWorkLocations($user, $workLocations);
+        $user->load($this->userRelations());
 
         $currentUser = auth()->user();
         ActivityLog::log(
@@ -565,6 +688,7 @@ class UserController extends Controller
                 ],
                 'updated_at' => now()->toIso8601String(),
                 'updated_fields' => array_keys($validated),
+                'work_location_ids' => $workLocations,
                 'user_details' => [
                     'user_id' => $user->id,
                     'name' => $user->first_name . ' ' . $user->last_name,
@@ -957,6 +1081,19 @@ class UserController extends Controller
             }
         }
 
+        $workLocations = $this->requestedWorkLocations(
+            $request,
+            $authUser,
+            null,
+            (string) $validated['role'],
+            $authUser->company_id !== null ? (int) $authUser->company_id : null,
+            !empty($validated['location_id']) ? (int) $validated['location_id'] : null
+        );
+
+        if ($workLocations instanceof JsonResponse) {
+            return $workLocations;
+        }
+
         $passwordMode = $validated['password_mode'] ?? (empty($validated['password']) ? 'generate' : 'custom');
         $plainPassword = $passwordMode === 'generate'
             ? $this->generateStrongPassword(12)
@@ -981,7 +1118,8 @@ class UserController extends Controller
         ];
 
         $user = User::create($payload);
-        $user->load(['company', 'location']);
+        $this->applyWorkLocations($user, $workLocations);
+        $user->load($this->userRelations());
 
         ActivityLog::log(
             action: 'Staff Account Created',

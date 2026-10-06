@@ -401,7 +401,7 @@ class SmsNotificationService
             return [];
         }
 
-        return User::where('location_id', $locationId)
+        return User::workingAt($locationId)
             ->whereIn('role', $roles)
             ->where('status', 'active')
             ->whereNotNull('phone')

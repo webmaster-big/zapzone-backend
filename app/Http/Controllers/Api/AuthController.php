@@ -178,7 +178,7 @@ class AuthController extends RoutingController
     protected function createTokenResponse($user, $type)
     {
         return response()->json([
-            'user'  => $user,
+            'user'  => $user instanceof User ? array_merge($user->toArray(), $user->locationAccessPayload()) : $user,
             'role'  => $type,
             'token' => $user->createToken($user->email)->plainTextToken,
         ]);

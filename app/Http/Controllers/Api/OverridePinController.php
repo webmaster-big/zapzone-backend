@@ -213,7 +213,7 @@ class OverridePinController extends Controller
                 ->whereNotNull('pin_hash')
                 ->where(function ($query) use ($locationId) {
                     $query->whereIn('role', ['company_admin', 'admin'])
-                        ->orWhere('location_id', $locationId);
+                        ->orWhere(fn ($staff) => $staff->workingAt($locationId));
                 })
                 ->exists();
         } catch (\Throwable $e) {
@@ -257,7 +257,7 @@ class OverridePinController extends Controller
             ->where('status', 'active')
             ->where(function ($query) use ($locationId) {
                 $query->whereIn('role', ['company_admin', 'admin'])
-                    ->orWhere('location_id', $locationId);
+                    ->orWhere(fn ($staff) => $staff->workingAt($locationId));
             })
             ->get();
     }
