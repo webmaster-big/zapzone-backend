@@ -6,6 +6,7 @@ use App\Models\Attraction;
 use App\Models\AttractionPurchase;
 use App\Models\Booking;
 use App\Models\Company;
+use App\Models\Customer;
 use App\Models\Location;
 use App\Models\Package;
 use App\Models\PackageAvailabilitySchedule;
@@ -13,6 +14,7 @@ use App\Models\Room;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Routing\Middleware\ThrottleRequests;
+use Illuminate\Support\Facades\Hash;
 use Tests\TestCase;
 
 class LiveFeedsTest extends TestCase
@@ -117,54 +119,70 @@ class LiveFeedsTest extends TestCase
         $this->assertCount(1, $this->dataFrames($body));
     }
 
-    public function test_a_fresh_notification_feed_sends_nothing_old_and_finishes_at_once(): void
+    public function test_the_live_feed_needs_a_staff_login(): void
+    {
+        $this->getJson('/api/notifications/live')->assertUnauthorized();
+
+        $customer = Customer::create([
+            'first_name' => 'Pat',
+            'last_name' => 'Guest',
+            'email' => 'pat@example.com',
+            'phone' => '7345550000',
+            'password' => Hash::make('secret-password'),
+            'status' => 'active',
+        ]);
+        $token = $customer->createToken('customer')->plainTextToken;
+        $this->app['auth']->forgetGuards();
+        $this->withHeader('Authorization', "Bearer {$token}")->getJson('/api/notifications/live')->assertForbidden();
+        $this->flushHeaders();
+        $this->app['auth']->forgetGuards();
+
+        $this->getJson('/api/stream/notifications')->assertNotFound();
+        $this->getJson('/api/stream/bookings')->assertNotFound();
+        $this->getJson('/api/stream/attraction-purchases')->assertNotFound();
+    }
+
+    public function test_a_fresh_live_feed_sends_nothing_old(): void
     {
         $this->book('11:00');
         $this->book('13:00');
-        $latest = Booking::withTrashed()->max('id');
 
-        $response = $this->get("/api/stream/notifications?location_id={$this->location->id}");
-        $startedAt = microtime(true);
-        $body = $response->streamedContent();
-        $elapsed = microtime(true) - $startedAt;
+        $this->actingAs($this->staff('company_admin'), 'sanctum');
+        $feed = $this->live(['location_id' => $this->location->id]);
 
-        $response->assertOk();
-        $this->assertStringStartsWith("retry: 20000\n\n", $body);
-        $this->assertSame([], $this->notificationEvents($body));
-        $this->assertSame("b{$latest}.p0", $this->cursorOf($body));
-        $this->assertLessThan(3.0, $elapsed);
+        $this->assertSame([], $feed['items']);
+        $this->assertSame('b' . Booking::withTrashed()->max('id') . '.p0', $feed['cursor']);
     }
 
-    public function test_the_notification_feed_sends_only_what_arrived_after_the_cursor_and_only_once(): void
+    public function test_the_live_feed_sends_only_what_arrived_after_the_cursor_and_only_once(): void
     {
         $this->book('11:00');
-        $cursor = $this->cursorOf($this->get("/api/stream/notifications?location_id={$this->location->id}")->streamedContent());
+        $this->actingAs($this->staff('company_admin'), 'sanctum');
+        $cursor = $this->live(['location_id' => $this->location->id])['cursor'];
 
         $new = $this->book('13:00');
         $elsewhere = $this->makePackage($this->otherLocation, 'Canton Party');
         $this->book('15:00', ['package_id' => $elsewhere->id, 'location_id' => $this->otherLocation->id, 'room_id' => null]);
         $newTickets = $this->buyTickets($this->attractionHere(), 'new.tickets@example.com');
 
-        $body = $this->get("/api/stream/notifications?location_id={$this->location->id}", ['Last-Event-ID' => $cursor])->streamedContent();
-        $events = $this->notificationEvents($body);
+        $feed = $this->live(['location_id' => $this->location->id, 'after' => $cursor]);
 
         $this->assertSame(
             [['booking', $new->id], ['attraction_purchase', $newTickets->id]],
-            array_map(fn (array $event) => [$event['type'], $event['id']], $events)
+            array_map(fn (array $item) => [$item['type'], $item['id']], $feed['items'])
         );
         $this->assertSame(
-            ['id', 'type', 'reference_number', 'customer_name', 'package_name', 'location_name', 'booking_date', 'booking_time', 'status', 'total_amount', 'created_at', 'timestamp', 'user_id'],
-            array_keys($events[0])
+            ['id', 'type', 'reference_number', 'customer_name', 'package_name', 'location_name', 'booking_date', 'booking_time', 'status', 'total_amount', 'created_at', 'timestamp', 'user_id', 'location_id'],
+            array_keys($feed['items'][0])
         );
-        $this->assertSame($new->reference_number, $events[0]['reference_number']);
-        $this->assertSame('Arcade Party', $events[0]['package_name']);
-        $this->assertSame('Laser Tag', $events[1]['attraction_name']);
+        $this->assertSame($new->reference_number, $feed['items'][0]['reference_number']);
+        $this->assertSame('Arcade Party', $feed['items'][0]['package_name']);
+        $this->assertSame($this->location->id, $feed['items'][0]['location_id']);
+        $this->assertSame('Laser Tag', $feed['items'][1]['attraction_name']);
+        $this->assertSame($this->location->id, $feed['items'][1]['location_id']);
 
-        $next = $this->cursorOf($body);
-        $this->assertSame("b{$new->id}.p{$newTickets->id}", $next);
-        $this->assertSame([], $this->notificationEvents(
-            $this->get("/api/stream/notifications?location_id={$this->location->id}", ['Last-Event-ID' => $next])->streamedContent()
-        ));
+        $this->assertSame("b{$new->id}.p{$newTickets->id}", $feed['cursor']);
+        $this->assertSame([], $this->live(['location_id' => $this->location->id, 'after' => $feed['cursor']])['items']);
     }
 
     public function test_a_far_behind_cursor_only_catches_up_on_the_newest_twenty(): void
@@ -177,68 +195,112 @@ class LiveFeedsTest extends TestCase
             ])->id;
         }
 
-        $events = $this->notificationEvents(
-            $this->get("/api/stream/notifications?location_id={$this->location->id}", ['Last-Event-ID' => 'b0.p0'])->streamedContent()
-        );
+        $this->actingAs($this->staff('company_admin'), 'sanctum');
+        $feed = $this->live(['location_id' => $this->location->id, 'after' => 'b0.p0']);
 
-        $this->assertSame(array_slice($ids, -20), array_column($events, 'id'));
+        $this->assertSame(array_slice($ids, -20), array_column($feed['items'], 'id'));
     }
 
-    public function test_an_unrecognised_cursor_is_treated_as_a_fresh_connection(): void
+    public function test_an_unrecognised_cursor_is_treated_as_a_fresh_start(): void
     {
         $this->book('11:00');
+        $this->actingAs($this->staff('company_admin'), 'sanctum');
 
-        foreach (['booking_1', 'purchase_7', 'b1.p', 'garbage', 'b99999999999999999999999.p1'] as $header) {
-            $body = $this->get("/api/stream/notifications?location_id={$this->location->id}", ['Last-Event-ID' => $header])->streamedContent();
+        foreach (['booking_1', 'purchase_7', 'b1.p', 'garbage', 'b99999999999999999999999.p1', ['b0.p0']] as $after) {
+            $feed = $this->live(['location_id' => $this->location->id, 'after' => $after]);
 
-            $this->assertSame([], $this->notificationEvents($body), $header);
-            $this->assertSame('b' . Booking::withTrashed()->max('id') . '.p0', $this->cursorOf($body), $header);
+            $this->assertSame([], $feed['items'], json_encode($after));
+            $this->assertSame('b' . Booking::withTrashed()->max('id') . '.p0', $feed['cursor'], json_encode($after));
         }
     }
 
-    public function test_the_notification_feed_leaves_out_the_viewers_own_bookings_when_asked(): void
+    public function test_a_location_manager_only_ever_sees_their_own_location(): void
     {
-        $staff = User::create([
-            'first_name' => 'Front',
-            'last_name' => 'Desk',
-            'email' => 'desk@zapzone.test',
-            'password' => bcrypt('secret-password'),
-            'role' => 'location_manager',
-            'company_id' => $this->company->id,
-            'location_id' => $this->location->id,
-        ]);
+        $cursor = 'b' . (int) Booking::withTrashed()->max('id') . '.p0';
+        $here = $this->book('11:00');
+        $elsewhere = $this->makePackage($this->otherLocation, 'Canton Party');
+        $this->book('13:00', ['package_id' => $elsewhere->id, 'location_id' => $this->otherLocation->id, 'room_id' => null]);
+        $ticketsHere = $this->buyTickets($this->attractionHere(), 'here.tickets@example.com');
+        $this->buyTickets($this->attractionAt($this->otherLocation), 'canton.tickets@example.com');
 
-        $this->actingAs($staff, 'sanctum');
-        $own = $this->book('11:00', ['payment_method' => 'in-store', 'amount_paid' => 30, 'created_by' => $staff->id]);
-        $this->app['auth']->forgetGuards();
-        $guest = $this->book('13:00');
+        $this->actingAs($this->staff('location_manager'), 'sanctum');
 
-        $this->assertSame($staff->id, (int) $own->created_by);
-
-        $events = $this->notificationEvents(
-            $this->get("/api/stream/notifications?location_id={$this->location->id}&user_id={$staff->id}", ['Last-Event-ID' => 'b' . ($own->id - 1) . '.p0'])->streamedContent()
+        $this->assertSame(
+            [['booking', $here->id], ['attraction_purchase', $ticketsHere->id]],
+            array_map(fn (array $item) => [$item['type'], $item['id']], $this->live(['after' => $cursor])['items'])
         );
-
-        $this->assertSame([$guest->id], array_column($events, 'id'));
+        $this->assertSame([], $this->live(['location_id' => $this->otherLocation->id, 'after' => $cursor])['items']);
     }
 
-    public function test_the_notification_feed_without_a_location_covers_every_location(): void
+    public function test_a_manager_covering_two_locations_sees_only_the_one_they_are_working_in(): void
     {
-        $cursor = $this->cursorOf($this->get('/api/stream/notifications')->streamedContent());
+        $manager = $this->staff('location_manager');
+        $manager->locations()->sync([$this->otherLocation->id]);
+        $token = $manager->createToken('test')->plainTextToken;
 
+        $cursor = 'b' . (int) Booking::withTrashed()->max('id') . '.p0';
         $elsewhere = $this->makePackage($this->otherLocation, 'Canton Party');
         $here = $this->book('11:00');
         $there = $this->book('13:00', ['package_id' => $elsewhere->id, 'location_id' => $this->otherLocation->id, 'room_id' => null]);
 
-        $events = $this->notificationEvents($this->get('/api/stream/notifications', ['Last-Event-ID' => $cursor])->streamedContent());
+        $poll = function (int $locationId) use ($token, $cursor): array {
+            $this->app['auth']->forgetGuards();
 
-        $this->assertSame([$here->id, $there->id], array_column($events, 'id'));
+            return $this->withHeaders(['Authorization' => "Bearer {$token}", 'Accept' => 'application/json'])
+                ->getJson('/api/notifications/live?' . http_build_query(['location_id' => $locationId, 'after' => $cursor]))
+                ->assertOk()
+                ->json('data.items');
+        };
+
+        $this->assertSame([$here->id], array_column($poll($this->location->id), 'id'));
+        $this->assertSame([], $poll($this->otherLocation->id));
+
+        $this->app['auth']->forgetGuards();
+        $this->withHeaders(['Authorization' => "Bearer {$token}", 'Accept' => 'application/json'])
+            ->putJson('/api/staff-locations/active', ['location_id' => $this->otherLocation->id])
+            ->assertOk();
+
+        $this->assertSame([$there->id], array_column($poll($this->otherLocation->id), 'id'));
+        $this->assertSame([], $poll($this->location->id));
     }
 
-    public function test_the_unused_stream_routes_are_gone(): void
+    public function test_a_company_admin_sees_every_company_location_but_never_another_company(): void
     {
-        $this->get('/api/stream/bookings')->assertNotFound();
-        $this->get('/api/stream/attraction-purchases')->assertNotFound();
+        $cursor = 'b' . (int) Booking::withTrashed()->max('id') . '.p0';
+        $elsewhere = $this->makePackage($this->otherLocation, 'Canton Party');
+        $here = $this->book('11:00');
+        $there = $this->book('13:00', ['package_id' => $elsewhere->id, 'location_id' => $this->otherLocation->id, 'room_id' => null]);
+
+        $rivalCompany = Company::create([
+            'company_name' => 'Other Arcade',
+            'email' => 'owner@other.test',
+            'phone' => '5559990000',
+            'address' => '9 Elsewhere Rd',
+        ]);
+        $rivalLocation = Location::create([
+            'company_id' => $rivalCompany->id,
+            'name' => 'Rival | Arcade',
+            'address' => '9 Elsewhere Rd',
+            'city' => 'Lansing',
+            'state' => 'MI',
+            'zip_code' => '48901',
+            'phone' => '5175550000',
+            'email' => 'rival@other.test',
+            'timezone' => 'America/Detroit',
+            'is_active' => true,
+        ]);
+        $rivalPackage = $this->makePackage($rivalLocation, 'Rival Party');
+        $this->book('15:00', ['package_id' => $rivalPackage->id, 'location_id' => $rivalLocation->id, 'room_id' => null]);
+        $ticketsThere = $this->buyTickets($this->attractionAt($this->otherLocation), 'canton.tickets@example.com');
+        $this->buyTickets($this->attractionAt($rivalLocation), 'rival.tickets@example.com');
+
+        $this->actingAs($this->staff('company_admin'), 'sanctum');
+
+        $this->assertSame(
+            [['booking', $here->id], ['booking', $there->id], ['attraction_purchase', $ticketsThere->id]],
+            array_map(fn (array $item) => [$item['type'], $item['id']], $this->live(['after' => $cursor])['items'])
+        );
+        $this->assertSame([], $this->live(['location_id' => $rivalLocation->id, 'after' => $cursor])['items']);
     }
 
     private function makeLocation(string $name, string $email): Location
@@ -329,10 +391,38 @@ class LiveFeedsTest extends TestCase
         return AttractionPurchase::findOrFail($id);
     }
 
+    private function staff(string $role): User
+    {
+        return User::create([
+            'first_name' => 'Front',
+            'last_name' => 'Desk',
+            'email' => $role . '.' . uniqid() . '@zapzone.test',
+            'password' => bcrypt('secret-password'),
+            'role' => $role,
+            'company_id' => $this->company->id,
+            'location_id' => $this->location->id,
+        ]);
+    }
+
+    private function live(array $query): array
+    {
+        $this->freshControllers();
+
+        return $this->getJson('/api/notifications/live?' . http_build_query($query))
+            ->assertOk()
+            ->assertJsonPath('success', true)
+            ->json('data');
+    }
+
     private function attractionHere(): Attraction
     {
+        return $this->attractionAt($this->location);
+    }
+
+    private function attractionAt(Location $location): Attraction
+    {
         return Attraction::create([
-            'location_id' => $this->location->id,
+            'location_id' => $location->id,
             'name' => 'Laser Tag',
             'description' => 'Tag',
             'category' => 'Activities',
@@ -341,19 +431,6 @@ class LiveFeedsTest extends TestCase
             'max_capacity' => 20,
             'status' => 'active',
         ]);
-    }
-
-    private function cursorOf(string $body): ?string
-    {
-        $cursor = null;
-
-        foreach (explode("\n", $body) as $line) {
-            if (str_starts_with($line, 'id: ')) {
-                $cursor = substr($line, 4);
-            }
-        }
-
-        return $cursor;
     }
 
     private function freshControllers(): void
@@ -381,13 +458,5 @@ class LiveFeedsTest extends TestCase
         }
 
         return $frames;
-    }
-
-    private function notificationEvents(string $body): array
-    {
-        return array_values(array_map(
-            fn (string $frame) => $this->dataFrames($frame)[0],
-            array_filter($this->frames($body), fn (string $frame) => in_array('event: notification', explode("\n", $frame), true))
-        ));
     }
 }
