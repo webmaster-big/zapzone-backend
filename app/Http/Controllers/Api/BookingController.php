@@ -136,26 +136,32 @@ class BookingController extends Controller
     public function index(Request $request): JsonResponse
     {
         try {
-            $query = Booking::select([
+            $staffRequester = app(\App\Services\AddOnRuleService::class)->isStaff($request->user('sanctum'));
+
+            $query = Booking::select(array_merge([
                     'id', 'reference_number', 'customer_id', 'package_id', 'location_id', 'room_id',
                     'created_by', 'guest_name', 'guest_email', 'guest_phone', 'booking_date', 'booking_time',
                     'participants', 'duration', 'duration_unit', 'total_amount', 'amount_paid',
-                    'discount_amount', 'applied_fees', 'applied_discounts', 'payment_method', 'payment_status', 'status', 'notes', 'internal_notes',
+                    'discount_amount', 'applied_fees', 'applied_discounts', 'payment_method', 'payment_status', 'status', 'notes',
                     'special_requests', 'transaction_id',
                     'guest_address', 'guest_city', 'guest_state', 'guest_zip', 'guest_country',
                     'guest_of_honor_name', 'guest_of_honor_age', 'guest_of_honor_gender', 'checked_in_at', 'created_at', 'updated_at'
-                ])
+                ], $staffRequester ? ['internal_notes'] : []))
                 ->with([
                     'customer:id,first_name,last_name,email,phone',
                     'package:id,name,price,category,display_label' . (\App\Models\Package::supportsEscapeRoomFlag() ? ',is_escape_room' : ''),
                     'location:id,name',
                     'room:id,name',
-                    'creator:id,first_name,last_name,email',
+                    $staffRequester ? 'creator:id,first_name,last_name,email' : 'creator:id,first_name,last_name',
                     'attractions:id,name,price',  // BelongsToMany - pivot data loaded automatically
                     'addOns:id,name',       // BelongsToMany - pivot data loaded automatically
                     'customFieldResponses:id,respondable_type,respondable_id,label,value',
                     'payments:id,payable_id,payable_type,status,method,card_last_four,card_type,amount,currency,paid_at,created_at',
                 ]);
+
+            if ($refusal = $this->limitListingToRequester($query, $request)) {
+                return $refusal;
+            }
 
             $this->applyAuthScope($query, $request);
 

@@ -21,9 +21,16 @@ class PackageTimeSlotController extends Controller
 
     private const SLOTS_RECONNECT_AFTER_MS = 30000;
 
+    private function slotRelationsFor(Request $request): array
+    {
+        return app(\App\Services\AddOnRuleService::class)->isStaff($request->user('sanctum'))
+            ? ['package', 'room', 'booking', 'customer', 'user']
+            : ['package', 'room'];
+    }
+
     public function index(Request $request): JsonResponse
     {
-        $query = PackageTimeSlot::with(['package', 'room', 'booking', 'customer', 'user']);
+        $query = PackageTimeSlot::with($this->slotRelationsFor($request));
 
         $authUser = $this->resolveAuthUser($request);
         if ($authUser) {
@@ -54,11 +61,11 @@ class PackageTimeSlotController extends Controller
             $query->where('status', $request->status);
         }
 
-        $sortBy = $request->get('sort_by', 'booked_date');
-        $sortOrder = $request->get('sort_order', 'asc');
+        $sortBy = in_array($request->get('sort_by'), ['booked_date', 'time_slot_start', 'created_at', 'id'], true) ? $request->get('sort_by') : 'booked_date';
+        $sortOrder = strtolower((string) $request->get('sort_order', 'asc')) === 'desc' ? 'desc' : 'asc';
         $query->orderBy($sortBy, $sortOrder);
 
-        $perPage = $request->get('per_page', 15);
+        $perPage = max(1, min((int) $request->get('per_page', 15), 100));
         $timeSlots = $query->paginate($perPage);
 
         return response()->json([
@@ -120,7 +127,7 @@ class PackageTimeSlotController extends Controller
         }
 
         $timeSlot = PackageTimeSlot::create($validated);
-        $timeSlot->load(['package', 'room', 'booking', 'customer']);
+        $timeSlot->load(array_values(array_diff($this->slotRelationsFor($request), ['user'])));
 
         return response()->json([
             'success' => true,
@@ -129,9 +136,9 @@ class PackageTimeSlotController extends Controller
         ], 201);
     }
 
-    public function show(PackageTimeSlot $packageTimeSlot): JsonResponse
+    public function show(Request $request, PackageTimeSlot $packageTimeSlot): JsonResponse
     {
-        $packageTimeSlot->load(['package', 'room', 'booking', 'customer', 'user']);
+        $packageTimeSlot->load($this->slotRelationsFor($request));
 
         return response()->json([
             'success' => true,

@@ -1497,6 +1497,85 @@ class CheckoutChargeSafetyTest extends TestCase
         $this->assertSame([], $this->getJson('/api/event-purchases/customer?guest_email=someone@example.com')->assertOk()->json('data.purchases'));
     }
 
+    public function test_the_main_booking_list_shows_a_customer_only_their_own_bookings(): void
+    {
+        $mine = $this->createBooking($this->roomOne, ['guest_email' => 'pat@example.com', 'guest_name' => 'Pat Customer']);
+        $theirs = $this->createBooking($this->roomTwo, ['guest_email' => 'someone@example.com', 'guest_name' => 'Someone Else']);
+        $staff = $this->staff();
+        Booking::whereKey($mine)->update(['created_by' => $staff->id]);
+        \Illuminate\Support\Facades\DB::table('bookings')->where('id', $mine)->update(['internal_notes' => 'Desk only: allergy']);
+
+        $this->getJson('/api/bookings')->assertStatus(401);
+
+        $this->withHeader('Authorization', 'Bearer ' . $this->customer('pat@example.com')->createToken('portal')->plainTextToken);
+
+        $rows = $this->getJson('/api/bookings?per_page=100')->assertOk()->json('data.bookings');
+        $this->assertSame([$mine], collect($rows)->pluck('id')->all());
+        $this->assertArrayNotHasKey('internal_notes', $rows[0], 'desk notes never reach a guest');
+        $this->assertArrayNotHasKey('email', $rows[0]['creator'], 'a staff member\'s email never reaches a guest');
+        $this->assertSame([$mine], collect($this->getJson("/api/bookings?per_page=100&user_id={$staff->id}")->assertOk()->json('data.bookings'))->pluck('id')->all(), 'naming a staff member does not widen the list');
+        $this->assertSame([], $this->getJson('/api/bookings?per_page=100&search=someone')->assertOk()->json('data.bookings'));
+
+        $this->getJson('/api/bookings/search?query=Someone')->assertForbidden();
+        $this->getJson('/api/bookings/location-date?location_id=' . $this->location->id . '&date=' . now()->toDateString())->assertForbidden();
+        $this->getJson('/api/bookings/summaries/day/' . now()->toDateString())->assertForbidden();
+        $this->getJson('/api/bookings/summaries/week')->assertForbidden();
+
+        $this->app['auth']->forgetGuards();
+        $this->flushHeaders();
+        $this->actingAs($staff, 'sanctum');
+
+        $staffRows = collect($this->getJson('/api/bookings?per_page=100')->assertOk()->json('data.bookings'))->keyBy('id');
+        $this->assertEqualsCanonicalizing([$mine, $theirs], $staffRows->keys()->all());
+        $this->assertSame('Desk only: allergy', $staffRows[$mine]['internal_notes']);
+        $this->assertSame($staff->email, $staffRows[$mine]['creator']['email']);
+        $this->getJson('/api/bookings/search?query=Someone')->assertOk();
+        $this->getJson('/api/bookings/location-date?location_id=' . $this->location->id . '&date=' . now()->toDateString())->assertOk();
+    }
+
+    public function test_public_catalog_and_slot_lists_never_carry_guest_bookings(): void
+    {
+        $bookingId = $this->createBooking($this->roomOne, ['guest_email' => 'pat@example.com', 'guest_name' => 'Pat Customer']);
+        \Illuminate\Support\Facades\DB::table('bookings')->where('id', $bookingId)->update(['internal_notes' => 'Desk only: allergy']);
+        $attraction = Attraction::create([
+            'location_id' => $this->location->id,
+            'name' => 'Axe Throwing',
+            'description' => 'Throw axes',
+            'category' => 'Activities',
+            'price' => 20,
+            'duration' => 30,
+            'max_capacity' => 20,
+            'status' => 'active',
+        ]);
+        \App\Models\BookingAttraction::create(['booking_id' => $bookingId, 'attraction_id' => $attraction->id, 'quantity' => 1, 'price_at_booking' => 20]);
+        $event = $this->glowNight();
+        $this->postJson('/api/event-purchases', $this->eventPurchasePayload($event, 'someone@example.com'))->assertSuccessful();
+
+        $this->assertArrayNotHasKey('bookings', $this->getJson("/api/attractions/{$attraction->id}")->assertOk()->json('data'));
+        $this->assertArrayNotHasKey('event_purchases', $this->getJson("/api/events/{$event->id}")->assertOk()->json());
+
+        $slots = $this->getJson('/api/package-time-slots?per_page=-1')->assertOk()->json('data.time_slots');
+        $this->assertCount(1, $slots);
+        foreach (['booking', 'customer', 'user'] as $private) {
+            $this->assertArrayNotHasKey($private, $slots[0]);
+        }
+        $this->assertArrayNotHasKey('booking', $this->getJson('/api/package-time-slots/' . $slots[0]['id'])->assertOk()->json('data'));
+        $this->assertStringNotContainsString('Desk only', $this->getJson('/api/package-time-slots?per_page=100')->getContent());
+
+        $this->withHeader('Authorization', 'Bearer ' . $this->customer('pat@example.com')->createToken('portal')->plainTextToken);
+        $this->getJson('/api/payments/invoices/day/' . now()->toDateString())->assertForbidden();
+        $this->getJson('/api/payments/invoices/week')->assertForbidden();
+        $this->getJson('/api/payments/invoices/report')->assertForbidden();
+        $this->getJson('/api/payments/trashed')->assertForbidden();
+        $this->getJson('/api/accounting-analytics/report')->assertForbidden();
+        $this->postJson('/api/analytics/location/export', ['location_id' => $this->location->id])->assertForbidden();
+
+        $this->app['auth']->forgetGuards();
+        $this->flushHeaders();
+        $this->actingAs($this->staff(), 'sanctum');
+        $this->assertArrayHasKey('booking', $this->getJson('/api/package-time-slots?per_page=100')->assertOk()->json('data.time_slots.0'));
+    }
+
     public function test_staff_can_still_look_any_guest_up_in_the_customer_lists(): void
     {
         $theirs = $this->createBooking($this->roomTwo, ['guest_email' => 'someone@example.com', 'guest_name' => 'Someone Else']);

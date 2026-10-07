@@ -315,14 +315,14 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('metrics/attendant', [MetricsController::class, 'attendant'])->middleware('staff');
 
     Route::get('analytics/company', [AnalyticsController::class, 'getCompanyAnalytics'])->middleware('staff');
-    Route::post('analytics/company/export', [AnalyticsController::class, 'exportAnalytics']);
+    Route::post('analytics/company/export', [AnalyticsController::class, 'exportAnalytics'])->middleware('staff');
 
     Route::get('analytics/location', [AnalyticsController::class, 'getLocationAnalytics'])->middleware('staff');
-    Route::post('analytics/location/export', [AnalyticsController::class, 'exportAnalytics']);
+    Route::post('analytics/location/export', [AnalyticsController::class, 'exportAnalytics'])->middleware('staff');
 
-    Route::get('accounting-analytics/report', [AccountingAnalyticsController::class, 'getReport']);
-    Route::get('accounting-analytics/summary-trend', [AccountingAnalyticsController::class, 'getSummaryTrend']);
-    Route::get('accounting-analytics/export', [AccountingAnalyticsController::class, 'exportReport']);
+    Route::get('accounting-analytics/report', [AccountingAnalyticsController::class, 'getReport'])->middleware('staff');
+    Route::get('accounting-analytics/summary-trend', [AccountingAnalyticsController::class, 'getSummaryTrend'])->middleware('staff');
+    Route::get('accounting-analytics/export', [AccountingAnalyticsController::class, 'exportReport'])->middleware('staff');
 
     Route::get('page-analytics/overview',          [PageAnalyticsController::class, 'overview']);
     Route::get('page-analytics/timeseries',        [PageAnalyticsController::class, 'timeseries']);
@@ -565,12 +565,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('bookings/details-report', [BookingController::class, 'bookingDetailsReport'])->middleware('staff');
 
     Route::get('bookings/summaries/export', [BookingController::class, 'summariesExport'])->middleware('staff');
-    Route::get('bookings/summaries/day/{date}', [BookingController::class, 'summariesDay']);
-    Route::get('bookings/summaries/week/{week?}', [BookingController::class, 'summariesWeek']);
+    Route::get('bookings/summaries/day/{date}', [BookingController::class, 'summariesDay'])->middleware('staff');
+    Route::get('bookings/summaries/week/{week?}', [BookingController::class, 'summariesWeek'])->middleware('staff');
 
     Route::get('bookings/trashed', [BookingController::class, 'trashed'])->middleware('staff');
-    Route::get('bookings/location-date', [BookingController::class, 'getByLocationAndDate']);
-    Route::get('bookings/search', [BookingController::class, 'search']);
+    Route::get('bookings/location-date', [BookingController::class, 'getByLocationAndDate'])->middleware('staff');
+    Route::get('bookings/search', [BookingController::class, 'search'])->middleware('staff');
 
     // Customers legitimately read their own bookings, so index/show stay on auth:sanctum.
     // Changing or cancelling a booking is a VENUE action - a guest who wants either contacts the
@@ -592,14 +592,14 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::delete('bookings/{booking}/invitations/{invitation}', [BookingInvitationController::class, 'destroy']);
     Route::get('bookings/{booking}/invitation-preview', [BookingInvitationController::class, 'preview']);
 
-    Route::get('payments/invoices/report', [PaymentController::class, 'invoicesReport']);
-    Route::get('payments/invoices/export', [PaymentController::class, 'invoicesExport']);
-    Route::get('payments/package-invoices/export', [PaymentController::class, 'packageInvoicesExport']);
-    Route::get('payments/invoices/day/{date}', [PaymentController::class, 'invoicesDay']);
-    Route::get('payments/invoices/week/{week?}', [PaymentController::class, 'invoicesWeek']);
+    Route::get('payments/invoices/report', [PaymentController::class, 'invoicesReport'])->middleware('staff');
+    Route::get('payments/invoices/export', [PaymentController::class, 'invoicesExport'])->middleware('staff');
+    Route::get('payments/package-invoices/export', [PaymentController::class, 'packageInvoicesExport'])->middleware('staff');
+    Route::get('payments/invoices/day/{date}', [PaymentController::class, 'invoicesDay'])->middleware('staff');
+    Route::get('payments/invoices/week/{week?}', [PaymentController::class, 'invoicesWeek'])->middleware('staff');
     Route::post('payments/invoices/bulk', [PaymentController::class, 'invoicesBulk'])->middleware('staff');
 
-    Route::get('payments/trashed', [PaymentController::class, 'trashed']);
+    Route::get('payments/trashed', [PaymentController::class, 'trashed'])->middleware('staff');
     Route::apiResource('payments', PaymentController::class)->except(['update'])->middleware('staff');
     Route::patch('payments/{payment}/refund', [PaymentController::class, 'refund'])->middleware('staff');
     Route::patch('payments/{payment}/manual-refund', [PaymentController::class, 'manualRefund'])->middleware('staff');
