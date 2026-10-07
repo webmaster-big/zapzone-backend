@@ -2,10 +2,12 @@
 
 namespace Tests\Feature;
 
+use App\Models\Booking;
 use App\Models\Company;
 use App\Models\Customer;
 use App\Models\CustomerNotification;
 use App\Models\Location;
+use App\Models\Package;
 use App\Models\TicketOrder;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -91,6 +93,7 @@ class CustomerRecordsScopeTest extends TestCase
         $this->deleteJson("/api/customer-notifications/{$theirs->id}")->assertNotFound();
         $this->postJson('/api/customer-notifications', ['customer_id' => $sam->id, 'type' => 'general', 'title' => 'Hi', 'message' => 'Spam'])->assertForbidden();
         $this->assertSame(2, $this->getJson("/api/customer-notifications/unread-count/{$sam->id}")->assertOk()->json('unread_count'));
+        $this->assertSame(2, $this->getJson('/api/customer-notifications/unread-count/0')->assertOk()->json('data.unread_count'), 'the portal reads the count from data');
 
         $this->patchJson("/api/customer-notifications/mark-all-as-read/{$sam->id}")->assertOk();
         $this->assertSame(0, CustomerNotification::where('customer_id', $pat->id)->where('status', 'unread')->count());
@@ -100,6 +103,51 @@ class CustomerRecordsScopeTest extends TestCase
 
         $this->as($this->staff());
         $this->assertSame([$sam->id], array_column($this->getJson("/api/customer-notifications?customer_id={$sam->id}")->assertOk()->json('data.notifications'), 'customer_id'));
+    }
+
+    public function test_waiver_links_and_party_invitations_need_the_booking_or_a_confirmed_email(): void
+    {
+        $package = Package::create([
+            'location_id' => $this->location->id,
+            'name' => 'Arcade Party',
+            'description' => 'Party package',
+            'category' => 'party',
+            'price' => 199.00,
+            'pricing_type' => 'base',
+            'min_participants' => 1,
+            'max_participants' => 40,
+            'duration' => 120,
+            'duration_unit' => 'minutes',
+            'is_active' => true,
+        ]);
+        $booking = Booking::create([
+            'reference_number' => 'BK' . strtoupper(uniqid()),
+            'location_id' => $this->location->id,
+            'package_id' => $package->id,
+            'guest_name' => 'Pat Guest',
+            'guest_email' => 'pat@example.com',
+            'booking_date' => now()->addDays(7)->toDateString(),
+            'booking_time' => '14:00',
+            'participants' => 8,
+            'duration' => 120,
+            'duration_unit' => 'minutes',
+            'total_amount' => 199.00,
+            'amount_paid' => 0,
+            'payment_status' => 'pending',
+            'status' => 'confirmed',
+            'payment_method' => 'in-store',
+        ]);
+        $pat = $this->customer('pat@example.com');
+        config(['gmail.credentials.client_email' => 'robot@example.iam.gserviceaccount.com', 'gmail.credentials.private_key' => 'unused']);
+
+        $this->as($pat);
+        $this->assertSame([], $this->getJson("/api/customer-bookings/waivers?ids[]={$booking->id}")->assertOk()->json('data.bookings'));
+        $this->getJson("/api/bookings/{$booking->id}/invitations")->assertForbidden();
+
+        $pat->forceFill(['email_verified_at' => now()])->save();
+        $this->as($pat);
+        $this->assertSame([$booking->id], array_column($this->getJson("/api/customer-bookings/waivers?ids[]={$booking->id}")->assertOk()->json('data.bookings'), 'booking_id'));
+        $this->getJson("/api/bookings/{$booking->id}/invitations")->assertOk();
     }
 
     private function customer(string $email): Customer

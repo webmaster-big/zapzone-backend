@@ -253,6 +253,7 @@ class CustomerNotificationController extends Controller
         return response()->json([
             'success' => true,
             'unread_count' => $count,
+            'data' => ['unread_count' => $count],
         ]);
     }
 }
