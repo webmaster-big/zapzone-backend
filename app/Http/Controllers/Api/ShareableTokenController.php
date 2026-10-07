@@ -66,6 +66,12 @@ class ShareableTokenController extends Controller
                     $validated['company_id'] = $staff->company_id;
                 }
 
+                if ($staff->role === 'location_manager' && !$staff->location_id) {
+                    return response()->json(['success' => false, 'message' => 'Your account has no location yet, so it cannot send invitations.'], 403);
+                }
+                if ($staff->role === 'location_manager' && empty($validated['location_id'])) {
+                    $validated['location_id'] = $staff->location_id;
+                }
                 if ($staff->role === 'location_manager' && $staff->location_id
                     && !empty($validated['location_id']) && (int) $validated['location_id'] !== (int) $staff->location_id) {
                     Log::warning('Location manager invited outside own location', [

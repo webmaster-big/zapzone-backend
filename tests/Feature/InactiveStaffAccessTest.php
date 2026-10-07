@@ -247,6 +247,75 @@ class InactiveStaffAccessTest extends TestCase
             ->assertJsonPath('data.status', 'inactive');
     }
 
+    public function test_a_manager_cannot_demote_or_delete_another_manager(): void
+    {
+        $lead = $this->staff('location_manager', 'lead');
+        $peer = $this->staff('location_manager', 'peer');
+        $leadToken = $lead->createToken('lead')->plainTextToken;
+
+        $this->as($leadToken)->putJson("/api/users/{$peer->id}", ['role' => 'attendant'])->assertForbidden();
+        $this->as($leadToken)->putJson("/api/users/{$peer->id}", ['password' => 'taken-over-1', 'password_confirmation' => 'taken-over-1'])->assertForbidden();
+        $this->as($leadToken)->putJson("/api/users/{$peer->id}", ['email' => 'lead.backup@zapzone.test'])->assertForbidden();
+        $this->as($leadToken)->putJson("/api/users/{$peer->id}", ['email' => 'PEER@zapzone.test', 'first_name' => 'Petra'])->assertOk();
+        $this->as($leadToken)->putJson("/api/users/{$this->attendant->id}", ['password' => 'fresh-start-1', 'password_confirmation' => 'fresh-start-1'])->assertOk();
+        $this->as($leadToken)->putJson("/api/users/{$lead->id}", ['password' => 'my-own-new-1', 'password_confirmation' => 'my-own-new-1'])->assertOk();
+        $this->as($leadToken)->deleteJson("/api/users/{$peer->id}")->assertForbidden();
+        $this->as($leadToken)->postJson('/api/users/bulk-delete', ['ids' => [$peer->id]]);
+
+        $this->assertSame('location_manager', $peer->fresh()->role);
+        $this->assertSame('peer@zapzone.test', strtolower($peer->fresh()->email));
+        $this->assertTrue(Hash::check('secret-password', $peer->fresh()->password));
+        $this->assertSame('Petra', $peer->fresh()->first_name);
+        $this->assertNotNull(User::find($peer->id));
+
+        $this->as($this->admin->createToken('owner')->plainTextToken)->deleteJson("/api/users/{$peer->id}")->assertSuccessful();
+        $this->assertNull(User::find($peer->id));
+    }
+
+    public function test_invitations_need_a_staff_sender_and_a_managers_location(): void
+    {
+        $orphan = ShareableToken::create([
+            'email' => 'late@example.com',
+            'role' => 'company_admin',
+            'company_id' => $this->company->id,
+            'created_by' => null,
+            'is_active' => true,
+        ]);
+
+        $this->app['auth']->forgetGuards();
+        $this->flushHeaders();
+        $this->postJson('/api/users', [
+            'first_name' => 'Late',
+            'last_name' => 'Comer',
+            'email' => 'late@example.com',
+            'password' => 'secret-password',
+            'password_confirmation' => 'secret-password',
+            'role' => 'company_admin',
+            'registration_token' => $orphan->token,
+        ])->assertStatus(422);
+        $this->assertNull(User::where('email', 'late@example.com')->first());
+
+        $lead = $this->staff('location_manager', 'lead');
+        $this->as($lead->createToken('lead')->plainTextToken)
+            ->postJson('/api/shareable-tokens', ['email' => 'helper@example.com', 'role' => 'attendant'])
+            ->assertSuccessful();
+        $this->assertSame($this->location->id, (int) ShareableToken::where('email', 'helper@example.com')->value('location_id'));
+
+        $homeless = User::create([
+            'first_name' => 'No',
+            'last_name' => 'Home',
+            'email' => 'nohome@zapzone.test',
+            'password' => 'secret-password',
+            'role' => 'location_manager',
+            'company_id' => $this->company->id,
+            'location_id' => null,
+            'status' => 'active',
+        ]);
+        $this->as($homeless->createToken('nohome')->plainTextToken)
+            ->postJson('/api/shareable-tokens', ['email' => 'helper2@example.com', 'role' => 'attendant'])
+            ->assertForbidden();
+    }
+
     public function test_customer_tokens_are_not_affected(): void
     {
         $customer = Customer::create([
