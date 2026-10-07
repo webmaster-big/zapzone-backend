@@ -115,9 +115,7 @@ class EventController extends Controller
 
     public function show(Event $event): JsonResponse
     {
-        return response()->json($event->load(app(\App\Services\AddOnRuleService::class)->isStaff(request()->user('sanctum'))
-            ? ['location:id,name', 'eventPurchases', 'addOns']
-            : ['location:id,name', 'addOns']));
+        return response()->json($event->load(['location:id,name', 'addOns']));
     }
 
     public function update(Request $request, Event $event): JsonResponse

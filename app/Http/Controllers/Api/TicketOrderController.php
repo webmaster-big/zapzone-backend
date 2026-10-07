@@ -178,7 +178,7 @@ class TicketOrderController extends Controller
 
             $this->rememberOrderCheckoutKey($checkoutKey, $order);
 
-            $qrToken = hash_hmac('sha256', $order->id . '|' . $order->reference_number, (string) config('app.key'));
+            $qrToken = $this->checkoutToken($order);
 
             return response()->json([
                 'success' => true,
@@ -448,7 +448,9 @@ class TicketOrderController extends Controller
         }
 
         if (!$rollerIsStaff
-            && ($order->payment_method !== 'authorize.net' || $order->created_at?->lt(now()->subDay()))) {
+            && ($order->payment_method !== 'authorize.net'
+                || $order->created_at?->lt(now()->subDay())
+                || !hash_equals($this->checkoutToken($order), (string) $request->input('qr_token', '')))) {
             return response()->json([
                 'success' => false,
                 'message' => 'This order can no longer be rolled back from checkout.',
@@ -514,9 +516,7 @@ class TicketOrderController extends Controller
         }
 
         if (!app(\App\Services\AddOnRuleService::class)->isStaff($request->user('sanctum'))) {
-            $expected = hash_hmac('sha256', $order->id . '|' . $order->reference_number, (string) config('app.key'));
-
-            if (!hash_equals($expected, (string) ($validated['qr_token'] ?? ''))) {
+            if (!hash_equals($this->checkoutToken($order), (string) ($validated['qr_token'] ?? ''))) {
                 return response()->json(['success' => false, 'message' => 'This link has expired.'], 403);
             }
         }
@@ -568,6 +568,11 @@ class TicketOrderController extends Controller
         } catch (Throwable $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
         }
+    }
+
+    private function checkoutToken(TicketOrder $order): string
+    {
+        return hash_hmac('sha256', $order->id . '|' . $order->reference_number, (string) config('app.key'));
     }
 
     private function deniesAccess(Request $request, TicketOrder $order): ?JsonResponse

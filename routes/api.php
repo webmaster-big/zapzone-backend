@@ -164,7 +164,7 @@ Route::get('packages/location/{locationId}', [PackageController::class, 'getByLo
 
 Route::get('membership-plans/public', [MembershipPlanController::class, 'publicIndex']); // include
 
-Route::get('customers/search', [CustomerController::class, 'search'])->middleware(['auth:sanctum', 'staff']); // include
+Route::get('customers/search', [CustomerController::class, 'search']); // include
 
 Route::post('customers', [CustomerController::class, 'store']); // include
 

@@ -929,7 +929,7 @@ class CheckoutChargeSafetyTest extends TestCase
         $orderId = (int) ($order->json('data.id') ?? $order->json('id'));
         $cartWaiver = Waiver::where('event_id', $event->id)->where('adult_email', 'cart@example.com')->firstOrFail();
 
-        $this->deleteJson("/api/ticket-orders/{$orderId}/rollback")->assertSuccessful();
+        $this->deleteJson("/api/ticket-orders/{$orderId}/rollback", ['qr_token' => $order->json('qr_token')])->assertSuccessful();
 
         $this->assertFalse(Waiver::withTrashed()->findOrFail($otherWaiver->id)->trashed(), "another guest's waiver for the same event and day survives");
         $this->assertTrue(Waiver::withTrashed()->findOrFail($cartWaiver->id)->trashed(), "the cart guest's own unsigned waiver goes with the order");
@@ -1586,8 +1586,8 @@ class CheckoutChargeSafetyTest extends TestCase
         $this->flushHeaders();
         $this->actingAs($this->staff(), 'sanctum');
         $this->assertArrayHasKey('booking', $this->getJson('/api/package-time-slots?per_page=100')->assertOk()->json('data.time_slots.0'));
-        $this->assertArrayHasKey('bookings', $this->getJson("/api/attractions/{$attraction->id}")->assertOk()->json('data'), 'the staff app keeps the attraction bookings');
-        $this->assertArrayHasKey('event_purchases', $this->getJson("/api/events/{$event->id}")->assertOk()->json(), 'the staff app keeps the event purchases');
+        $this->assertArrayNotHasKey('bookings', $this->getJson("/api/attractions/{$attraction->id}")->assertOk()->json('data'), 'no page reads them, and they would cross locations');
+        $this->assertArrayNotHasKey('event_purchases', $this->getJson("/api/events/{$event->id}")->assertOk()->json());
     }
 
     public function test_checkouts_take_the_customer_from_the_login_never_from_the_page(): void
@@ -1636,7 +1636,7 @@ class CheckoutChargeSafetyTest extends TestCase
         $attraction = $this->axeThrowing();
         $purchaseId = (int) $this->postJson('/api/attraction-purchases', $this->attractionPayload($attraction, 'someone@example.com'))->assertStatus(201)->json('data.id');
 
-        $this->getJson('/api/customers/search?q=someone')->assertStatus(401);
+        $this->getJson('/api/customers/search?q=someone')->assertForbidden();
 
         $this->withHeader('Authorization', 'Bearer ' . $this->customer('pat@example.com')->createToken('portal')->plainTextToken);
         $this->getJson('/api/customers/search?q=someone')->assertForbidden();
@@ -1705,14 +1705,22 @@ class CheckoutChargeSafetyTest extends TestCase
         $this->assertNotNull(\App\Models\TicketOrder::find($orderId));
         $this->assertNotSame('cancelled', \App\Models\TicketOrder::find($orderId)->status);
 
-        $ownCardOrder = (int) $this->postJson('/api/ticket-orders', [
+        $ownCard = $this->postJson('/api/ticket-orders', [
             'items' => $line('19:00'),
             'guest_name' => 'Pat Guest',
             'guest_email' => 'pat@example.com',
             'payment_method' => 'authorize.net',
-        ])->assertSuccessful()->json('data.id');
+        ])->assertSuccessful();
+        $ownCardOrder = (int) $ownCard->json('data.id');
+
         $this->app['auth']->forgetGuards();
-        $this->deleteJson("/api/ticket-orders/{$ownCardOrder}/rollback")->assertSuccessful();
+        $this->flushHeaders();
+        $this->deleteJson("/api/ticket-orders/{$ownCardOrder}/rollback")->assertStatus(422);
+        $this->deleteJson("/api/ticket-orders/{$ownCardOrder}/rollback", ['qr_token' => str_repeat('0', 64)])->assertStatus(422);
+        $this->assertNotNull(\App\Models\TicketOrder::find($ownCardOrder), "a stranger cannot undo someone else's fresh card order");
+
+        $this->withHeader('Authorization', "Bearer {$patToken}");
+        $this->deleteJson("/api/ticket-orders/{$ownCardOrder}/rollback", ['qr_token' => $ownCard->json('qr_token')])->assertSuccessful();
         $this->assertNull(\App\Models\TicketOrder::find($ownCardOrder), 'a declined card lets the shopper undo their own order');
 
         $elsewhere = Location::create([
