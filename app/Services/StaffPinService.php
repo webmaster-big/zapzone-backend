@@ -223,7 +223,7 @@ class StaffPinService
             return true;
         }
 
-        return (int) $candidate->location_id === $locationId;
+        return $candidate->canWorkAt($locationId);
     }
 
     private function rotateLookupIfStale(User $candidate, int $companyId, string $pin): void

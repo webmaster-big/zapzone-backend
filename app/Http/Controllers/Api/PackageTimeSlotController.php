@@ -19,6 +19,8 @@ class PackageTimeSlotController extends Controller
     use GeneratesAvailableTimeSlots;
     use ScopesByAuthUser;
 
+    private const SLOTS_RECONNECT_AFTER_MS = 30000;
+
     public function index(Request $request): JsonResponse
     {
         $query = PackageTimeSlot::with(['package', 'room', 'booking', 'customer', 'user']);
@@ -273,53 +275,23 @@ class PackageTimeSlotController extends Controller
     public function getAvailableSlotsAuto(int $packageId, string $date)
     {
         return response()->stream(function () use ($packageId, $date) {
-            header('Content-Type: text/event-stream');
-            header('Cache-Control: no-cache');
-            header('Connection: keep-alive');
-            header('X-Accel-Buffering: no'); // Disable nginx buffering
+            echo "retry: " . self::SLOTS_RECONNECT_AFTER_MS . "\n\n";
 
             try {
                 $package = Package::with('rooms')->findOrFail($packageId);
 
-                $lastHash = '';
+                $this->forgetSlotLookups();
 
-                while (true) {
-                    // a live stream must re-read the day, and re-read the clock, on every tick
-                    $this->forgetSlotLookups();
-                    $package->refresh();
-                    $package->forgetResolvedSchedules();
-
-                    $availableSlots = $this->generateAvailableSlotsWithRooms(
-                        $package,
-                        $date
-                    );
-
-                    $data = [
-                        'available_slots' => $availableSlots,
-                        'package' => [
-                            'id' => $package->id,
-                            'name' => $package->name,
-                            'duration' => $package->duration,
-                            'duration_unit' => $package->duration_unit,
-                        ],
-                        'timestamp' => now()->toIso8601String(),
-                    ];
-
-                    $currentHash = md5(json_encode($data));
-
-                    if ($currentHash !== $lastHash) {
-                        echo "data: " . json_encode($data) . "\n\n";
-                        ob_flush();
-                        flush();
-                        $lastHash = $currentHash;
-                    }
-
-                    if (connection_aborted()) {
-                        break;
-                    }
-
-                    sleep(3);
-                }
+                echo "data: " . json_encode([
+                    'available_slots' => $this->generateAvailableSlotsWithRooms($package, $date),
+                    'package' => [
+                        'id' => $package->id,
+                        'name' => $package->name,
+                        'duration' => $package->duration,
+                        'duration_unit' => $package->duration_unit,
+                    ],
+                    'timestamp' => now()->toIso8601String(),
+                ]) . "\n\n";
             } catch (\Exception $e) {
                 Log::error('Error in SSE available slots stream', [
                     'package_id' => $packageId,
@@ -332,9 +304,12 @@ class PackageTimeSlotController extends Controller
                     'error' => $e->getMessage(),
                     'message' => 'Failed to load available time slots'
                 ]) . "\n\n";
-                ob_flush();
-                flush();
             }
+
+            if (ob_get_level() > 0) {
+                ob_flush();
+            }
+            flush();
         }, 200, [
             'Content-Type' => 'text/event-stream',
             'Cache-Control' => 'no-cache',

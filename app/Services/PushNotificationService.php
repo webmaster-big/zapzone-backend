@@ -114,7 +114,7 @@ class PushNotificationService
             ->where(function ($group) use ($notification, $companyId) {
                 $group->where(function ($manager) use ($notification) {
                     $manager->where('role', self::MANAGER_ROLE)
-                        ->where('location_id', $notification->location_id);
+                        ->workingAt($notification->location_id);
                 });
 
                 if ($companyId) {

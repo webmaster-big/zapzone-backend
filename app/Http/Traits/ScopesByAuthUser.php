@@ -16,6 +16,12 @@ trait ScopesByAuthUser
         }
 
         if ($request && $request->filled('user_id')) {
+            $tokenUser = $request->bearerToken() ? auth('sanctum')->user() : null;
+
+            if ($tokenUser instanceof User && (int) $tokenUser->getKey() === (int) $request->input('user_id')) {
+                return $tokenUser;
+            }
+
             return User::find($request->input('user_id'));
         }
 
@@ -86,6 +92,18 @@ trait ScopesByAuthUser
     protected function denyForeignRecord($record, string $what = 'record')
     {
         if (! $this->authorizeRecordScope($record)) {
+            $elsewhere = $record && isset($record->location_id)
+                ? $this->otherWorkLocation($this->resolveAuthUser(), $record->location_id)
+                : null;
+
+            if ($elsewhere) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "That {$what} belongs to {$elsewhere->name}. Switch to {$elsewhere->name} in the sidebar to open it.",
+                    'switch_location_id' => (int) $elsewhere->id,
+                ], 403);
+            }
+
             return response()->json([
                 'success' => false,
                 'message' => "Forbidden: that {$what} belongs to another location",
@@ -111,12 +129,31 @@ trait ScopesByAuthUser
         if (in_array($authUser->role, ['location_manager', 'attendant'], true)
             && $authUser->location_id
             && (int) $authUser->location_id !== (int) $locationId) {
+            $elsewhere = $this->otherWorkLocation($authUser, $locationId);
+
+            if ($elsewhere) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "That belongs to {$elsewhere->name}. Switch to {$elsewhere->name} in the sidebar to work with it.",
+                    'switch_location_id' => (int) $elsewhere->id,
+                ], 403);
+            }
+
             return response()->json([
                 'success' => false,
                 'message' => 'Forbidden: cannot access another location\'s data',
             ], 403);
         }
         return null;
+    }
+
+    private function otherWorkLocation(?User $authUser, $locationId): ?\App\Models\Location
+    {
+        if (! $authUser || ! $authUser->canHoldSeveralLocations() || ! $authUser->canWorkAt($locationId)) {
+            return null;
+        }
+
+        return \App\Models\Location::find((int) $locationId);
     }
 
     /**

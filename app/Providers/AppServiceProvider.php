@@ -16,6 +16,11 @@ class AppServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        \Illuminate\Support\Facades\Event::listen(
+            \Laravel\Sanctum\Events\TokenAuthenticated::class,
+            [\App\Support\StaffLocationSession::class, 'handle']
+        );
+
         Relation::morphMap([
             'booking' => \App\Models\Booking::class,
             'attraction_purchase' => \App\Models\AttractionPurchase::class,

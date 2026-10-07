@@ -200,9 +200,6 @@ Route::post('users', [UserController::class, 'store'])->middleware('throttle:10,
 Route::apiResource('package-time-slots', PackageTimeSlotController::class)->only(['index', 'store', 'show']); // include
 Route::get('package-time-slots/available-slots/{packageId}/{date}', [PackageTimeSlotController::class, 'getAvailableSlotsAuto']); // include
 
-Route::get('stream/bookings', [StreamController::class, 'bookingNotifications']); 
-Route::get('stream/attraction-purchases', [StreamController::class, 'attractionPurchaseNotifications']); 
-Route::get('stream/notifications', [StreamController::class, 'combinedNotifications']); 
 
 Route::post('shareable-tokens/check', [ShareableTokenController::class, 'check'])->middleware('throttle:30,1');
 Route::post('shareable-tokens', [ShareableTokenController::class, 'store'])->middleware('throttle:20,1');
@@ -256,7 +253,11 @@ Route::prefix('staff-pin')->group(function () {
 
 Route::middleware('auth:sanctum')->group(function () {
     Route::get('/user', function (Request $request) {
-        return $request->user();
+        $user = $request->user();
+
+        return $user instanceof \App\Models\User
+            ? array_merge($user->toArray(), $user->locationAccessPayload())
+            : $user;
     });
 
     Route::post('logout', [ApiAuthController::class, 'logout']); // include
@@ -265,6 +266,9 @@ Route::middleware('auth:sanctum')->group(function () {
     // scoping for a non-staff principal, so these need the fail-closed staff gate.
     Route::middleware('staff')->group(function () {
         Route::get('targeting-options', [\App\Http\Controllers\Api\TargetingOptionController::class, 'index']);
+
+        Route::get('staff-locations', [\App\Http\Controllers\Api\StaffLocationController::class, 'index']);
+        Route::put('staff-locations/active', [\App\Http\Controllers\Api\StaffLocationController::class, 'activate']);
 
         // A manager's PIN approves a booking that overlaps something already in the space. Any
         // staff member may ASK (they are standing at the desk with the manager); only a manager's
@@ -610,6 +614,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::apiResource('activity-logs', ActivityLogController::class)->only(['index', 'store', 'show'])->middleware('staff');
 
     Route::middleware('staff')->group(function () {
+        Route::get('notifications/live', [StreamController::class, 'liveNotifications']);
         Route::patch('notifications/mark-all-as-read', [NotificationController::class, 'markAllAsRead']);
         Route::delete('notifications/clear-all', [NotificationController::class, 'clearAll']);
         Route::patch('notifications/{notification}/mark-as-read', [NotificationController::class, 'markAsRead']);

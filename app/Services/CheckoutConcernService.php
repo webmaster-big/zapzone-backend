@@ -16,7 +16,7 @@ class CheckoutConcernService
 {
     public function staffFor(int $locationId): Collection
     {
-        return User::where('location_id', $locationId)
+        return User::workingAt($locationId)
             ->where('status', 'active')
             ->get();
     }

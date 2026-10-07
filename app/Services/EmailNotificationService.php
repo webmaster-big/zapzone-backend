@@ -637,7 +637,7 @@ class EmailNotificationService
             return [];
         }
 
-        return User::where('location_id', $locationId)
+        return User::workingAt($locationId)
             ->where('role', 'location_manager')
             ->where('status', 'active')
             ->whereNotNull('email')

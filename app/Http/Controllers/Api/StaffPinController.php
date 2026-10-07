@@ -10,6 +10,7 @@ use App\Models\ActivityLog;
 use App\Models\StaffTerminal;
 use App\Models\User;
 use App\Services\StaffPinService;
+use App\Support\StaffLocationSession;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
@@ -82,6 +83,12 @@ class StaffPinController extends Controller
             $expiresAt
         );
 
+        StaffLocationSession::startAt(
+            $token->accessToken,
+            $user,
+            $terminal->location_id !== null ? (int) $terminal->location_id : null
+        );
+
         $user->forceFill(['last_login' => now()])->save();
         $terminal->forceFill(['last_seen_at' => now()])->saveQuietly();
 
@@ -107,7 +114,7 @@ class StaffPinController extends Controller
 
         return response()->json([
             'success' => true,
-            'user' => $user,
+            'user' => array_merge($user->toArray(), $user->locationAccessPayload()),
             'role' => $role,
             'token' => $token->plainTextToken,
             'data' => [

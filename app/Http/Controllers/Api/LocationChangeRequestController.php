@@ -493,7 +493,7 @@ class LocationChangeRequestController extends Controller
         if (!$locationId) {
             return collect();
         }
-        return User::where('location_id', $locationId)
+        return User::workingAt($locationId)
             ->whereIn('role', ['location_manager', 'attendant'])
             ->get();
     }
