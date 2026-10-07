@@ -1586,6 +1586,158 @@ class CheckoutChargeSafetyTest extends TestCase
         $this->flushHeaders();
         $this->actingAs($this->staff(), 'sanctum');
         $this->assertArrayHasKey('booking', $this->getJson('/api/package-time-slots?per_page=100')->assertOk()->json('data.time_slots.0'));
+        $this->assertArrayHasKey('bookings', $this->getJson("/api/attractions/{$attraction->id}")->assertOk()->json('data'), 'the staff app keeps the attraction bookings');
+        $this->assertArrayHasKey('event_purchases', $this->getJson("/api/events/{$event->id}")->assertOk()->json(), 'the staff app keeps the event purchases');
+    }
+
+    public function test_checkouts_take_the_customer_from_the_login_never_from_the_page(): void
+    {
+        $attraction = $this->axeThrowing();
+        $event = $this->glowNight();
+        $eventDate = $event->start_date instanceof \DateTimeInterface ? $event->start_date->format('Y-m-d') : (string) $event->start_date;
+        $victim = $this->customer('victim@example.com');
+        $pat = $this->customer('pat@example.com');
+        $orderPayload = fn (string $email, int $customerId) => [
+            'items' => [['type' => 'event', 'id' => $event->id, 'quantity' => 1, 'scheduled_date' => $eventDate, 'scheduled_time' => '18:00']],
+            'guest_name' => 'Cart Guest',
+            'guest_email' => $email,
+            'customer_id' => $customerId,
+            'payment_method' => 'authorize.net',
+        ];
+
+        $anonymousTicket = (int) $this->postJson('/api/attraction-purchases', $this->attractionPayload($attraction, 'victim@example.com', ['customer_id' => $victim->id]))->assertStatus(201)->json('data.id');
+        $anonymousEvent = $this->postJson('/api/event-purchases', $this->eventPurchasePayload($event, 'victim@example.com', ['customer_id' => $victim->id]))->assertSuccessful();
+        $anonymousOrder = $this->postJson('/api/ticket-orders', $orderPayload('victim@example.com', $victim->id))->assertSuccessful();
+
+        $this->assertNull(AttractionPurchase::find($anonymousTicket)->customer_id);
+        $this->assertNull(EventPurchase::find((int) ($anonymousEvent->json('data.id') ?? $anonymousEvent->json('id')))->customer_id);
+        $this->assertNull(\App\Models\TicketOrder::find((int) ($anonymousOrder->json('data.id') ?? $anonymousOrder->json('id')))->customer_id);
+
+        $nameless = $this->attractionPayload($attraction, 'victim@example.com', ['customer_id' => $victim->id, 'scheduled_time' => '20:00']);
+        unset($nameless['guest_email']);
+        $this->postJson('/api/attraction-purchases', $nameless)->assertStatus(422)->assertJsonValidationErrors('guest_email');
+        $this->postJson('/api/ticket-orders', ['items' => $orderPayload('x@example.com', $victim->id)['items'], 'customer_id' => $victim->id, 'payment_method' => 'authorize.net'])
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'We need a name or an email to attach this order to.');
+
+        $this->withHeader('Authorization', 'Bearer ' . $pat->createToken('portal')->plainTextToken);
+        $myTicket = (int) $this->postJson('/api/attraction-purchases', $this->attractionPayload($attraction, 'pat@example.com', ['customer_id' => $victim->id, 'scheduled_time' => '19:00']))->assertStatus(201)->json('data.id');
+        $myEvent = $this->postJson('/api/event-purchases', $this->eventPurchasePayload($event, 'pat@example.com', ['customer_id' => $victim->id]))->assertSuccessful();
+        $myOrder = $this->postJson('/api/ticket-orders', $orderPayload('pat@example.com', $victim->id))->assertSuccessful();
+
+        $this->assertSame($pat->id, (int) AttractionPurchase::find($myTicket)->customer_id);
+        $this->assertSame($pat->id, (int) EventPurchase::find((int) ($myEvent->json('data.id') ?? $myEvent->json('id')))->customer_id);
+        $this->assertSame($pat->id, (int) \App\Models\TicketOrder::find((int) ($myOrder->json('data.id') ?? $myOrder->json('id')))->customer_id);
+        $this->assertNull(\App\Models\TicketOrder::find((int) ($myOrder->json('data.id') ?? $myOrder->json('id')))->created_by, 'a customer is never recorded as the staff member who made the order');
+    }
+
+    public function test_purchase_admin_routes_and_the_customer_search_need_a_staff_login(): void
+    {
+        $attraction = $this->axeThrowing();
+        $purchaseId = (int) $this->postJson('/api/attraction-purchases', $this->attractionPayload($attraction, 'someone@example.com'))->assertStatus(201)->json('data.id');
+
+        $this->getJson('/api/customers/search?q=someone')->assertStatus(401);
+
+        $this->withHeader('Authorization', 'Bearer ' . $this->customer('pat@example.com')->createToken('portal')->plainTextToken);
+        $this->getJson('/api/customers/search?q=someone')->assertForbidden();
+        $this->getJson('/api/attraction-purchases')->assertForbidden();
+        $this->getJson("/api/attraction-purchases/{$purchaseId}")->assertForbidden();
+        $this->putJson("/api/attraction-purchases/{$purchaseId}", ['amount_paid' => 20])->assertForbidden();
+        $this->postJson('/api/attraction-purchases/bulk-delete', ['ids' => [$purchaseId]])->assertForbidden();
+        $this->getJson('/api/event-purchases')->assertForbidden();
+        $this->getJson('/api/event-purchases/trashed')->assertForbidden();
+        $this->getJson('/api/attraction-purchases/customer')->assertOk();
+        $this->assertSame(0.0, (float) AttractionPurchase::find($purchaseId)->amount_paid);
+
+        $this->app['auth']->forgetGuards();
+        $this->flushHeaders();
+        $this->actingAs($this->staff(), 'sanctum');
+        $this->getJson('/api/customers/search?q=pat')->assertOk();
+        $this->getJson('/api/attraction-purchases')->assertOk();
+    }
+
+    public function test_saving_an_order_qr_code_needs_the_orders_signed_token_unless_staff(): void
+    {
+        $event = $this->glowNight();
+        $eventDate = $event->start_date instanceof \DateTimeInterface ? $event->start_date->format('Y-m-d') : (string) $event->start_date;
+        $order = fn (string $time, string $email) => [
+            'items' => [['type' => 'event', 'id' => $event->id, 'quantity' => 1, 'scheduled_date' => $eventDate, 'scheduled_time' => $time]],
+            'guest_name' => 'Order Guest',
+            'guest_email' => $email,
+            'payment_method' => 'authorize.net',
+        ];
+        ob_start();
+        imagepng(imagecreatetruecolor(2, 2));
+        $png = 'data:image/png;base64,' . base64_encode((string) ob_get_clean());
+
+        $this->withHeader('Authorization', 'Bearer ' . $this->customer('pat@example.com')->createToken('portal')->plainTextToken);
+        $mine = $this->postJson('/api/ticket-orders', $order('18:00', 'pat@example.com'))->assertSuccessful();
+        $mineId = (int) $mine->json('data.id');
+        $this->postJson("/api/ticket-orders/{$mineId}/qrcode", ['qr_code' => $png])->assertForbidden();
+        $this->assertNull(\App\Models\TicketOrder::find($mineId)->qr_code);
+        $this->postJson("/api/ticket-orders/{$mineId}/qrcode", ['qr_code' => $png, 'qr_token' => $mine->json('qr_token')])->assertOk();
+        $this->assertNotNull(\App\Models\TicketOrder::find($mineId)->qr_code);
+
+        $this->app['auth']->forgetGuards();
+        $this->withHeader('Authorization', 'Bearer ' . $this->staff()->createToken('desk')->plainTextToken);
+        $deskId = (int) $this->postJson('/api/ticket-orders', $order('19:00', 'walkin@example.com'))->assertSuccessful()->json('data.id');
+        $this->postJson("/api/ticket-orders/{$deskId}/qrcode", ['qr_code' => $png])->assertOk();
+    }
+
+    public function test_a_customer_login_cannot_roll_back_someone_elses_order(): void
+    {
+        $event = $this->glowNight();
+        $eventDate = $event->start_date instanceof \DateTimeInterface ? $event->start_date->format('Y-m-d') : (string) $event->start_date;
+        $line = fn (string $time) => [['type' => 'event', 'id' => $event->id, 'quantity' => 1, 'scheduled_date' => $eventDate, 'scheduled_time' => $time]];
+        $staffToken = $this->staff()->createToken('desk')->plainTextToken;
+        $patToken = $this->customer('pat@example.com')->createToken('portal')->plainTextToken;
+
+        $orderId = (int) $this->withHeader('Authorization', "Bearer {$staffToken}")->postJson('/api/ticket-orders', [
+            'items' => $line('18:00'),
+            'guest_name' => 'Walk In',
+            'guest_email' => 'walkin@example.com',
+            'payment_method' => 'paylater',
+        ])->assertSuccessful()->json('data.id');
+
+        $this->app['auth']->forgetGuards();
+        $this->withHeader('Authorization', "Bearer {$patToken}");
+        $this->deleteJson("/api/ticket-orders/{$orderId}/rollback")->assertStatus(422);
+        $this->assertNotNull(\App\Models\TicketOrder::find($orderId));
+        $this->assertNotSame('cancelled', \App\Models\TicketOrder::find($orderId)->status);
+
+        $ownCardOrder = (int) $this->postJson('/api/ticket-orders', [
+            'items' => $line('19:00'),
+            'guest_name' => 'Pat Guest',
+            'guest_email' => 'pat@example.com',
+            'payment_method' => 'authorize.net',
+        ])->assertSuccessful()->json('data.id');
+        $this->app['auth']->forgetGuards();
+        $this->deleteJson("/api/ticket-orders/{$ownCardOrder}/rollback")->assertSuccessful();
+        $this->assertNull(\App\Models\TicketOrder::find($ownCardOrder), 'a declined card lets the shopper undo their own order');
+
+        $elsewhere = Location::create([
+            'company_id' => $this->company->id,
+            'name' => 'Novi | Escape Room',
+            'address' => '2 Test Way',
+            'city' => 'Novi',
+            'state' => 'MI',
+            'zip_code' => '48375',
+            'phone' => '2485550000',
+            'email' => 'novi@zapzone.test',
+            'timezone' => 'America/Detroit',
+            'is_active' => true,
+        ]);
+        $otherDesk = $this->staff();
+        $otherDesk->forceFill(['location_id' => $elsewhere->id])->save();
+        $this->app['auth']->forgetGuards();
+        $this->withHeader('Authorization', 'Bearer ' . $otherDesk->createToken('novi')->plainTextToken);
+        $this->deleteJson("/api/ticket-orders/{$orderId}/rollback")->assertNotFound();
+        $this->assertNotNull(\App\Models\TicketOrder::find($orderId), 'another location cannot undo this order');
+
+        $this->app['auth']->forgetGuards();
+        $this->withHeader('Authorization', "Bearer {$staffToken}");
+        $this->deleteJson("/api/ticket-orders/{$orderId}/rollback")->assertSuccessful();
+        $this->assertNull(\App\Models\TicketOrder::find($orderId), 'the desk can still undo its own pay-on-arrival order');
     }
 
     public function test_staff_can_still_look_any_guest_up_in_the_customer_lists(): void

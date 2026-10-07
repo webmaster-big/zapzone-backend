@@ -310,7 +310,7 @@ class AttractionController extends Controller
     {
         $attraction = Attraction::findOrFail($id);
 
-        $attraction->load(['location', 'packages', 'addOns']);
+        $attraction->load(app(\App\Services\AddOnRuleService::class)->isStaff(request()->user('sanctum')) ? ['location', 'packages', 'bookings', 'addOns'] : ['location', 'packages', 'addOns']);
 
         return response()->json([
             'success' => true,

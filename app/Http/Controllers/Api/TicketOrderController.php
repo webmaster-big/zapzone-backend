@@ -87,16 +87,20 @@ class TicketOrderController extends Controller
         $checkoutKey = $validated['checkout_key'] ?? null;
         unset($validated['checkout_key']);
 
+        $staff = $request->user('sanctum');
+        $method = $validated['payment_method'] ?? 'authorize.net';
+        $callerIsStaff = app(\App\Services\AddOnRuleService::class)->isStaff($staff);
+
+        if (!$callerIsStaff) {
+            $validated['customer_id'] = $staff instanceof \App\Models\Customer ? $staff->id : null;
+        }
+
         if (empty($validated['customer_id']) && empty($validated['guest_name']) && empty($validated['guest_email'])) {
             return response()->json([
                 'success' => false,
                 'message' => 'We need a name or an email to attach this order to.',
             ], 422);
         }
-
-        $staff = $request->user('sanctum');
-        $method = $validated['payment_method'] ?? 'authorize.net';
-        $callerIsStaff = app(\App\Services\AddOnRuleService::class)->isStaff($staff);
 
         if (!$callerIsStaff && $method !== 'authorize.net') {
             return response()->json([
@@ -142,7 +146,7 @@ class TicketOrderController extends Controller
             $order = $this->orders->create($validated['items'], [
                 'customer_id' => $validated['customer_id'] ?? null,
                 'membership_id' => $validated['membership_id'] ?? null,
-                'created_by' => $staff?->id,
+                'created_by' => $callerIsStaff ? $staff->id : null,
                 'guest_name' => $validated['guest_name'] ?? null,
                 'guest_email' => $validated['guest_email'] ?? null,
                 'guest_phone' => $validated['guest_phone'] ?? null,
@@ -438,7 +442,12 @@ class TicketOrderController extends Controller
             ], 422);
         }
 
-        if (!$request->user('sanctum')
+        $rollerIsStaff = app(\App\Services\AddOnRuleService::class)->isStaff($request->user('sanctum'));
+        if ($rollerIsStaff && ($guard = $this->deniesAccess($request, $order))) {
+            return $guard;
+        }
+
+        if (!$rollerIsStaff
             && ($order->payment_method !== 'authorize.net' || $order->created_at?->lt(now()->subDay()))) {
             return response()->json([
                 'success' => false,
@@ -504,7 +513,7 @@ class TicketOrderController extends Controller
             return response()->json(['success' => false, 'message' => 'Order not found'], 404);
         }
 
-        if (!$request->user('sanctum')) {
+        if (!app(\App\Services\AddOnRuleService::class)->isStaff($request->user('sanctum'))) {
             $expected = hash_hmac('sha256', $order->id . '|' . $order->reference_number, (string) config('app.key'));
 
             if (!hash_equals($expected, (string) ($validated['qr_token'] ?? ''))) {
@@ -563,7 +572,7 @@ class TicketOrderController extends Controller
 
     private function deniesAccess(Request $request, TicketOrder $order): ?JsonResponse
     {
-        $user = $request->user();
+        $user = $request->user('sanctum');
 
         if (!$user) {
             return response()->json(['success' => false, 'message' => 'Unauthenticated.'], 401);

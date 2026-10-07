@@ -164,7 +164,7 @@ Route::get('packages/location/{locationId}', [PackageController::class, 'getByLo
 
 Route::get('membership-plans/public', [MembershipPlanController::class, 'publicIndex']); // include
 
-Route::get('customers/search', [CustomerController::class, 'search']); // include
+Route::get('customers/search', [CustomerController::class, 'search'])->middleware(['auth:sanctum', 'staff']); // include
 
 Route::post('customers', [CustomerController::class, 'store']); // include
 
@@ -443,19 +443,19 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     Route::get('attraction-purchases/trashed', [AttractionPurchaseController::class, 'trashed'])->middleware('staff');
-    Route::get('attraction-purchases/statistics', [AttractionPurchaseController::class, 'statistics']);
-    Route::post('attraction-purchases/bulk-restore', [AttractionPurchaseController::class, 'bulkRestore']);
-    Route::apiResource('attraction-purchases', AttractionPurchaseController::class)->except(['store', 'destroy']);
-    Route::patch('attraction-purchases/{attractionPurchase}/update-status', [AttractionPurchaseController::class, 'updateStatus']);
-    Route::get('attraction-purchases/customer/{customerId}', [AttractionPurchaseController::class, 'getByCustomer']);
-    Route::get('attraction-purchases/attraction/{attractionId}', [AttractionPurchaseController::class, 'getByAttraction']);
-    Route::patch('attraction-purchases/{attractionPurchase}/confirm', [AttractionPurchaseController::class, 'markAsConfirmed']);
-    Route::patch('attraction-purchases/{attractionPurchase}/cancel', [AttractionPurchaseController::class, 'cancel']);
-    Route::post('attraction-purchases/{attractionPurchase}/send-receipt', [AttractionPurchaseController::class, 'sendReceipt']);
+    Route::get('attraction-purchases/statistics', [AttractionPurchaseController::class, 'statistics'])->middleware('staff');
+    Route::post('attraction-purchases/bulk-restore', [AttractionPurchaseController::class, 'bulkRestore'])->middleware('staff');
+    Route::apiResource('attraction-purchases', AttractionPurchaseController::class)->except(['store', 'destroy'])->middleware('staff');
+    Route::patch('attraction-purchases/{attractionPurchase}/update-status', [AttractionPurchaseController::class, 'updateStatus'])->middleware('staff');
+    Route::get('attraction-purchases/customer/{customerId}', [AttractionPurchaseController::class, 'getByCustomer'])->middleware('staff');
+    Route::get('attraction-purchases/attraction/{attractionId}', [AttractionPurchaseController::class, 'getByAttraction'])->middleware('staff');
+    Route::patch('attraction-purchases/{attractionPurchase}/confirm', [AttractionPurchaseController::class, 'markAsConfirmed'])->middleware('staff');
+    Route::patch('attraction-purchases/{attractionPurchase}/cancel', [AttractionPurchaseController::class, 'cancel'])->middleware('staff');
+    Route::post('attraction-purchases/{attractionPurchase}/send-receipt', [AttractionPurchaseController::class, 'sendReceipt'])->middleware('staff');
     Route::get('attraction-purchases/{id}/verify', [AttractionPurchaseController::class, 'verify'])->middleware('staff');
     Route::patch('attraction-purchases/{id}/check-in', [AttractionPurchaseController::class, 'checkIn'])->middleware('staff');
-    Route::post('attraction-purchases/bulk-delete', [AttractionPurchaseController::class, 'bulkDelete']);
-    Route::post('attraction-purchases/{id}/restore', [AttractionPurchaseController::class, 'restore']);
+    Route::post('attraction-purchases/bulk-delete', [AttractionPurchaseController::class, 'bulkDelete'])->middleware('staff');
+    Route::post('attraction-purchases/{id}/restore', [AttractionPurchaseController::class, 'restore'])->middleware('staff');
 
     Route::middleware('staff')->group(function () {
         Route::get('schedule/day-window', [ScheduleWindowController::class, 'dayWindow']);
@@ -735,9 +735,9 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::get('event-purchases/verify/{reference}', [EventPurchaseController::class, 'verifyByReference'])
         ->middleware(['staff', 'throttle:60,1']);
-    Route::get('event-purchases/trashed', [EventPurchaseController::class, 'trashed']);
+    Route::get('event-purchases/trashed', [EventPurchaseController::class, 'trashed'])->middleware('staff');
     Route::post('event-purchases/bulk-restore', [EventPurchaseController::class, 'bulkRestore'])->middleware('staff');
-    Route::apiResource('event-purchases', EventPurchaseController::class)->except(['store', 'update']);
+    Route::apiResource('event-purchases', EventPurchaseController::class)->except(['store', 'update'])->middleware('staff');
     Route::match(['put', 'patch'], 'event-purchases/{eventPurchase}', [EventPurchaseController::class, 'update'])->middleware('staff');
     Route::patch('event-purchases/{eventPurchase}/cancel', [EventPurchaseController::class, 'cancel'])->middleware('staff');
     Route::patch('event-purchases/{eventPurchase}/status', [EventPurchaseController::class, 'updateStatus'])->middleware('staff');

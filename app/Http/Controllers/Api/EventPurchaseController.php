@@ -192,6 +192,11 @@ class EventPurchaseController extends Controller
             $checkoutKey = $validated['checkout_key'] ?? null;
             unset($validated['checkout_key']);
 
+            $requester = $request->user('sanctum');
+            if (! app(\App\Services\AddOnRuleService::class)->isStaff($requester)) {
+                $validated['customer_id'] = $requester instanceof \App\Models\Customer ? $requester->id : null;
+            }
+
             $event = Event::findOrFail($validated['event_id']);
             if (!$event->is_active) {
                 return response()->json(['message' => 'This event is not currently active'], 422);

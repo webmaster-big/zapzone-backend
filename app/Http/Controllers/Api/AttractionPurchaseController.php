@@ -321,6 +321,19 @@ class AttractionPurchaseController extends Controller
         $isStaff = $rules->isStaff($request->user('sanctum'));
         $addOnLines = $rules->normalize($validated['additional_addons'] ?? [], 'addon_id', 'price_at_purchase');
 
+        if (! $isStaff) {
+            $requester = $request->user('sanctum');
+            $validated['customer_id'] = $requester instanceof \App\Models\Customer ? $requester->id : null;
+
+            if ($validated['customer_id'] === null && (empty($validated['guest_name']) || empty($validated['guest_email']))) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Please enter the guest name and email.',
+                    'errors' => ['guest_email' => ['Please enter the guest name and email.']],
+                ], 422);
+            }
+        }
+
         if (! $isStaff && in_array($validated['payment_method'] ?? null, ['in-store', 'card'], true)) {
             Log::warning('A checkout without a staff login asked to be recorded as paid at the venue; saved as pay later instead', [
                 'requested_payment_method' => $validated['payment_method'],
