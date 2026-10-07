@@ -294,6 +294,7 @@ class InactiveStaffAccessTest extends TestCase
             'registration_token' => $orphan->token,
         ])->assertStatus(422);
         $this->assertNull(User::where('email', 'late@example.com')->first());
+        $this->postJson('/api/shareable-tokens/check', ['token' => $orphan->token])->assertStatus(400)->assertJsonPath('success', false);
 
         $lead = $this->staff('location_manager', 'lead');
         $this->as($lead->createToken('lead')->plainTextToken)
@@ -314,6 +315,20 @@ class InactiveStaffAccessTest extends TestCase
         $this->as($homeless->createToken('nohome')->plainTextToken)
             ->postJson('/api/shareable-tokens', ['email' => 'helper2@example.com', 'role' => 'attendant'])
             ->assertForbidden();
+    }
+
+    public function test_a_manager_cannot_set_clear_or_unlock_another_managers_pin(): void
+    {
+        config(['staff_pins.enabled' => true, 'staff_pins.pepper' => 'round7-test-pepper']);
+        $lead = $this->staff('location_manager', 'lead');
+        $peer = $this->staff('location_manager', 'peer');
+        $leadToken = $lead->createToken('lead')->plainTextToken;
+
+        $this->as($leadToken)->postJson("/api/staff-pin/users/{$peer->id}", ['pin' => '482915'])->assertForbidden();
+        $this->as($leadToken)->deleteJson("/api/staff-pin/users/{$peer->id}")->assertForbidden();
+        $this->as($leadToken)->postJson("/api/staff-pin/users/{$peer->id}/unlock")->assertForbidden();
+        $this->as($leadToken)->postJson("/api/staff-pin/users/{$this->attendant->id}", ['pin' => '573026'])->assertSuccessful();
+        $this->as($this->admin->createToken('owner')->plainTextToken)->postJson("/api/staff-pin/users/{$peer->id}", ['pin' => '691437'])->assertSuccessful();
     }
 
     public function test_customer_tokens_are_not_affected(): void

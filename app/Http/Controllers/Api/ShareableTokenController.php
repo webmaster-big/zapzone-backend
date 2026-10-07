@@ -243,7 +243,7 @@ class ShareableTokenController extends Controller
             ], 400);
         }
 
-        if (!$token->is_active) {
+        if (!$token->is_active || $token->created_by === null) {
             return response()->json([
                 'success' => false,
                 'message' => 'Token inactive',
