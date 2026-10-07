@@ -309,7 +309,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('ticket-orders', [TicketOrderController::class, 'index']);
     Route::get('ticket-orders/{ticketOrder}', [TicketOrderController::class, 'show']);
     Route::post('ticket-orders/{ticketOrder}/check-in', [TicketOrderController::class, 'checkIn'])->middleware('staff');
-    Route::post('ticket-orders/{ticketOrder}/cancel', [TicketOrderController::class, 'cancel']);
+    Route::post('ticket-orders/{ticketOrder}/cancel', [TicketOrderController::class, 'cancel'])->middleware('staff');
 
     Route::get('metrics/dashboard/{user}', [MetricsController::class, 'dashboard'])->middleware('staff');
     Route::get('metrics/attendant', [MetricsController::class, 'attendant'])->middleware('staff');

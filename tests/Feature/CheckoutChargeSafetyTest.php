@@ -1232,9 +1232,9 @@ class CheckoutChargeSafetyTest extends TestCase
 
         $this->assertSame(2, EventPurchase::count());
     }
-    private function customer(string $email): Customer
+    private function customer(string $email, bool $verified = false): Customer
     {
-        return Customer::create([
+        $customer = Customer::create([
             'first_name' => 'Pat',
             'last_name' => 'Customer',
             'email' => $email,
@@ -1242,6 +1242,12 @@ class CheckoutChargeSafetyTest extends TestCase
             'password' => bcrypt('secret-password'),
             'status' => 'active',
         ]);
+
+        if ($verified) {
+            $customer->forceFill(['email_verified_at' => now()])->save();
+        }
+
+        return $customer;
     }
 
     private function chargeLock(int $payableId, string $type = Payment::TYPE_BOOKING): \Illuminate\Contracts\Cache\Lock
@@ -1448,7 +1454,13 @@ class CheckoutChargeSafetyTest extends TestCase
         $this->getJson('/api/customers/bookings')->assertStatus(401);
         $this->getJson('/api/customers/bookings?guest_email=someone@example.com')->assertStatus(401);
 
-        $this->withHeader('Authorization', 'Bearer ' . $this->customer('pat@example.com')->createToken('portal')->plainTextToken);
+        $unverified = $this->customer('pat@example.com');
+        $this->withHeader('Authorization', 'Bearer ' . $unverified->createToken('portal')->plainTextToken);
+        $this->assertSame([], $this->getJson('/api/customers/bookings')->assertOk()->json('data.bookings'), 'an unconfirmed email does not unlock guest bookings made under it');
+
+        $unverified->forceFill(['email_verified_at' => now()])->save();
+        $this->app['auth']->forgetGuards();
+        $this->withHeader('Authorization', 'Bearer ' . $unverified->createToken('portal')->plainTextToken);
 
         $this->assertSame([$mine], collect($this->getJson('/api/customers/bookings')->assertOk()->json('data.bookings'))->pluck('id')->all());
         $this->assertSame([], $this->getJson('/api/customers/bookings?guest_email=someone@example.com')->assertOk()->json('data.bookings'), 'a customer cannot look another guest up by email');
@@ -1489,7 +1501,7 @@ class CheckoutChargeSafetyTest extends TestCase
         $this->getJson('/api/attraction-purchases/customer')->assertStatus(401);
         $this->getJson('/api/event-purchases/customer?guest_email=someone@example.com')->assertStatus(401);
 
-        $this->withHeader('Authorization', 'Bearer ' . $this->customer('pat@example.com')->createToken('portal')->plainTextToken);
+        $this->withHeader('Authorization', 'Bearer ' . $this->customer('pat@example.com', true)->createToken('portal')->plainTextToken);
 
         $this->assertSame([$myAttraction], collect($this->getJson('/api/attraction-purchases/customer?guest_email=pat@example.com')->assertOk()->json('data.purchases'))->pluck('id')->all());
         $this->assertSame([], $this->getJson('/api/attraction-purchases/customer?guest_email=someone@example.com')->assertOk()->json('data.purchases'));
@@ -1507,7 +1519,7 @@ class CheckoutChargeSafetyTest extends TestCase
 
         $this->getJson('/api/bookings')->assertStatus(401);
 
-        $this->withHeader('Authorization', 'Bearer ' . $this->customer('pat@example.com')->createToken('portal')->plainTextToken);
+        $this->withHeader('Authorization', 'Bearer ' . $this->customer('pat@example.com', true)->createToken('portal')->plainTextToken);
 
         $rows = $this->getJson('/api/bookings?per_page=100')->assertOk()->json('data.bookings');
         $this->assertSame([$mine], collect($rows)->pluck('id')->all());

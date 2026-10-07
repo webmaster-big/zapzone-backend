@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Models\ActivityLog;
+use App\Models\Customer;
 use App\Models\CustomerNotification;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
@@ -14,13 +15,33 @@ class CustomerNotificationController extends Controller
 {
     use ScopesByAuthUser;
 
+    private function signedInCustomer(Request $request): ?Customer
+    {
+        $requester = $request->user('sanctum');
+
+        return $requester instanceof Customer ? $requester : null;
+    }
+
+    private function notYours(Request $request, CustomerNotification $notification): ?JsonResponse
+    {
+        $customer = $this->signedInCustomer($request);
+
+        if ($customer && (int) $notification->customer_id !== (int) $customer->id) {
+            return response()->json(['success' => false, 'message' => 'Notification not found'], 404);
+        }
+
+        return null;
+    }
+
     public function index(Request $request): JsonResponse
     {
         $query = CustomerNotification::with(['customer', 'location']);
 
         $this->applyAuthScope($query, $request);
 
-        if ($request->has('customer_id')) {
+        if ($customer = $this->signedInCustomer($request)) {
+            $query->byCustomer($customer->id);
+        } elseif ($request->has('customer_id')) {
             $query->byCustomer($request->customer_id);
         }
 
@@ -65,6 +86,10 @@ class CustomerNotificationController extends Controller
 
     public function store(Request $request): JsonResponse
     {
+        if ($this->signedInCustomer($request)) {
+            return response()->json(['success' => false, 'message' => 'Only staff can send notifications.'], 403);
+        }
+
         $validated = $request->validate([
             'customer_id' => 'required|exists:customers,id',
             'location_id' => 'nullable|exists:locations,id',
@@ -90,14 +115,22 @@ class CustomerNotificationController extends Controller
         ], 201);
     }
 
-    public function show(CustomerNotification $customerNotification): JsonResponse
+    public function show(Request $request, CustomerNotification $customerNotification): JsonResponse
     {
+        if ($denied = $this->notYours($request, $customerNotification)) {
+            return $denied;
+        }
+
         $customerNotification->load(['customer', 'location']);
         return response()->json(['success' => true, 'data' => $customerNotification]);
     }
 
     public function update(Request $request, CustomerNotification $customerNotification): JsonResponse
     {
+        if ($denied = $this->notYours($request, $customerNotification)) {
+            return $denied;
+        }
+
         $validated = $request->validate([
             'status' => ['sometimes', Rule::in(['unread', 'read', 'archived'])],
             'priority' => ['sometimes', Rule::in(['low', 'medium', 'high', 'urgent'])],
@@ -116,8 +149,12 @@ class CustomerNotificationController extends Controller
         ]);
     }
 
-    public function destroy(CustomerNotification $customerNotification): JsonResponse
+    public function destroy(Request $request, CustomerNotification $customerNotification): JsonResponse
     {
+        if ($denied = $this->notYours($request, $customerNotification)) {
+            return $denied;
+        }
+
         $notificationId = $customerNotification->id;
         $customerId = $customerNotification->customer_id;
         $title = $customerNotification->title;
@@ -156,8 +193,12 @@ class CustomerNotificationController extends Controller
         ]);
     }
 
-    public function markAsRead(CustomerNotification $customerNotification): JsonResponse
+    public function markAsRead(Request $request, CustomerNotification $customerNotification): JsonResponse
     {
+        if ($denied = $this->notYours($request, $customerNotification)) {
+            return $denied;
+        }
+
         $customerNotification->update([
             'status' => 'read',
             'read_at' => now()
@@ -172,7 +213,7 @@ class CustomerNotificationController extends Controller
 
     public function markAllAsRead(Request $request): JsonResponse
     {
-        $customerId = $request->get('customer_id');
+        $customerId = $this->signedInCustomer($request)?->id ?? $request->route('customerId') ?? $request->get('customer_id');
 
         if (!$customerId) {
             return response()->json([
@@ -196,7 +237,7 @@ class CustomerNotificationController extends Controller
 
     public function getUnreadCount(Request $request): JsonResponse
     {
-        $customerId = $request->route('customerId') ?? $request->get('customer_id');
+        $customerId = $this->signedInCustomer($request)?->id ?? $request->route('customerId') ?? $request->get('customer_id');
 
         if (!$customerId) {
             return response()->json([

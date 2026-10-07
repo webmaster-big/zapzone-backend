@@ -26,6 +26,7 @@ class TicketOrderController extends Controller
 {
     use \App\Http\Traits\ReversesGiftCards;
     use \App\Http\Traits\ScopesByAuthUser;
+    use \App\Http\Traits\LimitsListingsToRequester;
 
     public function __construct(private TicketOrderService $orders)
     {
@@ -244,6 +245,10 @@ class TicketOrderController extends Controller
         $query = TicketOrder::query()
             ->withoutHeavyColumns()
             ->with(['location', 'customer', 'attractionPurchases.attraction', 'attractionPurchases.addOns', 'eventPurchases.event', 'eventPurchases.addOns', 'payments:id,payable_id,payable_type,status,method,card_last_four,card_type,amount,currency,paid_at,created_at']);
+
+        if ($refusal = $this->limitListingToRequester($query, $request)) {
+            return $refusal;
+        }
 
         $this->applyAuthScope($query, $request);
 
@@ -562,6 +567,17 @@ class TicketOrderController extends Controller
 
         if (!$user) {
             return response()->json(['success' => false, 'message' => 'Unauthenticated.'], 401);
+        }
+
+        if ($user instanceof \App\Models\Customer) {
+            $own = (int) $order->customer_id === (int) $user->id
+                || ($user->email_verified_at !== null && $order->guest_email !== null && strcasecmp($order->guest_email, (string) $user->email) === 0);
+
+            return $own ? null : response()->json(['success' => false, 'message' => 'Order not found'], 404);
+        }
+
+        if (!$user instanceof \App\Models\User) {
+            return response()->json(['success' => false, 'message' => 'Order not found'], 404);
         }
 
         if ($user->company_id && $order->company_id && (int) $order->company_id !== (int) $user->company_id) {

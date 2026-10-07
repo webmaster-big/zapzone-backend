@@ -21,7 +21,7 @@ trait LimitsListingsToRequester
             $query->where(function ($own) use ($requester) {
                 $own->where('customer_id', $requester->id);
 
-                if (! empty($requester->email)) {
+                if (! empty($requester->email) && $requester->email_verified_at !== null) {
                     $own->orWhere('guest_email', $requester->email);
                 }
             });
