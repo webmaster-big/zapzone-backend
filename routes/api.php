@@ -615,6 +615,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::middleware('staff')->group(function () {
         Route::get('notifications/live', [StreamController::class, 'liveNotifications']);
+        Route::get('notifications/feed', [NotificationController::class, 'feed']);
         Route::patch('notifications/mark-all-as-read', [NotificationController::class, 'markAllAsRead']);
         Route::delete('notifications/clear-all', [NotificationController::class, 'clearAll']);
         Route::patch('notifications/{notification}/mark-as-read', [NotificationController::class, 'markAsRead']);

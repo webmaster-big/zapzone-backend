@@ -64,6 +64,10 @@ class BookingController extends Controller
 
     private const CHECKOUT_KEY_CACHE_PREFIX = 'booking-checkout:';
 
+    private const SYNC_OVERLAP_SECONDS = 300;
+
+    private const SYNC_UNSUPPORTED_FILTERS = ['status', 'search', 'booking_date', 'date_from', 'date_to', 'customer_id', 'reference_number'];
+
     private static function redactedChange($oldValue, $newValue): array
     {
         $describe = static function ($value): string {
@@ -133,11 +137,124 @@ class BookingController extends Controller
         }
     }
 
+    private function bookingSyncScope(Request $request, ?User $authUser): string
+    {
+        if (! $authUser) {
+            return 'none';
+        }
+
+        $pinned = in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id;
+        $filter = $request->has('location_id') && is_scalar($request->location_id) ? (string) $request->location_id : '*';
+
+        return implode(':', [
+            (int) $authUser->id,
+            (string) $authUser->role,
+            (int) $authUser->company_id,
+            $pinned ? (int) $authUser->location_id : '*',
+            $filter,
+        ]);
+    }
+
+    private function syncWindowStart(int $cursor): Carbon
+    {
+        $since = Carbon::createFromTimestamp($cursor, config('app.timezone'));
+
+        return $since->getOffset() === now()->getOffset() ? $since : $since->subHour();
+    }
+
+    private function bookingIdsChangedSince(Carbon $since, ?User $authUser): array
+    {
+        $pinnedLocationId = $authUser && in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id
+            ? (int) $authUser->location_id
+            : null;
+
+        return DB::table('bookings')
+            ->when($pinnedLocationId, fn ($bookings) => $bookings->where('location_id', $pinnedLocationId))
+            ->where('updated_at', '>=', $since)
+            ->pluck('id')
+            ->merge(DB::table('booking_internal_notes')
+                ->where(function ($recent) use ($since) {
+                    $recent->where('created_at', '>=', $since)->orWhere('edited_at', '>=', $since);
+                })
+                ->pluck('booking_id'))
+            ->merge(DB::table('bookings')
+                ->whereIn('customer_id', DB::table('customers')->where('updated_at', '>=', $since)->select('id'))
+                ->pluck('id'))
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    private function bookingIdsDeletedSince(Request $request, ?User $authUser, Carbon $since): array
+    {
+        $trashed = Booking::onlyTrashed()->where('bookings.deleted_at', '>=', $since);
+        $removed = \App\Models\BookingTombstone::tableExists()
+            ? \App\Models\BookingTombstone::query()->where('removed_at', '>=', $since)
+            : null;
+        $locationFilter = $request->has('location_id') && is_scalar($request->location_id) ? $request->location_id : null;
+
+        foreach (array_filter([$trashed, $removed]) as $query) {
+            $this->applyAuthScope($query, $request);
+
+            if ($authUser && $authUser->company_id) {
+                $query->whereIn($query->getModel()->qualifyColumn('location_id'), \App\Models\Location::where('company_id', $authUser->company_id)->select('id'));
+            }
+
+            if ($locationFilter !== null) {
+                $query->where($query->getModel()->qualifyColumn('location_id'), $locationFilter);
+            }
+        }
+
+        return $trashed->pluck('bookings.id')
+            ->merge($removed?->pluck('booking_id') ?? [])
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values()
+            ->all();
+    }
+
     public function index(Request $request): JsonResponse
     {
-        try {
-            $staffRequester = app(\App\Services\AddOnRuleService::class)->isStaff($request->user('sanctum'));
+        $updatedSince = $request->query('updated_since');
+        if ($updatedSince !== null && (! is_string($updatedSince) || ! preg_match('/^\d{1,12}$/', $updatedSince))) {
+            return response()->json([
+                'success' => false,
+                'message' => 'updated_since must be a sync cursor returned by this endpoint.',
+            ], 422);
+        }
 
+        $staffRequester = app(\App\Services\AddOnRuleService::class)->isStaff($request->user('sanctum'));
+        $syncRequested = $updatedSince !== null || $request->boolean('sync');
+        $beforeId = $request->query('before_id');
+        if ($syncRequested) {
+            if (! $staffRequester) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Only staff can keep a synced copy of the bookings list.',
+                ], 403);
+            }
+
+            foreach (self::SYNC_UNSUPPORTED_FILTERS as $filter) {
+                if ($request->has($filter)) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'A synced bookings list cannot be combined with filters.',
+                    ], 422);
+                }
+            }
+
+            if ($beforeId !== null && (! is_string($beforeId) || ! preg_match('/^\d{1,18}$/', $beforeId))) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'before_id must be a booking id.',
+                ], 422);
+            }
+        }
+
+        $syncCursor = (string) (now()->getTimestamp() - self::SYNC_OVERLAP_SECONDS);
+
+        try {
             $query = Booking::select(array_merge([
                     'id', 'reference_number', 'customer_id', 'package_id', 'location_id', 'room_id',
                     'created_by', 'guest_name', 'guest_email', 'guest_phone', 'booking_date', 'booking_time',
@@ -168,10 +285,7 @@ class BookingController extends Controller
             // bookings table has no direct company_id — scope through location instead
             $authUser = $this->resolveAuthUser($request);
             if ($authUser && $authUser->company_id) {
-                $companyId = $authUser->company_id;
-                $query->whereHas('location', function ($q) use ($companyId) {
-                    $q->where('company_id', $companyId);
-                });
+                $query->whereIn('bookings.location_id', \App\Models\Location::where('company_id', $authUser->company_id)->select('id'));
             }
 
             if ($request->has('location_id')) {
@@ -210,32 +324,88 @@ class BookingController extends Controller
                 $this->applyBookingSearch($query, (string) $request->search);
             }
 
+            $sync = null;
+            if ($syncRequested) {
+                $sync = [
+                    'cursor' => $syncCursor,
+                    'scope' => $this->bookingSyncScope($request, $authUser),
+                ];
+            }
+
             $sortBy = $request->get('sort_by', 'booking_date');
             $sortOrder = strtolower((string) $request->get('sort_order', 'desc'));
             if (!in_array($sortOrder, ['asc', 'desc'])) {
                 $sortOrder = 'desc';
             }
 
-            if (in_array($sortBy, ['booking_date', 'booking_time', 'total_amount', 'status', 'created_at', 'reference_number', 'participants', 'amount_paid', 'payment_status', 'payment_method', 'updated_at', 'id'])) {
+            if ($syncRequested) {
+                $query->orderBy('bookings.id', 'desc');
+            } elseif (in_array($sortBy, ['booking_date', 'booking_time', 'total_amount', 'status', 'created_at', 'reference_number', 'participants', 'amount_paid', 'payment_status', 'payment_method', 'updated_at', 'id'])) {
                 $query->orderBy($sortBy, $sortOrder);
             }
 
-            $perPage = min($request->get('per_page', 15), 100); // Max 100 items per page
-            $bookings = $query->paginate($perPage);
+            $perPage = max(1, min((int) $request->get('per_page', 15), $updatedSince !== null ? 500 : 100));
+            $page = $syncRequested && $beforeId !== null ? 1 : null;
+            $onlyBelowCursorId = function ($listed) use ($syncRequested, $beforeId) {
+                if ($syncRequested && $beforeId !== null) {
+                    $listed->where('bookings.id', '<', (int) $beforeId);
+                }
+            };
+
+            if ($updatedSince !== null) {
+                $since = $this->syncWindowStart((int) $updatedSince);
+                if ($since->lt(now()->subHours(3))) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'That sync cursor has expired. Download the bookings list again.',
+                    ], 422);
+                }
+
+                $read = DB::transaction(function () use ($query, $request, $authUser, $since, $perPage, $page, $onlyBelowCursorId) {
+                    $changedIds = $this->bookingIdsChangedSince($since, $authUser);
+                    if (count($changedIds) > (int) config('booking_rules.sync_max_changed_ids', 10000)) {
+                        return null;
+                    }
+
+                    $total = (clone $query)->count();
+                    $deletedIds = $this->bookingIdsDeletedSince($request, $authUser, $since);
+                    $query->whereIn('bookings.id', $changedIds);
+                    $onlyBelowCursorId($query);
+
+                    return [$query->paginate($perPage, ['*'], 'page', $page), $total, $deletedIds];
+                });
+
+                if ($read === null) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Too many bookings changed since that sync cursor. Download the bookings list again.',
+                    ], 422);
+                }
+
+                [$bookings, $sync['total'], $sync['deleted_ids']] = $read;
+            } else {
+                $onlyBelowCursorId($query);
+                $bookings = $query->paginate($perPage, ['*'], 'page', $page);
+            }
+
+            $data = [
+                'bookings' => $bookings->items(),
+                'pagination' => [
+                    'current_page' => $bookings->currentPage(),
+                    'last_page' => $bookings->lastPage(),
+                    'per_page' => $bookings->perPage(),
+                    'total' => $bookings->total(),
+                    'from' => $bookings->firstItem(),
+                    'to' => $bookings->lastItem(),
+                ],
+            ];
+            if ($sync !== null) {
+                $data['sync'] = $sync;
+            }
 
             return response()->json([
                 'success' => true,
-                'data' => [
-                    'bookings' => $bookings->items(),
-                    'pagination' => [
-                        'current_page' => $bookings->currentPage(),
-                        'last_page' => $bookings->lastPage(),
-                        'per_page' => $bookings->perPage(),
-                        'total' => $bookings->total(),
-                        'from' => $bookings->firstItem(),
-                        'to' => $bookings->lastItem(),
-                    ],
-                ],
+                'data' => $data,
             ]);
         } catch (\Exception $e) {
             Log::error('Error in bookings index', [
@@ -306,7 +476,7 @@ class BookingController extends Controller
             $query->orderBy($sortBy, $sortOrder);
         }
 
-        $perPage = min($request->get('per_page', 15), 100); // Max 100 items per page
+        $perPage = max(1, min((int) $request->get('per_page', 15), 100)); // Max 100 items per page
         $bookings = $query->paginate($perPage);
 
         return response()->json([
@@ -2173,6 +2343,10 @@ class BookingController extends Controller
                     }
                 }
 
+                if ($attractionLines !== null || $addOnLines !== null) {
+                    $booking->touch();
+                }
+
                 if (isset($validated['room_id']) || isset($validated['booking_date']) || isset($validated['booking_time']) || isset($validated['duration']) || isset($validated['duration_unit'])) {
                     $timeSlot = PackageTimeSlot::where('booking_id', $booking->id)->first();
 
@@ -4030,7 +4204,7 @@ class BookingController extends Controller
             }
             $query->orderBy($sortBy, $sortOrder);
 
-            $perPage = min($request->get('per_page', 15), 100);
+            $perPage = max(1, min((int) $request->get('per_page', 15), 100));
             $bookings = $query->paginate($perPage);
 
             return response()->json([

@@ -35,23 +35,18 @@ class AuthController extends RoutingController
         }
 
         if ($user->status === 'inactive') {
-            $block = (bool) config('registration.block_inactive_login');
-
             Log::warning('Inactive staff account attempted login', [
                 'user_id' => $user->id,
                 'email' => $user->email,
                 'ip' => $request->ip(),
-                'enforced' => $block,
             ]);
 
-            if ($block) {
-                return response()->json([
-                    'message' => 'Your account is inactive. Please ask an administrator to reactivate it.',
-                    'errors' => [
-                        'email' => ['Your account is inactive. Please ask an administrator to reactivate it.']
-                    ]
-                ], 403);
-            }
+            return response()->json([
+                'message' => 'Your account is inactive. Please ask an administrator to reactivate it.',
+                'errors' => [
+                    'email' => ['Your account is inactive. Please ask an administrator to reactivate it.']
+                ]
+            ], 403);
         }
 
         $type = $user->role;

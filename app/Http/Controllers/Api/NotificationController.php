@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Models\ActivityLog;
+use App\Models\Location;
 use App\Models\Notification;
 use App\Models\User;
 use Illuminate\Http\Request;
@@ -15,20 +16,69 @@ class NotificationController extends Controller
 {
     use ScopesByAuthUser;
 
-    public function index(Request $request): JsonResponse
+    private const FEED_BATCH_LIMIT = 20;
+
+    private function visibleTo(Request $request, bool $applyLocationFilter = true)
     {
-        $query = Notification::with('location');
+        $query = Notification::query();
 
         $this->applyAuthScope($query, $request);
 
         if ($companyId = $this->resolveAuthUser($request)?->company_id) {
-            $query->where(fn ($scoped) => $scoped->whereNull('location_id')
-                ->orWhereHas('location', fn ($location) => $location->where('company_id', $companyId)));
+            $query->whereIn('location_id', Location::where('company_id', $companyId)->select('id'));
         }
 
-        if ($request->has('location_id')) {
+        if ($applyLocationFilter && $request->has('location_id')) {
             $query->byLocation($request->location_id);
         }
+
+        return $query;
+    }
+
+    public function feed(Request $request): JsonResponse
+    {
+        $latest = (int) Notification::max('id');
+        $after = $request->query('after');
+        $start = is_string($after) && preg_match('/^n(\d{1,18})$/', $after, $match) ? (int) $match[1] : null;
+
+        $items = $start === null || $start >= $latest
+            ? collect()
+            : $this->visibleTo($request)
+                ->where('id', '>', $start)
+                ->where('id', '<=', $latest)
+                ->orderByDesc('id')
+                ->limit(self::FEED_BATCH_LIMIT)
+                ->get(['id', 'type', 'priority', 'title', 'message', 'user_id', 'location_id', 'created_at'])
+                ->reverse()
+                ->values();
+
+        $data = [
+            'cursor' => 'n' . $latest,
+            'items' => $items->map(fn (Notification $notification) => [
+                'id' => $notification->id,
+                'type' => $notification->type,
+                'priority' => $notification->priority,
+                'title' => $notification->title,
+                'message' => $notification->message,
+                'user_id' => $notification->user_id,
+                'location_id' => $notification->location_id,
+                'created_at' => $notification->created_at?->toIso8601String(),
+            ])->values(),
+        ];
+
+        if ($request->boolean('count') || $items->isNotEmpty()) {
+            $data['unread'] = $this->visibleTo($request, false)->unread()->count();
+        }
+
+        return response()->json([
+            'success' => true,
+            'data' => $data,
+        ]);
+    }
+
+    public function index(Request $request): JsonResponse
+    {
+        $query = $this->visibleTo($request)->with('location');
 
         if ($request->has('status')) {
             $query->where('status', $request->status);

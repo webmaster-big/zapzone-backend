@@ -314,6 +314,10 @@ class UserController extends Controller
             return $deny('Forbidden: an account cannot be moved to another company');
         }
 
+        if ((int) $actor->id === (int) $target->id && in_array('status', $changing, true)) {
+            return $deny('Forbidden: you cannot deactivate your own account');
+        }
+
         if ($actor->role === 'company_admin') {
             return null;
         }
