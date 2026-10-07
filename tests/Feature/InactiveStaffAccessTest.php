@@ -190,6 +190,63 @@ class InactiveStaffAccessTest extends TestCase
         $this->assertFalse($pending->fresh()->is_active);
     }
 
+    public function test_only_signed_in_staff_can_send_invitations(): void
+    {
+        $manager = $this->staff('location_manager', 'lead');
+        $otherLocation = Location::create([
+            'company_id' => $this->company->id,
+            'name' => 'Canton | Zap Zone',
+            'address' => '2 Test Way',
+            'city' => 'Canton',
+            'state' => 'MI',
+            'zip_code' => '48187',
+            'phone' => '7345551234',
+            'email' => 'canton@zapzone.test',
+            'timezone' => 'America/Detroit',
+            'is_active' => true,
+        ]);
+
+        $this->app['auth']->forgetGuards();
+        $this->flushHeaders();
+        $this->postJson('/api/shareable-tokens', ['email' => 'stranger@example.com', 'role' => 'company_admin', 'company_id' => $this->company->id])->assertForbidden();
+        $this->assertSame(0, ShareableToken::where('email', 'stranger@example.com')->count());
+
+        $this->as($this->attendant->createToken('desk')->plainTextToken)
+            ->postJson('/api/shareable-tokens', ['email' => 'friend@example.com', 'role' => 'attendant', 'location_id' => $this->location->id])
+            ->assertForbidden();
+
+        $managerToken = $manager->createToken('lead')->plainTextToken;
+        $this->as($managerToken)
+            ->postJson('/api/shareable-tokens', ['email' => 'boss@example.com', 'role' => 'company_admin'])
+            ->assertForbidden();
+        $this->as($managerToken)
+            ->postJson('/api/shareable-tokens', ['email' => 'newhire@example.com', 'role' => 'attendant', 'location_id' => $otherLocation->id])
+            ->assertSuccessful();
+        $this->assertSame($this->location->id, (int) ShareableToken::where('email', 'newhire@example.com')->value('location_id'));
+
+        $this->as($this->admin->createToken('owner')->plainTextToken)
+            ->postJson('/api/shareable-tokens', ['email' => 'partner@example.com', 'role' => 'company_admin'])
+            ->assertSuccessful();
+    }
+
+    public function test_only_a_company_admin_changes_a_location_managers_status(): void
+    {
+        $lead = $this->staff('location_manager', 'lead');
+        $peer = $this->staff('location_manager', 'peer');
+        $leadToken = $lead->createToken('lead')->plainTextToken;
+
+        $this->as($leadToken)->patchJson("/api/users/{$peer->id}/toggle-status")->assertForbidden();
+        $this->as($leadToken)->putJson("/api/users/{$peer->id}", ['status' => 'inactive'])->assertForbidden();
+        $this->assertSame('active', $peer->fresh()->status);
+
+        $this->as($leadToken)->patchJson("/api/users/{$this->attendant->id}/toggle-status")->assertOk()->assertJsonPath('data.status', 'inactive');
+
+        $this->as($this->admin->createToken('owner')->plainTextToken)
+            ->patchJson("/api/users/{$peer->id}/toggle-status")
+            ->assertOk()
+            ->assertJsonPath('data.status', 'inactive');
+    }
+
     public function test_customer_tokens_are_not_affected(): void
     {
         $customer = Customer::create([

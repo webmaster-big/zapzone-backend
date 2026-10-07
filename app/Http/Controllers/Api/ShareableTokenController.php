@@ -23,7 +23,7 @@ class ShareableTokenController extends Controller
                 'location_id' => 'nullable|exists:locations,id',
             ]);
 
-            $enforce = (bool) config('registration.require_staff_to_invite');
+            $enforce = true;
             $user = $request->user('sanctum');
             $staff = $user instanceof \App\Models\User && in_array((string) $user->role, \App\Http\Middleware\EnsureStaff::ROLES, true) ? $user : null;
 

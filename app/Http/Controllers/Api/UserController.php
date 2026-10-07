@@ -330,6 +330,10 @@ class UserController extends Controller
             return $deny('Forbidden: you cannot change your own role, location or status');
         }
 
+        if (in_array('status', $changing, true) && $target->role === 'location_manager') {
+            return $deny('Forbidden: only a company admin can deactivate or reactivate a location manager');
+        }
+
         if (in_array('role', $changing, true) && ($validated['role'] ?? null) === 'company_admin') {
             return $deny('Forbidden: a location manager cannot grant company admin access');
         }
@@ -926,6 +930,13 @@ class UserController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Forbidden: you cannot deactivate your own account',
+            ], 403);
+        }
+
+        if (request()->user()?->role !== 'company_admin' && $user->role === 'location_manager') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Forbidden: only a company admin can deactivate or reactivate a location manager',
             ], 403);
         }
 
