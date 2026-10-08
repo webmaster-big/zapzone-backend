@@ -512,7 +512,9 @@ class BookingController extends Controller
         $staffCreating = app(\App\Services\AddOnRuleService::class)->isStaff($request->user('sanctum'));
 
         $validated = $request->validate([
-            'customer_id' => 'nullable|required_without:guest_name|exists:customers,id',
+            'customer_id' => $staffCreating
+                ? 'nullable|required_without:guest_name|exists:customers,id'
+                : 'nullable|integer|required_without:guest_name',
             'guest_name' => 'nullable|required_without:customer_id|string|max:255',
             'guest_email' => $staffCreating
                 ? 'nullable|email|max:255'
@@ -627,6 +629,20 @@ class BookingController extends Controller
 
         if (! $isStaff && ($validated['payment_method'] ?? 'paylater') === 'paylater') {
             $validated['amount_paid'] = 0;
+        }
+
+        if (! $isStaff) {
+            $requester = $request->user('sanctum');
+            $validated['customer_id'] = $requester instanceof \App\Models\Customer ? $requester->id : null;
+            $validated['created_by'] = null;
+
+            if ($validated['customer_id'] === null && (empty($validated['guest_name']) || empty($validated['guest_email']))) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Please enter the guest name and email.',
+                    'errors' => ['guest_email' => ['Please enter the guest name and email.']],
+                ], 422);
+            }
         }
 
         if (empty($validated['package_id'])) {
@@ -752,7 +768,12 @@ class BookingController extends Controller
         }
 
         if ($earlierAttempt && !$requestCarriesCode && $this->isUnchangedRetryOf($earlierAttempt, $validated, $addOnLines, $attractionLines)) {
-            $earlierAttempt->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
+            $earlierAttempt->load($isStaff
+                ? ['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']
+                : ['package', 'location', 'room', 'attractions', 'addOns']);
+            if (! $isStaff) {
+                $earlierAttempt->makeHidden(['internal_notes', 'notes', 'special_requests', 'guest_name', 'guest_phone', 'guest_address', 'guest_city', 'guest_state', 'guest_zip', 'guest_country', 'customer_id', 'created_by', 'overlap_override_by']);
+            }
             Log::info('Duplicate booking prevented (existing pending found)', [
                 'existing_booking_id' => $earlierAttempt->id,
                 'package_id' => $validated['package_id'] ?? null,
@@ -1790,8 +1811,8 @@ class BookingController extends Controller
                 'qr_code_path' => $qrCodePath,
                 'qr_code_url' => asset('storage/' . $qrCodePath),
                 'email_sent' => $emailSent,
-                'email_error' => $emailError,
-                'recipient_email' => $recipientEmail,
+                'email_error' => $staffStoring ? $emailError : null,
+                'recipient_email' => $staffStoring ? $recipientEmail : \App\Services\WaiverProfileService::maskEmail($recipientEmail),
             ],
         ]);
     }

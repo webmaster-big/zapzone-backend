@@ -84,9 +84,9 @@ Route::post('customer-register', [ApiAuthController::class, 'customerRegister'])
 // --- Public waiver flows (token-addressed, no auth) ---
 Route::get('waivers/access/{token}',          [WaiverPublicController::class, 'show']);
 Route::get('waivers/status/{token}',          [WaiverPublicController::class, 'status']);
-Route::post('waivers/access/{token}/submit',  [WaiverPublicController::class, 'submit'])->middleware('throttle:30,1');
+Route::post('waivers/access/{token}/submit',  [WaiverPublicController::class, 'submit'])->middleware('throttle:30,1,waiver-access-submit');
 Route::get('waivers/kiosk/{templateId}',      [WaiverPublicController::class, 'kioskShow'])->whereNumber('templateId');
-Route::post('waivers/kiosk/{templateId}/submit', [WaiverPublicController::class, 'kioskSubmit'])->middleware('throttle:60,1')->whereNumber('templateId');
+Route::post('waivers/kiosk/{templateId}/submit', [WaiverPublicController::class, 'kioskSubmit'])->middleware('throttle:60,1,waiver-kiosk-submit')->whereNumber('templateId');
 Route::post('waivers/ads/learn-more', [WaiverAdController::class, 'learnMore'])->middleware('throttle:waiver-ad-learn-more');
 Route::post('waivers/kiosk/{templateId}/lookup', [WaiverPublicController::class, 'kioskLookup'])->middleware('throttle:waiver-returning-lookup')->whereNumber('templateId');
 Route::get('waivers/escape-room/{locationId}', [WaiverPublicController::class, 'escapeRoomKiosk'])->whereNumber('locationId')->middleware('throttle:escape-room-kiosk');
@@ -94,9 +94,9 @@ Route::get('waivers/escape-room/{locationId}/rooms/{packageId}', [WaiverPublicCo
 Route::post('waivers/escape-room/{locationId}/submit', [WaiverPublicController::class, 'escapeRoomSubmit'])->whereNumber('locationId')->middleware('throttle:escape-room-submit');
 // Bulk / chaperone (manage-token addressed, no auth)
 Route::get('waivers/bulk/{manageToken}',             [WaiverPublicController::class, 'bulkShow']);
-Route::post('waivers/bulk/{manageToken}/recipients', [WaiverPublicController::class, 'bulkAddRecipients'])->middleware('throttle:30,1');
-Route::post('waivers/bulk/{manageToken}/send',       [WaiverPublicController::class, 'bulkSend'])->middleware('throttle:10,1');
-Route::post('waivers/bulk/{manageToken}/recipients/{recipientId}/resend', [WaiverPublicController::class, 'bulkResendRecipient'])->middleware('throttle:10,1')->whereNumber('recipientId');
+Route::post('waivers/bulk/{manageToken}/recipients', [WaiverPublicController::class, 'bulkAddRecipients'])->middleware('throttle:30,1,waiver-bulk-recipients');
+Route::post('waivers/bulk/{manageToken}/send',       [WaiverPublicController::class, 'bulkSend'])->middleware('throttle:10,1,waiver-bulk-send');
+Route::post('waivers/bulk/{manageToken}/recipients/{recipientId}/resend', [WaiverPublicController::class, 'bulkResendRecipient'])->middleware('throttle:10,1,waiver-bulk-resend')->whereNumber('recipientId');
 
 Route::post('client-errors', [ClientErrorController::class, 'store'])->middleware('throttle:client-errors');
 
@@ -136,7 +136,7 @@ Route::prefix('photos')->group(function () {
     Route::get('access/{accessToken}/photos/{photoId}/download', [PhotoPublicController::class, 'downloadPhoto'])->whereNumber('photoId')->middleware('throttle:photo-media');
 });
 
-Route::middleware('throttle:120,1')->group(function () {
+Route::middleware('throttle:120,1,analytics')->group(function () {
     Route::post('analytics/track',       [PageAnalyticsController::class, 'track']);
     Route::post('analytics/track/batch', [PageAnalyticsController::class, 'trackBatch']);
     Route::post('analytics/duration',    [PageAnalyticsController::class, 'patchDuration']);
@@ -157,7 +157,7 @@ Route::get('/packages/{id}', [PackageController::class, 'show']); // include
 Route::get('attractions/grouped', [AttractionController::class, 'attractionsGroupedByName']);  // include
 Route::get('attractions/popular', [AttractionController::class, 'getPopular']);
 Route::get('attractions/location/{locationId}', [AttractionController::class, 'getByLocation']);
-Route::get('attractions/{id}/slot-availability/{date}', [AttractionController::class, 'slotAvailability'])->middleware('throttle:120,1');
+Route::get('attractions/{id}/slot-availability/{date}', [AttractionController::class, 'slotAvailability'])->middleware('throttle:120,1,slot-availability');
 Route::get('custom-fields/applicable', [\App\Http\Controllers\Api\CustomFieldController::class, 'applicable'])->middleware('throttle:custom-fields');
 Route::get('attractions/{id}', [AttractionController::class, 'show']); // include
 Route::get('packages/location/{locationId}', [PackageController::class, 'getByLocation']);
@@ -177,13 +177,13 @@ Route::post('bookings/{booking}/qrcode', [BookingController::class, 'storeQrCode
 Route::delete('bookings/{booking}', [BookingController::class, 'destroy']);
 Route::delete('bookings/{id}/force-delete', [BookingController::class, 'publicForceDelete']);
 
-Route::post('ticket-orders/quote', [TicketOrderController::class, 'quote'])->middleware('throttle:30,1');
-Route::post('ticket-orders', [TicketOrderController::class, 'store'])->middleware('throttle:10,1');
-Route::delete('ticket-orders/{id}/rollback', [TicketOrderController::class, 'publicRollback'])->middleware('throttle:10,1');
-Route::post('ticket-orders/{id}/qrcode', [TicketOrderController::class, 'storeQrCode'])->middleware('throttle:20,1');
+Route::post('ticket-orders/quote', [TicketOrderController::class, 'quote'])->middleware('throttle:30,1,order-quote');
+Route::post('ticket-orders', [TicketOrderController::class, 'store'])->middleware('throttle:10,1,order-create');
+Route::delete('ticket-orders/{id}/rollback', [TicketOrderController::class, 'publicRollback'])->middleware('throttle:10,1,order-rollback');
+Route::post('ticket-orders/{id}/qrcode', [TicketOrderController::class, 'storeQrCode'])->middleware('throttle:20,1,order-qrcode');
 
 Route::post('attraction-purchases', [AttractionPurchaseController::class, 'store']); // include
-Route::post('attraction-purchases/{attractionPurchase}/qrcode', [AttractionPurchaseController::class, 'storeQrCode']); // include
+Route::post('attraction-purchases/{attractionPurchase}/qrcode', [AttractionPurchaseController::class, 'storeQrCode'])->middleware('throttle:20,1,ticket-receipt'); // include
 Route::get('attraction-purchases/customer', [AttractionPurchaseController::class, 'customerPurchases']); // include
 Route::delete('attraction-purchases/{attractionPurchase}', [AttractionPurchaseController::class, 'destroy']);
 Route::delete('attraction-purchases/{id}/force-delete', [AttractionPurchaseController::class, 'publicForceDelete']);
@@ -192,7 +192,7 @@ Route::get('locations', [LocationController::class, 'index']);
 Route::get('storefront/locations', [LocationController::class, 'storefront']);
 Route::get('storefront/brand', [CompanyController::class, 'storefront']);
 
-Route::post('users', [UserController::class, 'store'])->middleware('throttle:10,1');
+Route::post('users', [UserController::class, 'store'])->middleware('throttle:10,1,registration');
 
 // Reads and store() stay public: the storefront checkout flow needs them. update() and
 // destroy() reschedule/void a booking's slot, so they moved into the staff group below - no
@@ -201,8 +201,8 @@ Route::apiResource('package-time-slots', PackageTimeSlotController::class)->only
 Route::get('package-time-slots/available-slots/{packageId}/{date}', [PackageTimeSlotController::class, 'getAvailableSlotsAuto']); // include
 
 
-Route::post('shareable-tokens/check', [ShareableTokenController::class, 'check'])->middleware('throttle:30,1');
-Route::post('shareable-tokens', [ShareableTokenController::class, 'store'])->middleware('throttle:20,1');
+Route::post('shareable-tokens/check', [ShareableTokenController::class, 'check'])->middleware('throttle:30,1,invite-check');
+Route::post('shareable-tokens', [ShareableTokenController::class, 'store'])->middleware('throttle:20,1,invite-create');
 
 Route::post('contacts/deactivate', [ContactController::class, 'deactivate']);
 
@@ -734,7 +734,7 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     Route::get('event-purchases/verify/{reference}', [EventPurchaseController::class, 'verifyByReference'])
-        ->middleware(['staff', 'throttle:60,1']);
+        ->middleware(['staff', 'throttle:60,1,event-verify']);
     Route::get('event-purchases/trashed', [EventPurchaseController::class, 'trashed'])->middleware('staff');
     Route::post('event-purchases/bulk-restore', [EventPurchaseController::class, 'bulkRestore'])->middleware('staff');
     Route::apiResource('event-purchases', EventPurchaseController::class)->except(['store', 'update'])->middleware('staff');
@@ -849,7 +849,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('waivers/kiosk-session',    [WaiverController::class, 'kioskSession'])->middleware('staff');
     Route::get('dashboard-settings',  [DashboardSettingController::class, 'show'])->middleware('staff');
     Route::put('dashboard-settings',  [DashboardSettingController::class, 'update'])->middleware('staff');
-    Route::post('waivers/scan',             [WaiverController::class, 'scan'])->middleware(['staff', 'throttle:60,1']);
+    Route::post('waivers/scan',             [WaiverController::class, 'scan'])->middleware(['staff', 'throttle:60,1,waiver-scan']);
     Route::post('waivers/check-in-all',     [WaiverController::class, 'checkInAll'])->middleware('staff');
     Route::post('waivers/{waiver}/check-in',      [WaiverController::class, 'checkIn'])->middleware('staff');
     Route::post('waivers/{waiver}/undo-check-in', [WaiverController::class, 'undoCheckIn'])->middleware('staff');

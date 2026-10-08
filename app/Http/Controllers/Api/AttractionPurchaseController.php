@@ -394,7 +394,10 @@ class AttractionPurchaseController extends Controller
 
         $existingPending = $requestCarriesCode ? null : $duplicateQuery->first();
         if ($existingPending) {
-            $existingPending->load(['attraction', 'customer', 'createdBy', 'addOns']);
+            $existingPending->load($isStaff ? ['attraction', 'customer', 'createdBy', 'addOns'] : ['attraction', 'addOns']);
+            if (! $isStaff) {
+                $existingPending->makeHidden(['guest_name', 'guest_phone', 'guest_address', 'guest_city', 'guest_state', 'guest_zip', 'guest_country', 'customer_id', 'created_by', 'notes', 'transaction_id']);
+            }
             Log::info('Duplicate attraction purchase prevented (existing pending found)', [
                 'existing_purchase_id' => $existingPending->id,
                 'attraction_id' => $validated['attraction_id'],
@@ -746,6 +749,18 @@ class AttractionPurchaseController extends Controller
             ]);
         }
 
+        $requester = $request->user('sanctum');
+        $staffSending = app(\App\Services\AddOnRuleService::class)->isStaff($requester);
+        $receiptKey = 'attraction-purchase-receipt:' . $attractionPurchase->id;
+
+        if (! $staffSending
+            && (! $requester instanceof \App\Models\Customer || (int) $attractionPurchase->customer_id !== (int) $requester->id)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Please sign in as the buyer to send this receipt.',
+            ], 403);
+        }
+
         $recipientEmail = $attractionPurchase->customer
             ? $attractionPurchase->customer->email
             : $attractionPurchase->guest_email;
@@ -764,6 +779,16 @@ class AttractionPurchaseController extends Controller
                 'success' => false,
                 'message' => 'No email address found for this purchase',
             ], 400);
+        }
+
+        if (! $staffSending
+            && (! $attractionPurchase->created_at
+                || $attractionPurchase->created_at->lt(now()->subDay())
+                || ! Cache::add($receiptKey, true, now()->addDay()))) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This receipt was already sent. Please contact the venue if you need it again.',
+            ], 422);
         }
 
         $emailSent = false;
@@ -853,8 +878,12 @@ class AttractionPurchaseController extends Controller
                 'method' => $useGmailApi ? 'Gmail API' : 'SMTP',
             ]);
 
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             $emailError = $e->getMessage();
+
+            if (! $staffSending) {
+                Cache::forget($receiptKey);
+            }
 
             Log::error('❌ Failed to send attraction purchase receipt', [
                 'email' => $recipientEmail,
@@ -869,15 +898,17 @@ class AttractionPurchaseController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to send receipt email',
-                'error' => $emailError,
+                'error' => $staffSending ? $emailError : null,
             ], 500);
         }
 
+        $shownEmail = $staffSending ? $recipientEmail : \App\Services\WaiverProfileService::maskEmail($recipientEmail);
+
         return response()->json([
             'success' => true,
-            'message' => 'Receipt sent successfully to ' . $recipientEmail,
+            'message' => 'Receipt sent successfully to ' . $shownEmail,
             'data' => [
-                'email_sent_to' => $recipientEmail,
+                'email_sent_to' => $shownEmail,
                 'email_sent' => $emailSent,
                 'method' => $useGmailApi ? 'Gmail API' : 'SMTP',
             ],

@@ -1357,7 +1357,7 @@ class VisitFollowUpTest extends TestCase
         $this->getJson("/api/visit-feedback/{$token}")->assertOk()
             ->assertJsonPath('data.opt_out_only', true)
             ->assertJsonPath('data.unsubscribed', false);
-        $this->getJson('/api/visit-feedback/' . substr($token, 0, -1) . '0')->assertNotFound();
+        $this->getJson('/api/visit-feedback/' . substr($token, 0, -1) . (str_ends_with($token, '0') ? '1' : '0'))->assertNotFound();
         $this->postJson("/api/visit-feedback/{$token}", ['rating' => 1])->assertNotFound();
 
         \App\Models\Contact::create(['company_id' => $this->company->id, 'email' => 'optout@example.test', 'status' => 'active']);
