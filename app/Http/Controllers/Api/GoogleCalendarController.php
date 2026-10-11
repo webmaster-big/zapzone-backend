@@ -111,6 +111,12 @@ class GoogleCalendarController extends Controller
 
         $locationId = (int) $request->query('location_id');
 
+        $location = $this->scopedLocation($request, $locationId);
+
+        if ($location instanceof JsonResponse) {
+            return $location;
+        }
+
         if (!$this->credentialsConfigured()) {
             return response()->json([
                 'success' => false,
@@ -145,15 +151,15 @@ class GoogleCalendarController extends Controller
     public function handleCallback(Request $request)
     {
         $code = $request->get('code');
-        $state = $request->get('state');
-        $locationId = null;
-
-        if ($state) {
-            $stateData = json_decode(base64_decode($state), true);
-            $locationId = $stateData['location_id'] ?? null;
-        }
+        $locationId = GoogleCalendarService::locationFromState($request->get('state'));
 
         $frontendUrl = config('google_calendar.frontend_redirect_url', 'http://localhost:3000/settings/google-calendar');
+
+        if ($code && !$locationId) {
+            Log::warning('Google Calendar OAuth callback refused: the state was missing, forged or already used');
+
+            return redirect($frontendUrl . '?error=' . urlencode('This Google sign-in link has expired. Please start the connection again from Settings.'));
+        }
 
         if (!$code) {
             $error = $request->get('error', 'unknown');
@@ -212,6 +218,12 @@ class GoogleCalendarController extends Controller
 
         $locationId = (int) $request->input('location_id');
 
+        $location = $this->scopedLocation($request, $locationId);
+
+        if ($location instanceof JsonResponse) {
+            return $location;
+        }
+
         try {
             $settings = GoogleCalendarSetting::getSettings($locationId);
             $email = $settings?->google_account_email;
@@ -262,6 +274,13 @@ class GoogleCalendarController extends Controller
         ]);
 
         $locationId = (int) $request->query('location_id');
+
+        $location = $this->scopedLocation($request, $locationId);
+
+        if ($location instanceof JsonResponse) {
+            return $location;
+        }
+
         $service = $this->resolveService($locationId);
 
         if (!$service->isConnected()) {
@@ -299,6 +318,13 @@ class GoogleCalendarController extends Controller
         ]);
 
         $locationId = (int) $validated['location_id'];
+
+        $location = $this->scopedLocation($request, $locationId);
+
+        if ($location instanceof JsonResponse) {
+            return $location;
+        }
+
         $service = $this->resolveService($locationId);
 
         if (!$service->isConnected()) {
@@ -328,6 +354,13 @@ class GoogleCalendarController extends Controller
         ]);
 
         $locationId = (int) $validated['location_id'];
+
+        $location = $this->scopedLocation($request, $locationId);
+
+        if ($location instanceof JsonResponse) {
+            return $location;
+        }
+
         $service = $this->resolveService($locationId);
 
         if (!$service->isConnected()) {
@@ -384,6 +417,10 @@ class GoogleCalendarController extends Controller
         $booking = \App\Models\Booking::with(['package', 'location', 'customer', 'room', 'attractions', 'addOns'])
             ->findOrFail($bookingId);
 
+        if ($denied = $this->denyForeignRecord($booking, 'booking')) {
+            return $denied;
+        }
+
         $service = $this->resolveService($booking->location_id);
 
         if (!$service->isConnected()) {
@@ -438,6 +475,10 @@ class GoogleCalendarController extends Controller
     {
         $booking = \App\Models\Booking::findOrFail($bookingId);
 
+        if ($denied = $this->denyForeignRecord($booking, 'booking')) {
+            return $denied;
+        }
+
         $service = $this->resolveService($booking->location_id);
 
         if (!$service->isConnected()) {
@@ -472,6 +513,13 @@ class GoogleCalendarController extends Controller
         ]);
 
         $locationId = (int) $validated['location_id'];
+
+        $location = $this->scopedLocation($request, $locationId);
+
+        if ($location instanceof JsonResponse) {
+            return $location;
+        }
+
         $service = $this->resolveService($locationId);
 
         if (!$service->isConnected()) {

@@ -298,7 +298,7 @@ class PageAnalyticsController extends Controller
 
     public function conversions(Request $request): JsonResponse
     {
-        $perPage = (int) $request->get('per_page', 25);
+        $perPage = min(200, max(1, (int) $request->get('per_page', 25)));
         $rows = $this->scopedQuery($request)
             ->where('event_type', 'conversion')
             ->orderByDesc('created_at')
@@ -345,7 +345,7 @@ class PageAnalyticsController extends Controller
 
     public function events(Request $request): JsonResponse
     {
-        $perPage = (int) $request->get('per_page', 50);
+        $perPage = min(200, max(1, (int) $request->get('per_page', 50)));
         $rows = $this->scopedQuery($request)->orderByDesc('created_at')->paginate($perPage);
 
         return response()->json([

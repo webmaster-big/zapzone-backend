@@ -21,23 +21,43 @@ class PackageTimeSlotController extends Controller
 
     private const SLOTS_RECONNECT_AFTER_MS = 30000;
 
+    private const GUEST_HIDDEN_FIELDS = ['notes', 'customer_id', 'booking_id', 'user_id'];
+
+    private function staffActor(Request $request): ?\App\Models\User
+    {
+        $actor = $request->user('sanctum');
+
+        return app(\App\Services\AddOnRuleService::class)->isStaff($actor) ? $actor : null;
+    }
+
     private function slotRelationsFor(Request $request): array
     {
-        return app(\App\Services\AddOnRuleService::class)->isStaff($request->user('sanctum'))
+        return $this->staffActor($request)
             ? ['package', 'room', 'booking', 'customer', 'user']
             : ['package', 'room'];
     }
 
+    private function staffMaySee(\App\Models\User $staff, PackageTimeSlot $slot): bool
+    {
+        $location = $slot->package?->location;
+
+        if (in_array($staff->role, ['location_manager', 'attendant'], true) && $staff->location_id) {
+            return $location && (int) $location->id === (int) $staff->location_id;
+        }
+
+        return !$staff->company_id || ($location && (int) $location->company_id === (int) $staff->company_id);
+    }
+
     public function index(Request $request): JsonResponse
     {
+        $staff = $this->staffActor($request);
         $query = PackageTimeSlot::with($this->slotRelationsFor($request));
 
-        $authUser = $this->resolveAuthUser($request);
-        if ($authUser) {
-            if (in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
-                $query->whereHas('package', fn($p) => $p->where('location_id', $authUser->location_id));
-            } elseif ($authUser->company_id) {
-                $query->whereHas('package.location', fn($l) => $l->where('company_id', $authUser->company_id));
+        if ($staff) {
+            if (in_array($staff->role, ['location_manager', 'attendant'], true) && $staff->location_id) {
+                $query->whereHas('package', fn($p) => $p->where('location_id', $staff->location_id));
+            } elseif ($staff->company_id) {
+                $query->whereHas('package.location', fn($l) => $l->where('company_id', $staff->company_id));
             }
         }
 
@@ -53,7 +73,7 @@ class PackageTimeSlotController extends Controller
             $query->byDate($request->date);
         }
 
-        if ($request->has('customer_id')) {
+        if ($staff && $request->has('customer_id')) {
             $query->byCustomer($request->customer_id);
         }
 
@@ -67,6 +87,12 @@ class PackageTimeSlotController extends Controller
 
         $perPage = max(1, min((int) $request->get('per_page', 15), 100));
         $timeSlots = $query->paginate($perPage);
+
+        if (!$staff) {
+            foreach ($timeSlots->items() as $slot) {
+                $slot->makeHidden(self::GUEST_HIDDEN_FIELDS);
+            }
+        }
 
         return response()->json([
             'success' => true,
@@ -84,6 +110,13 @@ class PackageTimeSlotController extends Controller
 
     public function store(Request $request): JsonResponse
     {
+        if (!$this->staffActor($request)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Time slots are booked through a booking.',
+            ], 403);
+        }
+
         $validated = $request->validate([
             'package_id' => 'required|exists:packages,id',
             'room_id' => 'required|exists:rooms,id',
@@ -210,7 +243,16 @@ class PackageTimeSlotController extends Controller
 
     public function show(Request $request, PackageTimeSlot $packageTimeSlot): JsonResponse
     {
+        $staff = $this->staffActor($request);
         $packageTimeSlot->load($this->slotRelationsFor($request));
+
+        if ($staff && !$this->staffMaySee($staff, $packageTimeSlot->loadMissing('package.location'))) {
+            return response()->json(['success' => false, 'message' => 'Time slot not found'], 404);
+        }
+
+        if (!$staff) {
+            $packageTimeSlot->makeHidden(self::GUEST_HIDDEN_FIELDS);
+        }
 
         return response()->json([
             'success' => true,
@@ -421,7 +463,6 @@ class PackageTimeSlotController extends Controller
 
                 echo "event: error\n";
                 echo "data: " . json_encode([
-                    'error' => $e->getMessage(),
                     'message' => 'Failed to load available time slots'
                 ]) . "\n\n";
             }

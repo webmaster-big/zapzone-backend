@@ -257,14 +257,14 @@ class UserController extends Controller
             return null;
         }
 
-        if (!in_array($actor->role, ['company_admin', 'location_manager'], true)) {
+        if (!in_array(EnsureStaff::effectiveRole($actor), ['company_admin', 'location_manager'], true)) {
             return response()->json([
                 'success' => false,
                 'message' => 'Forbidden: only company admins or location managers may manage other staff accounts',
             ], 403);
         }
 
-        if ($actor->role === 'location_manager') {
+        if (EnsureStaff::effectiveRole($actor) === 'location_manager') {
             if ($target->role === 'company_admin') {
                 return response()->json([
                     'success' => false,
@@ -294,7 +294,7 @@ class UserController extends Controller
             ], 403);
         }
 
-        if ($actor->role !== 'company_admin' && (int) $actor->id !== (int) $target->id && $target->role === 'location_manager'
+        if (EnsureStaff::effectiveRole($actor) !== 'company_admin' && (int) $actor->id !== (int) $target->id && $target->role === 'location_manager'
             && (!empty($validated['password'])
                 || (array_key_exists('email', $validated) && strcasecmp(trim((string) $validated['email']), trim((string) $target->email)) !== 0))) {
             return response()->json([
@@ -327,11 +327,11 @@ class UserController extends Controller
             return $deny('Forbidden: you cannot deactivate your own account');
         }
 
-        if ($actor->role === 'company_admin') {
+        if (EnsureStaff::effectiveRole($actor) === 'company_admin') {
             return null;
         }
 
-        if ($actor->role !== 'location_manager') {
+        if (EnsureStaff::effectiveRole($actor) !== 'location_manager') {
             return $deny('Forbidden: only company admins or location managers may change an account\'s role, company, location or status');
         }
 
@@ -389,7 +389,7 @@ class UserController extends Controller
             return $extras;
         }
 
-        if (!$actor || $actor->role !== 'company_admin') {
+        if (!$actor || EnsureStaff::effectiveRole($actor) !== 'company_admin') {
             return response()->json([
                 'success' => false,
                 'message' => 'Forbidden: only a company admin can choose which locations a manager can access',
@@ -451,14 +451,14 @@ class UserController extends Controller
 
     private function guardStaffCreate(User $staff, array &$validated): ?JsonResponse
     {
-        if (!in_array($staff->role, ['company_admin', 'location_manager'], true)) {
+        if (!in_array(EnsureStaff::effectiveRole($staff), ['company_admin', 'location_manager'], true)) {
             return response()->json([
                 'success' => false,
                 'message' => 'Forbidden: only company admins or location managers may create staff accounts',
             ], 403);
         }
 
-        if ($staff->role === 'location_manager') {
+        if (EnsureStaff::effectiveRole($staff) === 'location_manager') {
             if ($validated['role'] === 'company_admin') {
                 return response()->json([
                     'success' => false,
@@ -823,11 +823,18 @@ class UserController extends Controller
             ], 403);
         }
 
-        if (request()->user()?->role !== 'company_admin' && $user->role === 'location_manager') {
+        if (EnsureStaff::effectiveRole(request()->user()) !== 'company_admin' && $user->role === 'location_manager') {
             return response()->json([
                 'success' => false,
                 'message' => 'Forbidden: only a company admin can delete a location manager',
             ], 403);
+        }
+
+        if ($held = $this->recordsDeletedWithTheAccount($user)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This account created ' . implode(', ', $held) . ', which would be deleted with it. Deactivate the account instead.',
+            ], 409);
         }
 
         $deletedBy = User::findOrFail(auth()->id());
@@ -950,7 +957,7 @@ class UserController extends Controller
             ], 403);
         }
 
-        if (request()->user()?->role !== 'company_admin' && $user->role === 'location_manager') {
+        if (EnsureStaff::effectiveRole(request()->user()) !== 'company_admin' && $user->role === 'location_manager') {
             return response()->json([
                 'success' => false,
                 'message' => 'Forbidden: only a company admin can deactivate or reactivate a location manager',
@@ -1004,18 +1011,31 @@ class UserController extends Controller
         $users = User::whereIn('id', $idsToDelete)->get();
         $deletedCount = 0;
         $skippedCount = 0;
+        $keptCount = 0;
         $locationIds = [];
 
         foreach ($users as $user) {
             if ($this->guardUserAdministration($request, $user)
-                || ($request->user()?->role !== 'company_admin' && $user->role === 'location_manager')) {
+                || (EnsureStaff::effectiveRole($request->user()) !== 'company_admin' && $user->role === 'location_manager')) {
                 $skippedCount++;
+                continue;
+            }
+
+            if ($this->recordsDeletedWithTheAccount($user)) {
+                $keptCount++;
                 continue;
             }
 
             $locationIds[] = $user->location_id;
             $user->delete();
             $deletedCount++;
+        }
+
+        if ($deletedCount === 0 && $keptCount > 0) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Nothing was deleted: those accounts created promo codes or email templates or campaigns, which would be deleted with them. Deactivate them instead.',
+            ], 409);
         }
 
         if ($deletedCount === 0) {
@@ -1046,27 +1066,39 @@ class UserController extends Controller
             ]
         );
 
+        $notes = array_filter([
+            $skippedCount > 0 ? "{$skippedCount} skipped because they are outside your access" : null,
+            $keptCount > 0 ? "{$keptCount} kept because they created promo codes or email templates or campaigns; deactivate those instead" : null,
+        ]);
+
         return response()->json([
             'success' => true,
-            'message' => $skippedCount > 0
-                ? "{$deletedCount} users deleted successfully; {$skippedCount} skipped because they are outside your access"
-                : "{$deletedCount} users deleted successfully",
-            'data' => ['deleted_count' => $deletedCount, 'skipped_count' => $skippedCount],
+            'message' => "{$deletedCount} users deleted successfully" . ($notes ? '; ' . implode('; ', $notes) : ''),
+            'data' => ['deleted_count' => $deletedCount, 'skipped_count' => $skippedCount, 'kept_count' => $keptCount],
         ]);
+    }
+
+    private function recordsDeletedWithTheAccount(User $user): array
+    {
+        return array_keys(array_filter([
+            'promo codes' => DB::table('promos')->where('created_by', $user->id)->exists(),
+            'email templates' => DB::table('email_templates')->where('created_by', $user->id)->exists(),
+            'email campaigns' => DB::table('email_campaigns')->where('sent_by', $user->id)->exists(),
+        ]));
     }
 
     public function createWithCredentials(Request $request): JsonResponse
     {
         $authUser = $request->user();
 
-        if (!$authUser || !in_array($authUser->role, ['company_admin', 'location_manager'], true)) {
+        if (!$authUser || !in_array(EnsureStaff::effectiveRole($authUser), ['company_admin', 'location_manager'], true)) {
             return response()->json([
                 'success' => false,
                 'message' => 'Forbidden: only company admins or location managers may create staff accounts',
             ], 403);
         }
 
-        $allowedRoles = $authUser->role === 'company_admin'
+        $allowedRoles = EnsureStaff::effectiveRole($authUser) === 'company_admin'
             ? ['location_manager', 'attendant', 'company_admin']
             : ['location_manager', 'attendant']; // location_manager can create managers and attendants within their location
 
@@ -1219,7 +1251,7 @@ class UserController extends Controller
     {
         $authUser = $request->user();
 
-        if (!$authUser || $authUser->role !== 'company_admin') {
+        if (!$authUser || EnsureStaff::effectiveRole($authUser) !== 'company_admin') {
             return response()->json([
                 'success' => false,
                 'message' => 'Forbidden: only company admins may resend credentials',

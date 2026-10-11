@@ -21,8 +21,6 @@ trait ScopesByAuthUser
             if ($tokenUser instanceof User && (int) $tokenUser->getKey() === (int) $request->input('user_id')) {
                 return $tokenUser;
             }
-
-            return User::find($request->input('user_id'));
         }
 
         return null;

@@ -211,6 +211,21 @@ class AppServiceProvider extends ServiceProvider
             Limit::perHour(15)->by('gc-claim:cust:' . ($request->user()?->id ?? $request->ip())),
         ]);
 
+        RateLimiter::for('sign-in', fn (Request $request) => [
+            Limit::perMinute(10)->by('sign-in:' . strtolower(trim((string) $request->input('email'))) . '|' . $request->ip()),
+            Limit::perMinute(60)->by('sign-in-ip:' . $request->ip()),
+        ]);
+
+        RateLimiter::for('sign-up', fn (Request $request) => Limit::perMinute(10)->by('sign-up:' . $request->ip()));
+
+        $orderCaller = function (Request $request): string {
+            $who = $request->user('sanctum');
+
+            return $who ? class_basename($who) . ':' . $who->getKey() : 'ip:' . $request->ip();
+        };
+        RateLimiter::for('order-quote', fn (Request $request) => Limit::perMinute(30)->by('order-quote:' . $orderCaller($request)));
+        RateLimiter::for('order-create', fn (Request $request) => Limit::perMinute(10)->by('order-create:' . $orderCaller($request)));
+
         RateLimiter::for('payment-charge', function (Request $request) {
             $who = $request->user('sanctum')?->getKey();
             $key = $who ? 'u:' . $who : 'ip:' . $request->ip();

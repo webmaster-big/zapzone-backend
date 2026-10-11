@@ -111,9 +111,11 @@ class AuthorizeNetProfileService
         string $paymentProfileId,
         float $amount,
         string $refId,
-        string $description
+        string $description,
+        ?int $fallbackAlertLocationId = null
     ): array {
         $sent = false;
+        $alertLocationId = $account->location_id ?? $fallbackAlertLocationId;
 
         try {
             $environment = $account->isProduction() ? ANetEnvironment::PRODUCTION : ANetEnvironment::SANDBOX;
@@ -146,7 +148,7 @@ class AuthorizeNetProfileService
             $response = $gateway->execute($controller, $environment);
 
             if (! $gateway->answered($response)) {
-                $gateway->reportNoAnswer($account->location_id, $amount, $description, substr($refId, 0, 20), ['ref_id' => $refId]);
+                $gateway->reportNoAnswer($alertLocationId, $amount, $description, substr($refId, 0, 20), ['ref_id' => $refId]);
 
                 return ['success' => false, 'transaction_id' => null, 'card_last_four' => null, 'card_type' => null, 'error' => AuthorizeNetGateway::NO_ANSWER_MESSAGE];
             }
@@ -154,7 +156,7 @@ class AuthorizeNetProfileService
             if ($response->getMessages()->getResultCode() === 'Ok') {
                 $tresponse = $response->getTransactionResponse();
                 if ($tresponse && $tresponse->getMessages() && ! $gateway->isApproved($tresponse, $amount)) {
-                    $gateway->refuseUnapproved($merchantAuthentication, $environment, $tresponse, $account->location_id, $amount, $description, ['ref_id' => $refId]);
+                    $gateway->refuseUnapproved($merchantAuthentication, $environment, $tresponse, $alertLocationId, $amount, $description, ['ref_id' => $refId]);
 
                     return ['success' => false, 'transaction_id' => null, 'card_last_four' => null, 'card_type' => null, 'error' => 'Your card payment was not approved. Please try a different card.'];
                 }
@@ -195,7 +197,7 @@ class AuthorizeNetProfileService
             ]);
 
             if ($sent) {
-                rescue(fn () => app(AuthorizeNetGateway::class)->reportNoAnswer($account->location_id, $amount, $description, substr($refId, 0, 20), ['ref_id' => $refId]), null, false);
+                rescue(fn () => app(AuthorizeNetGateway::class)->reportNoAnswer($alertLocationId, $amount, $description, substr($refId, 0, 20), ['ref_id' => $refId]), null, false);
 
                 return ['success' => false, 'transaction_id' => null, 'card_last_four' => null, 'card_type' => null, 'error' => AuthorizeNetGateway::NO_ANSWER_MESSAGE];
             }

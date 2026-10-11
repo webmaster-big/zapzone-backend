@@ -77,9 +77,9 @@ use App\Http\Controllers\Api\WaiverTemplateController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
-Route::post('login', [ApiAuthController::class, 'login']); // include
-Route::post('customer-login', [ApiAuthController::class, 'customerLogin']); // include
-Route::post('customer-register', [ApiAuthController::class, 'customerRegister']); // include
+Route::post('login', [ApiAuthController::class, 'login'])->middleware('throttle:sign-in'); // include
+Route::post('customer-login', [ApiAuthController::class, 'customerLogin'])->middleware('throttle:sign-in'); // include
+Route::post('customer-register', [ApiAuthController::class, 'customerRegister'])->middleware('throttle:sign-up'); // include
 
 // --- Public waiver flows (token-addressed, no auth) ---
 Route::get('waivers/access/{token}',          [WaiverPublicController::class, 'show']);
@@ -146,9 +146,9 @@ Route::post('analytics/identify', [\App\Http\Controllers\Api\VisitorTrackingCont
     ->middleware('throttle:analytics-identify');
 
 Route::get('authorize-net/public-key/{locationId}', [AuthorizeNetAccountController::class, 'getPublicKey']); // include
-Route::get('authorize-net/accounts/all', [AuthorizeNetAccountController::class, 'allAccounts'])->middleware('auth:sanctum');
-Route::post('authorize-net/test-connection', [AuthorizeNetAccountController::class, 'testConnection'])->middleware('auth:sanctum');
-Route::post('authorize-net/test-connection/{locationId}', [AuthorizeNetAccountController::class, 'testConnectionForLocation'])->middleware('auth:sanctum');
+Route::get('authorize-net/accounts/all', [AuthorizeNetAccountController::class, 'allAccounts'])->middleware(['auth:sanctum', 'staff']);
+Route::post('authorize-net/test-connection', [AuthorizeNetAccountController::class, 'testConnection'])->middleware(['auth:sanctum', 'staff']);
+Route::post('authorize-net/test-connection/{locationId}', [AuthorizeNetAccountController::class, 'testConnectionForLocation'])->middleware(['auth:sanctum', 'staff']);
 
 
 
@@ -177,8 +177,8 @@ Route::post('bookings/{booking}/qrcode', [BookingController::class, 'storeQrCode
 Route::delete('bookings/{booking}', [BookingController::class, 'destroy']);
 Route::delete('bookings/{id}/force-delete', [BookingController::class, 'publicForceDelete']);
 
-Route::post('ticket-orders/quote', [TicketOrderController::class, 'quote'])->middleware('throttle:30,1,order-quote');
-Route::post('ticket-orders', [TicketOrderController::class, 'store'])->middleware('throttle:10,1,order-create');
+Route::post('ticket-orders/quote', [TicketOrderController::class, 'quote'])->middleware('throttle:order-quote');
+Route::post('ticket-orders', [TicketOrderController::class, 'store'])->middleware('throttle:order-create');
 Route::delete('ticket-orders/{id}/rollback', [TicketOrderController::class, 'publicRollback'])->middleware('throttle:10,1,order-rollback');
 Route::post('ticket-orders/{id}/qrcode', [TicketOrderController::class, 'storeQrCode'])->middleware('throttle:20,1,order-qrcode');
 
@@ -324,33 +324,35 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('accounting-analytics/summary-trend', [AccountingAnalyticsController::class, 'getSummaryTrend'])->middleware('staff');
     Route::get('accounting-analytics/export', [AccountingAnalyticsController::class, 'exportReport'])->middleware('staff');
 
-    Route::get('page-analytics/overview',          [PageAnalyticsController::class, 'overview']);
-    Route::get('page-analytics/timeseries',        [PageAnalyticsController::class, 'timeseries']);
-    Route::get('page-analytics/top-pages',         [PageAnalyticsController::class, 'topPages']);
-    Route::get('page-analytics/top-entities',      [PageAnalyticsController::class, 'topEntities']);
-    Route::get('page-analytics/sources',           [PageAnalyticsController::class, 'sources']);
-    Route::get('page-analytics/devices',           [PageAnalyticsController::class, 'devices']);
-    Route::get('page-analytics/funnel',            [PageAnalyticsController::class, 'funnel']);
-    Route::get('page-analytics/conversions',       [PageAnalyticsController::class, 'conversions']);
-    Route::get('page-analytics/events',            [PageAnalyticsController::class, 'events']);
-    Route::get('page-analytics/live',              [PageAnalyticsController::class, 'live']);
-    Route::get('page-analytics/landing-pages',     [PageAnalyticsController::class, 'landingPages']);
-    Route::get('page-analytics/searches',          [PageAnalyticsController::class, 'searches']);
+    Route::middleware('staff')->group(function () {
+        Route::get('page-analytics/overview',          [PageAnalyticsController::class, 'overview']);
+        Route::get('page-analytics/timeseries',        [PageAnalyticsController::class, 'timeseries']);
+        Route::get('page-analytics/top-pages',         [PageAnalyticsController::class, 'topPages']);
+        Route::get('page-analytics/top-entities',      [PageAnalyticsController::class, 'topEntities']);
+        Route::get('page-analytics/sources',           [PageAnalyticsController::class, 'sources']);
+        Route::get('page-analytics/devices',           [PageAnalyticsController::class, 'devices']);
+        Route::get('page-analytics/funnel',            [PageAnalyticsController::class, 'funnel']);
+        Route::get('page-analytics/conversions',       [PageAnalyticsController::class, 'conversions']);
+        Route::get('page-analytics/events',            [PageAnalyticsController::class, 'events']);
+        Route::get('page-analytics/live',              [PageAnalyticsController::class, 'live']);
+        Route::get('page-analytics/landing-pages',     [PageAnalyticsController::class, 'landingPages']);
+        Route::get('page-analytics/searches',          [PageAnalyticsController::class, 'searches']);
 
-    Route::prefix('visitor-sessions')->middleware('staff')->group(function () {
-        Route::get('/', [\App\Http\Controllers\Api\VisitorTrackingController::class, 'sessions']);
-        Route::get('/statistics', [\App\Http\Controllers\Api\VisitorTrackingController::class, 'statistics']);
-        Route::get('/export', [\App\Http\Controllers\Api\VisitorTrackingController::class, 'export']);
-        Route::get('/detail', [\App\Http\Controllers\Api\VisitorTrackingController::class, 'detail']);
+        Route::prefix('visitor-sessions')->middleware('staff')->group(function () {
+            Route::get('/', [\App\Http\Controllers\Api\VisitorTrackingController::class, 'sessions']);
+            Route::get('/statistics', [\App\Http\Controllers\Api\VisitorTrackingController::class, 'statistics']);
+            Route::get('/export', [\App\Http\Controllers\Api\VisitorTrackingController::class, 'export']);
+            Route::get('/detail', [\App\Http\Controllers\Api\VisitorTrackingController::class, 'detail']);
+        });
+        Route::get('page-analytics/promo-performance', [PageAnalyticsController::class, 'promoPerformance']);
+        Route::get('page-analytics/gift-card-performance', [PageAnalyticsController::class, 'giftCardPerformance']);
+        Route::get('page-analytics/attribution',       [PageAnalyticsController::class, 'attribution']);
+        Route::get('page-analytics/entities-leaderboard', [PageAnalyticsController::class, 'entitiesLeaderboard']);
+        Route::get('page-analytics/entities/{type}/{id}', [PageAnalyticsController::class, 'entityDetail'])
+            ->whereIn('type', ['package', 'attraction', 'event', 'booking', 'attraction_purchase', 'event_purchase', 'gift_card', 'promo'])
+            ->whereNumber('id');
+        Route::get('page-analytics/sessions/{sessionId}', [PageAnalyticsController::class, 'session']);
     });
-    Route::get('page-analytics/promo-performance', [PageAnalyticsController::class, 'promoPerformance']);
-    Route::get('page-analytics/gift-card-performance', [PageAnalyticsController::class, 'giftCardPerformance']);
-    Route::get('page-analytics/attribution',       [PageAnalyticsController::class, 'attribution']);
-    Route::get('page-analytics/entities-leaderboard', [PageAnalyticsController::class, 'entitiesLeaderboard']);
-    Route::get('page-analytics/entities/{type}/{id}', [PageAnalyticsController::class, 'entityDetail'])
-        ->whereIn('type', ['package', 'attraction', 'event', 'booking', 'attraction_purchase', 'event_purchase', 'gift_card', 'promo'])
-        ->whereNumber('id');
-    Route::get('page-analytics/sessions/{sessionId}', [PageAnalyticsController::class, 'session']);
 
     Route::apiResource('companies', CompanyController::class)->only(['index', 'show'])->middleware('staff');
     Route::apiResource('companies', CompanyController::class)->only(['store', 'update', 'destroy'])->middleware('staff:company_admin|admin|location_manager');
@@ -430,7 +432,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::get('attractions/category/{category}', [AttractionController::class, 'getByCategory']);
     Route::apiResource('attractions', AttractionController::class)->only(['index']);
-    Route::get('attractions/{attraction}/statistics', [AttractionController::class, 'statistics']);
+    Route::get('attractions/{attraction}/statistics', [AttractionController::class, 'statistics'])->middleware('staff');
 
     Route::middleware('staff')->group(function () {
         Route::post('attractions/bulk-import', [AttractionController::class, 'bulkImport']);
@@ -507,7 +509,7 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     Route::apiResource('global-notes', GlobalNoteController::class)->middleware('staff');
-    Route::get('global-notes/package/{packageId}', [GlobalNoteController::class, 'getForPackage']);
+    Route::get('global-notes/package/{packageId}', [GlobalNoteController::class, 'getForPackage'])->middleware('staff');
     Route::patch('global-notes/{globalNote}/toggle-status', [GlobalNoteController::class, 'toggleStatus'])->middleware('staff');
 
     Route::get('gift-cards', [GiftCardController::class, 'index']);
@@ -639,7 +641,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('account/{locationId?}', [AuthorizeNetAccountController::class, 'destroy'])->middleware('staff:company_admin|admin|location_manager');
     });
 
-    Route::prefix('email-templates')->group(function () {
+    Route::prefix('email-templates')->middleware('staff')->group(function () {
         Route::get('/', [EmailTemplateController::class, 'index']);
         Route::post('/', [EmailTemplateController::class, 'store']);
         Route::get('/variables', [EmailTemplateController::class, 'getAvailableVariables']);
@@ -652,12 +654,12 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('/{emailTemplate}/status', [EmailTemplateController::class, 'updateStatus']);
     });
 
-    Route::prefix('email-campaigns')->group(function () {
+    Route::prefix('email-campaigns')->middleware('staff')->group(function () {
         Route::get('/', [EmailCampaignController::class, 'index']);
         Route::post('/', [EmailCampaignController::class, 'store']);
         Route::get('/statistics', [EmailCampaignController::class, 'statistics']);
         Route::post('/preview-recipients', [EmailCampaignController::class, 'previewRecipients']);
-        Route::post('/send-test', [EmailCampaignController::class, 'sendTest']);
+        Route::post('/send-test', [EmailCampaignController::class, 'sendTest'])->middleware('throttle:10,1,email-send-test');
         Route::post('/upload-image', [EmailCampaignController::class, 'uploadImage']);
         Route::get('/{emailCampaign}', [EmailCampaignController::class, 'show']);
         Route::delete('/{emailCampaign}', [EmailCampaignController::class, 'destroy']);
@@ -719,7 +721,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('{visitFollowUp}/cancel', [\App\Http\Controllers\Api\VisitFollowUpController::class, 'cancel'])->whereNumber('visitFollowUp');
     });
 
-    Route::prefix('sms-notifications')->group(function () {
+    Route::prefix('sms-notifications')->middleware('staff')->group(function () {
         Route::get('/', [SmsNotificationController::class, 'index']);
         Route::post('/', [SmsNotificationController::class, 'store']);
         Route::get('/options', [SmsNotificationController::class, 'options']);
@@ -795,7 +797,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('memberships/{membership}/cancel',         [MembershipController::class, 'cancel']);
     Route::patch('memberships/{membership}/extend',         [MembershipController::class, 'extend'])->middleware('staff');
     Route::delete('memberships/{membership}',               [MembershipController::class, 'destroy'])->middleware('staff:company_admin|admin|location_manager');
-    Route::patch('memberships/{membership}/change-plan',    [MembershipController::class, 'changePlan']);
+    Route::patch('memberships/{membership}/change-plan',    [MembershipController::class, 'changePlan'])->middleware('staff');
     Route::post('memberships/{membership}/upgrade-plan',    [MembershipController::class, 'upgradePlan']);
     Route::patch('memberships/{membership}/payment-method', [MembershipController::class, 'updatePaymentMethod']);
     Route::post('memberships/{membership}/retry-payment',   [MembershipController::class, 'retryPayment']);
