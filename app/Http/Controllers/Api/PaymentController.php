@@ -57,14 +57,7 @@ class PaymentController extends Controller
     {
         $query = Payment::with(['customer', 'location', 'booking', 'attractionPurchase', 'eventPurchase', 'ticketOrder']);
 
-        $authUser = $this->resolveAuthUser($request);
-        if ($authUser) {
-            if (in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
-                $query->where('location_id', $authUser->location_id);
-            } elseif ($authUser->company_id) {
-                $query->whereHas('location', fn($q) => $q->where('company_id', $authUser->company_id));
-            }
-        }
+        $this->scopePaymentsToActor($query, $request);
 
         if ($request->has('payable_id')) {
             $query->where('payable_id', $request->payable_id);
@@ -378,8 +371,24 @@ class PaymentController extends Controller
         ], 201);
     }
 
+    private function scopePaymentsToActor($query, Request $request): void
+    {
+        $authUser = $this->resolveAuthUser($request);
+        if ($authUser) {
+            if (in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
+                $query->where('location_id', $authUser->location_id);
+            } elseif ($authUser->company_id) {
+                $query->whereHas('location', fn($q) => $q->where('company_id', $authUser->company_id));
+            }
+        }
+    }
+
     public function show(Payment $payment): JsonResponse
     {
+        if ($denied = $this->denyForeignRecord($payment, 'payment')) {
+            return $denied;
+        }
+
         $payment->load(['customer', 'location']);
 
         $payableDetails = $payment->getPayableDetails();
@@ -463,6 +472,7 @@ class PaymentController extends Controller
     public function trashed(Request $request): JsonResponse
     {
         $query = Payment::onlyTrashed()->with(['customer', 'location', 'booking', 'attractionPurchase', 'eventPurchase', 'ticketOrder']);
+        $this->scopePaymentsToActor($query, $request);
 
         if ($request->has('payable_type')) {
             $query->where('payable_type', $request->payable_type);
@@ -2026,6 +2036,8 @@ class PaymentController extends Controller
     {
         $approvedTransactionId = null;
         $recordedPayment = null;
+        $staffPayer = app(\App\Services\AddOnRuleService::class)->isStaff($request->user('sanctum'));
+        $freshOnlineCheckout = false;
 
         try {
             if ($request->payable_id && $request->payable_type) {
@@ -2060,6 +2072,9 @@ class PaymentController extends Controller
                         'error_code' => 'PAYABLE_NOT_FOUND',
                     ], 422);
                 }
+
+                $freshOnlineCheckout = $this->isFreshOnlineCheckout($duePayable)
+                    && $this->provesCheckout($request, (string) $request->payable_type, $duePayable);
 
                 $settled = 0.0;
                 $due = null;
@@ -2143,8 +2158,8 @@ class PaymentController extends Controller
                     return response()->json([
                         'success' => true,
                         'message' => 'Payment already processed',
-                        'transaction_id' => $existingPayment->transaction_id,
-                        'payment' => $existingPayment,
+                        'transaction_id' => $staffPayer ? $existingPayment->transaction_id : null,
+                        'payment' => $staffPayer ? $existingPayment : null,
                         'email_sent' => false,
                     ], 200);
                 }
@@ -2175,7 +2190,7 @@ class PaymentController extends Controller
                 ->first();
 
             if (!$account) {
-                $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
+                $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null, $request);
 
                 return response()->json([
                     'success' => false,
@@ -2330,7 +2345,7 @@ class PaymentController extends Controller
                             'environment' => $account->environment,
                         ]);
 
-                        $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
+                        $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null, $request);
 
                         return response()->json([
                             'success' => false,
@@ -2392,7 +2407,7 @@ class PaymentController extends Controller
 
                         $approvedTransactionId = null;
 
-                        $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
+                        $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null, $request);
 
                         return response()->json([
                             'success' => false,
@@ -2510,7 +2525,10 @@ class PaymentController extends Controller
                                     'amount_paid' => $totalPaid,
                                     'payment_method' => 'authorize.net',
                                     'transaction_id' => $transactionId,
-                                    'status' => $payable->status === AttractionPurchase::STATUS_CHECKED_IN ? $payable->status : AttractionPurchase::STATUS_CONFIRMED,
+                                    'status' => $payable->status === AttractionPurchase::STATUS_CHECKED_IN
+                                        || ! ($staffPayer || (float) $totalPaid + 0.005 >= (float) $payable->total_amount)
+                                        ? $payable->status
+                                        : AttractionPurchase::STATUS_CONFIRMED,
                                 ]);
                             }
                         } elseif ($payment->payable_type === Payment::TYPE_EVENT_PURCHASE) {
@@ -2525,7 +2543,9 @@ class PaymentController extends Controller
                                     'payment_method' => 'authorize.net',
                                     'transaction_id' => $transactionId,
                                     'payment_status' => $totalPaid >= $payable->total_amount ? 'paid' : 'partial',
-                                    'status' => Booking::statusAfterPayment($payable->status),
+                                    'status' => $staffPayer || (float) $totalPaid + 0.005 >= (float) $payable->total_amount
+                                        ? Booking::statusAfterPayment($payable->status)
+                                        : $payable->status,
                                 ]);
                             }
                         } elseif ($payment->payable_type === Payment::TYPE_TICKET_ORDER) {
@@ -2631,7 +2651,7 @@ class PaymentController extends Controller
                                 $booking = $payable;
                                 $booking->load(['customer', 'package', 'location.company', 'room', 'creator', 'attractions', 'addOns']);
 
-                                if ($qrCode) {
+                                if ($qrCode && ($staffPayer || (empty($booking->qr_code_path) && $freshOnlineCheckout))) {
                                     $qrCodeData = $qrCode;
                                     if (strpos($qrCodeData, 'data:image') === 0) {
                                         $qrCodeData = substr($qrCodeData, strpos($qrCodeData, ',') + 1);
@@ -2667,7 +2687,15 @@ class PaymentController extends Controller
                                     ? $purchase->customer->email
                                     : $purchase->guest_email;
 
-                                if ($recipientEmail && $qrCode) {
+                                $buyer = $request->user('sanctum');
+                                $mayEmailReceipt = $staffPayer
+                                    || (($freshOnlineCheckout
+                                            || ($buyer instanceof \App\Models\Customer
+                                                && (int) $purchase->customer_id === (int) $buyer->id
+                                                && $purchase->created_at?->gt(now()->subDay())))
+                                        && Cache::add('attraction-purchase-receipt:' . $purchase->id, true, now()->addDay()));
+
+                                if ($recipientEmail && $qrCode && $mayEmailReceipt) {
                                     $qrCodeBase64 = $qrCode;
                                     if (strpos($qrCodeBase64, 'data:image') === 0) {
                                         $qrCodeBase64 = substr($qrCodeBase64, strpos($qrCodeBase64, ',') + 1);
@@ -2932,7 +2960,7 @@ class PaymentController extends Controller
                         'response_code' => $tresponse?->getResponseCode(),
                     ]);
 
-                    $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
+                    $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null, $request);
 
                     return response()->json([
                         'success' => false,
@@ -3000,7 +3028,7 @@ class PaymentController extends Controller
                     );
                 }
 
-                $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
+                $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null, $request);
 
                 return response()->json([
                     'success' => false,
@@ -3018,7 +3046,7 @@ class PaymentController extends Controller
                 'location_id' => $request->location_id,
             ]);
 
-            $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
+            $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null, $request);
 
             return response()->json([
                 'success' => false,
@@ -3078,7 +3106,7 @@ class PaymentController extends Controller
                     );
                 }
 
-                $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
+                $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null, $request);
 
                 return response()->json([
                     'success' => false,
@@ -3089,11 +3117,13 @@ class PaymentController extends Controller
                 ], 500);
             }
 
-            $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
+            $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null, $request);
 
             return response()->json([
                 'success' => false,
-                'message' => 'Payment processing failed: ' . $e->getMessage()
+                'message' => $staffPayer
+                    ? 'Payment processing failed: ' . $e->getMessage()
+                    : 'Payment processing failed. Please try again, or call us if it keeps happening.',
             ], 500);
         }
     }
@@ -3131,7 +3161,7 @@ class PaymentController extends Controller
             ]
         );
 
-        $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null);
+        $this->forceDeletePayableOnFailure($request->payable_id ?? null, $request->payable_type ?? null, $request);
 
         return response()->json([
             'success' => false,
@@ -3140,11 +3170,15 @@ class PaymentController extends Controller
         ], 400);
     }
 
-    private function forceDeletePayableOnFailure(?int $payableId, ?string $payableType): void
+    private function forceDeletePayableOnFailure(?int $payableId, ?string $payableType, ?Request $request = null): void
     {
         if (!$payableId || !$payableType) {
             return;
         }
+
+        $staffCaller = $request && app(\App\Services\AddOnRuleService::class)->isStaff($request->user('sanctum'));
+        $looksLikeThisCheckout = fn ($record): bool => $staffCaller
+            || ($request && $this->isFreshOnlineCheckout($record) && $this->provesCheckout($request, $payableType, $record));
 
         try {
             $payable = null;
@@ -3159,6 +3193,7 @@ class PaymentController extends Controller
                 $order = TicketOrder::with(['attractionPurchases', 'eventPurchases'])->find($payableId);
 
                 if ($order
+                    && $looksLikeThisCheckout($order)
                     && (float) $order->amount_paid <= 0
                     && in_array($order->status, [TicketOrder::STATUS_DRAFT, TicketOrder::STATUS_PENDING], true)
                     && $order->payment_method === 'authorize.net'
@@ -3183,7 +3218,7 @@ class PaymentController extends Controller
                 return;
             }
 
-            if (!$payable) {
+            if (!$payable || !$looksLikeThisCheckout($payable)) {
                 return;
             }
 
@@ -3219,20 +3254,26 @@ class PaymentController extends Controller
             ]);
 
             try {
+                $untouched = fn ($record) => $record
+                    && $looksLikeThisCheckout($record)
+                    && !Payment::where('payable_type', $payableType)
+                        ->where('payable_id', $payableId)
+                        ->whereIn('status', ['completed', 'refunded'])
+                        ->exists();
                 $fallback = null;
                 if ($payableType === Payment::TYPE_BOOKING) {
                     $fallback = Booking::find($payableId);
-                    if ($fallback && $fallback->status === 'pending') {
+                    if ($untouched($fallback) && $fallback->status === 'pending') {
                         $fallback->delete();
                     }
                 } elseif ($payableType === Payment::TYPE_ATTRACTION_PURCHASE) {
                     $fallback = AttractionPurchase::find($payableId);
-                    if ($fallback && $fallback->status === AttractionPurchase::STATUS_PENDING) {
+                    if ($untouched($fallback) && $fallback->status === AttractionPurchase::STATUS_PENDING) {
                         $fallback->delete();
                     }
                 } elseif ($payableType === Payment::TYPE_EVENT_PURCHASE) {
                     $fallback = EventPurchase::find($payableId);
-                    if ($fallback && $fallback->status === 'pending') {
+                    if ($untouched($fallback) && $fallback->status === 'pending') {
                         $fallback->delete();
                     }
                 }
@@ -3251,8 +3292,36 @@ class PaymentController extends Controller
         }
     }
 
+    private function provesCheckout(Request $request, string $payableType, $record): bool
+    {
+        if (! $record) {
+            return false;
+        }
+
+        if ($payableType === Payment::TYPE_TICKET_ORDER) {
+            $given = (string) $request->input('checkout_token', '');
+
+            return $record instanceof TicketOrder && $given !== '' && hash_equals(\App\Support\CheckoutToken::forOrder($record), $given);
+        }
+
+        return in_array($payableType, [Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE, Payment::TYPE_EVENT_PURCHASE], true)
+            && \App\Support\CheckoutToken::presented($request, $payableType, (int) $record->id);
+    }
+
+    private function isFreshOnlineCheckout($record): bool
+    {
+        return $record
+            && $record->payment_method === 'authorize.net'
+            && empty($record->created_by)
+            && $record->created_at?->gt(now()->subMinutes(30));
+    }
+
     public function invoice(Payment $payment)
     {
+        if ($denied = $this->denyForeignRecord($payment, 'payment')) {
+            return $denied;
+        }
+
         $payment->load(['customer', 'location']);
 
         $payable = $payment->getPayableDetails();
@@ -3301,6 +3370,10 @@ class PaymentController extends Controller
 
     public function invoiceView(Payment $payment)
     {
+        if ($denied = $this->denyForeignRecord($payment, 'payment')) {
+            return $denied;
+        }
+
         $payment->load(['customer', 'location']);
 
         $payable = $payment->getPayableDetails();
@@ -3360,6 +3433,7 @@ class PaymentController extends Controller
         ]);
 
         $query = Payment::with(['customer', 'location']);
+        $this->scopePaymentsToActor($query, $request);
 
         if ($request->has('location_id')) {
             $query->where('location_id', $request->location_id);
@@ -3478,8 +3552,10 @@ class PaymentController extends Controller
             'payment_ids.*' => 'exists:payments,id',
         ]);
 
-        $payments = Payment::with(['customer', 'location'])
-            ->whereIn('id', $request->payment_ids)
+        $paymentsQuery = Payment::with(['customer', 'location'])
+            ->whereIn('id', $request->payment_ids);
+        $this->scopePaymentsToActor($paymentsQuery, $request);
+        $payments = $paymentsQuery
             ->orderBy('created_at', 'desc')
             ->get();
 
@@ -3602,6 +3678,7 @@ class PaymentController extends Controller
         ]);
 
         $query = Payment::with(['customer', 'location']);
+        $this->scopePaymentsToActor($query, $request);
         $dateRange = null;
 
         if ($request->has('payment_ids')) {

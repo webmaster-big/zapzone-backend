@@ -368,6 +368,10 @@ class BookingController extends Controller
 
                     $total = (clone $query)->count();
                     $deletedIds = $this->bookingIdsDeletedSince($request, $authUser, $since);
+                    if ($deletedIds) {
+                        $stillListed = (clone $query)->whereIn('bookings.id', $deletedIds)->pluck('bookings.id')->map(fn ($id) => (int) $id)->all();
+                        $deletedIds = array_values(array_diff($deletedIds, $stillListed));
+                    }
                     $query->whereIn('bookings.id', $changedIds);
                     $onlyBelowCursorId($query);
 
@@ -788,7 +792,12 @@ class BookingController extends Controller
                 ? ['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']
                 : ['package', 'location', 'room', 'attractions', 'addOns']);
             if (! $isStaff) {
-                $earlierAttempt->makeHidden(['internal_notes', 'notes', 'special_requests', 'guest_name', 'guest_phone', 'guest_address', 'guest_city', 'guest_state', 'guest_zip', 'guest_country', 'customer_id', 'created_by', 'overlap_override_by']);
+                $earlierAttempt->makeHidden(['internal_notes', 'notes', 'special_requests', 'guest_name', 'guest_phone', 'guest_address', 'guest_city', 'guest_state', 'guest_zip', 'guest_country', 'customer_id', 'created_by', 'overlap_override_by', 'applied_discounts', 'gift_card_id', 'promo_id', 'membership_id']);
+
+                $replayAsker = $request->user('sanctum');
+                if (! $checkoutKey && ! ($replayAsker instanceof \App\Models\Customer && (int) $earlierAttempt->customer_id === (int) $replayAsker->id)) {
+                    $earlierAttempt->makeHidden(['reference_number']);
+                }
             }
             Log::info('Duplicate booking prevented (existing pending found)', [
                 'existing_booking_id' => $earlierAttempt->id,
@@ -800,6 +809,11 @@ class BookingController extends Controller
                 'success' => true,
                 'message' => 'Booking already exists',
                 'data' => $earlierAttempt,
+                'checkout_token' => $isStaff
+                    || $checkoutKey
+                    || (($replayRequester = $request->user('sanctum')) instanceof \App\Models\Customer && (int) $earlierAttempt->customer_id === (int) $replayRequester->id)
+                    ? \App\Support\CheckoutToken::for('booking', $earlierAttempt->id)
+                    : null,
             ], 200);
         }
 
@@ -820,12 +834,16 @@ class BookingController extends Controller
         $alreadyBooked = (!$isStaff && !$bookAnother) ? $this->paidBookingAtThisTime($validated) : null;
         if ($alreadyBooked) {
             $bookedWhen = Carbon::parse($alreadyBooked->booking_date)->format('M j') . ' at ' . Carbon::parse($alreadyBooked->booking_time)->format('g:i A');
+            $sameTimeAsker = $request->user('sanctum');
+            $askerOwnsIt = $sameTimeAsker instanceof \App\Models\Customer && (int) $alreadyBooked->customer_id === (int) $sameTimeAsker->id;
 
             return response()->json([
                 'success' => false,
                 'code' => 'BOOKED_SAME_TIME',
-                'message' => "You already have " . ($alreadyBooked->package?->name ?? 'this') . " booked for {$bookedWhen} (reference {$alreadyBooked->reference_number}). Do you want to book another one for the same time?",
-                'reference_number' => $alreadyBooked->reference_number,
+                'message' => "You already have " . ($alreadyBooked->package?->name ?? 'this') . " booked for {$bookedWhen}"
+                    . ($askerOwnsIt ? " (reference {$alreadyBooked->reference_number})" : '')
+                    . ". Do you want to book another one for the same time?",
+                'reference_number' => $askerOwnsIt ? $alreadyBooked->reference_number : null,
             ], 409);
         }
 
@@ -909,7 +927,7 @@ class BookingController extends Controller
                         'booking_overlap_override',
                         'bookings',
                         'An overlapping booking was saved with a manager override: '.implode(', ', $slotConflicts),
-                        auth()->id(),
+                        \App\Support\StaffActor::id(),
                         $bookingLocationId,
                         'room',
                         (int) $validated['room_id'],
@@ -1160,6 +1178,10 @@ class BookingController extends Controller
 
             return $created;
             });
+        } catch (\Illuminate\Database\QueryException $e) {
+            Log::error('Booking save failed', ['error' => $e->getMessage()]);
+
+            return response()->json(['success' => false, 'message' => 'We could not save this right now. Please try again.'], 422);
         } catch (\RuntimeException $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
         }
@@ -1238,7 +1260,7 @@ class BookingController extends Controller
                 'location_id' => $booking->location_id,
                 'type' => 'booking',
                 'priority' => 'medium',
-                'user_id' => $booking->created_by ?? auth()->id(),
+                'user_id' => $booking->created_by ?? \App\Support\StaffActor::id(),
                 'title' => 'New Booking Received',
                 'message' => "{$customerName} — {$formattedDate} at {$formattedTime} • $" . number_format($booking->total_amount, 2) . " ({$booking->reference_number})",
                 'status' => 'unread',
@@ -1345,7 +1367,7 @@ class BookingController extends Controller
                     source: 'booking',
                     tags: ['booking', 'customer'],
                     locationId: $booking->location_id,
-                    createdBy: $booking->created_by ?? auth()->id()
+                    createdBy: $booking->created_by ?? \App\Support\StaffActor::id()
                 );
             }
         } catch (\Exception $e) {
@@ -1382,6 +1404,7 @@ class BookingController extends Controller
             'success' => true,
             'message' => 'Booking created successfully',
             'data' => $booking,
+            'checkout_token' => \App\Support\CheckoutToken::for('booking', $booking->id),
         ], 201);
     }
 
@@ -1404,7 +1427,7 @@ class BookingController extends Controller
                     $booking,
                     $validated['membership_applied'],
                     $booking->location_id,
-                    auth()->id()
+                    \App\Support\StaffActor::id()
                 );
                 return;
             }
@@ -1425,7 +1448,7 @@ class BookingController extends Controller
                     $booking,
                     $quote['applied'],
                     $booking->location_id,
-                    auth()->id()
+                    \App\Support\StaffActor::id()
                 );
             }
         } catch (\Throwable $e) {
@@ -3442,6 +3465,12 @@ class BookingController extends Controller
 
         $this->applyBookingSearch($query, $validated['query']);
 
+        $this->applyAuthScope($query, $request);
+        $searcher = $this->resolveAuthUser($request);
+        if ($searcher && $searcher->company_id) {
+            $query->whereIn('bookings.location_id', \App\Models\Location::where('company_id', $searcher->company_id)->select('id'));
+        }
+
         $bookings = $query
             ->orderBy('booking_date', 'desc')
             ->orderBy('booking_time', 'desc')
@@ -3788,7 +3817,9 @@ class BookingController extends Controller
             }
 
             if (!app(\App\Services\AddOnRuleService::class)->isStaff(request()->user('sanctum'))
-                && ($booking->status !== 'pending' || $this->bookingWasCharged($booking))) {
+                && ($booking->status !== 'pending'
+                    || $this->bookingWasCharged($booking)
+                    || !\App\Support\CheckoutToken::presented(request(), 'booking', $booking->id))) {
                 Log::warning('Public booking delete refused: only an unpaid pending booking can be rolled back', [
                     'id' => $booking->id,
                     'status' => $booking->status,
@@ -3809,7 +3840,7 @@ class BookingController extends Controller
             $deletedBy = null;
             $user = null;
             try {
-                $authUser = auth()->user();
+                $authUser = \App\Support\StaffActor::current();
                 if ($authUser instanceof User) {
                     $deletedBy = $authUser->id;
                     $user = $authUser;
@@ -3867,6 +3898,8 @@ class BookingController extends Controller
                 'success' => true,
                 'message' => 'Booking deleted successfully',
             ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            throw $e;
         } catch (\Exception $e) {
             Log::error('Booking delete failed with exception', [
                 'id' => $id,
@@ -3882,6 +3915,10 @@ class BookingController extends Controller
 
     public function summary(Booking $booking)
     {
+        if ($denied = $this->denyForeignRecord($booking, 'booking')) {
+            return $denied;
+        }
+
         $booking->load(['customer', 'package', 'location', 'room', 'attractions', 'addOns', 'payments']);
 
         $pdf = Pdf::loadView('exports.booking-summary', [
@@ -3898,6 +3935,10 @@ class BookingController extends Controller
 
     public function summaryView(Booking $booking)
     {
+        if ($denied = $this->denyForeignRecord($booking, 'booking')) {
+            return $denied;
+        }
+
         $booking->load(['customer', 'package', 'location', 'room', 'attractions', 'addOns', 'payments']);
 
         $pdf = Pdf::loadView('exports.booking-summary', [
@@ -4580,6 +4621,14 @@ class BookingController extends Controller
                 return response()->json([
                     'success' => false,
                     'message' => 'Only pending bookings can be force deleted',
+                ], 403);
+            }
+
+            if (!app(\App\Services\AddOnRuleService::class)->isStaff(request()->user('sanctum'))
+                && !\App\Support\CheckoutToken::presented(request(), 'booking', $booking->id)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Only the checkout that made this booking can remove it.',
                 ], 403);
             }
 

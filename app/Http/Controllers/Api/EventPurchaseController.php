@@ -139,9 +139,11 @@ class EventPurchaseController extends Controller
     public function store(Request $request, DiscountService $discounts): JsonResponse
     {
         try {
+            $staffCaller = app(\App\Services\AddOnRuleService::class)->isStaff($request->user('sanctum'));
+
             $validated = $request->validate([
                 'event_id' => 'required|exists:events,id',
-                'customer_id' => 'nullable|exists:customers,id',
+                'customer_id' => $staffCaller ? 'nullable|exists:customers,id' : 'nullable|integer',
                 'membership_id' => 'nullable|exists:memberships,id',
                 'membership_applied' => 'nullable|array',
                 'membership_applied.*.membership_plan_benefit_id' => 'nullable|integer',
@@ -196,6 +198,14 @@ class EventPurchaseController extends Controller
             $requesterIsStaff = app(\App\Services\AddOnRuleService::class)->isStaff($requester);
             if (! $requesterIsStaff) {
                 $validated['customer_id'] = $requester instanceof \App\Models\Customer ? $requester->id : null;
+
+                if ($validated['customer_id'] === null && (empty($validated['guest_name']) || empty($validated['guest_email']))) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Please enter the guest name and email.',
+                        'errors' => ['guest_email' => ['Please enter the guest name and email.']],
+                    ], 422);
+                }
             }
 
             $event = Event::findOrFail($validated['event_id']);
@@ -331,7 +341,7 @@ class EventPurchaseController extends Controller
             if (!empty($validated['customer_id'])) {
                 $duplicateQuery->where('customer_id', $validated['customer_id']);
             } else {
-                $duplicateQuery->where('guest_email', $validated['guest_email'] ?? null);
+                $duplicateQuery->whereNull('customer_id')->where('guest_email', $validated['guest_email'] ?? null);
             }
 
             $requestCarriesCode = !empty($validated['gift_card_code']) || !empty($validated['gift_card_id'])
@@ -343,7 +353,7 @@ class EventPurchaseController extends Controller
             if ($existingPending) {
                 $existingPending->load($requesterIsStaff ? ['event', 'customer', 'location:id,name', 'addOns'] : ['event', 'location:id,name', 'addOns']);
                 if (! $requesterIsStaff) {
-                    $existingPending->makeHidden(['guest_name', 'guest_phone', 'guest_address', 'guest_city', 'guest_state', 'guest_zip', 'guest_country', 'customer_id', 'created_by', 'notes', 'special_requests', 'transaction_id']);
+                    $existingPending->makeHidden(['guest_name', 'guest_phone', 'guest_address', 'guest_city', 'guest_state', 'guest_zip', 'guest_country', 'customer_id', 'created_by', 'notes', 'special_requests', 'transaction_id', 'applied_discounts', 'gift_card_id', 'promo_id', 'membership_id']);
                 }
                 Log::info('Duplicate event purchase prevented (existing pending found)', [
                     'existing_purchase_id' => $existingPending->id,
@@ -351,6 +361,13 @@ class EventPurchaseController extends Controller
                     'customer_id' => $validated['customer_id'] ?? null,
                     'guest_email' => $validated['guest_email'] ?? null,
                 ]);
+                $replayRequester = $request->user('sanctum');
+                if ($requesterIsStaff
+                    || ($earlierAttempt && (int) $earlierAttempt->id === (int) $existingPending->id)
+                    || ($replayRequester instanceof \App\Models\Customer && (int) $existingPending->customer_id === (int) $replayRequester->id)) {
+                    $existingPending->setAttribute('checkout_token', \App\Support\CheckoutToken::for('event_purchase', $existingPending->id));
+                }
+
                 return response()->json($existingPending, 200);
             }
 
@@ -543,7 +560,7 @@ class EventPurchaseController extends Controller
                     'location_id' => $purchase->location_id,
                     'type' => 'payment',
                     'priority' => 'medium',
-                    'user_id' => auth()->id(),
+                    'user_id' => \App\Support\StaffActor::id(),
                     'title' => 'New Event Purchase',
                     'message' => "{$customerName} — {$purchase->quantity}x {$purchase->event->name} on {$formattedDate} at {$formattedTime} • $" . number_format($purchase->total_amount, 2),
                     'status' => 'unread',
@@ -559,19 +576,19 @@ class EventPurchaseController extends Controller
                 ]);
             }
 
-            if (auth()->id()) {
+            if (\App\Support\StaffActor::id()) {
                 ActivityLog::log(
                     action: 'Event Purchase Created',
                     category: 'create',
                     description: "Event purchase: {$purchase->quantity} x {$purchase->event->name} by {$customerName}",
-                    userId: auth()->id(),
+                    userId: \App\Support\StaffActor::id(),
                     locationId: $purchase->location_id,
                     entityType: 'event_purchase',
                     entityId: $purchase->id,
                     metadata: [
                         'created_by' => [
-                            'user_id' => auth()->id(),
-                            'email' => auth()->user()?->email,
+                            'user_id' => \App\Support\StaffActor::id(),
+                            'email' => \App\Support\StaffActor::current()?->email,
                         ],
                         'created_at' => now()->toIso8601String(),
                         'purchase_details' => [
@@ -613,7 +630,7 @@ class EventPurchaseController extends Controller
                         source: 'event_purchase',
                         tags: ['event_purchase', 'customer'],
                         locationId: $purchase->location_id,
-                        createdBy: auth()->id()
+                        createdBy: \App\Support\StaffActor::id()
                     );
                 }
             } catch (\Exception $e) {
@@ -637,9 +654,15 @@ class EventPurchaseController extends Controller
 
             $this->recordConversion('event_purchase_completed', $purchase, (float) ($purchase->total_amount ?? 0));
 
+            $purchase->setAttribute('checkout_token', \App\Support\CheckoutToken::for('event_purchase', $purchase->id));
+
             return response()->json($purchase, 201);
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json(['message' => 'Validation failed', 'errors' => $e->errors()], 422);
+        } catch (\Illuminate\Database\QueryException $e) {
+            Log::error('Event purchase save failed', ['error' => $e->getMessage()]);
+
+            return response()->json(['success' => false, 'message' => 'We could not save this right now. Please try again.'], 422);
         } catch (\RuntimeException $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
         } catch (\Exception $e) {
@@ -713,7 +736,7 @@ class EventPurchaseController extends Controller
                     $purchase,
                     $validated['membership_applied'],
                     $purchase->location_id,
-                    auth()->id()
+                    \App\Support\StaffActor::id()
                 );
                 return;
             }
@@ -734,7 +757,7 @@ class EventPurchaseController extends Controller
                     $purchase,
                     $quote['applied'],
                     $purchase->location_id,
-                    auth()->id()
+                    \App\Support\StaffActor::id()
                 );
             }
         } catch (\Throwable $e) {
@@ -1013,7 +1036,8 @@ class EventPurchaseController extends Controller
             if (!app(\App\Services\AddOnRuleService::class)->isStaff(request()->user('sanctum'))
                 && ($eventPurchase->status !== 'pending'
                     || $eventPurchase->checked_in_at !== null
-                    || $eventPurchase->payments()->whereIn('status', ['completed', 'refunded'])->exists())) {
+                    || $eventPurchase->payments()->whereIn('status', ['completed', 'refunded'])->exists()
+                    || !\App\Support\CheckoutToken::presented(request(), 'event_purchase', $eventPurchase->id))) {
                 Log::warning('Public event purchase delete refused: only an unpaid pending purchase can be rolled back', [
                     'id' => $eventPurchase->id,
                     'status' => $eventPurchase->status,
@@ -1029,7 +1053,7 @@ class EventPurchaseController extends Controller
             $userId = null;
             $user = null;
             try {
-                $authUser = auth()->user();
+                $authUser = \App\Support\StaffActor::current();
                 if ($authUser instanceof \App\Models\User) {
                     $userId = $authUser->id;
                     $user = $authUser;
@@ -1484,6 +1508,14 @@ class EventPurchaseController extends Controller
                 return response()->json([
                     'success' => false,
                     'message' => 'Only pending event purchases can be force deleted',
+                ], 403);
+            }
+
+            if (!app(\App\Services\AddOnRuleService::class)->isStaff(request()->user('sanctum'))
+                && !\App\Support\CheckoutToken::presented(request(), 'event_purchase', $eventPurchase->id)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Only the checkout that made this purchase can remove it.',
                 ], 403);
             }
 

@@ -55,6 +55,10 @@ class TicketOrderController extends Controller
 
         try {
             return response()->json(['success' => true, 'data' => $this->orders->quote($validated['items'])]);
+        } catch (\Illuminate\Database\QueryException $e) {
+            Log::error('Order quote failed on the database', ['error' => $e->getMessage()]);
+
+            return response()->json(['success' => false, 'message' => 'We could not save this right now. Please try again.'], 422);
         } catch (\RuntimeException $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
         } catch (Throwable $e) {
@@ -65,9 +69,11 @@ class TicketOrderController extends Controller
 
     public function store(Request $request): JsonResponse
     {
+        $staffCaller = app(\App\Services\AddOnRuleService::class)->isStaff($request->user('sanctum'));
+
         $validated = $request->validate($this->cartRules() + [
-            'customer_id' => 'nullable|integer|exists:customers,id',
-            'membership_id' => 'nullable|integer|exists:memberships,id',
+            'customer_id' => $staffCaller ? 'nullable|integer|exists:customers,id' : 'nullable|integer',
+            'membership_id' => $staffCaller ? 'nullable|integer|exists:memberships,id' : 'nullable|integer',
             'guest_name' => 'nullable|string|max:255',
             'guest_email' => 'nullable|email|max:255',
             'guest_phone' => 'nullable|string|max:50',
@@ -95,6 +101,7 @@ class TicketOrderController extends Controller
 
         if (!$callerIsStaff) {
             $validated['customer_id'] = $staff instanceof \App\Models\Customer ? $staff->id : null;
+            $validated['membership_id'] = null;
         }
 
         if (empty($validated['customer_id']) && empty($validated['guest_name']) && empty($validated['guest_email'])) {
@@ -208,6 +215,10 @@ class TicketOrderController extends Controller
                 'qr_token' => $qrToken,
                 'data' => $this->present($order->load(['attractionPurchases.attraction', 'attractionPurchases.addOns', 'eventPurchases.event', 'eventPurchases.addOns', 'location'])),
             ], 201);
+        } catch (\Illuminate\Database\QueryException $e) {
+            Log::error('Ticket order save failed', ['error' => $e->getMessage()]);
+
+            return response()->json(['success' => false, 'message' => 'We could not save this right now. Please try again.'], 422);
         } catch (\RuntimeException $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
         } catch (Throwable $e) {
@@ -641,7 +652,7 @@ class TicketOrderController extends Controller
 
     private function checkoutToken(TicketOrder $order): string
     {
-        return hash_hmac('sha256', $order->id . '|' . $order->reference_number, (string) config('app.key'));
+        return \App\Support\CheckoutToken::forOrder($order);
     }
 
     private function deniesAccess(Request $request, TicketOrder $order): ?JsonResponse
@@ -714,7 +725,7 @@ class TicketOrderController extends Controller
                         source: 'ticket_order',
                         tags: ['ticket_order', 'event_purchase', 'customer'],
                         locationId: $order->location_id,
-                        createdBy: auth()->id()
+                        createdBy: $order->created_by
                     );
                 }
             } catch (Throwable $e) {
@@ -730,7 +741,7 @@ class TicketOrderController extends Controller
             action: 'Order Created',
             category: 'create',
             description: "Order {$order->reference_number}: {$order->item_count} items, {$order->ticket_count} tickets for " . ($order->customer ? trim($order->customer->first_name . ' ' . $order->customer->last_name) : $order->guest_name),
-            userId: auth()->id(),
+            userId: $order->created_by,
             locationId: $order->location_id,
             entityType: 'ticket_order',
             entityId: $order->id,

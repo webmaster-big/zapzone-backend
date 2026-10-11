@@ -8,6 +8,8 @@ use App\Models\AttractionPurchase;
 use App\Models\Booking;
 use App\Models\EventPurchase;
 use App\Models\Payment;
+use App\Models\TicketOrder;
+use App\Services\TicketOrderService;
 use App\Services\GoogleCalendarService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
@@ -98,6 +100,38 @@ class CleanupAbandonedCardCheckouts extends Command
                 $this->logRemoval($set['label'], $purchase->id, $purchase->reference_number ?? (string) $purchase->id, $purchase->location_id ?? null, $purchase->created_at?->toIso8601String());
                 $purchase->forceDelete();
                 $removed++;
+            }
+        }
+
+        $abandonedOrders = TicketOrder::where('status', TicketOrder::STATUS_PENDING)
+            ->where('payment_method', 'authorize.net')
+            ->whereNull('created_by')
+            ->where(fn ($q) => $q->where('amount_paid', 0)->orWhereNull('amount_paid'))
+            ->where('created_at', '<', $cutoff)
+            ->with(['attractionPurchases', 'eventPurchases'])
+            ->get();
+
+        foreach ($abandonedOrders as $order) {
+            if ($this->hasCompletedPayment(Payment::TYPE_TICKET_ORDER, $order->id)
+                || $order->lines()->contains(fn (array $line) => $line['model']->checked_in_at !== null)) {
+                continue;
+            }
+
+            if ($dryRun) {
+                $this->line("would cancel abandoned card order {$order->reference_number} ({$order->created_at})");
+                $removed++;
+                continue;
+            }
+
+            try {
+                app(TicketOrderService::class)->cancelOrder($order);
+                $this->logRemoval('card order', $order->id, $order->reference_number, $order->location_id, $order->created_at?->toIso8601String());
+                $removed++;
+            } catch (\Throwable $e) {
+                Log::warning('Abandoned card order could not be cancelled', [
+                    'ticket_order_id' => $order->id,
+                    'error' => $e->getMessage(),
+                ]);
             }
         }
 

@@ -254,9 +254,11 @@ class AttractionPurchaseController extends Controller
 
     public function store(Request $request, DiscountService $discounts): JsonResponse
     {
+        $staffCaller = app(\App\Services\AddOnRuleService::class)->isStaff($request->user('sanctum'));
+
         $validated = $request->validate([
             'attraction_id' => 'required|exists:attractions,id',
-            'customer_id' => 'nullable|exists:customers,id',
+            'customer_id' => $staffCaller ? 'nullable|exists:customers,id' : 'nullable|integer',
             'membership_id' => 'nullable|exists:memberships,id',
             'membership_applied' => 'nullable|array',
             'membership_applied.*.membership_plan_benefit_id' => 'nullable|integer',
@@ -265,7 +267,7 @@ class AttractionPurchaseController extends Controller
             'membership_applied.*.value_applied' => 'nullable|numeric',
 
             'guest_name' => 'required_without:customer_id|string|max:255',
-            'guest_email' => 'required_without:customer_id|email|max:255',
+            'guest_email' => $staffCaller ? 'nullable|email|max:255' : 'required_without:customer_id|email|max:255',
             'guest_phone' => 'nullable|string|max:20',
             'guest_address' => 'nullable|string|max:255',
             'guest_city' => 'nullable|string|max:100',
@@ -385,7 +387,7 @@ class AttractionPurchaseController extends Controller
         if (!empty($validated['customer_id'])) {
             $duplicateQuery->where('customer_id', $validated['customer_id']);
         } else {
-            $duplicateQuery->where('guest_email', $validated['guest_email'] ?? null);
+            $duplicateQuery->whereNull('customer_id')->where('guest_email', $validated['guest_email'] ?? null);
         }
 
         $attractionLocationId = Attraction::query()->whereKey($validated['attraction_id'])->value('location_id');
@@ -406,15 +408,17 @@ class AttractionPurchaseController extends Controller
             }
         }
 
+        $buyerIdentifiable = !empty($validated['customer_id']) || trim((string) ($validated['guest_email'] ?? '')) !== '';
+
         $requestCarriesCode = !empty($validated['gift_card_code']) || !empty($validated['gift_card_id'])
             || !empty($validated['promo_code']) || !empty($validated['promo_id']);
 
-        $existingPending = $requestCarriesCode ? null : $duplicateQuery->first();
+        $existingPending = ($requestCarriesCode || !$buyerIdentifiable) ? null : $duplicateQuery->first();
         if ($existingPending) {
             $blockGuard->recordBookedInside($request, $blockedPeriods, 'attraction_purchase', (int) $existingPending->id, $this->blockLogDetails($existingPending));
             $existingPending->load($isStaff ? ['attraction', 'customer', 'createdBy', 'addOns'] : ['attraction', 'addOns']);
             if (! $isStaff) {
-                $existingPending->makeHidden(['guest_name', 'guest_phone', 'guest_address', 'guest_city', 'guest_state', 'guest_zip', 'guest_country', 'customer_id', 'created_by', 'notes', 'transaction_id']);
+                $existingPending->makeHidden(['guest_name', 'guest_phone', 'guest_address', 'guest_city', 'guest_state', 'guest_zip', 'guest_country', 'customer_id', 'created_by', 'notes', 'transaction_id', 'applied_discounts', 'gift_card_id', 'promo_id', 'membership_id']);
             }
             Log::info('Duplicate attraction purchase prevented (existing pending found)', [
                 'existing_purchase_id' => $existingPending->id,
@@ -426,6 +430,9 @@ class AttractionPurchaseController extends Controller
                 'success' => true,
                 'message' => 'Attraction purchase already exists',
                 'data' => $existingPending,
+                'checkout_token' => $this->provesReplayOwner($request, $isStaff, $earlierAttempt, $existingPending)
+                    ? \App\Support\CheckoutToken::for('attraction_purchase', $existingPending->id)
+                    : null,
             ], 200);
         }
 
@@ -443,7 +450,7 @@ class AttractionPurchaseController extends Controller
             $validated['amount_paid'] = 0;
         }
 
-        $validated['created_by'] = auth()->id() ?? null;
+        $validated['created_by'] = \App\Support\StaffActor::id() ?? null;
 
         $attractionModel = Attraction::find($validated['attraction_id']);
         $attractionLocationId = $attractionModel?->location_id;
@@ -614,6 +621,10 @@ class AttractionPurchaseController extends Controller
 
             return $created;
             });
+        } catch (\Illuminate\Database\QueryException $e) {
+            Log::error('Attraction purchase save failed', ['error' => $e->getMessage()]);
+
+            return response()->json(['success' => false, 'message' => 'We could not save this right now. Please try again.'], 422);
         } catch (\RuntimeException $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
         }
@@ -638,7 +649,17 @@ class AttractionPurchaseController extends Controller
             'success' => true,
             'message' => 'Attraction purchase created successfully',
             'data' => $purchase,
+            'checkout_token' => \App\Support\CheckoutToken::for('attraction_purchase', $purchase->id),
         ], 201);
+    }
+
+    private function provesReplayOwner(Request $request, bool $isStaff, ?AttractionPurchase $keyed, AttractionPurchase $replayed): bool
+    {
+        $requester = $request->user('sanctum');
+
+        return $isStaff
+            || ($keyed && (int) $keyed->id === (int) $replayed->id)
+            || ($requester instanceof \App\Models\Customer && (int) $replayed->customer_id === (int) $requester->id);
     }
 
     private function purchaseForCheckoutKey(string $checkoutKey): ?AttractionPurchase
@@ -707,7 +728,7 @@ class AttractionPurchaseController extends Controller
                     $purchase,
                     $validated['membership_applied'],
                     $locationId,
-                    auth()->id()
+                    \App\Support\StaffActor::id()
                 );
                 return;
             }
@@ -729,7 +750,7 @@ class AttractionPurchaseController extends Controller
                     $purchase,
                     $quote['applied'],
                     $locationId,
-                    auth()->id()
+                    \App\Support\StaffActor::id()
                 );
             }
         } catch (\Throwable $e) {
@@ -1165,7 +1186,8 @@ class AttractionPurchaseController extends Controller
             if (!app(\App\Services\AddOnRuleService::class)->isStaff(request()->user('sanctum'))
                 && ($attractionPurchase->status !== AttractionPurchase::STATUS_PENDING
                     || $attractionPurchase->checked_in_at !== null
-                    || $attractionPurchase->payments()->whereIn('status', ['completed', 'refunded'])->exists())) {
+                    || $attractionPurchase->payments()->whereIn('status', ['completed', 'refunded'])->exists()
+                    || !\App\Support\CheckoutToken::presented(request(), 'attraction_purchase', $attractionPurchase->id))) {
                 Log::warning('Public attraction purchase delete refused: only an unpaid pending purchase can be rolled back', [
                     'id' => $attractionPurchase->id,
                     'status' => $attractionPurchase->status,
@@ -1181,7 +1203,7 @@ class AttractionPurchaseController extends Controller
             $userId = null;
             $user = null;
             try {
-                $authUser = auth()->user();
+                $authUser = \App\Support\StaffActor::current();
                 if ($authUser instanceof User) {
                     $userId = $authUser->id;
                     $user = $authUser;
@@ -2027,6 +2049,14 @@ public function checkIn(Request $request, int $id): JsonResponse
                 return response()->json([
                     'success' => false,
                     'message' => 'Only pending attraction purchases can be force deleted',
+                ], 403);
+            }
+
+            if (!app(\App\Services\AddOnRuleService::class)->isStaff(request()->user('sanctum'))
+                && !\App\Support\CheckoutToken::presented(request(), 'attraction_purchase', $attractionPurchase->id)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Only the checkout that made this purchase can remove it.',
                 ], 403);
             }
 
