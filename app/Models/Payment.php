@@ -13,6 +13,19 @@ class Payment extends Model
 {
     use HasFactory, SoftDeletes;
 
+    protected static function booted(): void
+    {
+        $touchBooking = function (Payment $payment) {
+            if ($payment->payable_type === self::TYPE_BOOKING && $payment->payable_id) {
+                \Illuminate\Support\Facades\DB::table('bookings')->where('id', $payment->payable_id)->update(['updated_at' => now()]);
+            }
+        };
+
+        static::saved($touchBooking);
+        static::deleted($touchBooking);
+        static::restored($touchBooking);
+    }
+
     public const TYPE_BOOKING = 'booking';
     public const TYPE_ATTRACTION_PURCHASE = 'attraction_purchase';
     public const TYPE_EVENT_PURCHASE = 'event_purchase';

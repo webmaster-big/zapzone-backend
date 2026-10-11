@@ -11,6 +11,13 @@ class Room extends Model
 {
     use HasFactory;
 
+    protected static function booted(): void
+    {
+        static::deleting(function (Room $room) {
+            \Illuminate\Support\Facades\DB::table('bookings')->where('room_id', $room->id)->update(['updated_at' => now()]);
+        });
+    }
+
     protected $fillable = [
         'location_id',
         'name',

@@ -69,6 +69,10 @@ class Package extends Model
 
     protected static function booted(): void
     {
+        static::forceDeleting(function (Package $package) {
+            \Illuminate\Support\Facades\DB::table('bookings')->where('package_id', $package->id)->update(['updated_at' => now()]);
+        });
+
         static::saving(function (Package $package) {
             if (!self::supportsEscapeRoomFlag()) {
                 $package->offsetUnset('is_escape_room');

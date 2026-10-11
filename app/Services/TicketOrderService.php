@@ -382,9 +382,9 @@ class TicketOrderService
         });
 
         if ($justConfirmed) {
-            $this->sendOrderNotifications($result->fresh([
+            DB::afterCommit(fn () => $this->sendOrderNotifications($result->fresh([
                 'location', 'customer', 'attractionPurchases.attraction', 'eventPurchases.event',
-            ]));
+            ])));
         }
 
         return $result;

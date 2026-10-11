@@ -208,6 +208,24 @@ class NotificationFeedTest extends TestCase
         $this->assertSame([$there->id], array_column($this->feed($token, ['after' => $cursor])['items'], 'id'));
     }
 
+    public function test_a_notification_that_lands_after_a_newer_one_still_reaches_a_feed_that_asks_for_the_overlap(): void
+    {
+        $token = $this->tokenFor($this->staff('location_manager', $this->brighton));
+        $late = $this->notify($this->brighton, 'Payment Received', 'payment');
+        $seen = $this->notify($this->brighton, 'New Booking Received');
+        $this->notify($this->canton, 'Canton Booking');
+        $cursor = 'n' . $seen->id;
+
+        $this->assertSame([], $this->feed($token, ['after' => $cursor])['items'], 'older pages that do not ask for the overlap get no repeats');
+
+        $overlap = $this->feed($token, ['after' => $cursor, 'overlap' => 1]);
+        $this->assertSame([$late->id, $seen->id], array_column($overlap['items'], 'id'));
+        $this->assertArrayNotHasKey('unread', $overlap, 'items sent again do not cost a count on every poll');
+
+        $this->travel(4)->minutes();
+        $this->assertSame([], $this->feed($token, ['after' => $cursor, 'overlap' => 1])['items'], 'only the last few minutes are sent again');
+    }
+
     private function makeCompany(string $name): Company
     {
         return Company::create([
