@@ -51,6 +51,8 @@ class TicketOrderController extends Controller
     {
         $validated = $request->validate($this->cartRules());
 
+        $this->orders->allowBlockedPeriods(app(\App\Services\AvailabilityBlockGuard::class)->isStaff($request));
+
         try {
             return response()->json(['success' => true, 'data' => $this->orders->quote($validated['items'])]);
         } catch (\RuntimeException $e) {
@@ -131,6 +133,15 @@ class TicketOrderController extends Controller
             return \App\Support\OnlineBookingGate::refusal();
         }
 
+        $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
+        $blockedPeriods = $callerIsStaff ? $this->blockedPeriodsFor($validated['items'], $blockGuard) : collect();
+
+        if ($refusal = $blockGuard->refusal($request, $blockedPeriods, 'A time in this order is closed. Please choose another.', 'This order')) {
+            return $refusal;
+        }
+
+        $this->orders->allowBlockedPeriods($blockedPeriods->isNotEmpty());
+
         try {
             // Resolved before the order exists so a missing required answer stops the
             // purchase instead of leaving an order that has to be cleaned up.
@@ -178,6 +189,18 @@ class TicketOrderController extends Controller
 
             $this->rememberOrderCheckoutKey($checkoutKey, $order);
 
+            $blockGuard->recordBookedInside($request, $blockedPeriods, 'ticket_order', (int) $order->id, [
+                'label' => 'Order',
+                'reference' => $order->reference_number,
+                'guest_name' => $order->guest_name,
+                'items' => collect($validated['items'])->map(fn (array $item) => [
+                    'type' => $item['type'],
+                    'id' => (int) $item['id'],
+                    'scheduled_date' => $item['scheduled_date'] ?? null,
+                    'scheduled_time' => $item['scheduled_time'] ?? null,
+                ])->all(),
+            ]);
+
             $qrToken = $this->checkoutToken($order);
 
             return response()->json([
@@ -196,6 +219,52 @@ class TicketOrderController extends Controller
 
             return response()->json(['success' => false, 'message' => 'We could not create this order. Please try again.'], 422);
         }
+    }
+
+    private function blockedPeriodsFor(array $items, \App\Services\AvailabilityBlockGuard $blockGuard): \Illuminate\Support\Collection
+    {
+        $blocks = collect();
+
+        foreach ($items as $item) {
+            $time = ! empty($item['scheduled_time']) ? substr((string) $item['scheduled_time'], 0, 5) : null;
+
+            if ($item['type'] === 'attraction') {
+                $attraction = \App\Models\Attraction::find($item['id']);
+
+                if ($attraction && $attraction->location_id && ! empty($item['scheduled_date']) && $time) {
+                    $blocks = $blocks->merge($blockGuard->forAttraction(
+                        (int) $attraction->location_id,
+                        (int) $attraction->id,
+                        \Carbon\Carbon::parse($item['scheduled_date'])->toDateString(),
+                        $time
+                    ));
+                }
+
+                continue;
+            }
+
+            $event = \App\Models\Event::find($item['id']);
+
+            if (! $event || ! $event->location_id) {
+                continue;
+            }
+
+            $date = ! empty($item['scheduled_date']) ? $item['scheduled_date'] : $event->start_date;
+
+            if (! $date) {
+                continue;
+            }
+
+            $blocks = $blocks->merge($blockGuard->forEvent(
+                (int) $event->location_id,
+                (int) $event->id,
+                \Carbon\Carbon::parse($date)->toDateString(),
+                $time,
+                $time ? \Carbon\Carbon::parse($time)->addMinutes((int) ($event->interval_minutes ?: 60))->format('H:i') : null
+            ));
+        }
+
+        return $blocks->unique('id')->values();
     }
 
     private function orderForCheckoutKey(string $checkoutKey): ?TicketOrder

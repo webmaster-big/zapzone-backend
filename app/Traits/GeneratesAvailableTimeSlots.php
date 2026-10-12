@@ -104,10 +104,10 @@ trait GeneratesAvailableTimeSlots
         return $this->slotLookupCache[$key];
     }
 
-    private function roomBlockedByDayOff($locationId, $roomId, $date, string $slotStart, string $slotEnd): bool
+    private function roomBlockedByDayOff($locationId, $roomId, $date, string $slotStart, string $slotEnd, ?int $overnightUntil = null): bool
     {
         foreach ($this->dayOffsFor($locationId, $date) as $dayOff) {
-            if ($dayOff->appliesToRoom((int) $roomId) && $dayOff->isTimeBlocked($slotStart, $slotEnd)) {
+            if ($dayOff->appliesToRoom((int) $roomId) && $dayOff->isTimeBlocked($slotStart, $slotEnd, $overnightUntil)) {
                 return true;
             }
         }
@@ -115,10 +115,10 @@ trait GeneratesAvailableTimeSlots
         return false;
     }
 
-    private function packageBlockedByDayOff($locationId, $packageId, $date, string $slotStart, string $slotEnd): bool
+    private function packageBlockedByDayOff($locationId, $packageId, $date, string $slotStart, string $slotEnd, ?int $overnightUntil = null): bool
     {
         foreach ($this->dayOffsFor($locationId, $date) as $dayOff) {
-            if ($dayOff->appliesToPackage((int) $packageId) && $dayOff->isTimeBlocked($slotStart, $slotEnd)) {
+            if ($dayOff->appliesToPackage((int) $packageId) && $dayOff->isTimeBlocked($slotStart, $slotEnd, $overnightUntil)) {
                 return true;
             }
         }
@@ -168,7 +168,7 @@ trait GeneratesAvailableTimeSlots
         return max(0, (int) config('booking_rules.room_cleanup_minutes', 15));
     }
 
-    private function generateAvailableSlotsWithRooms($package, $date, bool $includePastStarts = false)
+    private function generateAvailableSlotsWithRooms($package, $date, bool $includePastStarts = false, bool $includeBlocked = false)
     {
         $availableSlots = [];
 
@@ -181,6 +181,7 @@ trait GeneratesAvailableTimeSlots
         $locationId = $package->location_id;
 
         $timeSlots = $package->getTimeSlotsForDate($date);
+        $overnightUntil = $package->overnightUntilMinute($date);
 
         if (empty($timeSlots)) {
             Log::info('No time slots found for package', [
@@ -224,10 +225,11 @@ trait GeneratesAvailableTimeSlots
                 $package->id,
                 $date,
                 $currentTime->format('H:i'),
-                $slotEndTime->format('H:i')
+                $slotEndTime->format('H:i'),
+                $overnightUntil
             );
 
-            if ($isPackageBlocked) {
+            if ($isPackageBlocked && ! $includeBlocked) {
                 Log::debug('Time slot blocked by day off for package', [
                     'package_id' => $package->id,
                     'date' => $date,
@@ -252,8 +254,27 @@ trait GeneratesAvailableTimeSlots
                 $date,
                 $currentTime->format('H:i'),
                 $duration,
-                $durationUnit
+                $durationUnit,
+                true,
+                $overnightUntil
             );
+
+            $roomBlocked = false;
+
+            if ($includeBlocked && $freeRoomIds === [] && $totalRooms > 0) {
+                $freeRoomIds = $this->availableRoomIds(
+                    $package->id,
+                    $date,
+                    $currentTime->format('H:i'),
+                    $duration,
+                    $durationUnit,
+                    false,
+                    $overnightUntil
+                );
+                $roomBlocked = $freeRoomIds !== [];
+            }
+
+            $slotBlocked = $isPackageBlocked || $roomBlocked;
 
             $availableRoom = $freeRoomIds === []
                 ? null
@@ -274,6 +295,7 @@ trait GeneratesAvailableTimeSlots
                     'min_participants' => $minForDate,
                     'exclusive' => $exclusive,
                     'is_past' => $isPastStart,
+                    'blocked' => $slotBlocked,
                 ];
             } elseif ($totalRooms === 0) {
                 $availableSlots[] = [
@@ -290,6 +312,7 @@ trait GeneratesAvailableTimeSlots
                     'min_participants' => $minForDate,
                     'exclusive' => $exclusive,
                     'is_past' => $isPastStart,
+                    'blocked' => $slotBlocked,
                 ];
             }
         }
@@ -298,7 +321,7 @@ trait GeneratesAvailableTimeSlots
     }
 
     /** Every space that could take this slot, so the caller can honour the one a user picked. */
-    private function availableRoomIds($packageId, $date, $startTime, $duration, $durationUnit): array
+    private function availableRoomIds($packageId, $date, $startTime, $duration, $durationUnit, bool $respectDayOffs = true, ?int $overnightUntil = null): array
     {
         $package = $this->cachedPackageWithRooms($packageId);
 
@@ -316,12 +339,13 @@ trait GeneratesAvailableTimeSlots
                 continue;
             }
 
-            $isRoomBlocked = $this->roomBlockedByDayOff(
+            $isRoomBlocked = $respectDayOffs && $this->roomBlockedByDayOff(
                 $package->location_id,
                 $room->id,
                 $date,
                 $startTime,
-                $slotEnd->format('H:i')
+                $slotEnd->format('H:i'),
+                $overnightUntil
             );
 
             if ($isRoomBlocked) {

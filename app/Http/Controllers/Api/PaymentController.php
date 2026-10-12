@@ -1020,14 +1020,16 @@ class PaymentController extends Controller
                         if ($payable) {
                             if ($isCancelled) {
                                 $payable->update([
-                                    'status' => $isFullRefund ? AttractionPurchase::STATUS_REFUNDED : AttractionPurchase::STATUS_CONFIRMED,
+                                    'status' => $isFullRefund ? AttractionPurchase::STATUS_REFUNDED : AttractionPurchase::STATUS_CANCELLED,
                                     'amount_paid' => max(0, $payable->amount_paid - $refundAmount),
                                 ]);
                             } else {
                                 $newAmountPaid = max(0, $payable->amount_paid - $refundAmount);
                                 $payable->update([
                                     'amount_paid' => $newAmountPaid,
-                                    'status' => $newAmountPaid <= 0 ? AttractionPurchase::STATUS_REFUNDED : AttractionPurchase::STATUS_CONFIRMED,
+                                    'status' => $newAmountPaid <= 0
+                                        ? AttractionPurchase::STATUS_REFUNDED
+                                        : (in_array($payable->status, [AttractionPurchase::STATUS_CANCELLED, AttractionPurchase::STATUS_REFUNDED], true) ? $payable->status : AttractionPurchase::STATUS_CONFIRMED),
                                 ]);
                             }
 
@@ -1528,14 +1530,16 @@ class PaymentController extends Controller
             if ($payable) {
                 if ($isCancelled) {
                     $payable->update([
-                        'status' => $isFullRefund ? AttractionPurchase::STATUS_REFUNDED : AttractionPurchase::STATUS_CONFIRMED,
+                        'status' => $isFullRefund ? AttractionPurchase::STATUS_REFUNDED : AttractionPurchase::STATUS_CANCELLED,
                         'amount_paid' => max(0, $payable->amount_paid - $refundAmount),
                     ]);
                 } else {
                     $newAmountPaid = max(0, $payable->amount_paid - $refundAmount);
                     $payable->update([
                         'amount_paid' => $newAmountPaid,
-                        'status' => $newAmountPaid <= 0 ? AttractionPurchase::STATUS_REFUNDED : AttractionPurchase::STATUS_CONFIRMED,
+                        'status' => $newAmountPaid <= 0
+                            ? AttractionPurchase::STATUS_REFUNDED
+                            : (in_array($payable->status, [AttractionPurchase::STATUS_CANCELLED, AttractionPurchase::STATUS_REFUNDED], true) ? $payable->status : AttractionPurchase::STATUS_CONFIRMED),
                     ]);
                 }
 

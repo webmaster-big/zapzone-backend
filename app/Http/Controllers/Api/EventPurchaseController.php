@@ -220,7 +220,20 @@ class EventPurchaseController extends Controller
                 return response()->json(['message' => 'Selected date is not available for this event'], 422);
             }
 
-            $availableSlots = $event->getAvailableTimeSlotsForDate($validated['purchase_date']);
+            $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
+            $blockedPeriods = $blockGuard->forEvent(
+                (int) $event->location_id,
+                (int) $event->id,
+                \Carbon\Carbon::parse($validated['purchase_date'])->toDateString(),
+                $validated['purchase_time'],
+                \Carbon\Carbon::parse($validated['purchase_time'])->addMinutes((int) ($event->interval_minutes ?: 60))->format('H:i')
+            );
+            if ($refusal = $blockGuard->refusal($request, $blockedPeriods, 'Selected time slot is not available', 'This purchase')) {
+                return $refusal;
+            }
+            $respectDayOffs = $blockedPeriods->isEmpty();
+
+            $availableSlots = $event->getAvailableTimeSlotsForDate($validated['purchase_date'], $respectDayOffs);
             if (!in_array($validated['purchase_time'], $availableSlots)) {
                 return response()->json(['message' => 'Selected time slot is not available'], 422);
             }
@@ -356,7 +369,7 @@ class EventPurchaseController extends Controller
             unset($validated['add_ons'], $validated['send_email'], $validated['sms_consent'], $validated['custom_fields']);
 
             $serverExpectedTotal = $serverExpectedTotal ?? null;
-            $purchase = DB::transaction(function () use (&$validated, $discounts, $request, $customFieldAnswers, $rules, $isStaff, $addOnLines, $serverExpectedTotal) {
+            $purchase = DB::transaction(function () use (&$validated, $discounts, $request, $customFieldAnswers, $rules, $isStaff, $addOnLines, $serverExpectedTotal, $respectDayOffs) {
                 $capEvent = Event::where('id', $validated['event_id'])->lockForUpdate()->first();
 
                 if ($capEvent && $capEvent->max_tickets_per_slot !== null) {
@@ -445,7 +458,7 @@ class EventPurchaseController extends Controller
                 }
 
                 if ($capEvent && $capEvent->max_bookings_per_slot !== null
-                    && !in_array($validated['purchase_time'], $capEvent->getAvailableTimeSlotsForDate($validated['purchase_date']))) {
+                    && !in_array($validated['purchase_time'], $capEvent->getAvailableTimeSlotsForDate($validated['purchase_date'], $respectDayOffs))) {
                     throw new \RuntimeException('Selected time slot is not available');
                 }
 
@@ -479,6 +492,15 @@ class EventPurchaseController extends Controller
             $purchase->load(['event.location.company', 'customer', 'location:id,name', 'addOns']);
 
             $this->rememberPurchaseCheckoutKey($checkoutKey, $purchase);
+
+            $blockGuard->recordBookedInside($request, $blockedPeriods, 'event_purchase', (int) $purchase->id, [
+                'label' => 'Event purchase',
+                'reference' => $purchase->reference_number ?? ('#' . $purchase->id),
+                'purchase_date' => $purchase->purchase_date?->toDateString(),
+                'purchase_time' => substr((string) $validated['purchase_time'], 0, 5),
+                'event_id' => $purchase->event_id,
+                'guest_name' => $purchase->guest_name,
+            ]);
 
             // Create a pending waiver if a template covers this event, so the
             // confirmation can include the {{waiver_link}}. Non-fatal.
@@ -771,6 +793,9 @@ class EventPurchaseController extends Controller
             $slotTouched = array_intersect(array_keys($validated), ['quantity', 'purchase_date', 'purchase_time']) !== []
                 || (isset($validated['status']) && $eventPurchase->status === 'cancelled' && $validated['status'] !== 'cancelled');
 
+            $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
+            $blockedPeriods = collect();
+
             if ($slotTouched && ($validated['status'] ?? $eventPurchase->status) !== 'cancelled') {
                 $closureEvent = Event::find($eventPurchase->event_id);
                 $closureDate = isset($validated['purchase_date'])
@@ -779,24 +804,23 @@ class EventPurchaseController extends Controller
                 $closureTime = isset($validated['purchase_time'])
                     ? substr((string) $validated['purchase_time'], 0, 5)
                     : $eventPurchase->purchase_time?->format('H:i');
+                $movesIntoNewSlot = $closureDate !== $eventPurchase->purchase_date?->toDateString()
+                    || $closureTime !== $eventPurchase->purchase_time?->format('H:i')
+                    || $eventPurchase->status === 'cancelled';
 
-                if ($closureEvent && $closureDate && \Carbon\Carbon::parse($closureDate)->gte(\Carbon\Carbon::today())) {
+                if ($movesIntoNewSlot && $closureEvent && $closureDate && \Carbon\Carbon::parse($closureDate)->gte(\Carbon\Carbon::today())) {
+                    $closureTime = \App\Services\AvailabilityBlockGuard::eventSlotTime($closureEvent, $closureTime);
                     $closureInterval = (int) ($closureEvent->interval_minutes ?: 60);
-                    $closureBlocked = $closureTime
-                        ? \App\Models\DayOff::isTimeSlotBlockedForEvent(
-                            $closureEvent->location_id,
-                            (int) $closureEvent->id,
-                            $closureDate,
-                            $closureTime,
-                            \Carbon\Carbon::parse($closureTime)->addMinutes($closureInterval)->format('H:i')
-                        )
-                        : \App\Models\DayOff::isDateBlockedForEvent($closureEvent->location_id, (int) $closureEvent->id, $closureDate);
+                    $blockedPeriods = $blockGuard->forEvent(
+                        (int) $closureEvent->location_id,
+                        (int) $closureEvent->id,
+                        $closureDate,
+                        $closureTime,
+                        $closureTime ? \Carbon\Carbon::parse($closureTime)->addMinutes($closureInterval)->format('H:i') : null
+                    );
 
-                    if ($closureBlocked) {
-                        return response()->json([
-                            'success' => false,
-                            'message' => 'The selected date or time is closed for this event. Please choose another.',
-                        ], 422);
+                    if ($refusal = $blockGuard->refusal($request, $blockedPeriods, 'The selected date or time is closed for this event. Please choose another.', 'This change')) {
+                        return $refusal;
                     }
                 }
 
@@ -804,7 +828,7 @@ class EventPurchaseController extends Controller
 
                 if ($targetEvent && $targetEvent->max_tickets_per_slot !== null) {
                     $slotDate = isset($validated['purchase_date']) ? \Carbon\Carbon::parse($validated['purchase_date'])->toDateString() : $eventPurchase->purchase_date?->toDateString();
-                    $slotTime = isset($validated['purchase_time']) ? substr((string) $validated['purchase_time'], 0, 5) : ($eventPurchase->purchase_time ? substr((string) $eventPurchase->purchase_time, 0, 5) : null);
+                    $slotTime = isset($validated['purchase_time']) ? substr((string) $validated['purchase_time'], 0, 5) : $eventPurchase->purchase_time?->format('H:i');
 
                     if (!$slotDate || !$slotTime) {
                         return response()->json(['success' => false, 'message' => "Please set a date and time for {$targetEvent->name}."], 422);
@@ -847,7 +871,7 @@ class EventPurchaseController extends Controller
 
                 if ($bookingCapEvent && $bookingCapEvent->max_bookings_per_slot !== null) {
                     $slotDate = isset($validated['purchase_date']) ? \Carbon\Carbon::parse($validated['purchase_date'])->toDateString() : $eventPurchase->purchase_date?->toDateString();
-                    $slotTime = isset($validated['purchase_time']) ? substr((string) $validated['purchase_time'], 0, 5) : ($eventPurchase->purchase_time ? substr((string) $eventPurchase->purchase_time, 0, 5) : null);
+                    $slotTime = isset($validated['purchase_time']) ? substr((string) $validated['purchase_time'], 0, 5) : $eventPurchase->purchase_time?->format('H:i');
 
                     if ($slotDate && $slotTime) {
                         $otherBookings = (int) $bookingCapEvent->eventPurchases()
@@ -936,6 +960,17 @@ class EventPurchaseController extends Controller
             }
 
             $saved = $eventPurchase->fresh();
+
+            $blockGuard->recordBookedInside($request, $blockedPeriods, 'event_purchase', (int) $eventPurchase->id, [
+                'label' => 'Event purchase',
+                'reference' => $saved?->reference_number ?? ('#' . $eventPurchase->id),
+                'purchase_date' => $saved?->purchase_date?->toDateString(),
+                'purchase_time' => $saved?->purchase_time?->format('H:i'),
+                'event_id' => $eventPurchase->event_id,
+                'guest_name' => $saved?->guest_name,
+                'moved' => true,
+            ]);
+
             $followUp = $this->followUpAfterStatusChange($saved, $originalStatus, $request, $saved !== null && \App\Services\VisitFollowUpService::bookerIdentity($saved) !== $previousBooker);
 
             return response()->json(array_filter([
@@ -1117,6 +1152,18 @@ class EventPurchaseController extends Controller
         return response()->json($eventPurchase->fresh()->load(['event:id,name', 'addOns']));
     }
 
+    private function blockLogDetails(EventPurchase $purchase, array $extra = []): array
+    {
+        return [
+            'label' => 'Event purchase',
+            'reference' => $purchase->reference_number ?? ('#' . $purchase->id),
+            'purchase_date' => $purchase->purchase_date?->toDateString(),
+            'purchase_time' => $purchase->purchase_time?->format('H:i'),
+            'event_id' => $purchase->event_id,
+            'guest_name' => $purchase->guest_name,
+        ] + $extra;
+    }
+
     public function updateStatus(Request $request, EventPurchase $eventPurchase): JsonResponse
     {
         if ($denied = $this->denyForeignRecord($eventPurchase, 'purchase')) {
@@ -1149,6 +1196,8 @@ class EventPurchaseController extends Controller
         }
 
         $originalStatus = $eventPurchase->status;
+        $reactivatedInside = collect();
+        $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
 
         if ($originalStatus === 'cancelled' && $validated['status'] !== 'cancelled') {
             if ($this->giftCardWasReversedFor(\App\Models\Payment::TYPE_EVENT_PURCHASE, (int) $eventPurchase->id)) {
@@ -1160,9 +1209,16 @@ class EventPurchaseController extends Controller
             } catch (\RuntimeException $e) {
                 return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
             }
+
+            $reactivatedInside = $blockGuard->forExistingEventPurchase($eventPurchase);
+
+            if ($refusal = $blockGuard->refusal($request, $reactivatedInside, 'The selected date or time is closed for this event. Please choose another.', 'Reactivating this purchase')) {
+                return $refusal;
+            }
         }
 
         $eventPurchase->update($updates);
+        $blockGuard->recordBookedInside($request, $reactivatedInside, 'event_purchase', (int) $eventPurchase->id, $this->blockLogDetails($eventPurchase, ['reactivated' => true]));
 
         if ($validated['status'] === 'cancelled') {
             app(MembershipBenefitService::class)->reverseForRedeemable($eventPurchase, 'purchase_cancelled');
@@ -1574,7 +1630,9 @@ class EventPurchaseController extends Controller
             ], 422);
         }
 
-        $purchase = EventPurchase::onlyTrashed()->findOrFail($id);
+        $purchase = EventPurchase::onlyTrashed()->whereIn('location_id', $this->staffLocationIds(request()))->findOrFail($id);
+        $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
+        $restoredInside = collect();
 
         if ($purchase->status !== 'cancelled') {
             try {
@@ -1582,9 +1640,16 @@ class EventPurchaseController extends Controller
             } catch (\RuntimeException $e) {
                 return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
             }
+
+            $restoredInside = $blockGuard->forExistingEventPurchase($purchase);
+
+            if ($refusal = $blockGuard->refusal(request(), $restoredInside, 'The selected date or time is closed for this event. Please choose another.', 'Restoring this purchase')) {
+                return $refusal;
+            }
         }
 
         $purchase->restore();
+        $blockGuard->recordBookedInside(request(), $restoredInside, 'event_purchase', (int) $purchase->id, $this->blockLogDetails($purchase, ['restored' => true]));
         $this->followUpAfterRestore($purchase);
         $purchase->load(['event', 'customer', 'location:id,name', 'addOns']);
 
@@ -1616,10 +1681,19 @@ class EventPurchaseController extends Controller
             'ids.*' => 'required|integer',
         ]);
 
-        $purchases = EventPurchase::onlyTrashed()->whereIn('id', $validated['ids'])->get();
+        $purchases = EventPurchase::onlyTrashed()->whereIn('id', $validated['ids'])->whereIn('location_id', $this->staffLocationIds($request))->get();
         $restoredCount = 0;
         $blocked = [];
         $guard = app(\App\Services\SlotCapacityGuard::class);
+        $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
+        $insideBlocks = $purchases
+            ->reject(fn (EventPurchase $purchase) => $purchase->status === 'cancelled')
+            ->mapWithKeys(fn (EventPurchase $purchase) => [$purchase->id => $blockGuard->forExistingEventPurchase($purchase)])
+            ->filter(fn ($blocks) => $blocks->isNotEmpty());
+
+        if ($refusal = $blockGuard->refusal($request, $insideBlocks->flatten(1)->unique('id')->sortBy('id')->values(), 'The selected date or time is closed for this event. Please choose another.', 'Restoring these purchases')) {
+            return $refusal;
+        }
 
         foreach ($purchases as $purchase) {
             if ($purchase->status !== 'cancelled') {
@@ -1632,6 +1706,10 @@ class EventPurchaseController extends Controller
             }
 
             $purchase->restore();
+
+            if ($insideBlocks->has($purchase->id)) {
+                $blockGuard->recordBookedInside($request, $insideBlocks->get($purchase->id), 'event_purchase', (int) $purchase->id, $this->blockLogDetails($purchase, ['restored' => true]));
+            }
             $this->followUpAfterRestore($purchase);
             $restoredCount++;
         }

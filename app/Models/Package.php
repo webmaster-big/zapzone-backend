@@ -179,6 +179,13 @@ class Package extends Model
         return $this->resolvedScheduleForDate[$date];
     }
 
+    public function overnightUntilMinute(string $date): ?int
+    {
+        $schedule = $this->scheduleForDate($date);
+
+        return $schedule ? DayOff::overnightUntil($schedule->time_slot_start, $schedule->time_slot_end) : null;
+    }
+
     public function forgetResolvedSchedules(): void
     {
         $this->resolvedScheduleForDate = [];

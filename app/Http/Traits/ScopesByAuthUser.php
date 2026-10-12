@@ -147,6 +147,25 @@ trait ScopesByAuthUser
         return null;
     }
 
+    protected function staffLocationIds(?Request $request = null): array
+    {
+        $authUser = $this->resolveAuthUser($request);
+
+        if (! $authUser instanceof \App\Models\User || ! $authUser->company_id) {
+            return [];
+        }
+
+        if (in_array(\App\Http\Middleware\EnsureStaff::effectiveRole($authUser), ['location_manager', 'attendant'], true)) {
+            return $authUser->location_id ? [(int) $authUser->location_id] : [];
+        }
+
+        return \App\Models\Location::query()
+            ->where('company_id', $authUser->company_id)
+            ->pluck('id')
+            ->map(fn ($id) => (int) $id)
+            ->all();
+    }
+
     private function otherWorkLocation(?User $authUser, $locationId): ?\App\Models\Location
     {
         if (! $authUser || ! $authUser->canHoldSeveralLocations() || ! $authUser->canWorkAt($locationId)) {

@@ -20,15 +20,17 @@ class ScheduleDayWindow
 
     public const FALLBACK_INTERVAL = 30;
 
-    public function forDate(?int $locationId, string $date): array
+    public function forDate(?int $locationId, string $date, ?array $allowedLocationIds = null): array
     {
         $day = Carbon::parse($date)->toDateString();
+        $limitToAllowed = $locationId === null && $allowedLocationIds !== null;
 
         $packages = Package::query()
             ->select(['id', 'location_id', 'name', 'duration', 'duration_unit', 'is_active',
                 'pricing_type', 'min_participants', 'max_participants', 'max_tickets_per_slot'])
             ->where('is_active', true)
             ->when($locationId !== null, fn ($q) => $q->where('location_id', $locationId))
+            ->when($limitToAllowed, fn ($q) => $q->whereIn('location_id', $allowedLocationIds))
             ->with([
                 'availabilitySchedules:id,package_id,availability_type,day_configuration,time_slot_start,time_slot_end,time_slot_interval,priority,is_active',
                 'rooms:id,name,is_available,booking_interval',
@@ -37,6 +39,7 @@ class ScheduleDayWindow
 
         $rooms = Room::query()
             ->when($locationId !== null, fn ($q) => $q->where('location_id', $locationId))
+            ->when($limitToAllowed, fn ($q) => $q->whereIn('location_id', $allowedLocationIds))
             ->get(['id', 'location_id', 'name', 'is_available', 'booking_interval', 'area_group']);
 
         // spaces in one area group start apart from each other by the strictest interval in the
@@ -57,6 +60,7 @@ class ScheduleDayWindow
 
         $dayOffs = DayOff::query()
             ->when($locationId !== null, fn ($q) => $q->where('location_id', $locationId))
+            ->when($limitToAllowed, fn ($q) => $q->whereIn('location_id', $allowedLocationIds))
             ->forDate($day)
             ->get();
 
@@ -87,6 +91,7 @@ class ScheduleDayWindow
 
             $packageClosedRanges = [];
             $packageClosedAllDay = $locationClosed;
+            $packageClosureNotes = [];
 
             foreach ($dayOffs as $dayOff) {
                 if ((int) $dayOff->location_id !== (int) $package->location_id) {
@@ -97,30 +102,33 @@ class ScheduleDayWindow
                     continue;
                 }
 
+                $packageClosureNotes[] = $this->closureNote($dayOff);
+
                 if ($dayOff->isFullDay()) {
                     $packageClosedAllDay = true;
 
                     continue;
                 }
 
-                if ($dayOff->isCloseEarly()) {
-                    $closesAt = $this->alignToWindow($this->toMinutes($dayOff->time_start), $startMinutes, $endMinutes);
-                    if ($closesAt !== null && $closesAt < $endMinutes) {
-                        $endMinutes = max($startMinutes, $closesAt);
-                    }
-                } elseif ($dayOff->isDelayedOpening()) {
-                    $opensAt = $this->alignToWindow($this->toMinutes($dayOff->time_end), $startMinutes, $endMinutes);
-                    if ($opensAt !== null && $opensAt > $startMinutes) {
-                        $startMinutes = min($endMinutes, $opensAt);
-                    }
-                } elseif ($dayOff->isTimeRange()) {
-                    $from = $this->alignToWindow($this->toMinutes($dayOff->time_start), $startMinutes, $endMinutes);
-                    $to = $this->alignToWindow($this->toMinutes($dayOff->time_end), $startMinutes, $endMinutes);
+                $closesAt = $this->alignToWindow($dayOff->closesAtMinutes(), $startMinutes, $endMinutes);
+                if ($closesAt !== null && $closesAt < $endMinutes) {
+                    $endMinutes = max($startMinutes, $closesAt);
+                }
+
+                $opensAt = $this->alignToWindow($dayOff->opensAtMinutes() ?: null, $startMinutes, $endMinutes);
+                if ($opensAt !== null && $opensAt > $startMinutes) {
+                    $startMinutes = min($endMinutes, $opensAt);
+                }
+
+                $closedRange = $dayOff->closedRangeMinutes();
+                if ($closedRange !== null) {
+                    $from = $this->alignToWindow($closedRange[0], $startMinutes, $endMinutes);
+                    $to = $this->alignToWindow($closedRange[1], $startMinutes, $endMinutes);
                     if ($from !== null && $to !== null && $to > $from) {
                         $packageClosedRanges[] = [
                             'start_minutes' => $from,
                             'end_minutes' => $to,
-                            'reason' => $dayOff->reason ?: 'Closed',
+                            'reason' => $this->closureLabel($dayOff),
                         ];
                     }
                 }
@@ -155,6 +163,7 @@ class ScheduleDayWindow
                 // already gone by: staff still see them, but they are not offered as the next start
                 'past_start_minutes' => $offered['past'],
                 'closed_ranges' => $packageClosedRanges,
+                'closure_notes' => array_values(array_unique($packageClosureNotes)),
                 'room_ids' => $packageRooms->pluck('id')->map(fn ($id) => (int) $id)->values()->all(),
             ];
 
@@ -184,6 +193,7 @@ class ScheduleDayWindow
             $roomClosedRanges = [];
             $closureReason = null;
             $roomClosedAllDay = $locationClosed || ! $room->is_available;
+            $roomClosureNotes = [];
 
             foreach ($dayOffs as $dayOff) {
                 if ((int) $dayOff->location_id !== (int) $room->location_id) {
@@ -194,9 +204,11 @@ class ScheduleDayWindow
                     continue;
                 }
 
+                $roomClosureNotes[] = $this->closureNote($dayOff);
+
                 if ($dayOff->isFullDay()) {
                     $roomClosedAllDay = true;
-                    $closureReason = $dayOff->reason ?: 'Closed';
+                    $closureReason = $this->closureLabel($dayOff);
 
                     continue;
                 }
@@ -205,26 +217,27 @@ class ScheduleDayWindow
                     continue;
                 }
 
-                if ($dayOff->isCloseEarly()) {
-                    $roomClosesAt = $this->alignToWindow($this->toMinutes($dayOff->time_start), $roomOpen, $roomClose);
-                    if ($roomClosesAt !== null && $roomClosesAt < $roomClose) {
-                        $roomClose = max($roomOpen, $roomClosesAt);
-                        $closureReason ??= $dayOff->reason ?: 'Closes early';
-                    }
-                } elseif ($dayOff->isDelayedOpening()) {
-                    $roomOpensAt = $this->alignToWindow($this->toMinutes($dayOff->time_end), $roomOpen, $roomClose);
-                    if ($roomOpensAt !== null && $roomOpensAt > $roomOpen) {
-                        $roomOpen = min($roomClose, $roomOpensAt);
-                        $closureReason ??= $dayOff->reason ?: 'Opens late';
-                    }
-                } elseif ($dayOff->isTimeRange()) {
-                    $from = $this->alignToWindow($this->toMinutes($dayOff->time_start), $roomOpen, $roomClose);
-                    $to = $this->alignToWindow($this->toMinutes($dayOff->time_end), $roomOpen, $roomClose);
+                $roomClosesAt = $this->alignToWindow($dayOff->closesAtMinutes(), $roomOpen, $roomClose);
+                if ($roomClosesAt !== null && $roomClosesAt < $roomClose) {
+                    $roomClose = max($roomOpen, $roomClosesAt);
+                    $closureReason ??= $this->closureLabel($dayOff, 'Closes early');
+                }
+
+                $roomOpensAt = $this->alignToWindow($dayOff->opensAtMinutes() ?: null, $roomOpen, $roomClose);
+                if ($roomOpensAt !== null && $roomOpensAt > $roomOpen) {
+                    $roomOpen = min($roomClose, $roomOpensAt);
+                    $closureReason ??= $this->closureLabel($dayOff, 'Opens late');
+                }
+
+                $closedRange = $dayOff->closedRangeMinutes();
+                if ($closedRange !== null) {
+                    $from = $this->alignToWindow($closedRange[0], $roomOpen, $roomClose);
+                    $to = $this->alignToWindow($closedRange[1], $roomOpen, $roomClose);
                     if ($from !== null && $to !== null && $to > $from) {
                         $roomClosedRanges[] = [
                             'start_minutes' => $from,
                             'end_minutes' => $to,
-                            'reason' => $dayOff->reason ?: 'Closed',
+                            'reason' => $this->closureLabel($dayOff),
                         ];
                     }
                 }
@@ -248,6 +261,7 @@ class ScheduleDayWindow
                 'close_minutes' => $roomClosedAllDay ? ($window['close_minutes'] ?? null) : $roomClose,
                 'closed_all_day' => (bool) $roomClosedAllDay,
                 'closed_ranges' => $roomClosedRanges,
+                'closure_notes' => array_values(array_unique($roomClosureNotes)),
                 'bookable' => ! $roomClosedAllDay && $roomOpen !== null && $roomClose !== null,
                 'reason' => $closureReason ?? $this->closureReason($locationClosed, $room, $window !== null),
             ];
@@ -264,6 +278,7 @@ class ScheduleDayWindow
             'interval_minutes' => $interval ?: self::FALLBACK_INTERVAL,
             'has_schedule' => $hasWindow,
             'location_closed' => $locationClosed,
+            'blocked_periods' => app(\App\Services\DayOffPresenter::class)->presentMany($dayOffs),
             'rooms' => $roomPayload,
             'packages' => $packageWindows,
         ];
@@ -332,7 +347,7 @@ class ScheduleDayWindow
             return $minutes;
         }
 
-        if ($windowClose > self::MINUTES_PER_DAY && $minutes < $windowOpen) {
+        if ($windowClose > self::MINUTES_PER_DAY && $minutes < $windowOpen && $minutes + self::MINUTES_PER_DAY <= $windowClose) {
             return $minutes + self::MINUTES_PER_DAY;
         }
 
@@ -344,6 +359,24 @@ class ScheduleDayWindow
         $wrapped = $minutes % self::MINUTES_PER_DAY;
 
         return sprintf('%02d:%02d', intdiv($wrapped, 60), $wrapped % 60);
+    }
+
+    private function closureLabel(DayOff $dayOff, string $fallback = 'Closed'): string
+    {
+        $parts = array_values(array_filter([
+            trim((string) $dayOff->group_name),
+            trim((string) $dayOff->reason),
+        ], fn ($part) => $part !== ''));
+
+        return $parts === [] ? $fallback : implode(': ', array_unique($parts));
+    }
+
+    private function closureNote(DayOff $dayOff): string
+    {
+        $window = app(\App\Services\DayOffPresenter::class)->windowLabel($dayOff);
+        $label = $this->closureLabel($dayOff, '');
+
+        return $label === '' ? $window : "{$window} · {$label}";
     }
 
     private function closureReason(bool $locationClosed, Room $room, bool $hasWindow): ?string

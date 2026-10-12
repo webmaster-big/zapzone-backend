@@ -26,6 +26,38 @@ class AppServiceProvider extends ServiceProvider
                 && ! ($accessToken->tokenable instanceof \App\Models\User && $accessToken->tokenable->status === 'inactive')
         );
 
+        foreach ([
+            \App\Models\Booking::class => 'booking',
+            \App\Models\AttractionPurchase::class => 'attraction_purchase',
+            \App\Models\EventPurchase::class => 'event_purchase',
+            \App\Models\TicketOrder::class => 'ticket_order',
+        ] as $removable => $entityType) {
+            $removable::deleted(function ($record) use ($entityType) {
+                app(\App\Services\AvailabilityBlockGuard::class)->recordRemoved(
+                    $entityType,
+                    (int) $record->getKey(),
+                    method_exists($record, 'isForceDeleting') ? $record->isForceDeleting() : true
+                );
+            });
+        }
+
+        foreach ([
+            \App\Models\Package::class => 'package_ids',
+            \App\Models\Room::class => 'room_ids',
+            \App\Models\Attraction::class => 'attraction_ids',
+            \App\Models\Event::class => 'event_ids',
+        ] as $blockable => $column) {
+            $blockable::updated(function ($item) use ($column) {
+                $from = $item->getOriginal('location_id');
+
+                if (! $item->wasChanged('location_id') || $from === null) {
+                    return;
+                }
+
+                app(\App\Services\AvailabilityBlockGuard::class)->releaseMovedItem($column, (int) $item->getKey(), (int) $from, (string) ($item->name ?? "#{$item->getKey()}"));
+            });
+        }
+
         Relation::morphMap([
             'booking' => \App\Models\Booking::class,
             'attraction_purchase' => \App\Models\AttractionPurchase::class,

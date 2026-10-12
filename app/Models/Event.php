@@ -71,11 +71,11 @@ class Event extends Model
         return $query->where('location_id', $locationId);
     }
 
-    public function getAvailableDates(): array
+    public function getAvailableDates(bool $respectDayOffs = true): array
     {
         if ($this->date_type === 'one_time') {
             $date = $this->start_date->format('Y-m-d');
-            return DayOff::isDateBlockedForEvent($this->location_id, $this->id, $date) ? [] : [$date];
+            return $respectDayOffs && DayOff::isDateBlockedForEvent($this->location_id, $this->id, $date) ? [] : [$date];
         }
 
         $dates = [];
@@ -84,7 +84,7 @@ class Event extends Model
 
         while ($current->lte($end)) {
             $date = $current->format('Y-m-d');
-            if (!DayOff::isDateBlockedForEvent($this->location_id, $this->id, $date)) {
+            if (! $respectDayOffs || !DayOff::isDateBlockedForEvent($this->location_id, $this->id, $date)) {
                 $dates[] = $date;
             }
             $current->addDay();
@@ -124,13 +124,23 @@ class Event extends Model
         return $slots;
     }
 
-    public function getAvailableTimeSlotsForDate(string $date): array
+    public function overnightUntilMinute(): ?int
+    {
+        return DayOff::overnightUntil($this->time_start, $this->time_end);
+    }
+
+    public function getAvailableTimeSlotsForDate(string $date, bool $respectDayOffs = true): array
     {
         $interval = (int) ($this->interval_minutes ?: 60);
+        $overnightUntil = $this->overnightUntilMinute();
 
-        $allSlots = array_values(array_filter($this->getTimeSlots(), function ($slot) use ($date, $interval) {
+        $allSlots = array_values(array_filter($this->getTimeSlots(), function ($slot) use ($date, $interval, $respectDayOffs, $overnightUntil) {
+            if (! $respectDayOffs) {
+                return true;
+            }
+
             $slotEnd = Carbon::parse($slot)->addMinutes($interval)->format('H:i');
-            return !DayOff::isTimeSlotBlockedForEvent($this->location_id, $this->id, $date, $slot, $slotEnd);
+            return !DayOff::isTimeSlotBlockedForEvent($this->location_id, $this->id, $date, $slot, $slotEnd, $overnightUntil);
         }));
 
         if ($this->max_tickets_per_slot !== null) {

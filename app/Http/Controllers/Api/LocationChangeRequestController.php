@@ -209,6 +209,34 @@ class LocationChangeRequestController extends Controller
             ], 422);
         }
 
+        $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
+        $blockedPeriods = collect();
+        $blockDate = $booking->booking_date instanceof Carbon
+            ? $booking->booking_date->format('Y-m-d')
+            : Carbon::parse($booking->booking_date)->format('Y-m-d');
+        $blockStart = $booking->booking_time instanceof Carbon
+            ? $booking->booking_time->format('H:i')
+            : substr((string) $booking->booking_time, 0, 5);
+
+        if ($booking->status !== 'cancelled' && Carbon::parse($blockDate)->gte(Carbon::today())) {
+            $blockEnd = Carbon::parse($blockStart)
+                ->addMinutes($this->getDurationInMinutes($booking->duration ?? 2, $booking->duration_unit ?? 'hours'))
+                ->format('H:i');
+
+            $blockedPeriods = $blockGuard->forPackageBooking(
+                $newLocationId,
+                $booking->package_id ? (int) $booking->package_id : null,
+                $roomId ? (int) $roomId : null,
+                $blockDate,
+                $blockStart,
+                $blockEnd
+            );
+
+            if ($refusal = $blockGuard->refusal($request, $blockedPeriods, 'The destination location is closed at this booking\'s date and time.', 'Moving this booking')) {
+                return $refusal;
+            }
+        }
+
         $conflicts = $this->collectRoomConflicts($booking, $roomId);
         if (!empty($conflicts) && !$request->boolean('force')) {
             return response()->json([
@@ -251,6 +279,18 @@ class LocationChangeRequestController extends Controller
                 'message' => 'The destination room is no longer available for this booking\'s date and time.',
             ], 409);
         }
+
+        $blockGuard->recordBookedInside($request, $blockedPeriods, 'booking', (int) $booking->id, [
+            'label' => 'Booking',
+            'reference' => $booking->reference_number,
+            'booking_date' => $blockDate,
+            'booking_time' => $blockStart,
+            'package_id' => $booking->package_id,
+            'room_id' => $roomId,
+            'guest_name' => $booking->guest_name,
+            'moved_to_location_id' => $newLocationId,
+            'location_change_request_id' => $locationChangeRequest->id,
+        ]);
 
         $locationChangeRequest->load(self::RELATIONS);
         try {

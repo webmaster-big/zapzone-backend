@@ -17,6 +17,15 @@ class TicketOrderPricer
     public const TYPE_ATTRACTION = 'attraction';
     public const TYPE_EVENT = 'event';
 
+    private bool $allowBlockedPeriods = false;
+
+    public function allowBlockedPeriods(bool $allow): self
+    {
+        $this->allowBlockedPeriods = $allow;
+
+        return $this;
+    }
+
     public function priceCart(array $items, ?int $locationId = null): array
     {
         if ($items === []) {
@@ -159,10 +168,11 @@ class TicketOrderPricer
             $locationId,
             (int) $attraction->id,
             $scheduledDate->toDateString(),
-            $scheduledTime
+            $scheduledTime,
+            \App\Services\AvailabilityBlockGuard::attractionSlotEnd($scheduledTime)
         );
 
-        if ($blocked) {
+        if ($blocked && ! $this->allowBlockedPeriods) {
             throw new RuntimeException("{$attraction->name} is closed on the date or time you picked. Please choose another.");
         }
 
@@ -248,8 +258,13 @@ class TicketOrderPricer
             throw new RuntimeException("Please pick a time for {$event->name}.");
         }
 
+        if ($requestedTime === null && ! $this->allowBlockedPeriods
+            && app(\App\Services\AvailabilityBlockGuard::class)->forEvent($locationId, (int) $event->id, $scheduledDate->toDateString(), null)->isNotEmpty()) {
+            throw new RuntimeException("{$event->name} is closed on the date you picked. Please choose another.");
+        }
+
         if ($requestedTime !== null) {
-            $slots = $event->getAvailableTimeSlotsForDate($scheduledDate->toDateString());
+            $slots = $event->getAvailableTimeSlotsForDate($scheduledDate->toDateString(), ! $this->allowBlockedPeriods);
 
             if (!in_array(substr((string) $requestedTime, 0, 5), array_map(fn ($t) => substr((string) $t, 0, 5), $slots), true)) {
                 throw new RuntimeException("That time for {$event->name} is full or unavailable. Please pick another slot.");

@@ -20,6 +20,13 @@ class TicketOrderService
     {
     }
 
+    public function allowBlockedPeriods(bool $allow): self
+    {
+        $this->pricer->allowBlockedPeriods($allow);
+
+        return $this;
+    }
+
     public function quote(array $items): array
     {
         return $this->pricer->priceCart($items);
@@ -418,9 +425,9 @@ class TicketOrderService
                     if (!$redeemed) {
                         if ($cancel) {
                             $model->status = AttractionPurchase::STATUS_CANCELLED;
-                        } elseif ($newPaidCents === 0) {
+                        } elseif ($model->status !== AttractionPurchase::STATUS_CANCELLED && $newPaidCents === 0) {
                             $model->status = $mode === 'resync' ? AttractionPurchase::STATUS_PENDING : AttractionPurchase::STATUS_REFUNDED;
-                        } elseif (!$fullyPaid) {
+                        } elseif ($model->status !== AttractionPurchase::STATUS_CANCELLED && !$fullyPaid) {
                             $model->status = AttractionPurchase::STATUS_PENDING;
                         }
                     }

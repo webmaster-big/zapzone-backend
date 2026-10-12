@@ -28,9 +28,20 @@ class ScheduleWindowController extends Controller
             $locationId = (int) $authUser->location_id;
         }
 
+        if ($locationId !== null) {
+            $location = $this->scopedLocation($request, $locationId);
+            if ($location instanceof JsonResponse) {
+                return $location;
+            }
+        }
+
+        $allowedLocationIds = $locationId === null && $authUser?->company_id
+            ? \App\Models\Location::where('company_id', $authUser->company_id)->pluck('id')->map(fn ($id) => (int) $id)->all()
+            : null;
+
         return response()->json([
             'success' => true,
-            'data' => $this->windows->forDate($locationId, $validated['date']),
+            'data' => $this->windows->forDate($locationId, $validated['date'], $allowedLocationIds),
         ]);
     }
 }

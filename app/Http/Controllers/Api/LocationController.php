@@ -5,12 +5,15 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Models\ActivityLog;
+use App\Models\DayOffChangeLog;
 use App\Models\Location;
+use App\Models\User;
 use App\Support\CacheGroups;
 use App\Support\DataUriImage;
 use App\Support\LocationSlug;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\Rule;
@@ -319,16 +322,25 @@ class LocationController extends Controller
         $locationName = $location->name;
         $locationId = $location->id;
         $companyId = $location->company_id;
-
-        $location->delete();
-
         $currentUser = auth()->user();
+
+        DB::transaction(function () use ($location, $locationId, $locationName, $currentUser) {
+            DayOffChangeLog::recordLocationRemoval(
+                [(int) $locationId],
+                "the location {$locationName} was deleted",
+                $currentUser instanceof User ? $currentUser : null,
+                request()->ip(),
+            );
+
+            $location->delete();
+        });
+
         ActivityLog::log(
             action: 'Location Deleted',
             category: 'delete',
             description: "Location '{$locationName}' was deleted",
             userId: auth()->id(),
-            locationId: $locationId,
+            locationId: null,
             entityType: 'location',
             entityId: $locationId,
             metadata: [

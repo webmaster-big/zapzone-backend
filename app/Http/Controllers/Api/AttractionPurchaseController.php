@@ -9,7 +9,6 @@ use App\Http\Traits\LimitsListingsToRequester;
 use App\Models\AttractionPurchase;
 use App\Models\AttractionPurchaseAddOn;
 use App\Models\Attraction;
-use App\Models\DayOff;
 use App\Mail\AttractionPurchaseReceipt;
 use App\Services\GmailApiService;
 use App\Models\EmailNotification;
@@ -389,11 +388,30 @@ class AttractionPurchaseController extends Controller
             $duplicateQuery->where('guest_email', $validated['guest_email'] ?? null);
         }
 
+        $attractionLocationId = Attraction::query()->whereKey($validated['attraction_id'])->value('location_id');
+        $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
+        $blockedPeriods = collect();
+
+        if (!empty($validated['scheduled_date']) && $attractionLocationId) {
+            $scheduledDate = Carbon::parse($validated['scheduled_date'])->toDateString();
+            $attractionId = (int) $validated['attraction_id'];
+            $blockedPeriods = $blockGuard->forAttraction(
+                (int) $attractionLocationId,
+                $attractionId,
+                $scheduledDate,
+                !empty($validated['scheduled_time']) ? substr((string) $validated['scheduled_time'], 0, 5) : null
+            );
+            if ($refusal = $blockGuard->refusal($request, $blockedPeriods, 'The selected date or time is closed for this attraction. Please choose another.', 'This purchase')) {
+                return $refusal;
+            }
+        }
+
         $requestCarriesCode = !empty($validated['gift_card_code']) || !empty($validated['gift_card_id'])
             || !empty($validated['promo_code']) || !empty($validated['promo_id']);
 
         $existingPending = $requestCarriesCode ? null : $duplicateQuery->first();
         if ($existingPending) {
+            $blockGuard->recordBookedInside($request, $blockedPeriods, 'attraction_purchase', (int) $existingPending->id, $this->blockLogDetails($existingPending));
             $existingPending->load($isStaff ? ['attraction', 'customer', 'createdBy', 'addOns'] : ['attraction', 'addOns']);
             if (! $isStaff) {
                 $existingPending->makeHidden(['guest_name', 'guest_phone', 'guest_address', 'guest_city', 'guest_state', 'guest_zip', 'guest_country', 'customer_id', 'created_by', 'notes', 'transaction_id']);
@@ -463,20 +481,6 @@ class AttractionPurchaseController extends Controller
             ]);
             if ($rejection) {
                 return response()->json(['success' => false, 'code' => 'PRICE_MISMATCH', 'message' => $rejection], 422);
-            }
-        }
-
-        if (!empty($validated['scheduled_date']) && $attractionLocationId) {
-            $scheduledDate = Carbon::parse($validated['scheduled_date'])->toDateString();
-            $attractionId = (int) $validated['attraction_id'];
-            $closureBlocked = !empty($validated['scheduled_time'])
-                ? DayOff::isTimeSlotBlockedForAttraction($attractionLocationId, $attractionId, $scheduledDate, $validated['scheduled_time'])
-                : DayOff::isDateBlockedForAttraction($attractionLocationId, $attractionId, $scheduledDate);
-            if ($closureBlocked) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'The selected date or time is closed for this attraction. Please choose another.',
-                ], 422);
             }
         }
 
@@ -618,6 +622,15 @@ class AttractionPurchaseController extends Controller
         $purchase->load(['attraction', 'customer', 'createdBy', 'addOns']);
 
         $this->rememberPurchaseCheckoutKey($checkoutKey, $purchase);
+
+        $blockGuard->recordBookedInside($request, $blockedPeriods, 'attraction_purchase', (int) $purchase->id, [
+            'label' => 'Attraction purchase',
+            'reference' => '#' . $purchase->id,
+            'scheduled_date' => $purchase->scheduled_date?->toDateString(),
+            'scheduled_time' => $purchase->scheduled_time?->format('H:i'),
+            'attraction_id' => $purchase->attraction_id,
+            'guest_name' => $purchase->guest_name,
+        ]);
 
         app(PurchaseCompletionService::class)->completeAttractionPurchase($purchase, $validated);
 
@@ -960,10 +973,14 @@ class AttractionPurchaseController extends Controller
             'additional_addons.*.price_at_purchase' => 'nullable|numeric|min:0',
         ]);
 
+        $inactiveStatuses = [AttractionPurchase::STATUS_CANCELLED, AttractionPurchase::STATUS_REFUNDED];
         $slotTouched = array_intersect(array_keys($validated), ['quantity', 'scheduled_date', 'scheduled_time', 'attraction_id']) !== []
-            || (isset($validated['status']) && $attractionPurchase->status === AttractionPurchase::STATUS_CANCELLED && $validated['status'] !== AttractionPurchase::STATUS_CANCELLED);
+            || (isset($validated['status']) && in_array($attractionPurchase->status, $inactiveStatuses, true) && ! in_array($validated['status'], $inactiveStatuses, true));
 
-        if ($slotTouched && ($validated['status'] ?? $attractionPurchase->status) !== AttractionPurchase::STATUS_CANCELLED) {
+        $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
+        $blockedPeriods = collect();
+
+        if ($slotTouched && ! in_array($validated['status'] ?? $attractionPurchase->status, $inactiveStatuses, true)) {
             $closureAttraction = \App\Models\Attraction::find($validated['attraction_id'] ?? $attractionPurchase->attraction_id);
             $closureDate = isset($validated['scheduled_date'])
                 ? Carbon::parse($validated['scheduled_date'])->toDateString()
@@ -971,17 +988,21 @@ class AttractionPurchaseController extends Controller
             $closureTime = isset($validated['scheduled_time'])
                 ? substr((string) $validated['scheduled_time'], 0, 5)
                 : $attractionPurchase->scheduled_time?->format('H:i');
+            $movesIntoNewSlot = $closureDate !== $attractionPurchase->scheduled_date?->toDateString()
+                || $closureTime !== $attractionPurchase->scheduled_time?->format('H:i')
+                || (int) ($closureAttraction?->id ?? 0) !== (int) $attractionPurchase->attraction_id
+                || in_array($attractionPurchase->status, [AttractionPurchase::STATUS_CANCELLED, AttractionPurchase::STATUS_REFUNDED], true);
 
-            if ($closureAttraction && $closureAttraction->location_id && $closureDate && Carbon::parse($closureDate)->gte(Carbon::today())) {
-                $closureBlocked = $closureTime
-                    ? DayOff::isTimeSlotBlockedForAttraction((int) $closureAttraction->location_id, (int) $closureAttraction->id, $closureDate, $closureTime)
-                    : DayOff::isDateBlockedForAttraction((int) $closureAttraction->location_id, (int) $closureAttraction->id, $closureDate);
+            if ($movesIntoNewSlot && $closureAttraction && $closureAttraction->location_id && $closureDate && Carbon::parse($closureDate)->gte(Carbon::today())) {
+                $blockedPeriods = $blockGuard->forAttraction(
+                    (int) $closureAttraction->location_id,
+                    (int) $closureAttraction->id,
+                    $closureDate,
+                    $closureTime
+                );
 
-                if ($closureBlocked) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'The selected date or time is closed for this attraction. Please choose another.',
-                    ], 422);
+                if ($refusal = $blockGuard->refusal($request, $blockedPeriods, 'The selected date or time is closed for this attraction. Please choose another.', 'This change')) {
+                    return $refusal;
                 }
             }
 
@@ -1069,6 +1090,16 @@ class AttractionPurchaseController extends Controller
         }
 
         $attractionPurchase->load(['attraction', 'customer', 'createdBy', 'addOns']);
+
+        $blockGuard->recordBookedInside($request, $blockedPeriods, 'attraction_purchase', (int) $attractionPurchase->id, [
+            'label' => 'Attraction purchase',
+            'reference' => '#' . $attractionPurchase->id,
+            'scheduled_date' => $attractionPurchase->scheduled_date?->toDateString(),
+            'scheduled_time' => $attractionPurchase->scheduled_time?->format('H:i'),
+            'attraction_id' => $attractionPurchase->attraction_id,
+            'guest_name' => $attractionPurchase->guest_name,
+            'moved' => true,
+        ]);
 
         $customerName = $attractionPurchase->customer ? "{$attractionPurchase->customer->first_name} {$attractionPurchase->customer->last_name}" : $attractionPurchase->guest_name;
         $currentUser = auth()->user();
@@ -1250,6 +1281,8 @@ class AttractionPurchaseController extends Controller
         }
 
         $inactive = [AttractionPurchase::STATUS_CANCELLED, AttractionPurchase::STATUS_REFUNDED];
+        $reactivatedInside = collect();
+        $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
 
         if (isset($validated['status']) && in_array($previousStatus, $inactive, true) && !in_array($validated['status'], $inactive, true)) {
             if ($this->giftCardWasReversedFor(\App\Models\Payment::TYPE_ATTRACTION_PURCHASE, (int) $attractionPurchase->id)) {
@@ -1261,9 +1294,17 @@ class AttractionPurchaseController extends Controller
             } catch (\RuntimeException $e) {
                 return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
             }
+
+            $reactivatedInside = $blockGuard->forExistingAttractionPurchase($attractionPurchase);
+
+            if ($refusal = $blockGuard->refusal($request, $reactivatedInside, 'The selected date or time is closed for this attraction. Please choose another.', 'Reactivating this purchase')) {
+                return $refusal;
+            }
         }
 
         $attractionPurchase->update($validated);
+
+        $blockGuard->recordBookedInside($request, $reactivatedInside, 'attraction_purchase', (int) $attractionPurchase->id, $this->blockLogDetails($attractionPurchase, ['reactivated' => true]));
 
         if (isset($validated['status'])
             && in_array($validated['status'], $inactive, true)
@@ -1277,6 +1318,18 @@ class AttractionPurchaseController extends Controller
             'message' => 'Attraction purchase status updated successfully',
             'data' => $attractionPurchase->fresh(['attraction', 'customer', 'createdBy', 'addOns']),
         ]);
+    }
+
+    private function blockLogDetails(AttractionPurchase $purchase, array $extra = []): array
+    {
+        return [
+            'label' => 'Attraction purchase',
+            'reference' => '#' . $purchase->id,
+            'scheduled_date' => $purchase->scheduled_date?->toDateString(),
+            'scheduled_time' => $purchase->scheduled_time?->format('H:i'),
+            'attraction_id' => $purchase->attraction_id,
+            'guest_name' => $purchase->guest_name,
+        ] + $extra;
     }
 
     public function markAsConfirmed(AttractionPurchase $attractionPurchase): JsonResponse
@@ -1302,15 +1355,25 @@ class AttractionPurchaseController extends Controller
             ], 400);
         }
 
+        $reactivatedInside = collect();
+        $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
+
         if (in_array($attractionPurchase->status, [AttractionPurchase::STATUS_CANCELLED, AttractionPurchase::STATUS_REFUNDED], true)) {
             try {
                 app(\App\Services\SlotCapacityGuard::class)->assertAttractionPurchaseFits($attractionPurchase, 'attraction_purchase.markAsConfirmed');
             } catch (\RuntimeException $e) {
                 return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
             }
+
+            $reactivatedInside = $blockGuard->forExistingAttractionPurchase($attractionPurchase);
+
+            if ($refusal = $blockGuard->refusal(request(), $reactivatedInside, 'The selected date or time is closed for this attraction. Please choose another.', 'Reactivating this purchase')) {
+                return $refusal;
+            }
         }
 
         $attractionPurchase->update(['status' => AttractionPurchase::STATUS_CONFIRMED]);
+        $blockGuard->recordBookedInside(request(), $reactivatedInside, 'attraction_purchase', (int) $attractionPurchase->id, $this->blockLogDetails($attractionPurchase, ['reactivated' => true]));
         $attractionPurchase->load(['attraction', 'customer', 'createdBy', 'addOns']);
 
         return response()->json([
@@ -1798,9 +1861,20 @@ public function checkIn(Request $request, int $id): JsonResponse
             ], 422);
         }
 
-        $purchase = AttractionPurchase::onlyTrashed()->findOrFail($id);
+        $purchase = AttractionPurchase::onlyTrashed()
+            ->whereIn('attraction_id', Attraction::query()->withoutGlobalScopes()->whereIn('location_id', $this->staffLocationIds(request()))->pluck('id'))
+            ->findOrFail($id);
+        $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
+        $restoredInside = in_array($purchase->status, [AttractionPurchase::STATUS_CANCELLED, AttractionPurchase::STATUS_REFUNDED], true)
+            ? collect()
+            : $blockGuard->forExistingAttractionPurchase($purchase);
+
+        if ($refusal = $blockGuard->refusal(request(), $restoredInside, 'The selected date or time is closed for this attraction. Please choose another.', 'Restoring this purchase')) {
+            return $refusal;
+        }
 
         $purchase->restore();
+        $blockGuard->recordBookedInside(request(), $restoredInside, 'attraction_purchase', (int) $purchase->id, $this->blockLogDetails($purchase, ['restored' => true]));
         $purchase->load(['attraction', 'customer', 'createdBy', 'addOns']);
 
         $currentUser = auth()->user();
@@ -1841,7 +1915,9 @@ public function checkIn(Request $request, int $id): JsonResponse
 
     public function forceDelete(int $id): JsonResponse
     {
-        $purchase = AttractionPurchase::onlyTrashed()->findOrFail($id);
+        $purchase = AttractionPurchase::onlyTrashed()
+            ->whereIn('attraction_id', Attraction::query()->withoutGlobalScopes()->whereIn('location_id', $this->staffLocationIds(request()))->pluck('id'))
+            ->findOrFail($id);
 
         $attractionName = $purchase->attraction->name ?? 'Unknown';
         $purchaseId = $purchase->id;
@@ -1883,12 +1959,28 @@ public function checkIn(Request $request, int $id): JsonResponse
             'ids.*' => 'required|integer',
         ]);
 
-        $purchases = AttractionPurchase::onlyTrashed()->whereIn('id', $validated['ids'])->get();
+        $purchases = AttractionPurchase::onlyTrashed()
+            ->whereIn('id', $validated['ids'])
+            ->whereIn('attraction_id', Attraction::query()->withoutGlobalScopes()->whereIn('location_id', $this->staffLocationIds($request))->pluck('id'))
+            ->get();
         $restoredCount = 0;
+        $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
+        $insideBlocks = $purchases
+            ->reject(fn (AttractionPurchase $purchase) => in_array($purchase->status, [AttractionPurchase::STATUS_CANCELLED, AttractionPurchase::STATUS_REFUNDED], true))
+            ->mapWithKeys(fn (AttractionPurchase $purchase) => [$purchase->id => $blockGuard->forExistingAttractionPurchase($purchase)])
+            ->filter(fn ($blocks) => $blocks->isNotEmpty());
+
+        if ($refusal = $blockGuard->refusal($request, $insideBlocks->flatten(1)->unique('id')->sortBy('id')->values(), 'The selected date or time is closed for this attraction. Please choose another.', 'Restoring these purchases')) {
+            return $refusal;
+        }
 
         foreach ($purchases as $purchase) {
             $purchase->restore();
             $restoredCount++;
+
+            if ($insideBlocks->has($purchase->id)) {
+                $blockGuard->recordBookedInside($request, $insideBlocks->get($purchase->id), 'attraction_purchase', (int) $purchase->id, $this->blockLogDetails($purchase, ['restored' => true]));
+            }
         }
 
         $currentUser = auth()->user();

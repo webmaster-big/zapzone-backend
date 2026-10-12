@@ -11,17 +11,30 @@ class DayOff extends Model
 {
     use HasFactory;
 
+    public const MINUTES_PER_DAY = 1440;
+
+    public const BLOCK_FULL_DAY = 'full_day';
+    public const BLOCK_OPERATING_WINDOW = 'operating_window';
+    public const BLOCK_LEGACY_CLOSURE = 'legacy_closure';
+
+    private const OPEN_ENDED = 2 * self::MINUTES_PER_DAY;
+
     protected $fillable = [
         'location_id',
         'date',
         'time_start',
         'time_end',
+        'opens_at',
+        'closes_at',
         'reason',
+        'group_name',
         'is_recurring',
         'package_ids',
         'room_ids',
         'attraction_ids',
         'event_ids',
+        'created_by',
+        'updated_by',
     ];
 
     protected $casts = [
@@ -33,9 +46,21 @@ class DayOff extends Model
         'event_ids' => 'array',
     ];
 
+    protected $appends = ['block_type'];
+
     public function location(): BelongsTo
     {
         return $this->belongsTo(Location::class);
+    }
+
+    public function creator(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'created_by');
+    }
+
+    public function updater(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'updated_by');
     }
 
     public function packages()
@@ -111,6 +136,48 @@ class DayOff extends Model
         });
     }
 
+    public function scopeAllDay($query)
+    {
+        $query->whereNull('time_start')->whereNull('time_end');
+
+        if (self::hasOperatingWindowColumns()) {
+            $query->whereNull('opens_at')->whereNull('closes_at');
+        }
+
+        return $query;
+    }
+
+    public static function hasOperatingWindowColumns(): bool
+    {
+        static $known = null;
+
+        if ($known === null) {
+            try {
+                $known = \Illuminate\Support\Facades\Schema::hasColumn('day_offs', 'opens_at');
+            } catch (\Throwable $e) {
+                $known = false;
+            }
+        }
+
+        return $known;
+    }
+
+    public static function tracksAvailabilityDetails(): bool
+    {
+        static $known = null;
+
+        if ($known === null) {
+            try {
+                $known = self::hasOperatingWindowColumns()
+                    && \Illuminate\Support\Facades\Schema::hasTable('day_off_change_logs');
+            } catch (\Throwable $e) {
+                $known = false;
+            }
+        }
+
+        return $known;
+    }
+
     public function scopeForPackage($query, $packageId)
     {
         return $query->where(function ($q) use ($packageId) {
@@ -155,75 +222,224 @@ class DayOff extends Model
             ->whereNull('event_ids');
     }
 
+    public static function clockToMinutes(?string $clock): ?int
+    {
+        if ($clock === null || trim($clock) === '') {
+            return null;
+        }
+
+        $parts = explode(':', trim($clock));
+
+        if (count($parts) < 2 || ! ctype_digit($parts[0]) || ! ctype_digit(substr($parts[1], 0, 2))) {
+            return null;
+        }
+
+        $hours = (int) $parts[0];
+        $minutes = (int) substr($parts[1], 0, 2);
+
+        if ($hours > 23 || $minutes > 59) {
+            return null;
+        }
+
+        return $hours * 60 + $minutes;
+    }
+
+    public static function closingClockToMinutes(?string $clock): ?int
+    {
+        $minutes = self::clockToMinutes($clock);
+
+        return $minutes === 0 ? self::MINUTES_PER_DAY : $minutes;
+    }
+
+    public static function shortClock(?string $clock): ?string
+    {
+        $minutes = self::clockToMinutes($clock);
+
+        return $minutes === null ? null : sprintf('%02d:%02d', intdiv($minutes, 60), $minutes % 60);
+    }
+
+    public function getBlockTypeAttribute(): string
+    {
+        if ($this->isOperatingWindow()) {
+            return self::BLOCK_OPERATING_WINDOW;
+        }
+
+        if ($this->isFullDay()) {
+            return self::BLOCK_FULL_DAY;
+        }
+
+        return self::BLOCK_LEGACY_CLOSURE;
+    }
+
+    public function isOperatingWindow(): bool
+    {
+        return ! empty($this->opens_at) || ! empty($this->closes_at);
+    }
+
     public function isFullDay(): bool
     {
-        return is_null($this->time_start) && is_null($this->time_end);
+        return empty($this->time_start) && empty($this->time_end) && ! $this->isOperatingWindow();
     }
 
     public function isCloseEarly(): bool
     {
-        return !is_null($this->time_start) && is_null($this->time_end);
+        return ! $this->isOperatingWindow() && ! empty($this->time_start) && empty($this->time_end);
     }
 
     public function isDelayedOpening(): bool
     {
-        return is_null($this->time_start) && !is_null($this->time_end);
+        return ! $this->isOperatingWindow() && empty($this->time_start) && ! empty($this->time_end);
     }
 
     public function isTimeRange(): bool
     {
-        return !is_null($this->time_start) && !is_null($this->time_end);
+        return ! $this->isOperatingWindow() && ! empty($this->time_start) && ! empty($this->time_end);
     }
 
-    public function isTimeBlocked(string $slotStart, ?string $slotEnd = null): bool
+    public function opensAtMinutes(): ?int
+    {
+        if ($this->isOperatingWindow()) {
+            return self::clockToMinutes($this->opens_at);
+        }
+
+        return $this->isDelayedOpening() ? self::clockToMinutes($this->time_end) : null;
+    }
+
+    public const OVERNIGHT_CLOSE_LIMIT = 6 * 60;
+
+    public static function overnightClose(?int $opensAt, ?int $closesAt): ?int
+    {
+        if ($opensAt !== null && $closesAt !== null && $closesAt <= $opensAt && $closesAt <= self::OVERNIGHT_CLOSE_LIMIT) {
+            return $closesAt + self::MINUTES_PER_DAY;
+        }
+
+        return $closesAt;
+    }
+
+    public function closesAtMinutes(): ?int
+    {
+        if ($this->isOperatingWindow()) {
+            return self::overnightClose(self::clockToMinutes($this->opens_at), self::closingClockToMinutes($this->closes_at));
+        }
+
+        return $this->isCloseEarly() ? self::clockToMinutes($this->time_start) : null;
+    }
+
+    public function closedRangeMinutes(): ?array
+    {
+        if (! $this->isTimeRange()) {
+            return null;
+        }
+
+        $start = self::clockToMinutes($this->time_start);
+        $end = self::clockToMinutes($this->time_end);
+
+        if ($start === null || $end === null || $end <= $start) {
+            return null;
+        }
+
+        return [$start, $end];
+    }
+
+    public function blockedRanges(?int $overnightUntil = null): array
+    {
+        if ($this->isFullDay()) {
+            return [[0, self::OPEN_ENDED]];
+        }
+
+        $tonight = fn (int $minutes) => $overnightUntil !== null && $minutes <= $overnightUntil
+            ? $minutes + self::MINUTES_PER_DAY
+            : $minutes;
+
+        $ranges = [];
+
+        $opensAt = $this->opensAtMinutes();
+        if ($opensAt !== null && $opensAt > 0) {
+            $ranges[] = [0, $tonight($opensAt)];
+        }
+
+        $closesAt = $this->closesAtMinutes();
+        if ($closesAt !== null) {
+            $ranges[] = [$tonight($closesAt), self::OPEN_ENDED];
+        }
+
+        $closedRange = $this->closedRangeMinutes();
+        if ($closedRange !== null) {
+            $ranges[] = $overnightUntil !== null && $closedRange[1] <= $overnightUntil
+                ? [$closedRange[0] + self::MINUTES_PER_DAY, $closedRange[1] + self::MINUTES_PER_DAY]
+                : $closedRange;
+        }
+
+        return $ranges;
+    }
+
+    public function isTimeBlocked(string $slotStart, ?string $slotEnd = null, ?int $overnightUntil = null): bool
     {
         if ($this->isFullDay()) {
             return true;
         }
 
-        $slotStartTime = Carbon::parse($slotStart);
-        $slotEndTime = $slotEnd ? Carbon::parse($slotEnd) : null;
+        $start = self::clockToMinutes($slotStart);
 
-        if ($this->isCloseEarly()) {
-            $closeTime = Carbon::parse($this->time_start);
-            if ($slotStartTime->gte($closeTime)) {
-                return true;
-            }
-            if ($slotEndTime && $slotEndTime->gt($closeTime)) {
-                return true;
-            }
-            return false;
+        if ($start === null) {
+            return true;
         }
 
-        if ($this->isDelayedOpening()) {
-            $openTime = Carbon::parse($this->time_end);
-            if ($slotStartTime->lt($openTime)) {
-                return true;
-            }
-            return false;
+        $hasEnd = $slotEnd !== null && trim($slotEnd) !== '';
+        $end = $hasEnd ? self::clockToMinutes($slotEnd) : null;
+
+        if ($hasEnd && $end === null) {
+            return true;
         }
 
-        if ($this->isTimeRange()) {
-            $rangeStart = Carbon::parse($this->time_start);
-            $rangeEnd = Carbon::parse($this->time_end);
+        if ($end !== null && $end <= $start) {
+            $end += self::MINUTES_PER_DAY;
+        }
 
-            if ($rangeEnd->lte($rangeStart)) {
-                return false;
-            }
+        if ($overnightUntil !== null && $start < $overnightUntil) {
+            $start += self::MINUTES_PER_DAY;
+            $end = $end === null ? null : $end + self::MINUTES_PER_DAY;
+        }
 
-            if ($slotEndTime) {
-                if ($slotStartTime->lt($rangeEnd) && $slotEndTime->gt($rangeStart)) {
+        foreach ($this->blockedRanges($overnightUntil) as [$rangeStart, $rangeEnd]) {
+            if ($end === null) {
+                if ($start >= $rangeStart && $start < $rangeEnd) {
                     return true;
                 }
-            } else {
-                if ($slotStartTime->gte($rangeStart) && $slotStartTime->lt($rangeEnd)) {
-                    return true;
-                }
+
+                continue;
             }
-            return false;
+
+            if ($start < $rangeEnd && $end > $rangeStart) {
+                return true;
+            }
         }
 
         return false;
+    }
+
+    public function asLegacyClosures(): array
+    {
+        if (! $this->isOperatingWindow()) {
+            return [[
+                'time_start' => self::shortClock($this->time_start),
+                'time_end' => self::shortClock($this->time_end),
+            ]];
+        }
+
+        $closures = [];
+
+        $opensAt = $this->opensAtMinutes();
+        if ($opensAt !== null && $opensAt > 0) {
+            $closures[] = ['time_start' => null, 'time_end' => self::shortClock($this->opens_at)];
+        }
+
+        $closesAt = $this->closesAtMinutes();
+        if ($closesAt !== null && $closesAt < self::MINUTES_PER_DAY) {
+            $closures[] = ['time_start' => self::shortClock($this->closes_at), 'time_end' => null];
+        }
+
+        return $closures;
     }
 
     public function isLocationWide(): bool
@@ -286,12 +502,58 @@ class DayOff extends Model
         return false;
     }
 
+    public function snapshot(): array
+    {
+        return [
+            'id' => $this->id,
+            'location_id' => $this->location_id !== null ? (int) $this->location_id : null,
+            'date' => $this->date ? Carbon::parse($this->date)->toDateString() : null,
+            'is_recurring' => (bool) $this->is_recurring,
+            'block_type' => $this->block_type,
+            'opens_at' => self::shortClock($this->opens_at),
+            'closes_at' => self::shortClock($this->closes_at),
+            'time_start' => self::shortClock($this->time_start),
+            'time_end' => self::shortClock($this->time_end),
+            'reason' => $this->reason,
+            'group_name' => $this->group_name,
+            'package_ids' => self::normalizedIds($this->package_ids),
+            'room_ids' => self::normalizedIds($this->room_ids),
+            'attraction_ids' => self::normalizedIds($this->attraction_ids),
+            'event_ids' => self::normalizedIds($this->event_ids),
+            'created_by' => $this->created_by !== null ? (int) $this->created_by : null,
+            'updated_by' => $this->updated_by !== null ? (int) $this->updated_by : null,
+        ];
+    }
+
+    public static function overnightUntil(?string $windowStart, ?string $windowEnd): ?int
+    {
+        $start = self::clockToMinutes($windowStart);
+        $end = self::clockToMinutes($windowEnd);
+
+        if ($start === null || $end === null || $end >= $start || $end === 0) {
+            return null;
+        }
+
+        return $end;
+    }
+
+    public static function normalizedIds($ids): ?array
+    {
+        if (empty($ids)) {
+            return null;
+        }
+
+        $normalized = array_values(array_unique(array_map('intval', (array) $ids)));
+        sort($normalized);
+
+        return $normalized;
+    }
+
     public static function isDateBlocked($locationId, $date)
     {
         return self::where('location_id', $locationId)
             ->forDate($date)
-            ->whereNull('time_start')
-            ->whereNull('time_end')
+            ->allDay()
             ->whereNull('package_ids')
             ->whereNull('room_ids')
             ->whereNull('attraction_ids')
@@ -363,7 +625,7 @@ class DayOff extends Model
         return false;
     }
 
-    public static function isTimeSlotBlockedForEvent($locationId, int $eventId, $date, string $slotStart, ?string $slotEnd = null): bool
+    public static function isTimeSlotBlockedForEvent($locationId, int $eventId, $date, string $slotStart, ?string $slotEnd = null, ?int $overnightUntil = null): bool
     {
         $dayOffs = self::where('location_id', $locationId)
             ->forDate($date)
@@ -371,7 +633,7 @@ class DayOff extends Model
             ->get();
 
         foreach ($dayOffs as $dayOff) {
-            if ($dayOff->isTimeBlocked($slotStart, $slotEnd) && $dayOff->appliesToEvent($eventId)) {
+            if ($dayOff->isTimeBlocked($slotStart, $slotEnd, $overnightUntil) && $dayOff->appliesToEvent($eventId)) {
                 return true;
             }
         }
@@ -383,8 +645,7 @@ class DayOff extends Model
     {
         $dayOffs = self::where('location_id', $locationId)
             ->forDate($date)
-            ->whereNull('time_start')
-            ->whereNull('time_end')
+            ->allDay()
             ->forAttraction($attractionId)
             ->get();
 
@@ -401,8 +662,7 @@ class DayOff extends Model
     {
         $dayOffs = self::where('location_id', $locationId)
             ->forDate($date)
-            ->whereNull('time_start')
-            ->whereNull('time_end')
+            ->allDay()
             ->forEvent($eventId)
             ->get();
 

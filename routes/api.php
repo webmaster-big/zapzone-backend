@@ -472,13 +472,18 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('rooms/bulk-delete', [RoomController::class, 'bulkDelete']);
     });
 
-    Route::apiResource('day-offs', DayOffController::class)->only(['index', 'show']);
-    Route::post('day-offs/check-date', [DayOffController::class, 'checkDate']);
-
     Route::middleware('staff')->group(function () {
+        Route::get('day-offs/calendar', [DayOffController::class, 'calendar']);
+        Route::post('day-offs/check-date', [DayOffController::class, 'checkDate']);
+    });
+
+    Route::middleware('staff:company_admin|admin|location_manager')->group(function () {
+        Route::get('day-offs/change-log', [DayOffController::class, 'changeLog']);
         Route::apiResource('day-offs', DayOffController::class)->only(['store', 'update', 'destroy']);
         Route::post('day-offs/bulk-delete', [DayOffController::class, 'bulkDelete']);
     });
+
+    Route::apiResource('day-offs', DayOffController::class)->only(['index', 'show'])->middleware('staff');
 
     Route::get('special-pricings/location/{locationId}', [SpecialPricingController::class, 'getByLocation'])->middleware('staff');
     Route::patch('special-pricings/{specialPricing}/toggle-status', [SpecialPricingController::class, 'toggleStatus'])->middleware('staff');
