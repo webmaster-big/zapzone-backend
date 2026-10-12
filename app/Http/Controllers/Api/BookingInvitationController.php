@@ -23,19 +23,17 @@ class BookingInvitationController extends Controller
 
     private function customerOwnsBooking($customer, Booking $booking): bool
     {
-        if (!$customer) {
+        if (!$customer instanceof \App\Models\Customer) {
             return false;
         }
 
-        if ($booking->customer_id && $booking->customer_id === $customer->id) {
+        if ($booking->customer_id && (int) $booking->customer_id === (int) $customer->id) {
             return true;
         }
 
-        if ($booking->guest_email && $booking->guest_email === $customer->email) {
-            return true;
-        }
-
-        return false;
+        return $customer->email_verified_at !== null
+            && $booking->guest_email
+            && strcasecmp(trim($booking->guest_email), trim((string) $customer->email)) === 0;
     }
 
     public function index(Request $request, Booking $booking): JsonResponse

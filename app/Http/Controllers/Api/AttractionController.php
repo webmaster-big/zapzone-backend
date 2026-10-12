@@ -310,7 +310,7 @@ class AttractionController extends Controller
     {
         $attraction = Attraction::findOrFail($id);
 
-        $attraction->load(['location', 'packages', 'bookings', 'addOns']);
+        $attraction->load(['location', 'packages', 'addOns']);
 
         return response()->json([
             'success' => true,

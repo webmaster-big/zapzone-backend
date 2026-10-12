@@ -9,6 +9,7 @@ use App\Models\Booking;
 use App\Models\Company;
 use App\Models\Customer;
 use App\Models\Event;
+use App\Models\CustomerNotification;
 use App\Models\EventPurchase;
 use App\Models\Location;
 use App\Models\Notification;
@@ -27,6 +28,7 @@ use Illuminate\Routing\Middleware\ThrottleRequests;
 use Illuminate\Support\Facades\Cache;
 use net\authorize\api\contract\v1 as AnetAPI;
 use net\authorize\api\controller as AnetController;
+use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
 class CheckoutChargeSafetyTest extends TestCase
@@ -929,7 +931,7 @@ class CheckoutChargeSafetyTest extends TestCase
         $orderId = (int) ($order->json('data.id') ?? $order->json('id'));
         $cartWaiver = Waiver::where('event_id', $event->id)->where('adult_email', 'cart@example.com')->firstOrFail();
 
-        $this->deleteJson("/api/ticket-orders/{$orderId}/rollback")->assertSuccessful();
+        $this->deleteJson("/api/ticket-orders/{$orderId}/rollback", ['qr_token' => $order->json('qr_token')])->assertSuccessful();
 
         $this->assertFalse(Waiver::withTrashed()->findOrFail($otherWaiver->id)->trashed(), "another guest's waiver for the same event and day survives");
         $this->assertTrue(Waiver::withTrashed()->findOrFail($cartWaiver->id)->trashed(), "the cart guest's own unsigned waiver goes with the order");
@@ -1232,9 +1234,9 @@ class CheckoutChargeSafetyTest extends TestCase
 
         $this->assertSame(2, EventPurchase::count());
     }
-    private function customer(string $email): Customer
+    private function customer(string $email, bool $verified = false): Customer
     {
-        return Customer::create([
+        $customer = Customer::create([
             'first_name' => 'Pat',
             'last_name' => 'Customer',
             'email' => $email,
@@ -1242,6 +1244,12 @@ class CheckoutChargeSafetyTest extends TestCase
             'password' => bcrypt('secret-password'),
             'status' => 'active',
         ]);
+
+        if ($verified) {
+            $customer->forceFill(['email_verified_at' => now()])->save();
+        }
+
+        return $customer;
     }
 
     private function chargeLock(int $payableId, string $type = Payment::TYPE_BOOKING): \Illuminate\Contracts\Cache\Lock
@@ -1448,7 +1456,13 @@ class CheckoutChargeSafetyTest extends TestCase
         $this->getJson('/api/customers/bookings')->assertStatus(401);
         $this->getJson('/api/customers/bookings?guest_email=someone@example.com')->assertStatus(401);
 
-        $this->withHeader('Authorization', 'Bearer ' . $this->customer('pat@example.com')->createToken('portal')->plainTextToken);
+        $unverified = $this->customer('pat@example.com');
+        $this->withHeader('Authorization', 'Bearer ' . $unverified->createToken('portal')->plainTextToken);
+        $this->assertSame([], $this->getJson('/api/customers/bookings')->assertOk()->json('data.bookings'), 'an unconfirmed email does not unlock guest bookings made under it');
+
+        $unverified->forceFill(['email_verified_at' => now()])->save();
+        $this->app['auth']->forgetGuards();
+        $this->withHeader('Authorization', 'Bearer ' . $unverified->createToken('portal')->plainTextToken);
 
         $this->assertSame([$mine], collect($this->getJson('/api/customers/bookings')->assertOk()->json('data.bookings'))->pluck('id')->all());
         $this->assertSame([], $this->getJson('/api/customers/bookings?guest_email=someone@example.com')->assertOk()->json('data.bookings'), 'a customer cannot look another guest up by email');
@@ -1489,12 +1503,404 @@ class CheckoutChargeSafetyTest extends TestCase
         $this->getJson('/api/attraction-purchases/customer')->assertStatus(401);
         $this->getJson('/api/event-purchases/customer?guest_email=someone@example.com')->assertStatus(401);
 
-        $this->withHeader('Authorization', 'Bearer ' . $this->customer('pat@example.com')->createToken('portal')->plainTextToken);
+        $this->withHeader('Authorization', 'Bearer ' . $this->customer('pat@example.com', true)->createToken('portal')->plainTextToken);
 
         $this->assertSame([$myAttraction], collect($this->getJson('/api/attraction-purchases/customer?guest_email=pat@example.com')->assertOk()->json('data.purchases'))->pluck('id')->all());
         $this->assertSame([], $this->getJson('/api/attraction-purchases/customer?guest_email=someone@example.com')->assertOk()->json('data.purchases'));
         $this->assertSame([$myEvent], collect($this->getJson('/api/event-purchases/customer?guest_email=pat@example.com')->assertOk()->json('data.purchases'))->pluck('id')->all());
         $this->assertSame([], $this->getJson('/api/event-purchases/customer?guest_email=someone@example.com')->assertOk()->json('data.purchases'));
+    }
+
+    public function test_the_main_booking_list_shows_a_customer_only_their_own_bookings(): void
+    {
+        $mine = $this->createBooking($this->roomOne, ['guest_email' => 'pat@example.com', 'guest_name' => 'Pat Customer']);
+        $theirs = $this->createBooking($this->roomTwo, ['guest_email' => 'someone@example.com', 'guest_name' => 'Someone Else']);
+        $staff = $this->staff();
+        Booking::whereKey($mine)->update(['created_by' => $staff->id]);
+        \Illuminate\Support\Facades\DB::table('bookings')->where('id', $mine)->update(['internal_notes' => 'Desk only: allergy']);
+
+        $this->getJson('/api/bookings')->assertStatus(401);
+
+        $this->withHeader('Authorization', 'Bearer ' . $this->customer('pat@example.com', true)->createToken('portal')->plainTextToken);
+
+        $rows = $this->getJson('/api/bookings?per_page=100')->assertOk()->json('data.bookings');
+        $this->assertSame([$mine], collect($rows)->pluck('id')->all());
+        $this->assertArrayNotHasKey('internal_notes', $rows[0], 'desk notes never reach a guest');
+        $this->assertArrayNotHasKey('email', $rows[0]['creator'], 'a staff member\'s email never reaches a guest');
+        $this->assertSame([$mine], collect($this->getJson("/api/bookings?per_page=100&user_id={$staff->id}")->assertOk()->json('data.bookings'))->pluck('id')->all(), 'naming a staff member does not widen the list');
+        $this->assertSame([], $this->getJson('/api/bookings?per_page=100&search=someone')->assertOk()->json('data.bookings'));
+
+        $this->getJson('/api/bookings/search?query=Someone')->assertForbidden();
+        $this->getJson('/api/bookings/location-date?location_id=' . $this->location->id . '&date=' . now()->toDateString())->assertForbidden();
+        $this->getJson('/api/bookings/summaries/day/' . now()->toDateString())->assertForbidden();
+        $this->getJson('/api/bookings/summaries/week')->assertForbidden();
+
+        $this->app['auth']->forgetGuards();
+        $this->flushHeaders();
+        $this->actingAs($staff, 'sanctum');
+
+        $staffRows = collect($this->getJson('/api/bookings?per_page=100')->assertOk()->json('data.bookings'))->keyBy('id');
+        $this->assertEqualsCanonicalizing([$mine, $theirs], $staffRows->keys()->all());
+        $this->assertSame('Desk only: allergy', $staffRows[$mine]['internal_notes']);
+        $this->assertSame($staff->email, $staffRows[$mine]['creator']['email']);
+        $this->getJson('/api/bookings/search?query=Someone')->assertOk();
+        $this->getJson('/api/bookings/location-date?location_id=' . $this->location->id . '&date=' . now()->toDateString())->assertOk();
+    }
+
+    public function test_public_catalog_and_slot_lists_never_carry_guest_bookings(): void
+    {
+        $bookingId = $this->createBooking($this->roomOne, ['guest_email' => 'pat@example.com', 'guest_name' => 'Pat Customer']);
+        \Illuminate\Support\Facades\DB::table('bookings')->where('id', $bookingId)->update(['internal_notes' => 'Desk only: allergy']);
+        $attraction = Attraction::create([
+            'location_id' => $this->location->id,
+            'name' => 'Axe Throwing',
+            'description' => 'Throw axes',
+            'category' => 'Activities',
+            'price' => 20,
+            'duration' => 30,
+            'max_capacity' => 20,
+            'status' => 'active',
+        ]);
+        \App\Models\BookingAttraction::create(['booking_id' => $bookingId, 'attraction_id' => $attraction->id, 'quantity' => 1, 'price_at_booking' => 20]);
+        $event = $this->glowNight();
+        $this->postJson('/api/event-purchases', $this->eventPurchasePayload($event, 'someone@example.com'))->assertSuccessful();
+
+        $this->assertArrayNotHasKey('bookings', $this->getJson("/api/attractions/{$attraction->id}")->assertOk()->json('data'));
+        $this->assertArrayNotHasKey('event_purchases', $this->getJson("/api/events/{$event->id}")->assertOk()->json());
+
+        $slots = $this->getJson('/api/package-time-slots?per_page=-1')->assertOk()->json('data.time_slots');
+        $this->assertCount(1, $slots);
+        foreach (['booking', 'customer', 'user'] as $private) {
+            $this->assertArrayNotHasKey($private, $slots[0]);
+        }
+        $this->assertArrayNotHasKey('booking', $this->getJson('/api/package-time-slots/' . $slots[0]['id'])->assertOk()->json('data'));
+        $this->assertStringNotContainsString('Desk only', $this->getJson('/api/package-time-slots?per_page=100')->getContent());
+
+        $this->withHeader('Authorization', 'Bearer ' . $this->customer('pat@example.com')->createToken('portal')->plainTextToken);
+        $this->getJson('/api/payments/invoices/day/' . now()->toDateString())->assertForbidden();
+        $this->getJson('/api/payments/invoices/week')->assertForbidden();
+        $this->getJson('/api/payments/invoices/report')->assertForbidden();
+        $this->getJson('/api/payments/trashed')->assertForbidden();
+        $this->getJson('/api/accounting-analytics/report')->assertForbidden();
+        $this->postJson('/api/analytics/location/export', ['location_id' => $this->location->id])->assertForbidden();
+
+        $this->app['auth']->forgetGuards();
+        $this->flushHeaders();
+        $this->actingAs($this->staff(), 'sanctum');
+        $this->assertArrayHasKey('booking', $this->getJson('/api/package-time-slots?per_page=100')->assertOk()->json('data.time_slots.0'));
+        $this->assertArrayNotHasKey('bookings', $this->getJson("/api/attractions/{$attraction->id}")->assertOk()->json('data'), 'no page reads them, and they would cross locations');
+        $this->assertArrayNotHasKey('event_purchases', $this->getJson("/api/events/{$event->id}")->assertOk()->json());
+    }
+
+    public function test_checkouts_take_the_customer_from_the_login_never_from_the_page(): void
+    {
+        $attraction = $this->axeThrowing();
+        $event = $this->glowNight();
+        $eventDate = $event->start_date instanceof \DateTimeInterface ? $event->start_date->format('Y-m-d') : (string) $event->start_date;
+        $victim = $this->customer('victim@example.com');
+        $pat = $this->customer('pat@example.com');
+        $orderPayload = fn (string $email, int $customerId) => [
+            'items' => [['type' => 'event', 'id' => $event->id, 'quantity' => 1, 'scheduled_date' => $eventDate, 'scheduled_time' => '18:00']],
+            'guest_name' => 'Cart Guest',
+            'guest_email' => $email,
+            'customer_id' => $customerId,
+            'payment_method' => 'authorize.net',
+        ];
+
+        $anonymousTicket = (int) $this->postJson('/api/attraction-purchases', $this->attractionPayload($attraction, 'victim@example.com', ['customer_id' => $victim->id]))->assertStatus(201)->json('data.id');
+        $anonymousEvent = $this->postJson('/api/event-purchases', $this->eventPurchasePayload($event, 'victim@example.com', ['customer_id' => $victim->id]))->assertSuccessful();
+        $anonymousOrder = $this->postJson('/api/ticket-orders', $orderPayload('victim@example.com', $victim->id))->assertSuccessful();
+
+        $this->assertNull(AttractionPurchase::find($anonymousTicket)->customer_id);
+        $this->assertNull(EventPurchase::find((int) ($anonymousEvent->json('data.id') ?? $anonymousEvent->json('id')))->customer_id);
+        $this->assertNull(\App\Models\TicketOrder::find((int) ($anonymousOrder->json('data.id') ?? $anonymousOrder->json('id')))->customer_id);
+
+        $nameless = $this->attractionPayload($attraction, 'victim@example.com', ['customer_id' => $victim->id, 'scheduled_time' => '20:00']);
+        unset($nameless['guest_email']);
+        $this->postJson('/api/attraction-purchases', $nameless)->assertStatus(422)->assertJsonValidationErrors('guest_email');
+        $this->postJson('/api/ticket-orders', ['items' => $orderPayload('x@example.com', $victim->id)['items'], 'customer_id' => $victim->id, 'payment_method' => 'authorize.net'])
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'We need a name or an email to attach this order to.');
+
+        $this->withHeader('Authorization', 'Bearer ' . $pat->createToken('portal')->plainTextToken);
+        $myTicket = (int) $this->postJson('/api/attraction-purchases', $this->attractionPayload($attraction, 'pat@example.com', ['customer_id' => $victim->id, 'scheduled_time' => '19:00']))->assertStatus(201)->json('data.id');
+        $myEvent = $this->postJson('/api/event-purchases', $this->eventPurchasePayload($event, 'pat@example.com', ['customer_id' => $victim->id]))->assertSuccessful();
+        $myOrder = $this->postJson('/api/ticket-orders', $orderPayload('pat@example.com', $victim->id))->assertSuccessful();
+
+        $this->assertSame($pat->id, (int) AttractionPurchase::find($myTicket)->customer_id);
+        $this->assertSame($pat->id, (int) EventPurchase::find((int) ($myEvent->json('data.id') ?? $myEvent->json('id')))->customer_id);
+        $this->assertSame($pat->id, (int) \App\Models\TicketOrder::find((int) ($myOrder->json('data.id') ?? $myOrder->json('id')))->customer_id);
+        $this->assertNull(\App\Models\TicketOrder::find((int) ($myOrder->json('data.id') ?? $myOrder->json('id')))->created_by, 'a customer is never recorded as the staff member who made the order');
+    }
+
+    public function test_purchase_admin_routes_and_the_customer_search_need_a_staff_login(): void
+    {
+        $attraction = $this->axeThrowing();
+        $purchaseId = (int) $this->postJson('/api/attraction-purchases', $this->attractionPayload($attraction, 'someone@example.com'))->assertStatus(201)->json('data.id');
+
+        $this->getJson('/api/customers/search?q=someone')->assertForbidden();
+
+        $this->withHeader('Authorization', 'Bearer ' . $this->customer('pat@example.com')->createToken('portal')->plainTextToken);
+        $this->getJson('/api/customers/search?q=someone')->assertForbidden();
+        $this->getJson('/api/attraction-purchases')->assertForbidden();
+        $this->getJson("/api/attraction-purchases/{$purchaseId}")->assertForbidden();
+        $this->putJson("/api/attraction-purchases/{$purchaseId}", ['amount_paid' => 20])->assertForbidden();
+        $this->postJson('/api/attraction-purchases/bulk-delete', ['ids' => [$purchaseId]])->assertForbidden();
+        $this->getJson('/api/event-purchases')->assertForbidden();
+        $this->getJson('/api/event-purchases/trashed')->assertForbidden();
+        $this->getJson('/api/attraction-purchases/customer')->assertOk();
+        $this->assertSame(0.0, (float) AttractionPurchase::find($purchaseId)->amount_paid);
+
+        $this->app['auth']->forgetGuards();
+        $this->flushHeaders();
+        $this->actingAs($this->staff(), 'sanctum');
+        $this->getJson('/api/customers/search?q=pat')->assertOk();
+        $this->getJson('/api/attraction-purchases')->assertOk();
+    }
+
+    public function test_saving_an_order_qr_code_needs_the_orders_signed_token_unless_staff(): void
+    {
+        $event = $this->glowNight();
+        $eventDate = $event->start_date instanceof \DateTimeInterface ? $event->start_date->format('Y-m-d') : (string) $event->start_date;
+        $order = fn (string $time, string $email) => [
+            'items' => [['type' => 'event', 'id' => $event->id, 'quantity' => 1, 'scheduled_date' => $eventDate, 'scheduled_time' => $time]],
+            'guest_name' => 'Order Guest',
+            'guest_email' => $email,
+            'payment_method' => 'authorize.net',
+        ];
+        ob_start();
+        imagepng(imagecreatetruecolor(2, 2));
+        $png = 'data:image/png;base64,' . base64_encode((string) ob_get_clean());
+
+        $this->withHeader('Authorization', 'Bearer ' . $this->customer('pat@example.com')->createToken('portal')->plainTextToken);
+        $mine = $this->postJson('/api/ticket-orders', $order('18:00', 'pat@example.com'))->assertSuccessful();
+        $mineId = (int) $mine->json('data.id');
+        $this->postJson("/api/ticket-orders/{$mineId}/qrcode", ['qr_code' => $png])->assertForbidden();
+        $this->assertNull(\App\Models\TicketOrder::find($mineId)->qr_code);
+        $this->postJson("/api/ticket-orders/{$mineId}/qrcode", ['qr_code' => $png, 'qr_token' => $mine->json('qr_token')])->assertOk();
+        $this->assertNotNull(\App\Models\TicketOrder::find($mineId)->qr_code);
+
+        $this->app['auth']->forgetGuards();
+        $this->withHeader('Authorization', 'Bearer ' . $this->staff()->createToken('desk')->plainTextToken);
+        $deskId = (int) $this->postJson('/api/ticket-orders', $order('19:00', 'walkin@example.com'))->assertSuccessful()->json('data.id');
+        $this->postJson("/api/ticket-orders/{$deskId}/qrcode", ['qr_code' => $png])->assertOk();
+    }
+
+    public function test_a_customer_login_cannot_roll_back_someone_elses_order(): void
+    {
+        $event = $this->glowNight();
+        $eventDate = $event->start_date instanceof \DateTimeInterface ? $event->start_date->format('Y-m-d') : (string) $event->start_date;
+        $line = fn (string $time) => [['type' => 'event', 'id' => $event->id, 'quantity' => 1, 'scheduled_date' => $eventDate, 'scheduled_time' => $time]];
+        $staffToken = $this->staff()->createToken('desk')->plainTextToken;
+        $patToken = $this->customer('pat@example.com')->createToken('portal')->plainTextToken;
+
+        $orderId = (int) $this->withHeader('Authorization', "Bearer {$staffToken}")->postJson('/api/ticket-orders', [
+            'items' => $line('18:00'),
+            'guest_name' => 'Walk In',
+            'guest_email' => 'walkin@example.com',
+            'payment_method' => 'paylater',
+        ])->assertSuccessful()->json('data.id');
+
+        $this->app['auth']->forgetGuards();
+        $this->withHeader('Authorization', "Bearer {$patToken}");
+        $this->deleteJson("/api/ticket-orders/{$orderId}/rollback")->assertStatus(422);
+        $this->assertNotNull(\App\Models\TicketOrder::find($orderId));
+        $this->assertNotSame('cancelled', \App\Models\TicketOrder::find($orderId)->status);
+
+        $ownCard = $this->postJson('/api/ticket-orders', [
+            'items' => $line('19:00'),
+            'guest_name' => 'Pat Guest',
+            'guest_email' => 'pat@example.com',
+            'payment_method' => 'authorize.net',
+        ])->assertSuccessful();
+        $ownCardOrder = (int) $ownCard->json('data.id');
+
+        $this->app['auth']->forgetGuards();
+        $this->flushHeaders();
+        $this->deleteJson("/api/ticket-orders/{$ownCardOrder}/rollback")->assertStatus(422);
+        $this->deleteJson("/api/ticket-orders/{$ownCardOrder}/rollback", ['qr_token' => str_repeat('0', 64)])->assertStatus(422);
+        $this->assertNotNull(\App\Models\TicketOrder::find($ownCardOrder), "a stranger cannot undo someone else's fresh card order");
+
+        $this->withHeader('Authorization', "Bearer {$patToken}");
+        $this->deleteJson("/api/ticket-orders/{$ownCardOrder}/rollback", ['qr_token' => $ownCard->json('qr_token')])->assertSuccessful();
+        $this->assertNull(\App\Models\TicketOrder::find($ownCardOrder), 'a declined card lets the shopper undo their own order');
+
+        $elsewhere = Location::create([
+            'company_id' => $this->company->id,
+            'name' => 'Novi | Escape Room',
+            'address' => '2 Test Way',
+            'city' => 'Novi',
+            'state' => 'MI',
+            'zip_code' => '48375',
+            'phone' => '2485550000',
+            'email' => 'novi@zapzone.test',
+            'timezone' => 'America/Detroit',
+            'is_active' => true,
+        ]);
+        $otherDesk = $this->staff();
+        $otherDesk->forceFill(['location_id' => $elsewhere->id])->save();
+        $this->app['auth']->forgetGuards();
+        $this->withHeader('Authorization', 'Bearer ' . $otherDesk->createToken('novi')->plainTextToken);
+        $this->deleteJson("/api/ticket-orders/{$orderId}/rollback")->assertNotFound();
+        $this->assertNotNull(\App\Models\TicketOrder::find($orderId), 'another location cannot undo this order');
+
+        $this->app['auth']->forgetGuards();
+        $this->withHeader('Authorization', "Bearer {$staffToken}");
+        $this->deleteJson("/api/ticket-orders/{$orderId}/rollback")->assertSuccessful();
+        $this->assertNull(\App\Models\TicketOrder::find($orderId), 'the desk can still undo its own pay-on-arrival order');
+    }
+
+    public function test_package_bookings_and_card_charges_take_the_customer_from_the_login(): void
+    {
+        config(['checkout.membership_hardening' => 'enforce']);
+        $victim = $this->customer('victim@example.com');
+        $pat = $this->customer('pat@example.com');
+        $plan = \App\Models\MembershipPlan::create([
+            'company_id' => $this->company->id,
+            'location_id' => $this->location->id,
+            'name' => 'Local Explorer',
+            'slug' => 'local-explorer',
+            'tier' => 'basic',
+            'price' => 29.99,
+            'billing_cycle' => 'monthly',
+            'is_active' => true,
+        ]);
+        $membership = \App\Models\Membership::create([
+            'customer_id' => $victim->id,
+            'membership_plan_id' => $plan->id,
+            'home_location_id' => $this->location->id,
+            'status' => 'active',
+            'billing_amount' => $plan->price,
+        ]);
+        $desk = $this->staff();
+
+        $strangerId = $this->createBooking($this->roomOne, ['customer_id' => $victim->id, 'membership_id' => $membership->id, 'created_by' => $desk->id]);
+        $stranger = Booking::findOrFail($strangerId);
+        $this->assertNull($stranger->customer_id);
+        $this->assertNull($stranger->created_by, 'an online booking is never credited to a staff member the page names');
+        $this->assertNull($stranger->membership_id, "a stranger cannot use someone else's membership");
+
+        $staleId = $this->createBooking($this->roomTwo, ['customer_id' => 999999, 'booking_time' => '17:00']);
+        $this->assertNull(Booking::findOrFail($staleId)->customer_id, 'a customer number the page sends is ignored, even an unknown one');
+
+        $nameless = $this->bookingPayload($this->roomTwo, ['customer_id' => $victim->id, 'booking_time' => '18:00']);
+        unset($nameless['guest_name'], $nameless['guest_email']);
+        $this->postJson('/api/bookings', $nameless)->assertStatus(422)->assertJsonValidationErrors('guest_email');
+
+        $this->gateway->replies[] = $this->transactionReply('1', '60200000091');
+        $this->postJson('/api/payments/charge', $this->chargePayload($strangerId) + ['customer_id' => 999999])->assertOk();
+        $this->assertNull(Payment::where('payable_type', Payment::TYPE_BOOKING)->where('payable_id', $strangerId)->value('customer_id'));
+        $this->assertSame(0, CustomerNotification::where('customer_id', $victim->id)->count(), "no payment notice lands in a stranger's account");
+
+        $this->withHeader('Authorization', 'Bearer ' . $pat->createToken('portal')->plainTextToken);
+        $patBookingId = $this->createBooking($this->roomTwo, ['customer_id' => $victim->id, 'membership_id' => $membership->id, 'booking_time' => '19:00', 'guest_email' => 'pat@example.com']);
+        $this->assertSame($pat->id, (int) Booking::findOrFail($patBookingId)->customer_id);
+        $this->assertNull(Booking::findOrFail($patBookingId)->membership_id);
+        $this->gateway->replies[] = $this->transactionReply('1', '60200000092');
+        $this->postJson('/api/payments/charge', $this->chargePayload($patBookingId) + ['customer_id' => $victim->id])->assertOk();
+        $this->assertSame($pat->id, (int) Payment::where('payable_type', Payment::TYPE_BOOKING)->where('payable_id', $patBookingId)->value('customer_id'));
+    }
+
+    public function test_a_repeated_checkout_never_hands_a_stranger_someone_elses_details(): void
+    {
+        $owner = $this->customer('owner@example.com');
+        $attraction = $this->axeThrowing();
+        $event = $this->glowNight();
+
+        $bookingId = $this->createBooking($this->roomOne, ['guest_email' => 'owner@example.com']);
+        DB::table('bookings')->where('id', $bookingId)->update(['internal_notes' => 'Desk only: owes a deposit']);
+
+        $this->withHeader('Authorization', 'Bearer ' . $owner->createToken('portal')->plainTextToken);
+        $this->postJson('/api/attraction-purchases', $this->attractionPayload($attraction, 'owner@example.com'))->assertStatus(201);
+        $this->postJson('/api/event-purchases', $this->eventPurchasePayload($event, 'owner@example.com'))->assertSuccessful();
+
+        $this->app['auth']->forgetGuards();
+        $this->flushHeaders();
+        $booking = $this->postJson('/api/bookings', $this->bookingPayload($this->roomOne, ['guest_email' => 'owner@example.com']))
+            ->assertOk()
+            ->assertJsonPath('message', 'Booking already exists')
+            ->json('data');
+        $this->assertSame($bookingId, $booking['id']);
+        $this->assertArrayNotHasKey('internal_notes', $booking);
+        $this->assertArrayNotHasKey('customer', $booking);
+        $this->assertArrayNotHasKey('creator', $booking);
+        $this->assertArrayNotHasKey('guest_phone', $booking);
+        $this->assertSame((float) 109.04, (float) $booking['total_amount'], 'the guest still gets what the checkout needs');
+
+        $ticket = $this->postJson('/api/attraction-purchases', $this->attractionPayload($attraction, 'owner@example.com'))
+            ->assertOk()
+            ->assertJsonPath('message', 'Attraction purchase already exists')
+            ->json('data');
+        $this->assertArrayNotHasKey('customer', $ticket);
+        $this->assertArrayNotHasKey('guest_name', $ticket);
+        $this->assertArrayNotHasKey('customer_id', $ticket);
+
+        $eventPurchase = $this->postJson('/api/event-purchases', $this->eventPurchasePayload($event, 'owner@example.com'))->assertOk()->json();
+        $this->assertArrayNotHasKey('customer', $eventPurchase);
+        $this->assertArrayNotHasKey('guest_name', $eventPurchase);
+        $this->assertArrayHasKey('event', $eventPurchase, 'the guest still gets what the checkout needs');
+    }
+
+    public function test_a_ticket_receipt_is_sent_once_by_its_buyer_and_never_shows_the_full_address(): void
+    {
+        $attraction = $this->axeThrowing();
+        ob_start();
+        imagepng(imagecreatetruecolor(2, 2));
+        $png = 'data:image/png;base64,' . base64_encode((string) ob_get_clean());
+        $buyerToken = $this->customer('buyer@example.com')->createToken('portal')->plainTextToken;
+
+        $this->withHeader('Authorization', "Bearer {$buyerToken}");
+        $purchaseId = (int) $this->postJson('/api/attraction-purchases', $this->attractionPayload($attraction, 'buyer@example.com'))->assertStatus(201)->json('data.id');
+        $older = (int) $this->postJson('/api/attraction-purchases', $this->attractionPayload($attraction, 'buyer@example.com', ['scheduled_time' => '19:00']))->assertStatus(201)->json('data.id');
+        AttractionPurchase::whereKey($older)->update(['created_at' => now()->subDays(2)]);
+
+        $this->app['auth']->forgetGuards();
+        $this->flushHeaders();
+        $this->postJson("/api/attraction-purchases/{$purchaseId}/qrcode", ['qr_code' => $png])->assertForbidden();
+        $this->withHeader('Authorization', 'Bearer ' . $this->customer('other@example.com')->createToken('portal')->plainTextToken);
+        $this->postJson("/api/attraction-purchases/{$purchaseId}/qrcode", ['qr_code' => $png])->assertForbidden();
+
+        $this->app['auth']->forgetGuards();
+        $this->withHeader('Authorization', "Bearer {$buyerToken}");
+        $sent = $this->postJson("/api/attraction-purchases/{$purchaseId}/qrcode", ['qr_code' => $png])->assertOk();
+        $this->assertSame('b****@example.com', $sent->json('data.email_sent_to'));
+        $this->assertStringNotContainsString('buyer@example.com', $sent->getContent());
+        $this->postJson("/api/attraction-purchases/{$purchaseId}/qrcode", ['qr_code' => $png])->assertStatus(422);
+        $this->postJson("/api/attraction-purchases/{$older}/qrcode", ['qr_code' => $png])->assertStatus(422);
+
+        $this->app['auth']->forgetGuards();
+        $this->flushHeaders();
+        $bookingId = $this->createBooking($this->roomOne, ['guest_email' => 'party@example.com']);
+        Booking::whereKey($bookingId)->update(['status' => 'confirmed']);
+        $this->postJson("/api/bookings/{$bookingId}/qrcode", ['qr_code' => $png])->assertOk()->assertJsonPath('data.recipient_email', 'p****@example.com');
+
+        $this->actingAs($this->staff(), 'sanctum');
+        $this->postJson("/api/attraction-purchases/{$purchaseId}/qrcode", ['qr_code' => $png])->assertOk()->assertJsonPath('data.email_sent_to', 'buyer@example.com');
+        $this->postJson("/api/attraction-purchases/{$older}/qrcode", ['qr_code' => $png])->assertOk();
+    }
+
+    public function test_browsing_the_storefront_never_uses_up_the_checkout_rate_limit(): void
+    {
+        $event = $this->glowNight();
+        $eventDate = $event->start_date instanceof \DateTimeInterface ? $event->start_date->format('Y-m-d') : (string) $event->start_date;
+        $this->withMiddleware(ThrottleRequests::class);
+
+        for ($i = 0; $i < 12; $i++) {
+            $this->postJson('/api/analytics/track', []);
+            $this->postJson('/api/ticket-orders/quote', ['items' => []]);
+        }
+
+        $this->postJson('/api/ticket-orders', [
+            'items' => [['type' => 'event', 'id' => $event->id, 'quantity' => 1, 'scheduled_date' => $eventDate, 'scheduled_time' => '18:00']],
+            'guest_name' => 'Busy Browser',
+            'guest_email' => 'busy@example.com',
+            'payment_method' => 'authorize.net',
+        ])->assertSuccessful();
+
+        for ($i = 0; $i < 10; $i++) {
+            $this->deleteJson('/api/ticket-orders/999999/rollback')->assertOk();
+        }
+        $this->deleteJson('/api/ticket-orders/999999/rollback')->assertStatus(429);
     }
 
     public function test_staff_can_still_look_any_guest_up_in_the_customer_lists(): void

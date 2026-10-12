@@ -84,9 +84,9 @@ Route::post('customer-register', [ApiAuthController::class, 'customerRegister'])
 // --- Public waiver flows (token-addressed, no auth) ---
 Route::get('waivers/access/{token}',          [WaiverPublicController::class, 'show']);
 Route::get('waivers/status/{token}',          [WaiverPublicController::class, 'status']);
-Route::post('waivers/access/{token}/submit',  [WaiverPublicController::class, 'submit'])->middleware('throttle:30,1');
+Route::post('waivers/access/{token}/submit',  [WaiverPublicController::class, 'submit'])->middleware('throttle:30,1,waiver-access-submit');
 Route::get('waivers/kiosk/{templateId}',      [WaiverPublicController::class, 'kioskShow'])->whereNumber('templateId');
-Route::post('waivers/kiosk/{templateId}/submit', [WaiverPublicController::class, 'kioskSubmit'])->middleware('throttle:60,1')->whereNumber('templateId');
+Route::post('waivers/kiosk/{templateId}/submit', [WaiverPublicController::class, 'kioskSubmit'])->middleware('throttle:60,1,waiver-kiosk-submit')->whereNumber('templateId');
 Route::post('waivers/ads/learn-more', [WaiverAdController::class, 'learnMore'])->middleware('throttle:waiver-ad-learn-more');
 Route::post('waivers/kiosk/{templateId}/lookup', [WaiverPublicController::class, 'kioskLookup'])->middleware('throttle:waiver-returning-lookup')->whereNumber('templateId');
 Route::get('waivers/escape-room/{locationId}', [WaiverPublicController::class, 'escapeRoomKiosk'])->whereNumber('locationId')->middleware('throttle:escape-room-kiosk');
@@ -94,9 +94,9 @@ Route::get('waivers/escape-room/{locationId}/rooms/{packageId}', [WaiverPublicCo
 Route::post('waivers/escape-room/{locationId}/submit', [WaiverPublicController::class, 'escapeRoomSubmit'])->whereNumber('locationId')->middleware('throttle:escape-room-submit');
 // Bulk / chaperone (manage-token addressed, no auth)
 Route::get('waivers/bulk/{manageToken}',             [WaiverPublicController::class, 'bulkShow']);
-Route::post('waivers/bulk/{manageToken}/recipients', [WaiverPublicController::class, 'bulkAddRecipients'])->middleware('throttle:30,1');
-Route::post('waivers/bulk/{manageToken}/send',       [WaiverPublicController::class, 'bulkSend'])->middleware('throttle:10,1');
-Route::post('waivers/bulk/{manageToken}/recipients/{recipientId}/resend', [WaiverPublicController::class, 'bulkResendRecipient'])->middleware('throttle:10,1')->whereNumber('recipientId');
+Route::post('waivers/bulk/{manageToken}/recipients', [WaiverPublicController::class, 'bulkAddRecipients'])->middleware('throttle:30,1,waiver-bulk-recipients');
+Route::post('waivers/bulk/{manageToken}/send',       [WaiverPublicController::class, 'bulkSend'])->middleware('throttle:10,1,waiver-bulk-send');
+Route::post('waivers/bulk/{manageToken}/recipients/{recipientId}/resend', [WaiverPublicController::class, 'bulkResendRecipient'])->middleware('throttle:10,1,waiver-bulk-resend')->whereNumber('recipientId');
 
 Route::post('client-errors', [ClientErrorController::class, 'store'])->middleware('throttle:client-errors');
 
@@ -136,7 +136,7 @@ Route::prefix('photos')->group(function () {
     Route::get('access/{accessToken}/photos/{photoId}/download', [PhotoPublicController::class, 'downloadPhoto'])->whereNumber('photoId')->middleware('throttle:photo-media');
 });
 
-Route::middleware('throttle:120,1')->group(function () {
+Route::middleware('throttle:120,1,analytics')->group(function () {
     Route::post('analytics/track',       [PageAnalyticsController::class, 'track']);
     Route::post('analytics/track/batch', [PageAnalyticsController::class, 'trackBatch']);
     Route::post('analytics/duration',    [PageAnalyticsController::class, 'patchDuration']);
@@ -157,7 +157,7 @@ Route::get('/packages/{id}', [PackageController::class, 'show']); // include
 Route::get('attractions/grouped', [AttractionController::class, 'attractionsGroupedByName']);  // include
 Route::get('attractions/popular', [AttractionController::class, 'getPopular']);
 Route::get('attractions/location/{locationId}', [AttractionController::class, 'getByLocation']);
-Route::get('attractions/{id}/slot-availability/{date}', [AttractionController::class, 'slotAvailability'])->middleware('throttle:120,1');
+Route::get('attractions/{id}/slot-availability/{date}', [AttractionController::class, 'slotAvailability'])->middleware('throttle:120,1,slot-availability');
 Route::get('custom-fields/applicable', [\App\Http\Controllers\Api\CustomFieldController::class, 'applicable'])->middleware('throttle:custom-fields');
 Route::get('attractions/{id}', [AttractionController::class, 'show']); // include
 Route::get('packages/location/{locationId}', [PackageController::class, 'getByLocation']);
@@ -177,13 +177,13 @@ Route::post('bookings/{booking}/qrcode', [BookingController::class, 'storeQrCode
 Route::delete('bookings/{booking}', [BookingController::class, 'destroy']);
 Route::delete('bookings/{id}/force-delete', [BookingController::class, 'publicForceDelete']);
 
-Route::post('ticket-orders/quote', [TicketOrderController::class, 'quote'])->middleware('throttle:30,1');
-Route::post('ticket-orders', [TicketOrderController::class, 'store'])->middleware('throttle:10,1');
-Route::delete('ticket-orders/{id}/rollback', [TicketOrderController::class, 'publicRollback'])->middleware('throttle:10,1');
-Route::post('ticket-orders/{id}/qrcode', [TicketOrderController::class, 'storeQrCode'])->middleware('throttle:20,1');
+Route::post('ticket-orders/quote', [TicketOrderController::class, 'quote'])->middleware('throttle:30,1,order-quote');
+Route::post('ticket-orders', [TicketOrderController::class, 'store'])->middleware('throttle:10,1,order-create');
+Route::delete('ticket-orders/{id}/rollback', [TicketOrderController::class, 'publicRollback'])->middleware('throttle:10,1,order-rollback');
+Route::post('ticket-orders/{id}/qrcode', [TicketOrderController::class, 'storeQrCode'])->middleware('throttle:20,1,order-qrcode');
 
 Route::post('attraction-purchases', [AttractionPurchaseController::class, 'store']); // include
-Route::post('attraction-purchases/{attractionPurchase}/qrcode', [AttractionPurchaseController::class, 'storeQrCode']); // include
+Route::post('attraction-purchases/{attractionPurchase}/qrcode', [AttractionPurchaseController::class, 'storeQrCode'])->middleware('throttle:20,1,ticket-receipt'); // include
 Route::get('attraction-purchases/customer', [AttractionPurchaseController::class, 'customerPurchases']); // include
 Route::delete('attraction-purchases/{attractionPurchase}', [AttractionPurchaseController::class, 'destroy']);
 Route::delete('attraction-purchases/{id}/force-delete', [AttractionPurchaseController::class, 'publicForceDelete']);
@@ -192,7 +192,7 @@ Route::get('locations', [LocationController::class, 'index']);
 Route::get('storefront/locations', [LocationController::class, 'storefront']);
 Route::get('storefront/brand', [CompanyController::class, 'storefront']);
 
-Route::post('users', [UserController::class, 'store'])->middleware('throttle:10,1');
+Route::post('users', [UserController::class, 'store'])->middleware('throttle:10,1,registration');
 
 // Reads and store() stay public: the storefront checkout flow needs them. update() and
 // destroy() reschedule/void a booking's slot, so they moved into the staff group below - no
@@ -201,8 +201,8 @@ Route::apiResource('package-time-slots', PackageTimeSlotController::class)->only
 Route::get('package-time-slots/available-slots/{packageId}/{date}', [PackageTimeSlotController::class, 'getAvailableSlotsAuto']); // include
 
 
-Route::post('shareable-tokens/check', [ShareableTokenController::class, 'check'])->middleware('throttle:30,1');
-Route::post('shareable-tokens', [ShareableTokenController::class, 'store'])->middleware('throttle:20,1');
+Route::post('shareable-tokens/check', [ShareableTokenController::class, 'check'])->middleware('throttle:30,1,invite-check');
+Route::post('shareable-tokens', [ShareableTokenController::class, 'store'])->middleware('throttle:20,1,invite-create');
 
 Route::post('contacts/deactivate', [ContactController::class, 'deactivate']);
 
@@ -309,20 +309,20 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('ticket-orders', [TicketOrderController::class, 'index']);
     Route::get('ticket-orders/{ticketOrder}', [TicketOrderController::class, 'show']);
     Route::post('ticket-orders/{ticketOrder}/check-in', [TicketOrderController::class, 'checkIn'])->middleware('staff');
-    Route::post('ticket-orders/{ticketOrder}/cancel', [TicketOrderController::class, 'cancel']);
+    Route::post('ticket-orders/{ticketOrder}/cancel', [TicketOrderController::class, 'cancel'])->middleware('staff');
 
     Route::get('metrics/dashboard/{user}', [MetricsController::class, 'dashboard'])->middleware('staff');
     Route::get('metrics/attendant', [MetricsController::class, 'attendant'])->middleware('staff');
 
     Route::get('analytics/company', [AnalyticsController::class, 'getCompanyAnalytics'])->middleware('staff');
-    Route::post('analytics/company/export', [AnalyticsController::class, 'exportAnalytics']);
+    Route::post('analytics/company/export', [AnalyticsController::class, 'exportAnalytics'])->middleware('staff');
 
     Route::get('analytics/location', [AnalyticsController::class, 'getLocationAnalytics'])->middleware('staff');
-    Route::post('analytics/location/export', [AnalyticsController::class, 'exportAnalytics']);
+    Route::post('analytics/location/export', [AnalyticsController::class, 'exportAnalytics'])->middleware('staff');
 
-    Route::get('accounting-analytics/report', [AccountingAnalyticsController::class, 'getReport']);
-    Route::get('accounting-analytics/summary-trend', [AccountingAnalyticsController::class, 'getSummaryTrend']);
-    Route::get('accounting-analytics/export', [AccountingAnalyticsController::class, 'exportReport']);
+    Route::get('accounting-analytics/report', [AccountingAnalyticsController::class, 'getReport'])->middleware('staff');
+    Route::get('accounting-analytics/summary-trend', [AccountingAnalyticsController::class, 'getSummaryTrend'])->middleware('staff');
+    Route::get('accounting-analytics/export', [AccountingAnalyticsController::class, 'exportReport'])->middleware('staff');
 
     Route::get('page-analytics/overview',          [PageAnalyticsController::class, 'overview']);
     Route::get('page-analytics/timeseries',        [PageAnalyticsController::class, 'timeseries']);
@@ -443,19 +443,19 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     Route::get('attraction-purchases/trashed', [AttractionPurchaseController::class, 'trashed'])->middleware('staff');
-    Route::get('attraction-purchases/statistics', [AttractionPurchaseController::class, 'statistics']);
-    Route::post('attraction-purchases/bulk-restore', [AttractionPurchaseController::class, 'bulkRestore']);
-    Route::apiResource('attraction-purchases', AttractionPurchaseController::class)->except(['store', 'destroy']);
-    Route::patch('attraction-purchases/{attractionPurchase}/update-status', [AttractionPurchaseController::class, 'updateStatus']);
-    Route::get('attraction-purchases/customer/{customerId}', [AttractionPurchaseController::class, 'getByCustomer']);
-    Route::get('attraction-purchases/attraction/{attractionId}', [AttractionPurchaseController::class, 'getByAttraction']);
-    Route::patch('attraction-purchases/{attractionPurchase}/confirm', [AttractionPurchaseController::class, 'markAsConfirmed']);
-    Route::patch('attraction-purchases/{attractionPurchase}/cancel', [AttractionPurchaseController::class, 'cancel']);
-    Route::post('attraction-purchases/{attractionPurchase}/send-receipt', [AttractionPurchaseController::class, 'sendReceipt']);
+    Route::get('attraction-purchases/statistics', [AttractionPurchaseController::class, 'statistics'])->middleware('staff');
+    Route::post('attraction-purchases/bulk-restore', [AttractionPurchaseController::class, 'bulkRestore'])->middleware('staff');
+    Route::apiResource('attraction-purchases', AttractionPurchaseController::class)->except(['store', 'destroy'])->middleware('staff');
+    Route::patch('attraction-purchases/{attractionPurchase}/update-status', [AttractionPurchaseController::class, 'updateStatus'])->middleware('staff');
+    Route::get('attraction-purchases/customer/{customerId}', [AttractionPurchaseController::class, 'getByCustomer'])->middleware('staff');
+    Route::get('attraction-purchases/attraction/{attractionId}', [AttractionPurchaseController::class, 'getByAttraction'])->middleware('staff');
+    Route::patch('attraction-purchases/{attractionPurchase}/confirm', [AttractionPurchaseController::class, 'markAsConfirmed'])->middleware('staff');
+    Route::patch('attraction-purchases/{attractionPurchase}/cancel', [AttractionPurchaseController::class, 'cancel'])->middleware('staff');
+    Route::post('attraction-purchases/{attractionPurchase}/send-receipt', [AttractionPurchaseController::class, 'sendReceipt'])->middleware('staff');
     Route::get('attraction-purchases/{id}/verify', [AttractionPurchaseController::class, 'verify'])->middleware('staff');
     Route::patch('attraction-purchases/{id}/check-in', [AttractionPurchaseController::class, 'checkIn'])->middleware('staff');
-    Route::post('attraction-purchases/bulk-delete', [AttractionPurchaseController::class, 'bulkDelete']);
-    Route::post('attraction-purchases/{id}/restore', [AttractionPurchaseController::class, 'restore']);
+    Route::post('attraction-purchases/bulk-delete', [AttractionPurchaseController::class, 'bulkDelete'])->middleware('staff');
+    Route::post('attraction-purchases/{id}/restore', [AttractionPurchaseController::class, 'restore'])->middleware('staff');
 
     Route::middleware('staff')->group(function () {
         Route::get('schedule/day-window', [ScheduleWindowController::class, 'dayWindow']);
@@ -565,12 +565,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('bookings/details-report', [BookingController::class, 'bookingDetailsReport'])->middleware('staff');
 
     Route::get('bookings/summaries/export', [BookingController::class, 'summariesExport'])->middleware('staff');
-    Route::get('bookings/summaries/day/{date}', [BookingController::class, 'summariesDay']);
-    Route::get('bookings/summaries/week/{week?}', [BookingController::class, 'summariesWeek']);
+    Route::get('bookings/summaries/day/{date}', [BookingController::class, 'summariesDay'])->middleware('staff');
+    Route::get('bookings/summaries/week/{week?}', [BookingController::class, 'summariesWeek'])->middleware('staff');
 
     Route::get('bookings/trashed', [BookingController::class, 'trashed'])->middleware('staff');
-    Route::get('bookings/location-date', [BookingController::class, 'getByLocationAndDate']);
-    Route::get('bookings/search', [BookingController::class, 'search']);
+    Route::get('bookings/location-date', [BookingController::class, 'getByLocationAndDate'])->middleware('staff');
+    Route::get('bookings/search', [BookingController::class, 'search'])->middleware('staff');
 
     // Customers legitimately read their own bookings, so index/show stay on auth:sanctum.
     // Changing or cancelling a booking is a VENUE action - a guest who wants either contacts the
@@ -592,14 +592,14 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::delete('bookings/{booking}/invitations/{invitation}', [BookingInvitationController::class, 'destroy']);
     Route::get('bookings/{booking}/invitation-preview', [BookingInvitationController::class, 'preview']);
 
-    Route::get('payments/invoices/report', [PaymentController::class, 'invoicesReport']);
-    Route::get('payments/invoices/export', [PaymentController::class, 'invoicesExport']);
-    Route::get('payments/package-invoices/export', [PaymentController::class, 'packageInvoicesExport']);
-    Route::get('payments/invoices/day/{date}', [PaymentController::class, 'invoicesDay']);
-    Route::get('payments/invoices/week/{week?}', [PaymentController::class, 'invoicesWeek']);
+    Route::get('payments/invoices/report', [PaymentController::class, 'invoicesReport'])->middleware('staff');
+    Route::get('payments/invoices/export', [PaymentController::class, 'invoicesExport'])->middleware('staff');
+    Route::get('payments/package-invoices/export', [PaymentController::class, 'packageInvoicesExport'])->middleware('staff');
+    Route::get('payments/invoices/day/{date}', [PaymentController::class, 'invoicesDay'])->middleware('staff');
+    Route::get('payments/invoices/week/{week?}', [PaymentController::class, 'invoicesWeek'])->middleware('staff');
     Route::post('payments/invoices/bulk', [PaymentController::class, 'invoicesBulk'])->middleware('staff');
 
-    Route::get('payments/trashed', [PaymentController::class, 'trashed']);
+    Route::get('payments/trashed', [PaymentController::class, 'trashed'])->middleware('staff');
     Route::apiResource('payments', PaymentController::class)->except(['update'])->middleware('staff');
     Route::patch('payments/{payment}/refund', [PaymentController::class, 'refund'])->middleware('staff');
     Route::patch('payments/{payment}/manual-refund', [PaymentController::class, 'manualRefund'])->middleware('staff');
@@ -615,6 +615,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::middleware('staff')->group(function () {
         Route::get('notifications/live', [StreamController::class, 'liveNotifications']);
+        Route::get('notifications/feed', [NotificationController::class, 'feed']);
         Route::patch('notifications/mark-all-as-read', [NotificationController::class, 'markAllAsRead']);
         Route::delete('notifications/clear-all', [NotificationController::class, 'clearAll']);
         Route::patch('notifications/{notification}/mark-as-read', [NotificationController::class, 'markAsRead']);
@@ -733,10 +734,10 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     Route::get('event-purchases/verify/{reference}', [EventPurchaseController::class, 'verifyByReference'])
-        ->middleware(['staff', 'throttle:60,1']);
-    Route::get('event-purchases/trashed', [EventPurchaseController::class, 'trashed']);
+        ->middleware(['staff', 'throttle:60,1,event-verify']);
+    Route::get('event-purchases/trashed', [EventPurchaseController::class, 'trashed'])->middleware('staff');
     Route::post('event-purchases/bulk-restore', [EventPurchaseController::class, 'bulkRestore'])->middleware('staff');
-    Route::apiResource('event-purchases', EventPurchaseController::class)->except(['store', 'update']);
+    Route::apiResource('event-purchases', EventPurchaseController::class)->except(['store', 'update'])->middleware('staff');
     Route::match(['put', 'patch'], 'event-purchases/{eventPurchase}', [EventPurchaseController::class, 'update'])->middleware('staff');
     Route::patch('event-purchases/{eventPurchase}/cancel', [EventPurchaseController::class, 'cancel'])->middleware('staff');
     Route::patch('event-purchases/{eventPurchase}/status', [EventPurchaseController::class, 'updateStatus'])->middleware('staff');
@@ -848,7 +849,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('waivers/kiosk-session',    [WaiverController::class, 'kioskSession'])->middleware('staff');
     Route::get('dashboard-settings',  [DashboardSettingController::class, 'show'])->middleware('staff');
     Route::put('dashboard-settings',  [DashboardSettingController::class, 'update'])->middleware('staff');
-    Route::post('waivers/scan',             [WaiverController::class, 'scan'])->middleware(['staff', 'throttle:60,1']);
+    Route::post('waivers/scan',             [WaiverController::class, 'scan'])->middleware(['staff', 'throttle:60,1,waiver-scan']);
     Route::post('waivers/check-in-all',     [WaiverController::class, 'checkInAll'])->middleware('staff');
     Route::post('waivers/{waiver}/check-in',      [WaiverController::class, 'checkIn'])->middleware('staff');
     Route::post('waivers/{waiver}/undo-check-in', [WaiverController::class, 'undoCheckIn'])->middleware('staff');

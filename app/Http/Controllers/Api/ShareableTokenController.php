@@ -23,7 +23,7 @@ class ShareableTokenController extends Controller
                 'location_id' => 'nullable|exists:locations,id',
             ]);
 
-            $enforce = (bool) config('registration.require_staff_to_invite');
+            $enforce = true;
             $user = $request->user('sanctum');
             $staff = $user instanceof \App\Models\User && in_array((string) $user->role, \App\Http\Middleware\EnsureStaff::ROLES, true) ? $user : null;
 
@@ -66,6 +66,12 @@ class ShareableTokenController extends Controller
                     $validated['company_id'] = $staff->company_id;
                 }
 
+                if ($staff->role === 'location_manager' && !$staff->location_id) {
+                    return response()->json(['success' => false, 'message' => 'Your account has no location yet, so it cannot send invitations.'], 403);
+                }
+                if ($staff->role === 'location_manager' && empty($validated['location_id'])) {
+                    $validated['location_id'] = $staff->location_id;
+                }
                 if ($staff->role === 'location_manager' && $staff->location_id
                     && !empty($validated['location_id']) && (int) $validated['location_id'] !== (int) $staff->location_id) {
                     Log::warning('Location manager invited outside own location', [
@@ -237,7 +243,7 @@ class ShareableTokenController extends Controller
             ], 400);
         }
 
-        if (!$token->is_active) {
+        if (!$token->is_active || $token->created_by === null) {
             return response()->json([
                 'success' => false,
                 'message' => 'Token inactive',

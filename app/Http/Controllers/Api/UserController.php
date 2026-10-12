@@ -294,6 +294,15 @@ class UserController extends Controller
             ], 403);
         }
 
+        if ($actor->role !== 'company_admin' && (int) $actor->id !== (int) $target->id && $target->role === 'location_manager'
+            && (!empty($validated['password'])
+                || (array_key_exists('email', $validated) && strcasecmp(trim((string) $validated['email']), trim((string) $target->email)) !== 0))) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Forbidden: only a company admin can change a location manager\'s email or password',
+            ], 403);
+        }
+
         $changing = [];
         foreach (['role', 'company_id', 'location_id', 'status'] as $field) {
             if (array_key_exists($field, $validated)
@@ -314,6 +323,10 @@ class UserController extends Controller
             return $deny('Forbidden: an account cannot be moved to another company');
         }
 
+        if ((int) $actor->id === (int) $target->id && in_array('status', $changing, true)) {
+            return $deny('Forbidden: you cannot deactivate your own account');
+        }
+
         if ($actor->role === 'company_admin') {
             return null;
         }
@@ -324,6 +337,10 @@ class UserController extends Controller
 
         if ((int) $actor->id === (int) $target->id) {
             return $deny('Forbidden: you cannot change your own role, location or status');
+        }
+
+        if ($target->role === 'location_manager' && (in_array('status', $changing, true) || in_array('role', $changing, true))) {
+            return $deny('Forbidden: only a company admin can change a location manager\'s role or status');
         }
 
         if (in_array('role', $changing, true) && ($validated['role'] ?? null) === 'company_admin') {
@@ -495,6 +512,7 @@ class UserController extends Controller
             !$token => 'Invalid registration link.',
             $token->isUsed() => 'This registration link has already been used.',
             !$token->is_active => 'This registration link is no longer active.',
+            $token->created_by === null => 'This registration link is no longer active.',
             $token->isExpired() => 'This registration link has expired.',
             $token->email && strcasecmp($token->email, $validated['email']) !== 0 => 'The email address must match the invitation.',
             default => null,
@@ -805,6 +823,13 @@ class UserController extends Controller
             ], 403);
         }
 
+        if (request()->user()?->role !== 'company_admin' && $user->role === 'location_manager') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Forbidden: only a company admin can delete a location manager',
+            ], 403);
+        }
+
         $deletedBy = User::findOrFail(auth()->id());
 
         $userName = $user->first_name . ' ' . $user->last_name;
@@ -925,6 +950,13 @@ class UserController extends Controller
             ], 403);
         }
 
+        if (request()->user()?->role !== 'company_admin' && $user->role === 'location_manager') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Forbidden: only a company admin can deactivate or reactivate a location manager',
+            ], 403);
+        }
+
         $newStatus = $user->status === 'active' ? 'inactive' : 'active';
         $user->update(['status' => $newStatus]);
 
@@ -975,7 +1007,8 @@ class UserController extends Controller
         $locationIds = [];
 
         foreach ($users as $user) {
-            if ($this->guardUserAdministration($request, $user)) {
+            if ($this->guardUserAdministration($request, $user)
+                || ($request->user()?->role !== 'company_admin' && $user->role === 'location_manager')) {
                 $skippedCount++;
                 continue;
             }

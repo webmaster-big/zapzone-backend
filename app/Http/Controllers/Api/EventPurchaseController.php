@@ -192,6 +192,12 @@ class EventPurchaseController extends Controller
             $checkoutKey = $validated['checkout_key'] ?? null;
             unset($validated['checkout_key']);
 
+            $requester = $request->user('sanctum');
+            $requesterIsStaff = app(\App\Services\AddOnRuleService::class)->isStaff($requester);
+            if (! $requesterIsStaff) {
+                $validated['customer_id'] = $requester instanceof \App\Models\Customer ? $requester->id : null;
+            }
+
             $event = Event::findOrFail($validated['event_id']);
             if (!$event->is_active) {
                 return response()->json(['message' => 'This event is not currently active'], 422);
@@ -322,7 +328,10 @@ class EventPurchaseController extends Controller
 
             $existingPending = ($requestCarriesCode || !$eventBuyerIdentifiable || !isset($validated['total_amount'])) ? null : $duplicateQuery->first();
             if ($existingPending) {
-                $existingPending->load(['event', 'customer', 'location:id,name', 'addOns']);
+                $existingPending->load($requesterIsStaff ? ['event', 'customer', 'location:id,name', 'addOns'] : ['event', 'location:id,name', 'addOns']);
+                if (! $requesterIsStaff) {
+                    $existingPending->makeHidden(['guest_name', 'guest_phone', 'guest_address', 'guest_city', 'guest_state', 'guest_zip', 'guest_country', 'customer_id', 'created_by', 'notes', 'special_requests', 'transaction_id']);
+                }
                 Log::info('Duplicate event purchase prevented (existing pending found)', [
                     'existing_purchase_id' => $existingPending->id,
                     'event_id' => $validated['event_id'],

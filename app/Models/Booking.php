@@ -31,6 +31,10 @@ class Booking extends Model
             }
         });
 
+        static::forceDeleted(function (Booking $booking) {
+            BookingTombstone::record($booking);
+        });
+
         static::forceDeleting(function (Booking $booking) {
             try {
                 app(\App\Services\MembershipBenefitService::class)->reverseForRedeemable($booking, 'checkout_deleted');

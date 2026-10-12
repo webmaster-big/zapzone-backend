@@ -52,7 +52,7 @@ class CustomerBookingWaiverController extends Controller
             ->where(function ($query) use ($customer, $email) {
                 $query->where('customer_id', $customer->id);
 
-                if ($email !== '') {
+                if ($email !== '' && $customer->email_verified_at !== null) {
                     $query->orWhere('guest_email', $email);
                 }
             })

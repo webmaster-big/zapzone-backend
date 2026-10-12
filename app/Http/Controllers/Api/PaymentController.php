@@ -1930,6 +1930,9 @@ class PaymentController extends Controller
 
     public function charge(Request $request): JsonResponse
     {
+        $payer = $request->user('sanctum');
+        $payerIsStaff = app(\App\Services\AddOnRuleService::class)->isStaff($payer);
+
         Log::info('💳 Payment charge request received', [
             'location_id' => $request->location_id,
             'amount' => $request->amount,
@@ -1945,7 +1948,7 @@ class PaymentController extends Controller
             'opaqueData.dataValue' => 'required|string',
             'amount' => 'required|numeric|min:0.01',
             'order_id' => 'nullable|string',
-            'customer_id' => 'nullable|exists:customers,id',
+            'customer_id' => $payerIsStaff ? 'nullable|exists:customers,id' : 'nullable',
             'description' => 'nullable|string',
             'customer' => 'nullable|array',
             'customer.first_name' => 'nullable|string|max:50',
@@ -1964,6 +1967,10 @@ class PaymentController extends Controller
             'send_email' => 'nullable|boolean',
             'qr_code' => 'nullable|string', // Base64 encoded QR code for email attachment
         ]);
+
+        if (! $payerIsStaff) {
+            $request->merge(['customer_id' => $payer instanceof \App\Models\Customer ? $payer->id : null]);
+        }
 
         if (! $request->payable_id || ! $request->payable_type) {
             return $this->processCharge($request);

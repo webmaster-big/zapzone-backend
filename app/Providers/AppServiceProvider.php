@@ -21,6 +21,11 @@ class AppServiceProvider extends ServiceProvider
             [\App\Support\StaffLocationSession::class, 'handle']
         );
 
+        \Laravel\Sanctum\Sanctum::authenticateAccessTokensUsing(
+            fn ($accessToken, bool $isValid) => $isValid
+                && ! ($accessToken->tokenable instanceof \App\Models\User && $accessToken->tokenable->status === 'inactive')
+        );
+
         Relation::morphMap([
             'booking' => \App\Models\Booking::class,
             'attraction_purchase' => \App\Models\AttractionPurchase::class,

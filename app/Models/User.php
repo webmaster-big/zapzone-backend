@@ -21,6 +21,29 @@ class User extends Authenticatable
         'name',
     ];
 
+    protected static function booted(): void
+    {
+        static::deleting(function (User $user) {
+            ShareableToken::where('created_by', $user->id)
+                ->whereNull('used_at')
+                ->where('is_active', true)
+                ->update(['is_active' => false]);
+        });
+
+        static::updated(function (User $user) {
+            if ($user->wasChanged('status')) {
+                $user->tokens()->delete();
+
+                if ($user->status === 'inactive') {
+                    ShareableToken::where('created_by', $user->id)
+                        ->whereNull('used_at')
+                        ->where('is_active', true)
+                        ->update(['is_active' => false]);
+                }
+            }
+        });
+    }
+
     protected $fillable = [
         'company_id',
         'location_id',

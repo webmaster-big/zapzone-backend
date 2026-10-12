@@ -517,6 +517,13 @@ class CustomerController extends Controller
 
     public function search(Request $request): JsonResponse
     {
+        if (!app(\App\Services\AddOnRuleService::class)->isStaff($request->user('sanctum'))) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Customer search is for staff. If you are signed in as staff, reload the page and try again.',
+            ], 403);
+        }
+
         $query = $request->get('q') ?? $request->get('query');
 
         if (!$query) {

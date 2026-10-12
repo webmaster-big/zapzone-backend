@@ -352,6 +352,13 @@ class StaffPinController extends Controller
                     'message' => 'A location manager cannot change an administrator\'s PIN.',
                 ], 403);
             }
+
+            if ((string) $target->role === 'location_manager' && (int) $target->id !== (int) $actor->id) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Only a company admin can change another location manager\'s PIN.',
+                ], 403);
+            }
         }
 
         if (! in_array((string) $target->role, $this->pins->allowedRoles(), true)) {

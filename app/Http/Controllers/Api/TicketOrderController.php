@@ -26,6 +26,7 @@ class TicketOrderController extends Controller
 {
     use \App\Http\Traits\ReversesGiftCards;
     use \App\Http\Traits\ScopesByAuthUser;
+    use \App\Http\Traits\LimitsListingsToRequester;
 
     public function __construct(private TicketOrderService $orders)
     {
@@ -86,16 +87,20 @@ class TicketOrderController extends Controller
         $checkoutKey = $validated['checkout_key'] ?? null;
         unset($validated['checkout_key']);
 
+        $staff = $request->user('sanctum');
+        $method = $validated['payment_method'] ?? 'authorize.net';
+        $callerIsStaff = app(\App\Services\AddOnRuleService::class)->isStaff($staff);
+
+        if (!$callerIsStaff) {
+            $validated['customer_id'] = $staff instanceof \App\Models\Customer ? $staff->id : null;
+        }
+
         if (empty($validated['customer_id']) && empty($validated['guest_name']) && empty($validated['guest_email'])) {
             return response()->json([
                 'success' => false,
                 'message' => 'We need a name or an email to attach this order to.',
             ], 422);
         }
-
-        $staff = $request->user('sanctum');
-        $method = $validated['payment_method'] ?? 'authorize.net';
-        $callerIsStaff = app(\App\Services\AddOnRuleService::class)->isStaff($staff);
 
         if (!$callerIsStaff && $method !== 'authorize.net') {
             return response()->json([
@@ -141,7 +146,7 @@ class TicketOrderController extends Controller
             $order = $this->orders->create($validated['items'], [
                 'customer_id' => $validated['customer_id'] ?? null,
                 'membership_id' => $validated['membership_id'] ?? null,
-                'created_by' => $staff?->id,
+                'created_by' => $callerIsStaff ? $staff->id : null,
                 'guest_name' => $validated['guest_name'] ?? null,
                 'guest_email' => $validated['guest_email'] ?? null,
                 'guest_phone' => $validated['guest_phone'] ?? null,
@@ -173,7 +178,7 @@ class TicketOrderController extends Controller
 
             $this->rememberOrderCheckoutKey($checkoutKey, $order);
 
-            $qrToken = hash_hmac('sha256', $order->id . '|' . $order->reference_number, (string) config('app.key'));
+            $qrToken = $this->checkoutToken($order);
 
             return response()->json([
                 'success' => true,
@@ -244,6 +249,10 @@ class TicketOrderController extends Controller
         $query = TicketOrder::query()
             ->withoutHeavyColumns()
             ->with(['location', 'customer', 'attractionPurchases.attraction', 'attractionPurchases.addOns', 'eventPurchases.event', 'eventPurchases.addOns', 'payments:id,payable_id,payable_type,status,method,card_last_four,card_type,amount,currency,paid_at,created_at']);
+
+        if ($refusal = $this->limitListingToRequester($query, $request)) {
+            return $refusal;
+        }
 
         $this->applyAuthScope($query, $request);
 
@@ -433,8 +442,15 @@ class TicketOrderController extends Controller
             ], 422);
         }
 
-        if (!$request->user('sanctum')
-            && ($order->payment_method !== 'authorize.net' || $order->created_at?->lt(now()->subDay()))) {
+        $rollerIsStaff = app(\App\Services\AddOnRuleService::class)->isStaff($request->user('sanctum'));
+        if ($rollerIsStaff && ($guard = $this->deniesAccess($request, $order))) {
+            return $guard;
+        }
+
+        if (!$rollerIsStaff
+            && ($order->payment_method !== 'authorize.net'
+                || $order->created_at?->lt(now()->subDay())
+                || !hash_equals($this->checkoutToken($order), (string) $request->input('qr_token', '')))) {
             return response()->json([
                 'success' => false,
                 'message' => 'This order can no longer be rolled back from checkout.',
@@ -499,10 +515,8 @@ class TicketOrderController extends Controller
             return response()->json(['success' => false, 'message' => 'Order not found'], 404);
         }
 
-        if (!$request->user('sanctum')) {
-            $expected = hash_hmac('sha256', $order->id . '|' . $order->reference_number, (string) config('app.key'));
-
-            if (!hash_equals($expected, (string) ($validated['qr_token'] ?? ''))) {
+        if (!app(\App\Services\AddOnRuleService::class)->isStaff($request->user('sanctum'))) {
+            if (!hash_equals($this->checkoutToken($order), (string) ($validated['qr_token'] ?? ''))) {
                 return response()->json(['success' => false, 'message' => 'This link has expired.'], 403);
             }
         }
@@ -556,12 +570,28 @@ class TicketOrderController extends Controller
         }
     }
 
+    private function checkoutToken(TicketOrder $order): string
+    {
+        return hash_hmac('sha256', $order->id . '|' . $order->reference_number, (string) config('app.key'));
+    }
+
     private function deniesAccess(Request $request, TicketOrder $order): ?JsonResponse
     {
-        $user = $request->user();
+        $user = $request->user('sanctum');
 
         if (!$user) {
             return response()->json(['success' => false, 'message' => 'Unauthenticated.'], 401);
+        }
+
+        if ($user instanceof \App\Models\Customer) {
+            $own = (int) $order->customer_id === (int) $user->id
+                || ($user->email_verified_at !== null && $order->guest_email !== null && strcasecmp($order->guest_email, (string) $user->email) === 0);
+
+            return $own ? null : response()->json(['success' => false, 'message' => 'Order not found'], 404);
+        }
+
+        if (!$user instanceof \App\Models\User) {
+            return response()->json(['success' => false, 'message' => 'Order not found'], 404);
         }
 
         if ($user->company_id && $order->company_id && (int) $order->company_id !== (int) $user->company_id) {
