@@ -135,6 +135,40 @@ class PackageTimeSlotStoreTest extends TestCase
         return Booking::findOrFail($id);
     }
 
+    private function otherCompanyStaff(): array
+    {
+        $rival = Company::create([
+            'company_name' => 'Rival Fun Center',
+            'email' => 'owner@rival.test',
+            'phone' => '5559876543',
+            'address' => '9 Other St',
+        ]);
+        $canton = Location::create([
+            'company_id' => $rival->id,
+            'name' => 'Rival Canton',
+            'address' => '2 Test Way',
+            'city' => 'Canton',
+            'state' => 'MI',
+            'zip_code' => '48187',
+            'phone' => '7345551234',
+            'email' => 'canton@rival.test',
+            'timezone' => 'America/Detroit',
+            'is_active' => true,
+        ]);
+        $desk = User::create([
+            'company_id' => $rival->id,
+            'location_id' => $canton->id,
+            'first_name' => 'Canton',
+            'last_name' => 'Desk',
+            'email' => 'desk@rival.test',
+            'password' => 'Password123!',
+            'role' => 'attendant',
+            'status' => 'active',
+        ]);
+
+        return ['Authorization' => 'Bearer ' . $desk->createToken('test')->plainTextToken, 'Accept' => 'application/json'];
+    }
+
     private function slotFor(Booking $booking, array $overrides = []): array
     {
         return array_merge([
@@ -149,19 +183,25 @@ class PackageTimeSlotStoreTest extends TestCase
         ], $overrides);
     }
 
-    public function test_a_public_caller_can_only_record_the_slot_its_booking_already_describes(): void
+    public function test_a_public_caller_is_refused_and_another_companys_staff_can_only_record_the_slot_its_booking_already_describes(): void
     {
         $booking = $this->booking('14:00');
 
         $this->withHeaders(['Authorization' => '', 'Accept' => 'application/json'])
+            ->postJson('/api/package-time-slots', $this->slotFor($booking))
+            ->assertForbidden();
+        $this->assertSame(0, PackageTimeSlot::count());
+
+        $otherStaff = $this->otherCompanyStaff();
+        $this->withHeaders($otherStaff)
             ->postJson('/api/package-time-slots', $this->slotFor($booking, ['time_slot_start' => '16:00']))
             ->assertStatus(422);
-        $this->withHeaders(['Authorization' => '', 'Accept' => 'application/json'])
+        $this->withHeaders($otherStaff)
             ->postJson('/api/package-time-slots', $this->slotFor($booking, ['room_id' => $this->otherRoom->id]))
             ->assertStatus(422);
         $this->assertSame(0, PackageTimeSlot::count());
 
-        $created = $this->withHeaders(['Authorization' => '', 'Accept' => 'application/json'])
+        $created = $this->withHeaders($otherStaff)
             ->postJson('/api/package-time-slots', $this->slotFor($booking, ['duration' => 8, 'duration_unit' => 'hours']))
             ->assertCreated()
             ->assertJsonMissingPath('data.customer_id')
@@ -171,7 +211,7 @@ class PackageTimeSlotStoreTest extends TestCase
         $this->assertSame(120.0, (float) $slot->duration);
         $this->assertSame('minutes', $slot->duration_unit);
 
-        $this->withHeaders(['Authorization' => '', 'Accept' => 'application/json'])
+        $this->withHeaders($otherStaff)
             ->postJson('/api/package-time-slots', $this->slotFor($booking))
             ->assertOk()
             ->assertJsonPath('data.id', $created);
@@ -184,6 +224,9 @@ class PackageTimeSlotStoreTest extends TestCase
         $this->assertSame(1, PackageTimeSlot::where('booking_id', $booking->id)->count());
 
         $this->withHeaders(['Authorization' => '', 'Accept' => 'application/json'])
+            ->postJson('/api/package-time-slots', $this->slotFor($booking, ['time_slot_start' => '16:00']))
+            ->assertForbidden();
+        $this->withHeaders($this->otherCompanyStaff())
             ->postJson('/api/package-time-slots', $this->slotFor($booking, ['time_slot_start' => '16:00']))
             ->assertOk();
 

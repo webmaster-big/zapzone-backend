@@ -1023,9 +1023,7 @@ class BlockedPeriodBookingTest extends TestCase
             'duration_unit' => 'minutes',
         ];
 
-        $this->asGuest()->postJson('/api/package-time-slots', $slot)
-            ->assertStatus(422)
-            ->assertJsonPath('message', 'That space is closed at that time. Please choose another time.');
+        $this->asGuest()->postJson('/api/package-time-slots', $slot)->assertForbidden();
 
         $this->as($this->attendant)->postJson('/api/package-time-slots', $slot)
             ->assertStatus(409)->assertJsonPath('code', 'BLOCKED_PERIOD');

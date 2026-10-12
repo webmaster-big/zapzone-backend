@@ -2755,6 +2755,7 @@ class CheckoutChargeSafetyTest extends TestCase
         $event = $this->glowNight();
         $eventDate = $event->start_date instanceof \DateTimeInterface ? $event->start_date->format('Y-m-d') : (string) $event->start_date;
         $this->mock(\App\Services\TicketOrderService::class, function ($orders) {
+            $orders->shouldReceive('allowBlockedPeriods')->andReturnSelf();
             $orders->shouldReceive('create')->andThrow(new \Illuminate\Database\QueryException(
                 'mysql',
                 'insert into `ticket_orders` (`guest_email`) values (?)',
