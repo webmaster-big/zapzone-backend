@@ -413,7 +413,13 @@ class AttractionPurchaseController extends Controller
         $requestCarriesCode = !empty($validated['gift_card_code']) || !empty($validated['gift_card_id'])
             || !empty($validated['promo_code']) || !empty($validated['promo_id']);
 
-        $existingPending = ($requestCarriesCode || !$buyerIdentifiable) ? null : $duplicateQuery->first();
+        if ($requestCarriesCode) {
+            $existingPending = null;
+        } elseif ($checkoutKey) {
+            $existingPending = $earlierAttempt ? $duplicateQuery->whereKey($earlierAttempt->id)->first() : null;
+        } else {
+            $existingPending = $buyerIdentifiable ? $duplicateQuery->first() : null;
+        }
         if ($existingPending) {
             $blockGuard->recordBookedInside($request, $blockedPeriods, 'attraction_purchase', (int) $existingPending->id, $this->blockLogDetails($existingPending));
             $existingPending->load($isStaff ? ['attraction', 'customer', 'createdBy', 'addOns'] : ['attraction', 'addOns']);
@@ -1271,7 +1277,7 @@ class AttractionPurchaseController extends Controller
             ]);
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to delete attraction purchase: ' . $e->getMessage(),
+                'message' => \App\Support\StaffActor::current() ? 'Failed to delete attraction purchase: ' . $e->getMessage() : 'This purchase could not be removed right now.',
             ], 500);
         }
     }
@@ -2035,6 +2041,8 @@ public function checkIn(Request $request, int $id): JsonResponse
     {
         Log::info('Attraction purchase public force delete request', ['id' => $id, 'ip' => request()->ip()]);
 
+        $staff = \App\Support\StaffActor::current();
+
         try {
             $attractionPurchase = AttractionPurchase::withTrashed()->find($id);
 
@@ -2052,8 +2060,7 @@ public function checkIn(Request $request, int $id): JsonResponse
                 ], 403);
             }
 
-            if (!app(\App\Services\AddOnRuleService::class)->isStaff(request()->user('sanctum'))
-                && !\App\Support\CheckoutToken::presented(request(), 'attraction_purchase', $attractionPurchase->id)) {
+            if (!$staff && !\App\Support\CheckoutToken::presented(request(), 'attraction_purchase', $attractionPurchase->id)) {
                 return response()->json([
                     'success' => false,
                     'message' => 'Only the checkout that made this purchase can remove it.',
@@ -2078,24 +2085,47 @@ public function checkIn(Request $request, int $id): JsonResponse
             $purchaseId = $attractionPurchase->id;
             $locationId = $attractionPurchase->attraction->location_id ?? null;
 
-            $this->reverseGiftCardFor($attractionPurchase, \App\Models\Payment::TYPE_ATTRACTION_PURCHASE, 'payment_error_cleanup');
+            $purgingTrash = $staff && $attractionPurchase->trashed();
+
+            $this->reverseGiftCardFor($attractionPurchase, \App\Models\Payment::TYPE_ATTRACTION_PURCHASE, $purgingTrash ? 'purchase_deleted' : 'payment_error_cleanup');
 
             $attractionPurchase->forceDelete();
 
-            ActivityLog::log(
-                action: 'Attraction Purchase Force Deleted (Payment Error)',
-                category: 'delete',
-                description: "Pending attraction purchase force deleted: {$attractionName}",
-                userId: null,
-                locationId: $locationId,
-                entityType: 'attraction_purchase',
-                entityId: $purchaseId,
-                metadata: [
-                    'reason' => 'payment_error_cleanup',
-                    'attraction_name' => $attractionName,
-                    'deleted_at' => now()->toIso8601String(),
-                ]
-            );
+            if ($purgingTrash) {
+                ActivityLog::log(
+                    action: 'Attraction Purchase Permanently Deleted',
+                    category: 'delete',
+                    description: "Attraction purchase permanently deleted: {$attractionName}",
+                    userId: $staff->id,
+                    locationId: $locationId,
+                    entityType: 'attraction_purchase',
+                    entityId: $purchaseId,
+                    metadata: [
+                        'deleted_by' => [
+                            'user_id' => $staff->id,
+                            'name' => $staff->first_name . ' ' . $staff->last_name,
+                            'email' => $staff->email,
+                        ],
+                        'attraction_name' => $attractionName,
+                        'deleted_at' => now()->toIso8601String(),
+                    ]
+                );
+            } else {
+                ActivityLog::log(
+                    action: 'Attraction Purchase Force Deleted (Payment Error)',
+                    category: 'delete',
+                    description: "Pending attraction purchase force deleted: {$attractionName}",
+                    userId: $staff?->id,
+                    locationId: $locationId,
+                    entityType: 'attraction_purchase',
+                    entityId: $purchaseId,
+                    metadata: [
+                        'reason' => 'payment_error_cleanup',
+                        'attraction_name' => $attractionName,
+                        'deleted_at' => now()->toIso8601String(),
+                    ]
+                );
+            }
 
             Log::info('Attraction purchase force deleted successfully', ['id' => $purchaseId, 'attraction' => $attractionName]);
 
@@ -2111,7 +2141,7 @@ public function checkIn(Request $request, int $id): JsonResponse
             ]);
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to force delete attraction purchase: ' . $e->getMessage(),
+                'message' => $staff ? 'Failed to force delete attraction purchase: ' . $e->getMessage() : 'This purchase could not be removed right now.',
             ], 500);
         }
     }

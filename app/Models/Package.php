@@ -70,7 +70,13 @@ class Package extends Model
     protected static function booted(): void
     {
         static::forceDeleting(function (Package $package) {
-            \Illuminate\Support\Facades\DB::table('bookings')->where('package_id', $package->id)->update(['updated_at' => now()]);
+            Booking::touchUpcoming('package_id', $package->id);
+        });
+
+        static::updated(function (Package $package) {
+            if ($package->wasChanged(['name', 'category', 'display_label', 'is_escape_room'])) {
+                Booking::touchUpcoming('package_id', $package->id);
+            }
         });
 
         static::saving(function (Package $package) {

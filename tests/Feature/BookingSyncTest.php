@@ -195,6 +195,51 @@ class BookingSyncTest extends TestCase
         $this->assertNotContains($kept->id, $changes['sync']['deleted_ids']);
     }
 
+    public function test_bookings_removed_with_their_location_reach_the_company_admins_list_and_no_one_elses(): void
+    {
+        $adminToken = $this->tokenFor($this->staff('company_admin', $this->brighton));
+        $rivalToken = $this->tokenFor($this->staff('company_admin', $this->rival));
+        $gone = [$this->book($this->canton)->id, $this->book($this->canton)->id];
+        $kept = $this->book($this->brighton);
+
+        $this->travel(10)->minutes();
+        $first = $this->list($adminToken, ['sync' => 1]);
+        $rivalFirst = $this->list($rivalToken, ['sync' => 1]);
+
+        $this->travel(1)->minutes();
+        $this->canton->delete();
+
+        $changes = $this->list($adminToken, ['updated_since' => $first['sync']['cursor']]);
+        $this->assertEqualsCanonicalizing($gone, $changes['sync']['deleted_ids']);
+        $this->assertNotContains($kept->id, $changes['sync']['deleted_ids']);
+        $this->assertSame([], $this->list($rivalToken, ['updated_since' => $rivalFirst['sync']['cursor']])['sync']['deleted_ids']);
+    }
+
+    public function test_renaming_a_package_or_room_refreshes_its_upcoming_bookings_but_a_reorder_does_not(): void
+    {
+        $token = $this->tokenFor($this->staff('location_manager', $this->brighton));
+        $package = $this->packages[$this->brighton->id];
+        $room = \App\Models\Room::create(['location_id' => $this->brighton->id, 'name' => 'Room A', 'capacity' => 20, 'is_available' => true]);
+        $upcoming = $this->book($this->brighton);
+        $upcoming->update(['room_id' => $room->id]);
+        $past = $this->book($this->brighton);
+        $past->update(['room_id' => $room->id, 'booking_date' => now()->subDays(10)->toDateString()]);
+        $changedAfter = function (callable $edit) use ($token): array {
+            $this->travel(10)->minutes();
+            $cursor = $this->list($token, ['sync' => 1])['sync']['cursor'];
+            $this->travel(7)->minutes();
+            $edit();
+
+            return array_column($this->list($token, ['updated_since' => $cursor])['bookings'], 'id');
+        };
+
+        $this->assertSame([], $changedAfter(fn () => $package->update(['display_order' => 5])));
+        $this->assertSame([$upcoming->id], $changedAfter(fn () => $package->update(['category' => 'birthday'])));
+        $this->assertSame([$upcoming->id], $changedAfter(fn () => $package->update(['name' => 'Arcade Bash'])));
+        $this->assertSame([$upcoming->id], $changedAfter(fn () => $room->update(['name' => 'Room B'])));
+        $this->assertSame([$upcoming->id], $changedAfter(fn () => $room->delete()));
+    }
+
     public function test_a_payment_or_a_removed_room_brings_its_bookings_into_the_changes_but_a_package_edit_does_not(): void
     {
         $token = $this->tokenFor($this->staff('location_manager', $this->brighton));

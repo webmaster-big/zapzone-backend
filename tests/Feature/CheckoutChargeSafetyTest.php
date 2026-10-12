@@ -1405,7 +1405,7 @@ class CheckoutChargeSafetyTest extends TestCase
         $bookingId = $this->createBooking($this->roomOne);
         $this->mock(EmailNotificationService::class, fn ($mock) => $mock->shouldNotReceive('triggerBookingNotification'));
 
-        $this->postJson("/api/bookings/{$bookingId}/qrcode", $this->qrPayload())
+        $this->postJson("/api/bookings/{$bookingId}/qrcode", $this->qrPayload(['checkout_token' => CheckoutToken::for('booking', $bookingId)]))
             ->assertOk()
             ->assertJsonPath('data.email_sent', false);
 
@@ -1418,7 +1418,7 @@ class CheckoutChargeSafetyTest extends TestCase
         $booking->update(['qr_code_path' => 'qrcodes/original.png']);
         $this->mock(EmailNotificationService::class, fn ($mock) => $mock->shouldNotReceive('triggerBookingNotification'));
 
-        $this->postJson("/api/bookings/{$booking->id}/qrcode", $this->qrPayload())
+        $this->postJson("/api/bookings/{$booking->id}/qrcode", $this->qrPayload(['checkout_token' => CheckoutToken::for('booking', $booking->id)]))
             ->assertOk()
             ->assertJsonPath('message', 'QR code already stored')
             ->assertJsonPath('data.email_sent', false);
@@ -1432,7 +1432,7 @@ class CheckoutChargeSafetyTest extends TestCase
         Booking::whereKey($booking->id)->update(['created_at' => now()->subDays(3)]);
         $this->mock(EmailNotificationService::class, fn ($mock) => $mock->shouldNotReceive('triggerBookingNotification'));
 
-        $this->postJson("/api/bookings/{$booking->id}/qrcode", $this->qrPayload())
+        $this->postJson("/api/bookings/{$booking->id}/qrcode", $this->qrPayload(['checkout_token' => CheckoutToken::for('booking', $booking->id)]))
             ->assertOk()
             ->assertJsonPath('data.email_sent', false);
 
@@ -1444,7 +1444,7 @@ class CheckoutChargeSafetyTest extends TestCase
         $booking = $this->bookAndPay($this->roomOne, '60200000047');
         $this->mock(EmailNotificationService::class, fn ($mock) => $mock->shouldReceive('triggerBookingNotification')->once());
 
-        $this->postJson("/api/bookings/{$booking->id}/qrcode", $this->qrPayload())
+        $this->postJson("/api/bookings/{$booking->id}/qrcode", $this->qrPayload(['checkout_token' => CheckoutToken::for('booking', $booking->id)]))
             ->assertOk()
             ->assertJsonPath('data.email_sent', true);
     }
@@ -1909,7 +1909,7 @@ class CheckoutChargeSafetyTest extends TestCase
         $this->flushHeaders();
         $bookingId = $this->createBooking($this->roomOne, ['guest_email' => 'party@example.com']);
         Booking::whereKey($bookingId)->update(['status' => 'confirmed']);
-        $this->postJson("/api/bookings/{$bookingId}/qrcode", ['qr_code' => $png])->assertOk()->assertJsonPath('data.recipient_email', 'p****@example.com');
+        $this->postJson("/api/bookings/{$bookingId}/qrcode", ['qr_code' => $png, 'checkout_token' => CheckoutToken::for('booking', $bookingId)])->assertOk()->assertJsonPath('data.recipient_email', 'p****@example.com');
 
         $this->actingAs($this->staff(), 'sanctum');
         $this->postJson("/api/attraction-purchases/{$purchaseId}/qrcode", ['qr_code' => $png])->assertOk()->assertJsonPath('data.email_sent_to', 'buyer@example.com');
@@ -2250,14 +2250,18 @@ class CheckoutChargeSafetyTest extends TestCase
         ])->assertStatus(201)->json('data.id');
         $this->recordPayment(Payment::TYPE_ATTRACTION_PURCHASE, $attractionId, 20.00);
 
-        $this->deleteJson("/api/attraction-purchases/{$attractionId}/force-delete")->assertStatus(403);
+        $this->deleteJson("/api/attraction-purchases/{$attractionId}/force-delete", ['checkout_token' => CheckoutToken::for('attraction_purchase', $attractionId)])
+            ->assertStatus(403)
+            ->assertJsonPath('message', 'This purchase has payments, so it cannot be removed this way.');
         $this->assertNotNull(AttractionPurchase::find($attractionId));
 
         $event = $this->postJson('/api/event-purchases', $this->eventPurchasePayload($this->glowNight(), 'event@example.com'))->assertSuccessful();
         $eventId = (int) ($event->json('data.id') ?? $event->json('id'));
         $this->recordPayment(Payment::TYPE_EVENT_PURCHASE, $eventId, 15.00);
 
-        $this->deleteJson("/api/event-purchases/{$eventId}/force-delete")->assertStatus(403);
+        $this->deleteJson("/api/event-purchases/{$eventId}/force-delete", ['checkout_token' => CheckoutToken::for('event_purchase', $eventId)])
+            ->assertStatus(403)
+            ->assertJsonPath('message', 'This purchase has payments, so it cannot be removed this way.');
         $this->assertNotNull(EventPurchase::find($eventId));
     }
 
@@ -2873,6 +2877,270 @@ class CheckoutChargeSafetyTest extends TestCase
             ->assertStatus(409)
             ->assertJsonPath('code', 'CHARGE_OUTCOME_UNKNOWN');
         $this->assertCount(1, $this->gateway->sent, 'nobody can charge the card again until someone has checked');
+    }
+
+    public function test_a_stranger_cannot_choose_a_fresh_bookings_check_in_code_and_the_guests_checkout_writes_its_own(): void
+    {
+        ob_start();
+        imagepng(imagecreatetruecolor(2, 2));
+        $guestPng = (string) ob_get_clean();
+        ob_start();
+        imagepng(imagecreatetruecolor(3, 3));
+        $strangerPng = (string) ob_get_clean();
+        $bookingId = $this->createBooking($this->roomOne);
+        $file = storage_path("app/public/qrcodes/qr_{$bookingId}.png");
+
+        $this->postJson("/api/bookings/{$bookingId}/qrcode", ['qr_code' => 'data:image/png;base64,' . base64_encode($strangerPng)])->assertForbidden();
+        $this->assertEmpty(Booking::findOrFail($bookingId)->qr_code_path, 'a stranger cannot pick the check-in code before the guest pays');
+
+        if (! is_dir(dirname($file))) {
+            mkdir(dirname($file), 0755, true);
+        }
+        file_put_contents($file, $strangerPng);
+        Booking::whereKey($bookingId)->update(['qr_code_path' => "qrcodes/qr_{$bookingId}.png"]);
+
+        $this->gateway->replies[] = $this->transactionReply('1', '60200000601');
+        $this->postJson('/api/payments/charge', array_merge($this->chargePayload($bookingId), ['send_email' => true, 'qr_code' => 'data:image/png;base64,' . base64_encode($guestPng)]))->assertOk();
+
+        $this->assertSame($guestPng, file_get_contents($file), "the guest's own checkout always writes the code it shows on screen");
+    }
+
+    public function test_a_keyed_retry_that_finds_its_booking_already_went_through_gets_its_rollback_token_back(): void
+    {
+        $payload = $this->bookingPayload($this->roomOne, ['checkout_key' => 'paid-attempt']);
+        $bookingId = (int) $this->postJson('/api/bookings', $payload)->assertStatus(201)->json('data.id');
+        $this->gateway->replies[] = $this->transactionReply('1', '60200000602');
+        $this->postJson('/api/payments/charge', $this->chargePayload($bookingId))->assertOk();
+
+        $this->postJson('/api/bookings', $payload)
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'ALREADY_BOOKED')
+            ->assertJsonPath('checkout_token', CheckoutToken::for('booking', $bookingId));
+    }
+
+    public function test_a_keyed_checkout_only_picks_up_its_own_earlier_attempt(): void
+    {
+        $attraction = $this->axeThrowing();
+        $event = $this->glowNight();
+
+        $abandonedTicket = (int) $this->postJson('/api/attraction-purchases', $this->attractionPayload($attraction, 'return@example.com', ['checkout_key' => 'first-visit']))->assertStatus(201)->json('data.id');
+        $ticket = $this->postJson('/api/attraction-purchases', $this->attractionPayload($attraction, 'return@example.com', ['checkout_key' => 'second-visit']))->assertStatus(201);
+        $this->assertNotSame($abandonedTicket, (int) $ticket->json('data.id'), 'a reloaded checkout gets a purchase it can roll back and be sent a receipt for');
+        $this->assertSame(CheckoutToken::for('attraction_purchase', (int) $ticket->json('data.id')), $ticket->json('checkout_token'));
+
+        $abandonedSeat = (int) $this->postJson('/api/event-purchases', $this->eventPurchasePayload($event, 'return@example.com', ['checkout_key' => 'first-visit']))->assertStatus(201)->json('id');
+        $seat = $this->postJson('/api/event-purchases', $this->eventPurchasePayload($event, 'return@example.com', ['checkout_key' => 'second-visit']))->assertStatus(201);
+        $this->assertNotSame($abandonedSeat, (int) $seat->json('id'));
+        $this->assertSame(CheckoutToken::for('event_purchase', (int) $seat->json('id')), $seat->json('checkout_token'));
+
+        $this->withHeader('Authorization', 'Bearer ' . $this->staff()->createToken('desk')->plainTextToken);
+        $walkIn = $this->attractionPayload($attraction, 'unused@example.com', ['guest_name' => 'Walk In', 'payment_method' => 'paylater', 'checkout_key' => 'desk-sale', 'scheduled_time' => '19:00']);
+        unset($walkIn['guest_email']);
+        $firstTicket = (int) $this->postJson('/api/attraction-purchases', $walkIn)->assertStatus(201)->json('data.id');
+        $retry = $this->postJson('/api/attraction-purchases', $walkIn)->assertOk();
+        $this->assertSame($firstTicket, (int) $retry->json('data.id'), 'a lost reply at the desk is picked up again instead of selling twice');
+        $this->assertSame(CheckoutToken::for('attraction_purchase', $firstTicket), $retry->json('checkout_token'));
+
+        $eventWalkIn = $this->eventPurchasePayload($event, '', ['guest_name' => 'Walk In', 'payment_method' => 'paylater', 'checkout_key' => 'desk-event-sale', 'purchase_time' => '19:00']);
+        $firstSeat = (int) $this->postJson('/api/event-purchases', $eventWalkIn)->assertStatus(201)->json('id');
+        $this->assertSame($firstSeat, (int) $this->postJson('/api/event-purchases', $eventWalkIn)->assertOk()->json('id'));
+    }
+
+    public function test_a_failed_confirmation_email_tells_a_guest_nothing_about_the_server(): void
+    {
+        $guestBookingId = $this->createBooking($this->roomOne);
+        $deskBookingId = $this->createBooking($this->roomTwo, ['guest_email' => 'desk@example.com']);
+        $this->mock(EmailNotificationService::class, function ($mock) {
+            $mock->shouldReceive('triggerPaymentNotification');
+            $mock->shouldReceive('triggerBookingNotification')->andThrow(new \RuntimeException('mail relay smtp.internal:2525 refused'));
+        });
+
+        $this->gateway->replies[] = $this->transactionReply('1', '60200000611');
+        $reply = $this->postJson('/api/payments/charge', array_merge($this->chargePayload($guestBookingId), ['send_email' => true]))
+            ->assertOk()
+            ->assertJsonPath('email_error', 'We could not send the confirmation email.');
+        $this->assertStringNotContainsString('smtp.internal', $reply->getContent());
+
+        $this->withHeader('Authorization', 'Bearer ' . $this->staff()->createToken('desk')->plainTextToken);
+        $this->gateway->replies[] = $this->transactionReply('1', '60200000612');
+        $this->postJson('/api/payments/charge', array_merge($this->chargePayload($deskBookingId), ['send_email' => true]))
+            ->assertOk()
+            ->assertJsonPath('email_error', 'mail relay smtp.internal:2525 refused');
+    }
+
+    public function test_a_guest_paying_within_the_rounding_allowance_gets_a_confirmed_purchase(): void
+    {
+        $ticketId = (int) $this->postJson('/api/attraction-purchases', $this->attractionPayload($this->axeThrowing(), 'axes@example.com'))->assertStatus(201)->json('data.id');
+        $seatId = (int) $this->postJson('/api/event-purchases', $this->eventPurchasePayload($this->glowNight(), 'glow@example.com'))->assertStatus(201)->json('id');
+        AttractionPurchase::whereKey($ticketId)->update(['total_amount' => 20.03]);
+        EventPurchase::whereKey($seatId)->update(['total_amount' => 15.03]);
+
+        $this->gateway->replies[] = $this->transactionReply('1', '60200000621');
+        $this->postJson('/api/payments/charge', $this->chargePayload($ticketId, 20.00, Payment::TYPE_ATTRACTION_PURCHASE))->assertOk();
+        $this->gateway->replies[] = $this->transactionReply('1', '60200000622');
+        $this->postJson('/api/payments/charge', $this->chargePayload($seatId, 15.00, Payment::TYPE_EVENT_PURCHASE))->assertOk();
+
+        $this->assertSame(AttractionPurchase::STATUS_CONFIRMED, AttractionPurchase::findOrFail($ticketId)->status, 'a few cents of rounding never leaves a paid ticket pending');
+        $this->assertSame('confirmed', EventPurchase::findOrFail($seatId)->status);
+    }
+
+    public function test_the_buyers_own_rollback_cannot_remove_a_purchase_that_already_took_money(): void
+    {
+        $ticket = $this->postJson('/api/attraction-purchases', $this->attractionPayload($this->axeThrowing(), 'axes@example.com'))->assertStatus(201);
+        $ticketId = (int) $ticket->json('data.id');
+        $seat = $this->postJson('/api/event-purchases', $this->eventPurchasePayload($this->glowNight(), 'glow@example.com'))->assertStatus(201);
+        $seatId = (int) $seat->json('id');
+        $this->gateway->replies[] = $this->transactionReply('1', '60200000631');
+        $this->postJson('/api/payments/charge', $this->chargePayload($ticketId, 0.01, Payment::TYPE_ATTRACTION_PURCHASE))->assertOk();
+        $this->gateway->replies[] = $this->transactionReply('1', '60200000632');
+        $this->postJson('/api/payments/charge', $this->chargePayload($seatId, 0.01, Payment::TYPE_EVENT_PURCHASE))->assertOk();
+        $this->assertSame(AttractionPurchase::STATUS_PENDING, AttractionPurchase::findOrFail($ticketId)->status);
+        $this->assertSame('pending', EventPurchase::findOrFail($seatId)->status);
+
+        foreach ([["/api/attraction-purchases/{$ticketId}", $ticket->json('checkout_token')], ["/api/event-purchases/{$seatId}", $seat->json('checkout_token')]] as [$url, $token]) {
+            $this->deleteJson($url, ['checkout_token' => $token])->assertStatus(403);
+            $this->deleteJson("{$url}/force-delete", ['checkout_token' => $token])
+                ->assertStatus(403)
+                ->assertJsonPath('message', 'This purchase has payments, so it cannot be removed this way.');
+        }
+        $this->assertNotNull(AttractionPurchase::find($ticketId));
+        $this->assertNotNull(EventPurchase::find($seatId));
+    }
+
+    public function test_a_failed_charge_never_throws_away_a_cart_order_it_cannot_prove_or_an_older_one(): void
+    {
+        $event = $this->glowNight();
+        $eventDate = $event->start_date instanceof \DateTimeInterface ? $event->start_date->format('Y-m-d') : (string) $event->start_date;
+        $placeOrder = fn (string $email) => \App\Models\TicketOrder::findOrFail((int) $this->postJson('/api/ticket-orders', [
+            'items' => [['type' => 'event', 'id' => $event->id, 'quantity' => 1, 'scheduled_date' => $eventDate, 'scheduled_time' => '18:00']],
+            'guest_name' => 'Cart Guest',
+            'guest_email' => $email,
+            'payment_method' => 'authorize.net',
+        ])->assertSuccessful()->json('data.id'));
+
+        $unproven = $placeOrder('unproven@example.com');
+        $this->gateway->replies[] = $this->declineReply();
+        $this->postJson('/api/payments/charge', array_diff_key($this->chargePayload($unproven->id, (float) $unproven->total_amount, Payment::TYPE_TICKET_ORDER), ['checkout_token' => true]))->assertStatus(400);
+        $this->assertNotNull(\App\Models\TicketOrder::find($unproven->id), "a stranger's declined card never throws away someone's cart order");
+        $this->assertSame(1, $unproven->eventPurchases()->count());
+
+        $older = $placeOrder('older@example.com');
+        \App\Models\TicketOrder::whereKey($older->id)->update(['created_at' => now()->subHour()]);
+        $this->gateway->replies[] = $this->declineReply();
+        $this->postJson('/api/payments/charge', $this->chargePayload($older->id, (float) $older->total_amount, Payment::TYPE_TICKET_ORDER))->assertStatus(400);
+        $this->assertNotNull(\App\Models\TicketOrder::find($older->id), 'an order older than the checkout window is left for staff to look at');
+        $this->assertSame(1, $older->eventPurchases()->count());
+    }
+
+    public function test_a_repeated_gift_card_purchase_reports_the_card_that_was_actually_bought(): void
+    {
+        $canton = Location::create([
+            'company_id' => $this->company->id,
+            'name' => 'Canton | Escape Room',
+            'address' => '2 Test Way',
+            'city' => 'Canton',
+            'state' => 'MI',
+            'zip_code' => '48187',
+            'phone' => '7345551234',
+            'email' => 'canton@zapzone.test',
+            'timezone' => 'America/Detroit',
+            'is_active' => true,
+        ]);
+        $purchase = [
+            'location_id' => $this->location->id,
+            'amount' => 50,
+            'payment_method' => 'authorize.net',
+            'purchaser_name' => 'Gift Giver',
+            'purchaser_email' => 'giver@example.com',
+            'opaque_data' => ['dataDescriptor' => 'COMMON.ACCEPT.INAPP.PAYMENT', 'dataValue' => 'opaque-token'],
+            'checkout_key' => 'gift-attempt',
+        ];
+        $this->gateway->replies[] = $this->transactionReply('1', '60200000641');
+        $bought = $this->postJson('/api/gift-cards/purchase', $purchase)->assertStatus(201);
+
+        $this->postJson('/api/gift-cards/purchase', array_merge($purchase, ['location_id' => $canton->id, 'purchaser_email' => 'someone.else@example.com']))
+            ->assertOk()
+            ->assertJsonPath('data.code', $bought->json('data.code'))
+            ->assertJsonPath('data.location', $this->location->name)
+            ->assertJsonPath('data.emailed_to', 'giver@example.com');
+        $this->assertCount(1, $this->gateway->sent);
+    }
+
+    public function test_staff_purging_the_trash_give_a_reason_and_are_recorded_by_name(): void
+    {
+        $staff = $this->staff();
+        $this->withHeader('Authorization', 'Bearer ' . $staff->createToken('desk')->plainTextToken);
+        $bookingId = $this->createBooking($this->roomOne, ['payment_method' => 'paylater', 'amount_paid' => 0]);
+        Booking::findOrFail($bookingId)->delete();
+        $ticketId = (int) $this->postJson('/api/attraction-purchases', $this->attractionPayload($this->axeThrowing(), 'walkin@example.com', ['payment_method' => 'paylater']))->assertStatus(201)->json('data.id');
+        AttractionPurchase::findOrFail($ticketId)->delete();
+        $seatId = (int) $this->postJson('/api/event-purchases', $this->eventPurchasePayload($this->glowNight(), 'walkin@example.com', ['payment_method' => 'paylater']))->assertStatus(201)->json('id');
+        EventPurchase::findOrFail($seatId)->delete();
+
+        $this->deleteJson("/api/bookings/{$bookingId}/force-delete")
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('change_reason');
+        $this->assertNotNull(Booking::withTrashed()->find($bookingId));
+
+        $this->deleteJson("/api/bookings/{$bookingId}/force-delete", ['change_reason' => 'Duplicate booking removed'])->assertOk();
+        $this->deleteJson("/api/attraction-purchases/{$ticketId}/force-delete")->assertOk();
+        $this->deleteJson("/api/event-purchases/{$seatId}/force-delete")->assertOk();
+
+        $purges = \App\Models\ActivityLog::whereIn('action', ['Booking Permanently Deleted', 'Attraction Purchase Permanently Deleted', 'Event Purchase Permanently Deleted'])->get();
+        $this->assertCount(3, $purges);
+        $this->assertSame([$staff->id], $purges->pluck('user_id')->map(fn ($id) => (int) $id)->unique()->values()->all());
+        $this->assertSame('Duplicate booking removed', $purges->firstWhere('action', 'Booking Permanently Deleted')->reason);
+        $this->assertSame(0, \App\Models\ActivityLog::where('action', 'like', '%(Payment Error)%')->count(), 'a staff purge is never filed as an automatic checkout cleanup');
+
+        $declinedAtTheDesk = $this->createBooking($this->roomTwo, ['guest_email' => 'declined@example.com']);
+        $this->deleteJson("/api/bookings/{$declinedAtTheDesk}/force-delete")->assertOk();
+        $rollback = \App\Models\ActivityLog::where('action', 'Booking Force Deleted (Payment Error)')->sole();
+        $this->assertSame($staff->id, (int) $rollback->user_id, 'a desk rolling back its own declined checkout is not asked for a reason, but is still named');
+    }
+
+    public function test_a_malformed_rollback_token_is_refused_not_crashed(): void
+    {
+        $bookingId = $this->createBooking($this->roomOne);
+        $event = $this->glowNight();
+        $eventDate = $event->start_date instanceof \DateTimeInterface ? $event->start_date->format('Y-m-d') : (string) $event->start_date;
+        $orderId = (int) $this->postJson('/api/ticket-orders', [
+            'items' => [['type' => 'event', 'id' => $event->id, 'quantity' => 1, 'scheduled_date' => $eventDate, 'scheduled_time' => '18:00']],
+            'guest_name' => 'Cart Guest',
+            'guest_email' => 'cart@example.com',
+            'payment_method' => 'authorize.net',
+        ])->assertSuccessful()->json('data.id');
+
+        $this->deleteJson("/api/bookings/{$bookingId}/force-delete", ['checkout_token' => ['not', 'a', 'string']])->assertStatus(403);
+        $this->postJson("/api/bookings/{$bookingId}/qrcode", $this->qrPayload(['checkout_token' => ['x']]))->assertStatus(403);
+        $this->gateway->replies[] = $this->declineReply();
+        $this->postJson('/api/payments/charge', array_merge($this->chargePayload($orderId, 15.00, Payment::TYPE_TICKET_ORDER), ['checkout_token' => ['x']]))->assertStatus(400);
+        $this->assertNotNull(Booking::find($bookingId));
+        $this->assertNotNull(\App\Models\TicketOrder::find($orderId), 'a declined charge without a real token leaves the order alone');
+    }
+
+    public function test_a_failure_while_removing_a_checkout_tells_a_guest_nothing_about_the_server(): void
+    {
+        $bookingId = $this->createBooking($this->roomOne);
+        $ticket = $this->postJson('/api/attraction-purchases', $this->attractionPayload($this->axeThrowing(), 'axes@example.com'))->assertStatus(201);
+        $seat = $this->postJson('/api/event-purchases', $this->eventPurchasePayload($this->glowNight(), 'glow@example.com'))->assertStatus(201);
+        $refuse = function () {
+            throw new \RuntimeException('SQLSTATE[HY000] secret-db-host:3306 went away');
+        };
+        Booking::deleting($refuse);
+        AttractionPurchase::deleting($refuse);
+        EventPurchase::deleting($refuse);
+
+        foreach ([
+            ["/api/bookings/{$bookingId}", CheckoutToken::for('booking', $bookingId)],
+            ["/api/bookings/{$bookingId}/force-delete", CheckoutToken::for('booking', $bookingId)],
+            ['/api/attraction-purchases/' . $ticket->json('data.id'), $ticket->json('checkout_token')],
+            ['/api/attraction-purchases/' . $ticket->json('data.id') . '/force-delete', $ticket->json('checkout_token')],
+            ['/api/event-purchases/' . $seat->json('id'), $seat->json('checkout_token')],
+            ['/api/event-purchases/' . $seat->json('id') . '/force-delete', $seat->json('checkout_token')],
+        ] as [$url, $token]) {
+            $reply = $this->deleteJson($url, ['checkout_token' => $token])->assertStatus(500);
+            $this->assertStringNotContainsString('secret-db-host', $reply->getContent(), $url);
+        }
     }
 
 }

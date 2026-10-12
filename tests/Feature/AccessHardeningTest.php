@@ -11,6 +11,7 @@ use App\Models\GiftCard;
 use App\Models\GoogleCalendarSetting;
 use App\Models\Location;
 use App\Models\Membership;
+use App\Models\MembershipPayment;
 use App\Models\MembershipPlan;
 use App\Models\Package;
 use App\Models\PackageTimeSlot;
@@ -356,6 +357,139 @@ class AccessHardeningTest extends TestCase
 
         $this->as($second);
         $this->postJson('/api/ticket-orders', [])->assertStatus(422);
+
+        $this->as($first);
+        for ($quote = 1; $quote <= 30; $quote++) {
+            $this->postJson('/api/ticket-orders/quote', [])->assertStatus(422);
+        }
+        $this->postJson('/api/ticket-orders/quote', [])->assertStatus(429);
+
+        $this->as($second);
+        $this->postJson('/api/ticket-orders/quote', [])->assertStatus(422);
+    }
+
+    public function test_payment_refunds_voids_and_deletes_stay_within_the_callers_location(): void
+    {
+        $there = $this->booking($this->otherLocation, 'Taylor There');
+        $card = $this->payment($there);
+        $card->forceFill(['method' => 'authorize.net'])->save();
+        $unstamped = $this->payment($there);
+        $unstamped->forceFill(['method' => 'authorize.net', 'location_id' => null])->save();
+        $binned = $this->payment($there);
+        $binned->delete();
+        $here = $this->payment($this->booking($this->location, 'Taylor Here'));
+
+        $this->as($this->staff('location_manager', 'brightonlead'));
+
+        foreach ([$card, $unstamped] as $payment) {
+            $this->patchJson("/api/payments/{$payment->id}/refund", ['amount' => 10])->assertForbidden();
+            $this->patchJson("/api/payments/{$payment->id}/manual-refund", ['notes' => 'Refunded at the desk'])->assertForbidden();
+            $this->patchJson("/api/payments/{$payment->id}/void")->assertForbidden();
+            $this->deleteJson("/api/payments/{$payment->id}")->assertForbidden();
+            $this->assertSame('completed', $payment->fresh()->status);
+            $this->assertFalse($payment->fresh()->trashed());
+        }
+        $this->patchJson("/api/payments/{$binned->id}/restore")->assertForbidden();
+        $this->deleteJson("/api/payments/{$binned->id}/force-delete")->assertForbidden();
+        $this->assertTrue(Payment::withTrashed()->findOrFail($binned->id)->trashed());
+        $this->postJson('/api/payments', ['booking_id' => $there->id, 'amount' => 25, 'method' => 'cash', 'status' => 'completed'])->assertForbidden();
+        $this->assertSame(3, Payment::withTrashed()->where('payable_id', $there->id)->count());
+
+        $this->deleteJson("/api/payments/{$here->id}")->assertOk();
+    }
+
+    public function test_staff_created_at_a_terminal_capped_to_manager_stay_at_that_location(): void
+    {
+        $admin = $this->staff('company_admin', 'admin');
+        $terminal = $admin->createToken('front-desk-terminal', ['role:location_manager'])->plainTextToken;
+        $this->withHeaders(['Authorization' => "Bearer {$terminal}", 'Accept' => 'application/json']);
+
+        $this->postJson('/api/users/staff', [
+            'first_name' => 'New',
+            'last_name' => 'Lead',
+            'email' => 'new.lead@zapzone.test',
+            'role' => 'location_manager',
+            'location_id' => $this->otherLocation->id,
+            'password_mode' => 'custom',
+            'password' => 'a-password-chosen-at-the-desk',
+            'send_email' => false,
+        ])->assertSuccessful();
+
+        $this->assertSame($this->location->id, (int) User::where('email', 'new.lead@zapzone.test')->value('location_id'));
+    }
+
+    public function test_membership_card_charges_and_refunds_stay_within_the_callers_locations(): void
+    {
+        $owner = $this->customer('member@example.com');
+        $membership = $this->membership($owner);
+        $settled = MembershipPayment::create([
+            'membership_id' => $membership->id,
+            'customer_id' => $owner->id,
+            'amount' => 29.99,
+            'status' => 'succeeded',
+            'transaction_id' => '60200000777',
+            'charged_at' => now(),
+        ]);
+        $unsettled = MembershipPayment::create([
+            'membership_id' => $membership->id,
+            'customer_id' => $owner->id,
+            'amount' => 29.99,
+            'status' => 'pending',
+            'transaction_id' => '60200000778',
+        ]);
+
+        $this->as($this->staff('attendant', 'cantondesk', $this->otherLocation));
+        $this->postJson("/api/memberships/{$membership->id}/retry-payment")->assertForbidden();
+        $this->patchJson("/api/memberships/{$membership->id}/payment-method", ['payment_method_label' => 'Visa ending 4242'])->assertForbidden();
+
+        $this->as($this->staff('location_manager', 'cantonlead', $this->otherLocation));
+        $this->postJson("/api/memberships/{$membership->id}/payments/{$settled->id}/refund", ['amount' => 5])->assertForbidden();
+        $this->postJson("/api/memberships/{$membership->id}/payments/{$unsettled->id}/void")->assertForbidden();
+        $this->assertSame('succeeded', $settled->fresh()->status);
+        $this->assertSame('pending', $unsettled->fresh()->status);
+        $this->assertNull($membership->fresh()->payment_method_label);
+
+        $this->as($owner);
+        $this->patchJson("/api/memberships/{$membership->id}/payment-method", ['payment_method_label' => 'Visa ending 4242'])->assertOk();
+        $this->assertSame('Visa ending 4242', $membership->fresh()->payment_method_label);
+    }
+
+    public function test_a_customer_login_on_a_rate_limited_staff_tool_is_refused_not_crashed(): void
+    {
+        $this->withMiddleware(ThrottleRequests::class);
+        $this->as($this->customer('guest@example.com'));
+
+        $this->postJson('/api/email-campaigns/send-test', ['email' => 'me@example.com'])->assertForbidden();
+        $this->postJson('/api/waivers/scan', ['code' => 'WV-123456'])->assertForbidden();
+        $this->getJson('/api/event-purchases/verify/EVT-ABCDEFGH')->assertForbidden();
+    }
+
+    public function test_a_malformed_sign_in_is_refused_not_crashed(): void
+    {
+        $this->withMiddleware(ThrottleRequests::class);
+
+        $this->postJson('/api/login', ['email' => ['someone@zapzone.test'], 'password' => 'whatever-password'])->assertStatus(422);
+        $this->postJson('/api/customer-login', ['email' => ['someone@example.com'], 'password' => 'whatever-password'])->assertStatus(422);
+    }
+
+    public function test_the_web_sign_up_form_is_rate_limited(): void
+    {
+        $this->withMiddleware(ThrottleRequests::class);
+
+        for ($attempt = 1; $attempt <= 10; $attempt++) {
+            $this->postJson('/api/customers', ['email' => 'not-an-email'])->assertStatus(422);
+        }
+
+        $this->postJson('/api/customers', ['email' => 'not-an-email'])->assertStatus(429);
+    }
+
+    public function test_a_customer_cannot_borrow_a_staff_id_to_reach_another_members_card_setup(): void
+    {
+        $membership = $this->membership($this->customer('member@example.com'));
+        $admin = $this->staff('company_admin', 'admin');
+
+        $this->as($this->customer('stranger@example.com'));
+        $this->getJson("/api/memberships/gateway-key?membership_id={$membership->id}&user_id={$admin->id}")->assertForbidden();
     }
 
     private function package(Location $location): Package

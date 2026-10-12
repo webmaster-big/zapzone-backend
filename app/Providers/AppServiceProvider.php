@@ -212,19 +212,22 @@ class AppServiceProvider extends ServiceProvider
         ]);
 
         RateLimiter::for('sign-in', fn (Request $request) => [
-            Limit::perMinute(10)->by('sign-in:' . strtolower(trim((string) $request->input('email'))) . '|' . $request->ip()),
+            Limit::perMinute(10)->by('sign-in:' . (is_string($email = $request->input('email')) ? strtolower(trim($email)) : '') . '|' . $request->ip()),
             Limit::perMinute(60)->by('sign-in-ip:' . $request->ip()),
         ]);
 
         RateLimiter::for('sign-up', fn (Request $request) => Limit::perMinute(10)->by('sign-up:' . $request->ip()));
 
-        $orderCaller = function (Request $request): string {
+        $caller = function (Request $request): string {
             $who = $request->user('sanctum');
 
             return $who ? class_basename($who) . ':' . $who->getKey() : 'ip:' . $request->ip();
         };
-        RateLimiter::for('order-quote', fn (Request $request) => Limit::perMinute(30)->by('order-quote:' . $orderCaller($request)));
-        RateLimiter::for('order-create', fn (Request $request) => Limit::perMinute(10)->by('order-create:' . $orderCaller($request)));
+        RateLimiter::for('order-quote', fn (Request $request) => Limit::perMinute(30)->by('order-quote:' . $caller($request)));
+        RateLimiter::for('order-create', fn (Request $request) => Limit::perMinute(10)->by('order-create:' . $caller($request)));
+        RateLimiter::for('email-send-test', fn (Request $request) => Limit::perMinute(10)->by('email-send-test:' . $caller($request)));
+        RateLimiter::for('event-verify', fn (Request $request) => Limit::perMinute(60)->by('event-verify:' . $caller($request)));
+        RateLimiter::for('waiver-scan', fn (Request $request) => Limit::perMinute(60)->by('waiver-scan:' . $caller($request)));
 
         RateLimiter::for('payment-charge', function (Request $request) {
             $who = $request->user('sanctum')?->getKey();

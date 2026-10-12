@@ -191,6 +191,12 @@ class PaymentController extends Controller
             unset($validated['event_purchase_id']);
         }
 
+        foreach ([$this->payableLocationId($validated['payable_type'] ?? null, $validated['payable_id'] ?? null), $validated['location_id'] ?? null] as $targetLocationId) {
+            if ($targetLocationId !== null && ($denied = $this->denyForeignRecord((object) ['location_id' => (int) $targetLocationId], 'booking or purchase'))) {
+                return $denied;
+            }
+        }
+
         if (!empty($validated['payable_id']) && !empty($validated['payable_type'])) {
             $existingPayment = Payment::where('payable_id', $validated['payable_id'])
                 ->where('payable_type', $validated['payable_type'])
@@ -371,6 +377,32 @@ class PaymentController extends Controller
         ], 201);
     }
 
+    private function denyForeignPayment(Payment $payment)
+    {
+        return $this->denyForeignRecord((object) [
+            'location_id' => $payment->location_id ?? $this->payableLocationId($payment->payable_type, $payment->payable_id),
+        ], 'payment');
+    }
+
+    private function payableLocationId(?string $payableType, $payableId): ?int
+    {
+        if (! $payableType || ! $payableId) {
+            return null;
+        }
+
+        $payable = match ($payableType) {
+            Payment::TYPE_BOOKING => Booking::withTrashed()->find($payableId),
+            Payment::TYPE_ATTRACTION_PURCHASE => AttractionPurchase::withTrashed()->with('attraction:id,location_id')->find($payableId),
+            Payment::TYPE_EVENT_PURCHASE => EventPurchase::withTrashed()->find($payableId),
+            Payment::TYPE_TICKET_ORDER => TicketOrder::withTrashed()->find($payableId),
+            default => null,
+        };
+
+        $locationId = $payableType === Payment::TYPE_ATTRACTION_PURCHASE ? $payable?->attraction?->location_id : $payable?->location_id;
+
+        return $locationId !== null ? (int) $locationId : null;
+    }
+
     private function scopePaymentsToActor($query, Request $request): void
     {
         $authUser = $this->resolveAuthUser($request);
@@ -385,7 +417,7 @@ class PaymentController extends Controller
 
     public function show(Payment $payment): JsonResponse
     {
-        if ($denied = $this->denyForeignRecord($payment, 'payment')) {
+        if ($denied = $this->denyForeignPayment($payment)) {
             return $denied;
         }
 
@@ -402,6 +434,10 @@ class PaymentController extends Controller
 
     public function destroy(Payment $payment): JsonResponse
     {
+        if ($denied = $this->denyForeignPayment($payment)) {
+            return $denied;
+        }
+
         $payment->delete();
 
         if ($payment->payable_id && $payment->payable_type && in_array($payment->status, ['completed', 'refunded'], true)) {
@@ -426,6 +462,11 @@ class PaymentController extends Controller
     public function restore(int $id): JsonResponse
     {
         $payment = Payment::onlyTrashed()->findOrFail($id);
+
+        if ($denied = $this->denyForeignPayment($payment)) {
+            return $denied;
+        }
+
         $payment->restore();
 
         if ($payment->payable_id && $payment->payable_type && in_array($payment->status, ['completed', 'refunded'], true)) {
@@ -451,6 +492,10 @@ class PaymentController extends Controller
     public function forceDelete(int $id): JsonResponse
     {
         $payment = Payment::onlyTrashed()->findOrFail($id);
+
+        if ($denied = $this->denyForeignPayment($payment)) {
+            return $denied;
+        }
 
         ActivityLog::create([
             'user_id' => auth()->id(),
@@ -719,6 +764,10 @@ class PaymentController extends Controller
 
     public function refund(Request $request, Payment $payment): JsonResponse
     {
+        if ($denied = $this->denyForeignPayment($payment)) {
+            return $denied;
+        }
+
         $validated = $request->validate([
             'amount' => 'sometimes|numeric|min:0.01',
             'notes' => 'sometimes|nullable|string',
@@ -1336,6 +1385,10 @@ class PaymentController extends Controller
 
     public function manualRefund(Request $request, Payment $payment): JsonResponse
     {
+        if ($denied = $this->denyForeignPayment($payment)) {
+            return $denied;
+        }
+
         $validated = $request->validate([
             'amount' => 'sometimes|numeric|min:0.01',
             'notes' => 'required|string|max:1000',
@@ -1621,6 +1674,10 @@ class PaymentController extends Controller
 
     public function voidTransaction(Payment $payment): JsonResponse
     {
+        if ($denied = $this->denyForeignPayment($payment)) {
+            return $denied;
+        }
+
         if (!in_array($payment->status, ['completed', 'pending'])) {
             return response()->json(['success' => false, 'message' => 'Only completed or pending payments can be voided'], 400);
         }
@@ -2526,7 +2583,7 @@ class PaymentController extends Controller
                                     'payment_method' => 'authorize.net',
                                     'transaction_id' => $transactionId,
                                     'status' => $payable->status === AttractionPurchase::STATUS_CHECKED_IN
-                                        || ! ($staffPayer || (float) $totalPaid + 0.005 >= (float) $payable->total_amount)
+                                        || ! ($staffPayer || (float) $totalPaid + (float) config('checkout.total_tolerance', 0.05) >= (float) $payable->total_amount)
                                         ? $payable->status
                                         : AttractionPurchase::STATUS_CONFIRMED,
                                 ]);
@@ -2543,7 +2600,7 @@ class PaymentController extends Controller
                                     'payment_method' => 'authorize.net',
                                     'transaction_id' => $transactionId,
                                     'payment_status' => $totalPaid >= $payable->total_amount ? 'paid' : 'partial',
-                                    'status' => $staffPayer || (float) $totalPaid + 0.005 >= (float) $payable->total_amount
+                                    'status' => $staffPayer || (float) $totalPaid + (float) config('checkout.total_tolerance', 0.05) >= (float) $payable->total_amount
                                         ? Booking::statusAfterPayment($payable->status)
                                         : $payable->status,
                                 ]);
@@ -2651,7 +2708,7 @@ class PaymentController extends Controller
                                 $booking = $payable;
                                 $booking->load(['customer', 'package', 'location.company', 'room', 'creator', 'attractions', 'addOns']);
 
-                                if ($qrCode && ($staffPayer || (empty($booking->qr_code_path) && $freshOnlineCheckout))) {
+                                if ($qrCode && ($staffPayer || $freshOnlineCheckout)) {
                                     $qrCodeData = $qrCode;
                                     if (strpos($qrCodeData, 'data:image') === 0) {
                                         $qrCodeData = substr($qrCodeData, strpos($qrCodeData, ',') + 1);
@@ -2942,7 +2999,7 @@ class PaymentController extends Controller
                         'cvv_result_code' => $cvvResultCode,
                         'payment' => $payment,
                         'email_sent' => $emailSent,
-                        'email_error' => $emailError,
+                        'email_error' => $staffPayer || $emailError === null ? $emailError : 'We could not send the confirmation email.',
                     ]);
                 } else {
                     $errorMessage = 'Transaction failed';
@@ -3299,9 +3356,7 @@ class PaymentController extends Controller
         }
 
         if ($payableType === Payment::TYPE_TICKET_ORDER) {
-            $given = (string) $request->input('checkout_token', '');
-
-            return $record instanceof TicketOrder && $given !== '' && hash_equals(\App\Support\CheckoutToken::forOrder($record), $given);
+            return $record instanceof TicketOrder && \App\Support\CheckoutToken::presentedForOrder($request, $record);
         }
 
         return in_array($payableType, [Payment::TYPE_BOOKING, Payment::TYPE_ATTRACTION_PURCHASE, Payment::TYPE_EVENT_PURCHASE], true)
@@ -3318,7 +3373,7 @@ class PaymentController extends Controller
 
     public function invoice(Payment $payment)
     {
-        if ($denied = $this->denyForeignRecord($payment, 'payment')) {
+        if ($denied = $this->denyForeignPayment($payment)) {
             return $denied;
         }
 
@@ -3370,7 +3425,7 @@ class PaymentController extends Controller
 
     public function invoiceView(Payment $payment)
     {
-        if ($denied = $this->denyForeignRecord($payment, 'payment')) {
+        if ($denied = $this->denyForeignPayment($payment)) {
             return $denied;
         }
 

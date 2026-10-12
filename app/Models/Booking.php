@@ -157,6 +157,14 @@ class Booking extends Model
         return in_array($current, ['checked-in', 'completed'], true) ? $current : 'confirmed';
     }
 
+    public static function touchUpcoming(string $column, int $id): void
+    {
+        \Illuminate\Support\Facades\DB::table('bookings')
+            ->where($column, $id)
+            ->where('booking_date', '>=', now()->subDay()->toDateString())
+            ->update(['updated_at' => now()]);
+    }
+
     public function customer(): BelongsTo
     {
         return $this->belongsTo(Customer::class);

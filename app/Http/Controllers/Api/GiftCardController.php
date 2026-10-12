@@ -461,7 +461,7 @@ class GiftCardController extends Controller
                 return response()->json([
                     'success' => true,
                     'message' => 'Gift card already purchased.',
-                    'data' => $this->purchasePayload($keyed, $location, null, $validated['purchaser_email']),
+                    'data' => $this->purchasePayload($keyed, $keyed->location ?? $location, null, $keyed->purchaser_email ?: $validated['purchaser_email']),
                     'duplicate' => true,
                 ], 200);
             }
@@ -481,7 +481,7 @@ class GiftCardController extends Controller
             if ($existing) {
                 $sameBuyer = $staff
                     || ($principal instanceof \App\Models\Customer && (int) $existing->purchased_by_customer_id === (int) $principal->id);
-                $payload = $this->purchasePayload($existing, $location, null, $validated['purchaser_email']);
+                $payload = $this->purchasePayload($existing, $existing->location ?? $location, null, $existing->purchaser_email ?: $validated['purchaser_email']);
 
                 return response()->json([
                     'success' => true,

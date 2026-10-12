@@ -349,7 +349,13 @@ class EventPurchaseController extends Controller
 
             $eventBuyerIdentifiable = !empty($validated['customer_id']) || trim((string) ($validated['guest_email'] ?? '')) !== '';
 
-            $existingPending = ($requestCarriesCode || !$eventBuyerIdentifiable || !isset($validated['total_amount'])) ? null : $duplicateQuery->first();
+            if ($requestCarriesCode || !isset($validated['total_amount'])) {
+                $existingPending = null;
+            } elseif ($checkoutKey) {
+                $existingPending = $earlierAttempt ? $duplicateQuery->whereKey($earlierAttempt->id)->first() : null;
+            } else {
+                $existingPending = $eventBuyerIdentifiable ? $duplicateQuery->first() : null;
+            }
             if ($existingPending) {
                 $existingPending->load($requesterIsStaff ? ['event', 'customer', 'location:id,name', 'addOns'] : ['event', 'location:id,name', 'addOns']);
                 if (! $requesterIsStaff) {
@@ -1121,7 +1127,7 @@ class EventPurchaseController extends Controller
             ]);
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to delete event purchase: ' . $e->getMessage(),
+                'message' => \App\Support\StaffActor::current() ? 'Failed to delete event purchase: ' . $e->getMessage() : 'This purchase could not be removed right now.',
             ], 500);
         }
     }
@@ -1494,6 +1500,8 @@ class EventPurchaseController extends Controller
     {
         Log::info('Event purchase public force delete request', ['id' => $id, 'ip' => request()->ip()]);
 
+        $staff = \App\Support\StaffActor::current();
+
         try {
             $eventPurchase = EventPurchase::withTrashed()->find($id);
 
@@ -1511,8 +1519,7 @@ class EventPurchaseController extends Controller
                 ], 403);
             }
 
-            if (!app(\App\Services\AddOnRuleService::class)->isStaff(request()->user('sanctum'))
-                && !\App\Support\CheckoutToken::presented(request(), 'event_purchase', $eventPurchase->id)) {
+            if (!$staff && !\App\Support\CheckoutToken::presented(request(), 'event_purchase', $eventPurchase->id)) {
                 return response()->json([
                     'success' => false,
                     'message' => 'Only the checkout that made this purchase can remove it.',
@@ -1537,24 +1544,47 @@ class EventPurchaseController extends Controller
             $purchaseId = $eventPurchase->id;
             $locationId = $eventPurchase->event->location_id ?? null;
 
-            $this->reverseGiftCardFor($eventPurchase, \App\Models\Payment::TYPE_EVENT_PURCHASE, 'payment_error_cleanup');
+            $purgingTrash = $staff && $eventPurchase->trashed();
+
+            $this->reverseGiftCardFor($eventPurchase, \App\Models\Payment::TYPE_EVENT_PURCHASE, $purgingTrash ? 'purchase_deleted' : 'payment_error_cleanup');
 
             $eventPurchase->forceDelete();
 
-            ActivityLog::log(
-                action: 'Event Purchase Force Deleted (Payment Error)',
-                category: 'delete',
-                description: "Pending event purchase force deleted: {$eventName}",
-                userId: null,
-                locationId: $locationId,
-                entityType: 'event_purchase',
-                entityId: $purchaseId,
-                metadata: [
-                    'reason' => 'payment_error_cleanup',
-                    'event_name' => $eventName,
-                    'deleted_at' => now()->toIso8601String(),
-                ]
-            );
+            if ($purgingTrash) {
+                ActivityLog::log(
+                    action: 'Event Purchase Permanently Deleted',
+                    category: 'delete',
+                    description: "Event purchase permanently deleted: {$eventName}",
+                    userId: $staff->id,
+                    locationId: $locationId,
+                    entityType: 'event_purchase',
+                    entityId: $purchaseId,
+                    metadata: [
+                        'deleted_by' => [
+                            'user_id' => $staff->id,
+                            'name' => $staff->first_name . ' ' . $staff->last_name,
+                            'email' => $staff->email,
+                        ],
+                        'event_name' => $eventName,
+                        'deleted_at' => now()->toIso8601String(),
+                    ]
+                );
+            } else {
+                ActivityLog::log(
+                    action: 'Event Purchase Force Deleted (Payment Error)',
+                    category: 'delete',
+                    description: "Pending event purchase force deleted: {$eventName}",
+                    userId: $staff?->id,
+                    locationId: $locationId,
+                    entityType: 'event_purchase',
+                    entityId: $purchaseId,
+                    metadata: [
+                        'reason' => 'payment_error_cleanup',
+                        'event_name' => $eventName,
+                        'deleted_at' => now()->toIso8601String(),
+                    ]
+                );
+            }
 
             Log::info('Event purchase force deleted successfully', ['id' => $purchaseId, 'event' => $eventName]);
 
@@ -1570,7 +1600,7 @@ class EventPurchaseController extends Controller
             ]);
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to force delete event purchase: ' . $e->getMessage(),
+                'message' => $staff ? 'Failed to force delete event purchase: ' . $e->getMessage() : 'This purchase could not be removed right now.',
             ], 500);
         }
     }

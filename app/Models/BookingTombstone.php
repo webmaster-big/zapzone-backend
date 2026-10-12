@@ -15,6 +15,7 @@ class BookingTombstone extends Model
     protected $fillable = [
         'booking_id',
         'location_id',
+        'company_id',
         'removed_at',
     ];
 
@@ -51,9 +52,16 @@ class BookingTombstone extends Model
         try {
             $now = now();
             $rows = [];
+            $bookings = collect($bookings);
+            $companies = self::companiesOf($bookings->pluck('location_id')->all());
 
             foreach ($bookings as $booking) {
-                $rows[] = ['booking_id' => $booking->id, 'location_id' => $booking->location_id, 'removed_at' => $now];
+                $rows[] = [
+                    'booking_id' => $booking->id,
+                    'location_id' => $booking->location_id,
+                    'company_id' => $companies[(int) $booking->location_id] ?? null,
+                    'removed_at' => $now,
+                ];
             }
 
             foreach (array_chunk($rows, 500) as $chunk) {
@@ -79,6 +87,7 @@ class BookingTombstone extends Model
             static::create([
                 'booking_id' => $booking->id,
                 'location_id' => $fromLocationId,
+                'company_id' => self::companiesOf([$fromLocationId])[(int) $fromLocationId] ?? null,
                 'removed_at' => now(),
             ]);
         } catch (\Throwable $e) {
@@ -95,6 +104,7 @@ class BookingTombstone extends Model
             static::create([
                 'booking_id' => $booking->id,
                 'location_id' => $booking->location_id,
+                'company_id' => self::companiesOf([$booking->location_id])[(int) $booking->location_id] ?? null,
                 'removed_at' => now(),
             ]);
 
@@ -105,5 +115,12 @@ class BookingTombstone extends Model
                 'error' => $e->getMessage(),
             ]);
         }
+    }
+
+    private static function companiesOf(array $locationIds): array
+    {
+        $locationIds = array_values(array_unique(array_filter(array_map('intval', $locationIds))));
+
+        return $locationIds === [] ? [] : Location::whereIn('id', $locationIds)->pluck('company_id', 'id')->all();
     }
 }

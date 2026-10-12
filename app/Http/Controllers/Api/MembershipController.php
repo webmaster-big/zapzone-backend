@@ -1054,11 +1054,7 @@ class MembershipController extends Controller
 
     public function updatePaymentMethod(Request $request, Membership $membership): JsonResponse
     {
-        $customer = $this->resolveCustomer();
-        $isStaff = Auth::guard('sanctum')->user() instanceof User;
-
-        $ownsIt = $customer && (int) $customer->id === (int) $membership->customer_id;
-        abort_unless($ownsIt || $isStaff, 403);
+        abort_unless($this->ownerOrStaff($membership), 403);
 
         $data = $request->validate([
             'payment_method_label'       => 'required|string|max:120',
@@ -1137,7 +1133,7 @@ class MembershipController extends Controller
 
     public function retryPayment(Request $request, Membership $membership): JsonResponse
     {
-        abort_unless(Auth::guard('sanctum')->user() instanceof User, 403);
+        abort_unless(Auth::guard('sanctum')->user() instanceof User && $this->ownerOrStaff($membership), 403);
 
         $lastFailed = $membership->membershipPayments()->where('status', 'failed')->latest()->first();
         $attempt = ($lastFailed?->retry_attempt ?? 0) + 1;
@@ -1253,6 +1249,7 @@ class MembershipController extends Controller
     {
         $authUser = $this->resolveAuthUser($request);
         abort_unless($authUser && in_array($authUser->role, ['company_admin', 'location_manager']), 403);
+        abort_unless($this->ownerOrStaff($membership), 403);
 
         abort_unless($membershipPayment->membership_id === $membership->id, 404);
 
@@ -1405,6 +1402,7 @@ class MembershipController extends Controller
     {
         $authUser = $this->resolveAuthUser($request);
         abort_unless($authUser && in_array($authUser->role, ['company_admin', 'location_manager']), 403);
+        abort_unless($this->ownerOrStaff($membership), 403);
 
         abort_unless($membershipPayment->membership_id === $membership->id, 404);
 

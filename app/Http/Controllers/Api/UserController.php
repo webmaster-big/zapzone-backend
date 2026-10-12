@@ -1123,7 +1123,7 @@ class UserController extends Controller
             'login_url'     => 'sometimes|url|max:500',
         ]);
 
-        if ($authUser->role === 'location_manager') {
+        if (EnsureStaff::effectiveRole($authUser) === 'location_manager') {
             $validated['location_id'] = $authUser->location_id;
         }
 

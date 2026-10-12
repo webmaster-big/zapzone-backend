@@ -166,7 +166,7 @@ Route::get('membership-plans/public', [MembershipPlanController::class, 'publicI
 
 Route::get('customers/search', [CustomerController::class, 'search']); // include
 
-Route::post('customers', [CustomerController::class, 'store']); // include
+Route::post('customers', [CustomerController::class, 'store'])->middleware('throttle:sign-up'); // include
 
 Route::get('customers/bookings', [BookingController::class, 'customerBookings']); //include
 
@@ -659,7 +659,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/', [EmailCampaignController::class, 'store']);
         Route::get('/statistics', [EmailCampaignController::class, 'statistics']);
         Route::post('/preview-recipients', [EmailCampaignController::class, 'previewRecipients']);
-        Route::post('/send-test', [EmailCampaignController::class, 'sendTest'])->middleware('throttle:10,1,email-send-test');
+        Route::post('/send-test', [EmailCampaignController::class, 'sendTest'])->middleware('throttle:email-send-test');
         Route::post('/upload-image', [EmailCampaignController::class, 'uploadImage']);
         Route::get('/{emailCampaign}', [EmailCampaignController::class, 'show']);
         Route::delete('/{emailCampaign}', [EmailCampaignController::class, 'destroy']);
@@ -741,7 +741,7 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     Route::get('event-purchases/verify/{reference}', [EventPurchaseController::class, 'verifyByReference'])
-        ->middleware(['staff', 'throttle:60,1,event-verify']);
+        ->middleware(['staff', 'throttle:event-verify']);
     Route::get('event-purchases/trashed', [EventPurchaseController::class, 'trashed'])->middleware('staff');
     Route::post('event-purchases/bulk-restore', [EventPurchaseController::class, 'bulkRestore'])->middleware('staff');
     Route::apiResource('event-purchases', EventPurchaseController::class)->except(['store', 'update'])->middleware('staff');
@@ -856,7 +856,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('waivers/kiosk-session',    [WaiverController::class, 'kioskSession'])->middleware('staff');
     Route::get('dashboard-settings',  [DashboardSettingController::class, 'show'])->middleware('staff');
     Route::put('dashboard-settings',  [DashboardSettingController::class, 'update'])->middleware('staff');
-    Route::post('waivers/scan',             [WaiverController::class, 'scan'])->middleware(['staff', 'throttle:60,1,waiver-scan']);
+    Route::post('waivers/scan',             [WaiverController::class, 'scan'])->middleware(['staff', 'throttle:waiver-scan']);
     Route::post('waivers/check-in-all',     [WaiverController::class, 'checkInAll'])->middleware('staff');
     Route::post('waivers/{waiver}/check-in',      [WaiverController::class, 'checkIn'])->middleware('staff');
     Route::post('waivers/{waiver}/undo-check-in', [WaiverController::class, 'undoCheckIn'])->middleware('staff');

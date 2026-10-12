@@ -192,14 +192,30 @@ class BookingController extends Controller
             ? \App\Models\BookingTombstone::query()->where('removed_at', '>=', $since)
             : null;
         $locationFilter = $request->has('location_id') && is_scalar($request->location_id) ? $request->location_id : null;
+        $companyLocations = $authUser && $authUser->company_id
+            ? \App\Models\Location::where('company_id', $authUser->company_id)->select('id')
+            : null;
 
-        foreach (array_filter([$trashed, $removed]) as $query) {
-            $this->applyAuthScope($query, $request);
+        $this->applyAuthScope($trashed, $request);
 
-            if ($authUser && $authUser->company_id) {
-                $query->whereIn($query->getModel()->qualifyColumn('location_id'), \App\Models\Location::where('company_id', $authUser->company_id)->select('id'));
+        if ($companyLocations) {
+            $trashed->whereIn('bookings.location_id', $companyLocations);
+        }
+
+        if ($removed) {
+            if ($authUser && in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
+                $removed->where('location_id', $authUser->location_id);
             }
 
+            if ($companyLocations) {
+                $removed->where(function ($inCompany) use ($authUser, $companyLocations) {
+                    $inCompany->where('company_id', $authUser->company_id)
+                        ->orWhere(fn ($unstamped) => $unstamped->whereNull('company_id')->whereIn('location_id', $companyLocations));
+                });
+            }
+        }
+
+        foreach (array_filter([$trashed, $removed]) as $query) {
             if ($locationFilter !== null) {
                 $query->where($query->getModel()->qualifyColumn('location_id'), $locationFilter);
             }
@@ -773,6 +789,11 @@ class BookingController extends Controller
                     : "This booking already went through (reference {$earlierAttempt->reference_number}), so your card was not charged again. Please check your email for your confirmation.",
                 'reference_number' => $earlierAttempt->reference_number,
                 'booking_id' => $earlierAttempt->id,
+                'checkout_token' => $isStaff
+                    || $checkoutKey
+                    || (($alreadyBookedAsker = $request->user('sanctum')) instanceof \App\Models\Customer && (int) $earlierAttempt->customer_id === (int) $alreadyBookedAsker->id)
+                    ? \App\Support\CheckoutToken::for('booking', $earlierAttempt->id)
+                    : null,
                 'confirmation_pending' => $earlierAttempt->status === 'confirmed'
                     && empty($earlierAttempt->qr_code_path)
                     && !$this->bookingWasCharged($earlierAttempt),
@@ -1738,6 +1759,13 @@ class BookingController extends Controller
         $sendEmail = !isset($validated['send_email']) || $validated['send_email'] !== false;
 
         $staffStoring = app(\App\Services\AddOnRuleService::class)->isStaff($request->user('sanctum'));
+
+        if (! $staffStoring && ! \App\Support\CheckoutToken::presented($request, 'booking', $booking->id)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only the checkout that made this booking can set its check-in code.',
+            ], 403);
+        }
 
         if (! $staffStoring && (! empty($booking->qr_code_path) || ($booking->created_at && $booking->created_at->lt(now()->subDay())))) {
             Log::info('QR code store without a staff login ignored: the booking already has one or is not new', [
@@ -3908,7 +3936,7 @@ class BookingController extends Controller
             ]);
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to delete booking: ' . $e->getMessage(),
+                'message' => \App\Support\StaffActor::current() ? 'Failed to delete booking: ' . $e->getMessage() : 'This booking could not be removed right now.',
             ], 500);
         }
     }
@@ -4607,6 +4635,8 @@ class BookingController extends Controller
     {
         Log::info('Booking public force delete request', ['id' => $id, 'ip' => request()->ip()]);
 
+        $staff = \App\Support\StaffActor::current();
+
         try {
             $booking = Booking::withTrashed()->find($id);
 
@@ -4624,8 +4654,7 @@ class BookingController extends Controller
                 ], 403);
             }
 
-            if (!app(\App\Services\AddOnRuleService::class)->isStaff(request()->user('sanctum'))
-                && !\App\Support\CheckoutToken::presented(request(), 'booking', $booking->id)) {
+            if (!$staff && !\App\Support\CheckoutToken::presented(request(), 'booking', $booking->id)) {
                 return response()->json([
                     'success' => false,
                     'message' => 'Only the checkout that made this booking can remove it.',
@@ -4640,6 +4669,9 @@ class BookingController extends Controller
                     'message' => 'This booking has payments, so it cannot be removed this way.',
                 ], 403);
             }
+
+            $purgingTrash = $staff && $booking->trashed();
+            $changeReason = $purgingTrash ? $this->resolveChangeReason(request(), self::CHANGE_GUEST_VISIBLE) : null;
 
             try {
                 $gcalService = new GoogleCalendarService($booking->location_id);
@@ -4669,24 +4701,46 @@ class BookingController extends Controller
                 ]);
             }
 
-            $this->reverseGiftCardFor($booking, \App\Models\Payment::TYPE_BOOKING, 'payment_error_cleanup');
+            $this->reverseGiftCardFor($booking, \App\Models\Payment::TYPE_BOOKING, $purgingTrash ? 'booking_deleted' : 'payment_error_cleanup');
 
             $booking->forceDelete();
 
-            ActivityLog::log(
-                action: 'Booking Force Deleted (Payment Error)',
-                category: 'delete',
-                description: "Pending booking {$referenceNumber} force deleted due to payment error",
-                userId: null,
-                locationId: $locationId,
-                entityType: 'booking',
-                entityId: $bookingId,
-                metadata: [
-                    'reason' => 'payment_error_cleanup',
-                    'reference_number' => $referenceNumber,
-                    'deleted_at' => now()->toIso8601String(),
-                ]
-            );
+            if ($purgingTrash) {
+                ActivityLog::log(
+                    action: 'Booking Permanently Deleted',
+                    category: 'delete',
+                    description: "Booking {$referenceNumber} permanently deleted",
+                    userId: $staff->id,
+                    locationId: $locationId,
+                    entityType: 'booking',
+                    entityId: $bookingId,
+                    metadata: [
+                        'deleted_by' => [
+                            'user_id' => $staff->id,
+                            'name' => $staff->first_name . ' ' . $staff->last_name,
+                            'email' => $staff->email,
+                        ],
+                        'deleted_at' => now()->toIso8601String(),
+                        'reference_number' => $referenceNumber,
+                    ],
+                    reason: $changeReason
+                );
+            } else {
+                ActivityLog::log(
+                    action: 'Booking Force Deleted (Payment Error)',
+                    category: 'delete',
+                    description: "Pending booking {$referenceNumber} force deleted due to payment error",
+                    userId: $staff?->id,
+                    locationId: $locationId,
+                    entityType: 'booking',
+                    entityId: $bookingId,
+                    metadata: [
+                        'reason' => 'payment_error_cleanup',
+                        'reference_number' => $referenceNumber,
+                        'deleted_at' => now()->toIso8601String(),
+                    ]
+                );
+            }
 
             Log::info('Booking force deleted successfully', ['id' => $bookingId, 'reference' => $referenceNumber]);
 
@@ -4694,6 +4748,8 @@ class BookingController extends Controller
                 'success' => true,
                 'message' => 'Booking permanently deleted',
             ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            throw $e;
         } catch (\Exception $e) {
             Log::error('Booking public force delete failed', [
                 'id' => $id,
@@ -4702,7 +4758,7 @@ class BookingController extends Controller
             ]);
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to force delete booking: ' . $e->getMessage(),
+                'message' => $staff ? 'Failed to force delete booking: ' . $e->getMessage() : 'This booking could not be removed right now.',
             ], 500);
         }
     }

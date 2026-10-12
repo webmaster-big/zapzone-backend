@@ -14,7 +14,13 @@ class Room extends Model
     protected static function booted(): void
     {
         static::deleting(function (Room $room) {
-            \Illuminate\Support\Facades\DB::table('bookings')->where('room_id', $room->id)->update(['updated_at' => now()]);
+            Booking::touchUpcoming('room_id', $room->id);
+        });
+
+        static::updated(function (Room $room) {
+            if ($room->wasChanged('name')) {
+                Booking::touchUpcoming('room_id', $room->id);
+            }
         });
     }
 
