@@ -110,7 +110,8 @@ class GoogleCalendarService
     {
         $data = json_decode(base64_decode((string) $state), true);
 
-        if (!is_array($data) || empty($data['location_id']) || empty($data['nonce']) || empty($data['sig'])) {
+        if (!is_array($data) || empty($data['location_id']) || empty($data['nonce']) || empty($data['sig'])
+            || !is_scalar($data['location_id']) || !is_string($data['nonce']) || !is_string($data['sig'])) {
             return null;
         }
 

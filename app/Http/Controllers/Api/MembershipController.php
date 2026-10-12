@@ -1146,9 +1146,7 @@ class MembershipController extends Controller
                 ], 422);
             }
 
-            $unknownOutcomeKey = 'membership-charge-unknown:' . $membership->id;
-
-            if (\Illuminate\Support\Facades\Cache::has($unknownOutcomeKey)) {
+            if ($membership->charge_outcome_unknown_at && $membership->charge_outcome_unknown_at->gt(now()->subMinutes(15))) {
                 return response()->json([
                     'success' => false,
                     'code' => 'CHARGE_OUTCOME_UNKNOWN',
@@ -1195,7 +1193,7 @@ class MembershipController extends Controller
             );
 
             if (! $result['success'] && ($result['error'] ?? null) === AuthorizeNetGateway::NO_ANSWER_MESSAGE) {
-                \Illuminate\Support\Facades\Cache::put($unknownOutcomeKey, true, now()->addMinutes(15));
+                $membership->forceFill(['charge_outcome_unknown_at' => now()])->save();
 
                 return response()->json([
                     'success' => false,

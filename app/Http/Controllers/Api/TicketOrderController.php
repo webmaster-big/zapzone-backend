@@ -530,7 +530,8 @@ class TicketOrderController extends Controller
         if (!$rollerIsStaff
             && ($order->payment_method !== 'authorize.net'
                 || $order->created_at?->lt(now()->subDay())
-                || !hash_equals($this->checkoutToken($order), (string) $request->input('qr_token', '')))) {
+                || !is_string($rollbackToken = $request->input('qr_token'))
+                || !hash_equals($this->checkoutToken($order), $rollbackToken))) {
             return response()->json([
                 'success' => false,
                 'message' => 'This order can no longer be rolled back from checkout.',

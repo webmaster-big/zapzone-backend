@@ -27,10 +27,18 @@ class GoogleCalendarController extends Controller
 
     public function status(Request $request): JsonResponse
     {
-        $locationId = $request->query('location_id') ? (int) $request->query('location_id') : null;
+        $locationId = $request->query('location_id') ? (int) $request->query('location_id') : ($this->resolveAuthUser($request)?->location_id ?: null);
 
-        if ($locationId && ($scopeError = $this->guardLocationAccess($request, $locationId))) {
-            return $scopeError;
+        if (!$locationId) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Choose a location to see its Google Calendar connection.',
+            ], 422);
+        }
+
+        $location = $this->scopedLocation($request, $locationId);
+        if ($location instanceof JsonResponse) {
+            return $location;
         }
 
         $settings = GoogleCalendarSetting::getSettings($locationId);
@@ -150,8 +158,8 @@ class GoogleCalendarController extends Controller
 
     public function handleCallback(Request $request)
     {
-        $code = $request->get('code');
-        $locationId = GoogleCalendarService::locationFromState($request->get('state'));
+        $code = is_string($givenCode = $request->get('code')) ? $givenCode : null;
+        $locationId = GoogleCalendarService::locationFromState(is_string($state = $request->get('state')) ? $state : null);
 
         $frontendUrl = config('google_calendar.frontend_redirect_url', 'http://localhost:3000/settings/google-calendar');
 
@@ -162,7 +170,7 @@ class GoogleCalendarController extends Controller
         }
 
         if (!$code) {
-            $error = $request->get('error', 'unknown');
+            $error = is_string($givenError = $request->get('error')) ? $givenError : 'unknown';
             Log::error('Google Calendar OAuth callback error', [
                 'error' => $error,
                 'location_id' => $locationId,

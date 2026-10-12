@@ -452,12 +452,10 @@ class GiftCardController extends Controller
             (string) ($staff?->id ?? 'guest'),
         ]));
 
-        $checkoutKeyCache = !empty($validated['checkout_key']) ? 'gift-card-checkout:' . $validated['checkout_key'] : null;
+        $checkoutKey = !empty($validated['checkout_key']) ? $validated['checkout_key'] : null;
 
-        if ($checkoutKeyCache && ($keyedId = \Illuminate\Support\Facades\Cache::get($checkoutKeyCache))) {
-            $keyed = GiftCard::find($keyedId);
-
-            if ($keyed && $keyed->status === 'active') {
+        if ($checkoutKey && ($keyed = GiftCard::where('checkout_key', $checkoutKey)->latest('id')->first())) {
+            if ($keyed->status === 'active') {
                 return response()->json([
                     'success' => true,
                     'message' => 'Gift card already purchased.',
@@ -466,13 +464,11 @@ class GiftCardController extends Controller
                 ], 200);
             }
 
-            if ($keyed) {
-                return response()->json([
-                    'success' => false,
-                    'code' => 'ATTEMPT_IN_PROGRESS',
-                    'message' => 'We are still confirming your earlier payment for this gift card, so your card was not charged again. Please check your email or call us before trying again.',
-                ], 409);
-            }
+            return response()->json([
+                'success' => false,
+                'code' => 'ATTEMPT_IN_PROGRESS',
+                'message' => 'We are still confirming your earlier payment for this gift card, so your card was not charged again. Please check your email or call us before trying again.',
+            ], 409);
         }
 
         if ($existingId = \Illuminate\Support\Facades\Cache::get($fingerprint)) {
@@ -519,11 +515,8 @@ class GiftCardController extends Controller
             'purchaser_phone' => $validated['purchaser_phone'] ?? null,
             'purchase_amount' => $amount,
             'deleted' => false,
+            'checkout_key' => $checkoutKey,
         ]);
-
-        if ($checkoutKeyCache) {
-            \Illuminate\Support\Facades\Cache::put($checkoutKeyCache, $card->id, now()->addDay());
-        }
 
         $transactionId = 'GC-' . strtoupper(Str::random(10));
         $cardLastFour = null;

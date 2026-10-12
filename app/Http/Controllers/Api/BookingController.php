@@ -1761,6 +1761,40 @@ class BookingController extends Controller
         $staffStoring = app(\App\Services\AddOnRuleService::class)->isStaff($request->user('sanctum'));
 
         if (! $staffStoring && ! \App\Support\CheckoutToken::presented($request, 'booking', $booking->id)) {
+            if ($sendEmail
+                && $booking->status === 'confirmed'
+                && empty($booking->qr_code_path)
+                && empty($booking->created_by)
+                && $booking->created_at?->gt(now()->subMinutes(30))
+                && \Illuminate\Support\Facades\Cache::add('booking-confirmation-without-code:' . $booking->id, true, now()->addDay())) {
+                $booking->load(['customer', 'package', 'location.company', 'room', 'creator', 'attractions', 'addOns']);
+                $confirmationSent = false;
+
+                if ($booking->customer?->email ?? $booking->guest_email) {
+                    try {
+                        app(EmailNotificationService::class)->triggerBookingNotification($booking, EmailNotification::TRIGGER_BOOKING_CONFIRMED);
+                        $confirmationSent = true;
+                    } catch (\Exception $e) {
+                        Log::error('Failed to send booking confirmation email', [
+                            'booking_id' => $booking->id,
+                            'error' => $e->getMessage(),
+                        ]);
+                    }
+                }
+
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Confirmation sent',
+                    'data' => [
+                        'qr_code_path' => null,
+                        'qr_code_url' => null,
+                        'email_sent' => $confirmationSent,
+                        'email_error' => null,
+                        'recipient_email' => null,
+                    ],
+                ]);
+            }
+
             return response()->json([
                 'success' => false,
                 'message' => 'Only the checkout that made this booking can set its check-in code.',

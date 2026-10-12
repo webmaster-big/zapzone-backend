@@ -379,9 +379,16 @@ class PaymentController extends Controller
 
     private function denyForeignPayment(Payment $payment)
     {
-        return $this->denyForeignRecord((object) [
-            'location_id' => $payment->location_id ?? $this->payableLocationId($payment->payable_type, $payment->payable_id),
-        ], 'payment');
+        $locationId = $payment->location_id ?? $this->payableLocationId($payment->payable_type, $payment->payable_id);
+
+        if ($locationId === null) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Forbidden: this payment is not linked to a location.',
+            ], 403);
+        }
+
+        return $this->denyForeignRecord((object) ['location_id' => (int) $locationId], 'payment');
     }
 
     private function payableLocationId(?string $payableType, $payableId): ?int

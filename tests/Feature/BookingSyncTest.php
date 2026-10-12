@@ -168,7 +168,7 @@ class BookingSyncTest extends TestCase
         $this->assertSame(2, $back['sync']['total']);
     }
 
-    public function test_bookings_removed_with_their_customer_or_location_are_dropped_from_open_lists(): void
+    public function test_bookings_removed_with_their_customer_are_dropped_from_open_lists(): void
     {
         $managerToken = $this->tokenFor($this->staff('location_manager', $this->brighton));
         $customer = Customer::create([
@@ -240,7 +240,7 @@ class BookingSyncTest extends TestCase
         $this->assertSame([$upcoming->id], $changedAfter(fn () => $room->delete()));
     }
 
-    public function test_a_payment_or_a_removed_room_brings_its_bookings_into_the_changes_but_a_package_edit_does_not(): void
+    public function test_a_payment_or_a_removed_room_brings_its_bookings_into_the_changes_but_a_timestamp_only_package_save_does_not(): void
     {
         $token = $this->tokenFor($this->staff('location_manager', $this->brighton));
         $room = \App\Models\Room::create(['location_id' => $this->brighton->id, 'name' => 'Room A', 'capacity' => 20, 'is_available' => true]);
@@ -270,7 +270,7 @@ class BookingSyncTest extends TestCase
         $changed = array_column($this->list($token, ['updated_since' => $cursor])['bookings'], 'id');
 
         $this->assertEqualsCanonicalizing([$byRoom->id, $byPayment->id], $changed);
-        $this->assertNotContains($untouched->id, $changed, 'reordering or editing a package never sends every one of its bookings to every open list again');
+        $this->assertNotContains($untouched->id, $changed, 'a package save that changes nothing the list shows never sends every one of its bookings to every open list again');
         $this->assertNull(Booking::findOrFail($byRoom->id)->room_id);
     }
 

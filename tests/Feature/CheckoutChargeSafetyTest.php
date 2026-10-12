@@ -2812,6 +2812,7 @@ class CheckoutChargeSafetyTest extends TestCase
         $this->gateway->replies[] = FakeAuthorizeNetGateway::NO_ANSWER;
         $this->postJson('/api/gift-cards/purchase', $purchase)->assertStatus(402);
         $this->assertSame(1, \App\Models\GiftCard::count(), 'a card whose payment got no answer is kept until someone checks');
+        Cache::flush();
 
         $this->postJson('/api/gift-cards/purchase', $purchase)
             ->assertStatus(409)
@@ -2822,15 +2823,41 @@ class CheckoutChargeSafetyTest extends TestCase
         $bought = $this->postJson('/api/gift-cards/purchase', array_merge($purchase, ['checkout_key' => 'gift-attempt-two']))->assertStatus(201);
         $code = $bought->json('data.code');
         $this->assertNotEmpty($code);
-
-        $this->postJson('/api/gift-cards/purchase', array_merge($purchase, ['checkout_key' => 'gift-attempt-two']))
-            ->assertOk()
-            ->assertJsonPath('data.code', $code);
+        $staffView = $this->withHeader('Authorization', 'Bearer ' . $this->staff()->createToken('desk')->plainTextToken)
+            ->getJson('/api/gift-cards/' . $bought->json('data.id'))
+            ->assertOk();
+        $this->assertSame($code, $staffView->json('data.code'));
+        $this->assertStringNotContainsString('gift-attempt-two', $staffView->getContent(), 'the checkout key never leaves the server');
+        $this->flushHeaders();
+        $this->app['auth']->forgetGuards();
 
         $stranger = $this->postJson('/api/gift-cards/purchase', array_merge($purchase, ['checkout_key' => null]))->assertOk();
         $this->assertTrue((bool) $stranger->json('duplicate'));
         $this->assertStringNotContainsString($code, $stranger->getContent(), 'repeating the request is not a way to read the code');
-        $this->assertCount(2, $this->gateway->sent);
+        Cache::flush();
+
+        $this->postJson('/api/gift-cards/purchase', array_merge($purchase, ['checkout_key' => 'gift-attempt-two']))
+            ->assertOk()
+            ->assertJsonPath('data.code', $code);
+        $this->assertCount(2, $this->gateway->sent, 'clearing the cache never reopens a checkout that already paid');
+
+        try {
+            \App\Models\GiftCard::create([
+                'code' => 'RACE' . strtoupper(uniqid()),
+                'type' => 'fixed',
+                'initial_value' => 50,
+                'balance' => 50,
+                'status' => 'inactive',
+                'max_usage' => 1,
+                'location_id' => $this->location->id,
+                'purchase_amount' => 50,
+                'deleted' => false,
+                'checkout_key' => 'gift-attempt-two',
+            ]);
+            $this->fail('a second card was saved for a checkout that already has one');
+        } catch (\Illuminate\Database\UniqueConstraintViolationException) {
+            $this->assertSame(1, \App\Models\GiftCard::where('checkout_key', 'gift-attempt-two')->count(), 'two requests racing past the lookup still cannot both save a card');
+        }
     }
 
     public function test_a_saved_card_retry_with_no_answer_is_not_called_a_failure_and_cannot_be_repeated_blind(): void
@@ -2872,6 +2899,7 @@ class CheckoutChargeSafetyTest extends TestCase
         $this->assertSame('active', $membership->fresh()->status, 'a charge that may have gone through does not make the member past due');
         $this->assertSame(0, \App\Models\MembershipPayment::where('membership_id', $membership->id)->count());
         $this->assertTrue(Notification::where('location_id', $this->location->id)->where('type', 'payment')->exists(), 'the home location is told to check Authorize.Net');
+        Cache::flush();
 
         $this->postJson("/api/memberships/{$membership->id}/retry-payment")
             ->assertStatus(409)
@@ -3098,6 +3126,49 @@ class CheckoutChargeSafetyTest extends TestCase
         $this->assertSame($staff->id, (int) $rollback->user_id, 'a desk rolling back its own declined checkout is not asked for a reason, but is still named');
     }
 
+    public function test_a_page_without_the_token_gets_one_confirmation_for_a_new_confirmed_online_booking_but_never_sets_its_code(): void
+    {
+        ob_start();
+        imagepng(imagecreatetruecolor(2, 2));
+        $png = 'data:image/png;base64,' . base64_encode((string) ob_get_clean());
+        $coveredId = $this->createBooking($this->roomOne, ['guest_email' => 'covered@example.com']);
+        Booking::whereKey($coveredId)->update(['status' => 'confirmed']);
+        $pendingId = $this->createBooking($this->roomTwo, ['guest_email' => 'pending@example.com']);
+        $olderId = $this->createBooking($this->roomOne, ['guest_email' => 'older@example.com', 'booking_time' => '18:00']);
+        Booking::whereKey($olderId)->update(['status' => 'confirmed', 'created_at' => now()->subHours(2)]);
+        $deskId = $this->createBooking($this->roomTwo, ['guest_email' => 'desk@example.com', 'booking_time' => '18:00']);
+        Booking::whereKey($deskId)->update(['status' => 'confirmed', 'created_by' => $this->staff()->id]);
+        $codedId = $this->createBooking($this->roomOne, ['guest_email' => 'coded@example.com', 'booking_time' => '16:00']);
+        Booking::whereKey($codedId)->update(['status' => 'confirmed', 'qr_code_path' => 'qrcodes/booking_coded.png']);
+        $this->mock(EmailNotificationService::class, fn ($mock) => $mock->shouldReceive('triggerBookingNotification')->once());
+
+        $this->postJson("/api/bookings/{$coveredId}/qrcode", ['qr_code' => $png, 'send_email' => false])->assertForbidden();
+        $this->postJson("/api/bookings/{$coveredId}/qrcode", ['qr_code' => $png])
+            ->assertOk()
+            ->assertJsonPath('data.email_sent', true)
+            ->assertJsonPath('data.recipient_email', null);
+        $this->assertEmpty(Booking::findOrFail($coveredId)->qr_code_path, 'an image sent without the checkout token is never stored');
+
+        $this->postJson("/api/bookings/{$coveredId}/qrcode", ['qr_code' => $png])->assertForbidden();
+        $this->postJson("/api/bookings/{$pendingId}/qrcode", ['qr_code' => $png])->assertForbidden();
+        $this->postJson("/api/bookings/{$olderId}/qrcode", ['qr_code' => $png])->assertForbidden();
+        $this->postJson("/api/bookings/{$deskId}/qrcode", ['qr_code' => $png])->assertForbidden();
+        $this->postJson("/api/bookings/{$codedId}/qrcode", ['qr_code' => $png])->assertForbidden();
+        $this->assertSame('qrcodes/booking_coded.png', Booking::findOrFail($codedId)->qr_code_path);
+    }
+
+    public function test_an_already_booked_reply_never_hands_a_stranger_the_rollback_token(): void
+    {
+        $bookingId = $this->createBooking($this->roomOne, ['guest_email' => 'paid.guest@example.com']);
+        $this->recordPayment(Payment::TYPE_BOOKING, $bookingId, 5.00);
+        $this->assertSame('pending', Booking::findOrFail($bookingId)->status);
+
+        $this->postJson('/api/bookings', $this->bookingPayload($this->roomOne, ['guest_email' => 'paid.guest@example.com']))
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'ALREADY_BOOKED')
+            ->assertJsonPath('checkout_token', null);
+    }
+
     public function test_a_malformed_rollback_token_is_refused_not_crashed(): void
     {
         $bookingId = $this->createBooking($this->roomOne);
@@ -3111,6 +3182,7 @@ class CheckoutChargeSafetyTest extends TestCase
         ])->assertSuccessful()->json('data.id');
 
         $this->deleteJson("/api/bookings/{$bookingId}/force-delete", ['checkout_token' => ['not', 'a', 'string']])->assertStatus(403);
+        $this->deleteJson("/api/ticket-orders/{$orderId}/rollback", ['qr_token' => ['not', 'a', 'string']])->assertStatus(422);
         $this->postJson("/api/bookings/{$bookingId}/qrcode", $this->qrPayload(['checkout_token' => ['x']]))->assertStatus(403);
         $this->gateway->replies[] = $this->declineReply();
         $this->postJson('/api/payments/charge', array_merge($this->chargePayload($orderId, 15.00, Payment::TYPE_TICKET_ORDER), ['checkout_token' => ['x']]))->assertStatus(400);

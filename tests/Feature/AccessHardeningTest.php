@@ -287,7 +287,25 @@ class AccessHardeningTest extends TestCase
         $this->assertSame($this->location->id, GoogleCalendarService::locationFromState($state));
         $this->assertNull(GoogleCalendarService::locationFromState($state), 'a sign-in link works once');
 
+        $crafted = base64_encode(json_encode(['location_id' => $this->location->id, 'nonce' => ['not', 'text'], 'sig' => ['x']]));
+        $crafted = $this->get('/api/google-calendar/callback?code=attacker-code&state=' . urlencode($crafted))->assertRedirect()->headers->get('Location');
+        $this->assertStringContainsString('expired', urldecode((string) $crafted));
+        $this->get('/api/google-calendar/callback?code=attacker-code&state[]=x')->assertRedirect();
+        $this->get('/api/google-calendar/callback?error[]=x')->assertRedirect();
+        $this->get('/api/google-calendar/callback?code[]=x&state=' . urlencode(GoogleCalendarService::signedState($this->location->id)))->assertRedirect();
+
+        GoogleCalendarSetting::create([
+            'location_id' => $this->otherLocation->id,
+            'google_account_email' => 'canton.calendar@example.com',
+            'calendar_id' => 'primary',
+            'is_connected' => true,
+        ]);
+
         $this->as($this->staff('location_manager', 'brightonlead'));
+        $own = $this->getJson('/api/google-calendar/status')->assertOk();
+        $this->assertSame($this->location->id, (int) $own->json('data.location_id'));
+        $this->assertStringNotContainsString('canton.calendar@example.com', $own->getContent());
+        $this->getJson("/api/google-calendar/status?location_id={$this->otherLocation->id}")->assertForbidden();
         $this->getJson("/api/google-calendar/auth-url?location_id={$this->otherLocation->id}")->assertForbidden();
         $this->postJson('/api/google-calendar/disconnect', ['location_id' => $this->otherLocation->id])->assertForbidden();
         $this->putJson('/api/google-calendar/calendar', ['location_id' => $this->otherLocation->id, 'calendar_id' => 'mine'])->assertForbidden();
@@ -395,6 +413,26 @@ class AccessHardeningTest extends TestCase
         $this->postJson('/api/payments', ['booking_id' => $there->id, 'amount' => 25, 'method' => 'cash', 'status' => 'completed'])->assertForbidden();
         $this->assertSame(3, Payment::withTrashed()->where('payable_id', $there->id)->count());
 
+        $orphan = Payment::create([
+            'amount' => 40,
+            'currency' => 'USD',
+            'method' => 'in-store',
+            'status' => 'completed',
+            'transaction_id' => 'TXN' . uniqid(),
+            'payable_type' => Payment::TYPE_BOOKING,
+            'payable_id' => 987654321,
+            'paid_at' => now(),
+        ]);
+        foreach ([$this->staff('location_manager', 'brightonboss'), $this->staff('company_admin', 'owner')] as $who) {
+            $this->as($who);
+            $this->getJson("/api/payments/{$orphan->id}")->assertForbidden();
+            $this->patchJson("/api/payments/{$orphan->id}/manual-refund", ['notes' => 'Refunded at the desk'])->assertForbidden();
+            $this->deleteJson("/api/payments/{$orphan->id}")->assertForbidden();
+        }
+        $this->assertSame('completed', $orphan->fresh()->status);
+        $this->assertFalse($orphan->fresh()->trashed());
+
+        $this->as($this->staff('location_manager', 'brightonlead2'));
         $this->deleteJson("/api/payments/{$here->id}")->assertOk();
     }
 
