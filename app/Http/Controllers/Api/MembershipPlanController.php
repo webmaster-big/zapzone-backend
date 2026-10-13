@@ -262,7 +262,10 @@ class MembershipPlanController extends Controller
 
         $membershipPlan->update($data);
         if ($approved !== null) {
-            $membershipPlan->approvedLocations()->sync($approved);
+            $changes = $membershipPlan->approvedLocations()->sync($approved);
+            if ($changes['attached'] || $changes['detached']) {
+                \App\Support\CacheGroups::flush([\App\Support\CacheGroups::MEMBERSHIP_PLANS]);
+            }
         }
 
         return response()->json(['success' => true, 'data' => $membershipPlan->fresh()->load(['approvedLocations', 'location:id,name'])]);
