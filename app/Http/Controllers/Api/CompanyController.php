@@ -6,10 +6,13 @@ use App\Http\Controllers\Controller;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Models\ActivityLog;
 use App\Models\Company;
+use App\Models\DayOffChangeLog;
+use App\Models\User;
 use App\Support\CacheGroups;
 use App\Support\DataUriImage;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class CompanyController extends Controller
@@ -175,6 +178,17 @@ class CompanyController extends Controller
 
     public function destroy(Company $company): JsonResponse
     {
+        $actor = request()->user();
+
+        if (! $actor instanceof User
+            || ! in_array(\App\Http\Middleware\EnsureStaff::effectiveRole($actor), ['company_admin', 'admin'], true)
+            || (int) $actor->company_id !== (int) $company->id) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only a company admin of this company can delete it.',
+            ], 403);
+        }
+
         $companyName = $company->company_name;
         $companyId = $company->id;
 
@@ -182,18 +196,31 @@ class CompanyController extends Controller
             unlink(storage_path('app/public/' . $company->logo_path));
         }
 
-        $company->delete();
-
         $currentUser = auth()->user();
-        ActivityLog::log(
-            action: 'Company Deleted',
-            category: 'delete',
-            description: "Company '{$companyName}' was deleted",
-            userId: auth()->id(),
-            locationId: null,
-            entityType: 'company',
-            entityId: $companyId,
-            metadata: [
+
+        DB::transaction(function () use ($company, $companyName, $currentUser) {
+            DayOffChangeLog::recordLocationRemoval(
+                $company->locations()->pluck('id')->map(fn ($id) => (int) $id)->all(),
+                "the company {$companyName} was deleted",
+                $currentUser instanceof User ? $currentUser : null,
+                request()->ip(),
+                ['location_deleted' => true, 'company_deleted' => true],
+            );
+
+            $company->delete();
+        });
+
+        ActivityLog::create([
+            'user_id' => User::whereKey(auth()->id())->exists() ? auth()->id() : null,
+            'location_id' => null,
+            'action' => 'Company Deleted',
+            'category' => 'delete',
+            'entity_type' => 'company',
+            'entity_id' => $companyId,
+            'description' => "Company '{$companyName}' was deleted",
+            'ip_address' => request()->ip(),
+            'user_agent' => request()->userAgent(),
+            'metadata' => [
                 'deleted_by' => [
                     'user_id' => auth()->id(),
                     'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
@@ -204,8 +231,8 @@ class CompanyController extends Controller
                     'company_id' => $companyId,
                     'name' => $companyName,
                 ],
-            ]
-        );
+            ],
+        ]);
 
         return response()->json([
             'success' => true,

@@ -70,7 +70,7 @@ trait CapturesChangeReason
 
     protected function actorIsStaff(): bool
     {
-        $user = auth()->user();
+        $user = request()->user('sanctum');
 
         return $user instanceof User && in_array((string) $user->role, EnsureStaff::ROLES, true);
     }

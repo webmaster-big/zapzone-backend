@@ -139,9 +139,11 @@ class EventPurchaseController extends Controller
     public function store(Request $request, DiscountService $discounts): JsonResponse
     {
         try {
+            $staffCaller = app(\App\Services\AddOnRuleService::class)->isStaff($request->user('sanctum'));
+
             $validated = $request->validate([
                 'event_id' => 'required|exists:events,id',
-                'customer_id' => 'nullable|exists:customers,id',
+                'customer_id' => $staffCaller ? 'nullable|exists:customers,id' : 'nullable|integer',
                 'membership_id' => 'nullable|exists:memberships,id',
                 'membership_applied' => 'nullable|array',
                 'membership_applied.*.membership_plan_benefit_id' => 'nullable|integer',
@@ -196,6 +198,14 @@ class EventPurchaseController extends Controller
             $requesterIsStaff = app(\App\Services\AddOnRuleService::class)->isStaff($requester);
             if (! $requesterIsStaff) {
                 $validated['customer_id'] = $requester instanceof \App\Models\Customer ? $requester->id : null;
+
+                if ($validated['customer_id'] === null && (empty($validated['guest_name']) || empty($validated['guest_email']))) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Please enter the guest name and email.',
+                        'errors' => ['guest_email' => ['Please enter the guest name and email.']],
+                    ], 422);
+                }
             }
 
             $event = Event::findOrFail($validated['event_id']);
@@ -220,7 +230,20 @@ class EventPurchaseController extends Controller
                 return response()->json(['message' => 'Selected date is not available for this event'], 422);
             }
 
-            $availableSlots = $event->getAvailableTimeSlotsForDate($validated['purchase_date']);
+            $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
+            $blockedPeriods = $blockGuard->forEvent(
+                (int) $event->location_id,
+                (int) $event->id,
+                \Carbon\Carbon::parse($validated['purchase_date'])->toDateString(),
+                $validated['purchase_time'],
+                \Carbon\Carbon::parse($validated['purchase_time'])->addMinutes((int) ($event->interval_minutes ?: 60))->format('H:i')
+            );
+            if ($refusal = $blockGuard->refusal($request, $blockedPeriods, 'Selected time slot is not available', 'This purchase')) {
+                return $refusal;
+            }
+            $respectDayOffs = $blockedPeriods->isEmpty();
+
+            $availableSlots = $event->getAvailableTimeSlotsForDate($validated['purchase_date'], $respectDayOffs);
             if (!in_array($validated['purchase_time'], $availableSlots)) {
                 return response()->json(['message' => 'Selected time slot is not available'], 422);
             }
@@ -318,7 +341,7 @@ class EventPurchaseController extends Controller
             if (!empty($validated['customer_id'])) {
                 $duplicateQuery->where('customer_id', $validated['customer_id']);
             } else {
-                $duplicateQuery->where('guest_email', $validated['guest_email'] ?? null);
+                $duplicateQuery->whereNull('customer_id')->where('guest_email', $validated['guest_email'] ?? null);
             }
 
             $requestCarriesCode = !empty($validated['gift_card_code']) || !empty($validated['gift_card_id'])
@@ -326,11 +349,17 @@ class EventPurchaseController extends Controller
 
             $eventBuyerIdentifiable = !empty($validated['customer_id']) || trim((string) ($validated['guest_email'] ?? '')) !== '';
 
-            $existingPending = ($requestCarriesCode || !$eventBuyerIdentifiable || !isset($validated['total_amount'])) ? null : $duplicateQuery->first();
+            if ($requestCarriesCode || !isset($validated['total_amount'])) {
+                $existingPending = null;
+            } elseif ($checkoutKey) {
+                $existingPending = $earlierAttempt ? $duplicateQuery->whereKey($earlierAttempt->id)->first() : null;
+            } else {
+                $existingPending = $eventBuyerIdentifiable ? $duplicateQuery->first() : null;
+            }
             if ($existingPending) {
                 $existingPending->load($requesterIsStaff ? ['event', 'customer', 'location:id,name', 'addOns'] : ['event', 'location:id,name', 'addOns']);
                 if (! $requesterIsStaff) {
-                    $existingPending->makeHidden(['guest_name', 'guest_phone', 'guest_address', 'guest_city', 'guest_state', 'guest_zip', 'guest_country', 'customer_id', 'created_by', 'notes', 'special_requests', 'transaction_id']);
+                    $existingPending->makeHidden(['guest_name', 'guest_phone', 'guest_address', 'guest_city', 'guest_state', 'guest_zip', 'guest_country', 'customer_id', 'created_by', 'notes', 'special_requests', 'transaction_id', 'applied_discounts', 'gift_card_id', 'promo_id', 'membership_id']);
                 }
                 Log::info('Duplicate event purchase prevented (existing pending found)', [
                     'existing_purchase_id' => $existingPending->id,
@@ -338,6 +367,13 @@ class EventPurchaseController extends Controller
                     'customer_id' => $validated['customer_id'] ?? null,
                     'guest_email' => $validated['guest_email'] ?? null,
                 ]);
+                $replayRequester = $request->user('sanctum');
+                if ($requesterIsStaff
+                    || ($earlierAttempt && (int) $earlierAttempt->id === (int) $existingPending->id)
+                    || ($replayRequester instanceof \App\Models\Customer && (int) $existingPending->customer_id === (int) $replayRequester->id)) {
+                    $existingPending->setAttribute('checkout_token', \App\Support\CheckoutToken::for('event_purchase', $existingPending->id));
+                }
+
                 return response()->json($existingPending, 200);
             }
 
@@ -356,7 +392,7 @@ class EventPurchaseController extends Controller
             unset($validated['add_ons'], $validated['send_email'], $validated['sms_consent'], $validated['custom_fields']);
 
             $serverExpectedTotal = $serverExpectedTotal ?? null;
-            $purchase = DB::transaction(function () use (&$validated, $discounts, $request, $customFieldAnswers, $rules, $isStaff, $addOnLines, $serverExpectedTotal) {
+            $purchase = DB::transaction(function () use (&$validated, $discounts, $request, $customFieldAnswers, $rules, $isStaff, $addOnLines, $serverExpectedTotal, $respectDayOffs) {
                 $capEvent = Event::where('id', $validated['event_id'])->lockForUpdate()->first();
 
                 if ($capEvent && $capEvent->max_tickets_per_slot !== null) {
@@ -445,7 +481,7 @@ class EventPurchaseController extends Controller
                 }
 
                 if ($capEvent && $capEvent->max_bookings_per_slot !== null
-                    && !in_array($validated['purchase_time'], $capEvent->getAvailableTimeSlotsForDate($validated['purchase_date']))) {
+                    && !in_array($validated['purchase_time'], $capEvent->getAvailableTimeSlotsForDate($validated['purchase_date'], $respectDayOffs))) {
                     throw new \RuntimeException('Selected time slot is not available');
                 }
 
@@ -479,6 +515,15 @@ class EventPurchaseController extends Controller
             $purchase->load(['event.location.company', 'customer', 'location:id,name', 'addOns']);
 
             $this->rememberPurchaseCheckoutKey($checkoutKey, $purchase);
+
+            $blockGuard->recordBookedInside($request, $blockedPeriods, 'event_purchase', (int) $purchase->id, [
+                'label' => 'Event purchase',
+                'reference' => $purchase->reference_number ?? ('#' . $purchase->id),
+                'purchase_date' => $purchase->purchase_date?->toDateString(),
+                'purchase_time' => substr((string) $validated['purchase_time'], 0, 5),
+                'event_id' => $purchase->event_id,
+                'guest_name' => $purchase->guest_name,
+            ]);
 
             // Create a pending waiver if a template covers this event, so the
             // confirmation can include the {{waiver_link}}. Non-fatal.
@@ -521,7 +566,7 @@ class EventPurchaseController extends Controller
                     'location_id' => $purchase->location_id,
                     'type' => 'payment',
                     'priority' => 'medium',
-                    'user_id' => auth()->id(),
+                    'user_id' => \App\Support\StaffActor::id(),
                     'title' => 'New Event Purchase',
                     'message' => "{$customerName} — {$purchase->quantity}x {$purchase->event->name} on {$formattedDate} at {$formattedTime} • $" . number_format($purchase->total_amount, 2),
                     'status' => 'unread',
@@ -537,19 +582,19 @@ class EventPurchaseController extends Controller
                 ]);
             }
 
-            if (auth()->id()) {
+            if (\App\Support\StaffActor::id()) {
                 ActivityLog::log(
                     action: 'Event Purchase Created',
                     category: 'create',
                     description: "Event purchase: {$purchase->quantity} x {$purchase->event->name} by {$customerName}",
-                    userId: auth()->id(),
+                    userId: \App\Support\StaffActor::id(),
                     locationId: $purchase->location_id,
                     entityType: 'event_purchase',
                     entityId: $purchase->id,
                     metadata: [
                         'created_by' => [
-                            'user_id' => auth()->id(),
-                            'email' => auth()->user()?->email,
+                            'user_id' => \App\Support\StaffActor::id(),
+                            'email' => \App\Support\StaffActor::current()?->email,
                         ],
                         'created_at' => now()->toIso8601String(),
                         'purchase_details' => [
@@ -591,7 +636,7 @@ class EventPurchaseController extends Controller
                         source: 'event_purchase',
                         tags: ['event_purchase', 'customer'],
                         locationId: $purchase->location_id,
-                        createdBy: auth()->id()
+                        createdBy: \App\Support\StaffActor::id()
                     );
                 }
             } catch (\Exception $e) {
@@ -615,9 +660,15 @@ class EventPurchaseController extends Controller
 
             $this->recordConversion('event_purchase_completed', $purchase, (float) ($purchase->total_amount ?? 0));
 
+            $purchase->setAttribute('checkout_token', \App\Support\CheckoutToken::for('event_purchase', $purchase->id));
+
             return response()->json($purchase, 201);
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json(['message' => 'Validation failed', 'errors' => $e->errors()], 422);
+        } catch (\Illuminate\Database\QueryException $e) {
+            Log::error('Event purchase save failed', ['error' => $e->getMessage()]);
+
+            return response()->json(['success' => false, 'message' => 'We could not save this right now. Please try again.'], 422);
         } catch (\RuntimeException $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
         } catch (\Exception $e) {
@@ -691,7 +742,7 @@ class EventPurchaseController extends Controller
                     $purchase,
                     $validated['membership_applied'],
                     $purchase->location_id,
-                    auth()->id()
+                    \App\Support\StaffActor::id()
                 );
                 return;
             }
@@ -712,7 +763,7 @@ class EventPurchaseController extends Controller
                     $purchase,
                     $quote['applied'],
                     $purchase->location_id,
-                    auth()->id()
+                    \App\Support\StaffActor::id()
                 );
             }
         } catch (\Throwable $e) {
@@ -771,6 +822,9 @@ class EventPurchaseController extends Controller
             $slotTouched = array_intersect(array_keys($validated), ['quantity', 'purchase_date', 'purchase_time']) !== []
                 || (isset($validated['status']) && $eventPurchase->status === 'cancelled' && $validated['status'] !== 'cancelled');
 
+            $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
+            $blockedPeriods = collect();
+
             if ($slotTouched && ($validated['status'] ?? $eventPurchase->status) !== 'cancelled') {
                 $closureEvent = Event::find($eventPurchase->event_id);
                 $closureDate = isset($validated['purchase_date'])
@@ -779,24 +833,23 @@ class EventPurchaseController extends Controller
                 $closureTime = isset($validated['purchase_time'])
                     ? substr((string) $validated['purchase_time'], 0, 5)
                     : $eventPurchase->purchase_time?->format('H:i');
+                $movesIntoNewSlot = $closureDate !== $eventPurchase->purchase_date?->toDateString()
+                    || $closureTime !== $eventPurchase->purchase_time?->format('H:i')
+                    || $eventPurchase->status === 'cancelled';
 
-                if ($closureEvent && $closureDate && \Carbon\Carbon::parse($closureDate)->gte(\Carbon\Carbon::today())) {
+                if ($movesIntoNewSlot && $closureEvent && $closureDate && \Carbon\Carbon::parse($closureDate)->gte(\Carbon\Carbon::today())) {
+                    $closureTime = \App\Services\AvailabilityBlockGuard::eventSlotTime($closureEvent, $closureTime);
                     $closureInterval = (int) ($closureEvent->interval_minutes ?: 60);
-                    $closureBlocked = $closureTime
-                        ? \App\Models\DayOff::isTimeSlotBlockedForEvent(
-                            $closureEvent->location_id,
-                            (int) $closureEvent->id,
-                            $closureDate,
-                            $closureTime,
-                            \Carbon\Carbon::parse($closureTime)->addMinutes($closureInterval)->format('H:i')
-                        )
-                        : \App\Models\DayOff::isDateBlockedForEvent($closureEvent->location_id, (int) $closureEvent->id, $closureDate);
+                    $blockedPeriods = $blockGuard->forEvent(
+                        (int) $closureEvent->location_id,
+                        (int) $closureEvent->id,
+                        $closureDate,
+                        $closureTime,
+                        $closureTime ? \Carbon\Carbon::parse($closureTime)->addMinutes($closureInterval)->format('H:i') : null
+                    );
 
-                    if ($closureBlocked) {
-                        return response()->json([
-                            'success' => false,
-                            'message' => 'The selected date or time is closed for this event. Please choose another.',
-                        ], 422);
+                    if ($refusal = $blockGuard->refusal($request, $blockedPeriods, 'The selected date or time is closed for this event. Please choose another.', 'This change')) {
+                        return $refusal;
                     }
                 }
 
@@ -804,7 +857,7 @@ class EventPurchaseController extends Controller
 
                 if ($targetEvent && $targetEvent->max_tickets_per_slot !== null) {
                     $slotDate = isset($validated['purchase_date']) ? \Carbon\Carbon::parse($validated['purchase_date'])->toDateString() : $eventPurchase->purchase_date?->toDateString();
-                    $slotTime = isset($validated['purchase_time']) ? substr((string) $validated['purchase_time'], 0, 5) : ($eventPurchase->purchase_time ? substr((string) $eventPurchase->purchase_time, 0, 5) : null);
+                    $slotTime = isset($validated['purchase_time']) ? substr((string) $validated['purchase_time'], 0, 5) : $eventPurchase->purchase_time?->format('H:i');
 
                     if (!$slotDate || !$slotTime) {
                         return response()->json(['success' => false, 'message' => "Please set a date and time for {$targetEvent->name}."], 422);
@@ -847,7 +900,7 @@ class EventPurchaseController extends Controller
 
                 if ($bookingCapEvent && $bookingCapEvent->max_bookings_per_slot !== null) {
                     $slotDate = isset($validated['purchase_date']) ? \Carbon\Carbon::parse($validated['purchase_date'])->toDateString() : $eventPurchase->purchase_date?->toDateString();
-                    $slotTime = isset($validated['purchase_time']) ? substr((string) $validated['purchase_time'], 0, 5) : ($eventPurchase->purchase_time ? substr((string) $eventPurchase->purchase_time, 0, 5) : null);
+                    $slotTime = isset($validated['purchase_time']) ? substr((string) $validated['purchase_time'], 0, 5) : $eventPurchase->purchase_time?->format('H:i');
 
                     if ($slotDate && $slotTime) {
                         $otherBookings = (int) $bookingCapEvent->eventPurchases()
@@ -936,6 +989,17 @@ class EventPurchaseController extends Controller
             }
 
             $saved = $eventPurchase->fresh();
+
+            $blockGuard->recordBookedInside($request, $blockedPeriods, 'event_purchase', (int) $eventPurchase->id, [
+                'label' => 'Event purchase',
+                'reference' => $saved?->reference_number ?? ('#' . $eventPurchase->id),
+                'purchase_date' => $saved?->purchase_date?->toDateString(),
+                'purchase_time' => $saved?->purchase_time?->format('H:i'),
+                'event_id' => $eventPurchase->event_id,
+                'guest_name' => $saved?->guest_name,
+                'moved' => true,
+            ]);
+
             $followUp = $this->followUpAfterStatusChange($saved, $originalStatus, $request, $saved !== null && \App\Services\VisitFollowUpService::bookerIdentity($saved) !== $previousBooker);
 
             return response()->json(array_filter([
@@ -978,7 +1042,8 @@ class EventPurchaseController extends Controller
             if (!app(\App\Services\AddOnRuleService::class)->isStaff(request()->user('sanctum'))
                 && ($eventPurchase->status !== 'pending'
                     || $eventPurchase->checked_in_at !== null
-                    || $eventPurchase->payments()->whereIn('status', ['completed', 'refunded'])->exists())) {
+                    || $eventPurchase->payments()->whereIn('status', ['completed', 'refunded'])->exists()
+                    || !\App\Support\CheckoutToken::presented(request(), 'event_purchase', $eventPurchase->id))) {
                 Log::warning('Public event purchase delete refused: only an unpaid pending purchase can be rolled back', [
                     'id' => $eventPurchase->id,
                     'status' => $eventPurchase->status,
@@ -994,7 +1059,7 @@ class EventPurchaseController extends Controller
             $userId = null;
             $user = null;
             try {
-                $authUser = auth()->user();
+                $authUser = \App\Support\StaffActor::current();
                 if ($authUser instanceof \App\Models\User) {
                     $userId = $authUser->id;
                     $user = $authUser;
@@ -1062,7 +1127,7 @@ class EventPurchaseController extends Controller
             ]);
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to delete event purchase: ' . $e->getMessage(),
+                'message' => \App\Support\StaffActor::current() ? 'Failed to delete event purchase: ' . $e->getMessage() : 'This purchase could not be removed right now.',
             ], 500);
         }
     }
@@ -1117,6 +1182,18 @@ class EventPurchaseController extends Controller
         return response()->json($eventPurchase->fresh()->load(['event:id,name', 'addOns']));
     }
 
+    private function blockLogDetails(EventPurchase $purchase, array $extra = []): array
+    {
+        return [
+            'label' => 'Event purchase',
+            'reference' => $purchase->reference_number ?? ('#' . $purchase->id),
+            'purchase_date' => $purchase->purchase_date?->toDateString(),
+            'purchase_time' => $purchase->purchase_time?->format('H:i'),
+            'event_id' => $purchase->event_id,
+            'guest_name' => $purchase->guest_name,
+        ] + $extra;
+    }
+
     public function updateStatus(Request $request, EventPurchase $eventPurchase): JsonResponse
     {
         if ($denied = $this->denyForeignRecord($eventPurchase, 'purchase')) {
@@ -1149,6 +1226,8 @@ class EventPurchaseController extends Controller
         }
 
         $originalStatus = $eventPurchase->status;
+        $reactivatedInside = collect();
+        $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
 
         if ($originalStatus === 'cancelled' && $validated['status'] !== 'cancelled') {
             if ($this->giftCardWasReversedFor(\App\Models\Payment::TYPE_EVENT_PURCHASE, (int) $eventPurchase->id)) {
@@ -1160,9 +1239,16 @@ class EventPurchaseController extends Controller
             } catch (\RuntimeException $e) {
                 return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
             }
+
+            $reactivatedInside = $blockGuard->forExistingEventPurchase($eventPurchase);
+
+            if ($refusal = $blockGuard->refusal($request, $reactivatedInside, 'The selected date or time is closed for this event. Please choose another.', 'Reactivating this purchase')) {
+                return $refusal;
+            }
         }
 
         $eventPurchase->update($updates);
+        $blockGuard->recordBookedInside($request, $reactivatedInside, 'event_purchase', (int) $eventPurchase->id, $this->blockLogDetails($eventPurchase, ['reactivated' => true]));
 
         if ($validated['status'] === 'cancelled') {
             app(MembershipBenefitService::class)->reverseForRedeemable($eventPurchase, 'purchase_cancelled');
@@ -1414,6 +1500,8 @@ class EventPurchaseController extends Controller
     {
         Log::info('Event purchase public force delete request', ['id' => $id, 'ip' => request()->ip()]);
 
+        $staff = \App\Support\StaffActor::current();
+
         try {
             $eventPurchase = EventPurchase::withTrashed()->find($id);
 
@@ -1428,6 +1516,13 @@ class EventPurchaseController extends Controller
                 return response()->json([
                     'success' => false,
                     'message' => 'Only pending event purchases can be force deleted',
+                ], 403);
+            }
+
+            if (!$staff && !\App\Support\CheckoutToken::presented(request(), 'event_purchase', $eventPurchase->id)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Only the checkout that made this purchase can remove it.',
                 ], 403);
             }
 
@@ -1449,24 +1544,47 @@ class EventPurchaseController extends Controller
             $purchaseId = $eventPurchase->id;
             $locationId = $eventPurchase->event->location_id ?? null;
 
-            $this->reverseGiftCardFor($eventPurchase, \App\Models\Payment::TYPE_EVENT_PURCHASE, 'payment_error_cleanup');
+            $purgingTrash = $staff && $eventPurchase->trashed();
+
+            $this->reverseGiftCardFor($eventPurchase, \App\Models\Payment::TYPE_EVENT_PURCHASE, $purgingTrash ? 'purchase_deleted' : 'payment_error_cleanup');
 
             $eventPurchase->forceDelete();
 
-            ActivityLog::log(
-                action: 'Event Purchase Force Deleted (Payment Error)',
-                category: 'delete',
-                description: "Pending event purchase force deleted: {$eventName}",
-                userId: null,
-                locationId: $locationId,
-                entityType: 'event_purchase',
-                entityId: $purchaseId,
-                metadata: [
-                    'reason' => 'payment_error_cleanup',
-                    'event_name' => $eventName,
-                    'deleted_at' => now()->toIso8601String(),
-                ]
-            );
+            if ($purgingTrash) {
+                ActivityLog::log(
+                    action: 'Event Purchase Permanently Deleted',
+                    category: 'delete',
+                    description: "Event purchase permanently deleted: {$eventName}",
+                    userId: $staff->id,
+                    locationId: $locationId,
+                    entityType: 'event_purchase',
+                    entityId: $purchaseId,
+                    metadata: [
+                        'deleted_by' => [
+                            'user_id' => $staff->id,
+                            'name' => $staff->first_name . ' ' . $staff->last_name,
+                            'email' => $staff->email,
+                        ],
+                        'event_name' => $eventName,
+                        'deleted_at' => now()->toIso8601String(),
+                    ]
+                );
+            } else {
+                ActivityLog::log(
+                    action: 'Event Purchase Force Deleted (Payment Error)',
+                    category: 'delete',
+                    description: "Pending event purchase force deleted: {$eventName}",
+                    userId: $staff?->id,
+                    locationId: $locationId,
+                    entityType: 'event_purchase',
+                    entityId: $purchaseId,
+                    metadata: [
+                        'reason' => 'payment_error_cleanup',
+                        'event_name' => $eventName,
+                        'deleted_at' => now()->toIso8601String(),
+                    ]
+                );
+            }
 
             Log::info('Event purchase force deleted successfully', ['id' => $purchaseId, 'event' => $eventName]);
 
@@ -1482,7 +1600,7 @@ class EventPurchaseController extends Controller
             ]);
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to force delete event purchase: ' . $e->getMessage(),
+                'message' => $staff ? 'Failed to force delete event purchase: ' . $e->getMessage() : 'This purchase could not be removed right now.',
             ], 500);
         }
     }
@@ -1574,7 +1692,9 @@ class EventPurchaseController extends Controller
             ], 422);
         }
 
-        $purchase = EventPurchase::onlyTrashed()->findOrFail($id);
+        $purchase = EventPurchase::onlyTrashed()->whereIn('location_id', $this->staffLocationIds(request()))->findOrFail($id);
+        $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
+        $restoredInside = collect();
 
         if ($purchase->status !== 'cancelled') {
             try {
@@ -1582,9 +1702,16 @@ class EventPurchaseController extends Controller
             } catch (\RuntimeException $e) {
                 return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
             }
+
+            $restoredInside = $blockGuard->forExistingEventPurchase($purchase);
+
+            if ($refusal = $blockGuard->refusal(request(), $restoredInside, 'The selected date or time is closed for this event. Please choose another.', 'Restoring this purchase')) {
+                return $refusal;
+            }
         }
 
         $purchase->restore();
+        $blockGuard->recordBookedInside(request(), $restoredInside, 'event_purchase', (int) $purchase->id, $this->blockLogDetails($purchase, ['restored' => true]));
         $this->followUpAfterRestore($purchase);
         $purchase->load(['event', 'customer', 'location:id,name', 'addOns']);
 
@@ -1616,10 +1743,19 @@ class EventPurchaseController extends Controller
             'ids.*' => 'required|integer',
         ]);
 
-        $purchases = EventPurchase::onlyTrashed()->whereIn('id', $validated['ids'])->get();
+        $purchases = EventPurchase::onlyTrashed()->whereIn('id', $validated['ids'])->whereIn('location_id', $this->staffLocationIds($request))->get();
         $restoredCount = 0;
         $blocked = [];
         $guard = app(\App\Services\SlotCapacityGuard::class);
+        $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
+        $insideBlocks = $purchases
+            ->reject(fn (EventPurchase $purchase) => $purchase->status === 'cancelled')
+            ->mapWithKeys(fn (EventPurchase $purchase) => [$purchase->id => $blockGuard->forExistingEventPurchase($purchase)])
+            ->filter(fn ($blocks) => $blocks->isNotEmpty());
+
+        if ($refusal = $blockGuard->refusal($request, $insideBlocks->flatten(1)->unique('id')->sortBy('id')->values(), 'The selected date or time is closed for this event. Please choose another.', 'Restoring these purchases')) {
+            return $refusal;
+        }
 
         foreach ($purchases as $purchase) {
             if ($purchase->status !== 'cancelled') {
@@ -1632,6 +1768,10 @@ class EventPurchaseController extends Controller
             }
 
             $purchase->restore();
+
+            if ($insideBlocks->has($purchase->id)) {
+                $blockGuard->recordBookedInside($request, $insideBlocks->get($purchase->id), 'event_purchase', (int) $purchase->id, $this->blockLogDetails($purchase, ['restored' => true]));
+            }
             $this->followUpAfterRestore($purchase);
             $restoredCount++;
         }

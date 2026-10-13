@@ -18,6 +18,10 @@ class NotificationController extends Controller
 
     private const FEED_BATCH_LIMIT = 20;
 
+    private const FEED_OVERLAP_IDS = 50;
+
+    private const FEED_OVERLAP_SECONDS = 180;
+
     private function visibleTo(Request $request, bool $applyLocationFilter = true)
     {
         $query = Notification::query();
@@ -41,11 +45,20 @@ class NotificationController extends Controller
         $after = $request->query('after');
         $start = is_string($after) && preg_match('/^n(\d{1,18})$/', $after, $match) ? (int) $match[1] : null;
 
-        $items = $start === null || $start >= $latest
+        $overlap = $request->boolean('overlap');
+
+        $items = $start === null || (!$overlap && $start >= $latest)
             ? collect()
             : $this->visibleTo($request)
-                ->where('id', '>', $start)
-                ->where('id', '<=', $latest)
+                ->where(function ($window) use ($start, $latest, $overlap) {
+                    $window->where(fn ($fresh) => $fresh->where('id', '>', $start)->where('id', '<=', $latest));
+
+                    if ($overlap) {
+                        $window->orWhere(fn ($late) => $late->where('id', '>', max(0, $start - self::FEED_OVERLAP_IDS))
+                            ->where('id', '<=', $start)
+                            ->where('created_at', '>=', now()->subSeconds(self::FEED_OVERLAP_SECONDS)));
+                    }
+                })
                 ->orderByDesc('id')
                 ->limit(self::FEED_BATCH_LIMIT)
                 ->get(['id', 'type', 'priority', 'title', 'message', 'user_id', 'location_id', 'created_at'])
@@ -66,7 +79,7 @@ class NotificationController extends Controller
             ])->values(),
         ];
 
-        if ($request->boolean('count') || $items->isNotEmpty()) {
+        if ($request->boolean('count') || $items->contains(fn (Notification $notification) => $notification->id > (int) $start)) {
             $data['unread'] = $this->visibleTo($request, false)->unread()->count();
         }
 

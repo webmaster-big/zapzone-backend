@@ -15,6 +15,7 @@ class BookingTombstone extends Model
     protected $fillable = [
         'booking_id',
         'location_id',
+        'company_id',
         'removed_at',
     ];
 
@@ -42,12 +43,68 @@ class BookingTombstone extends Model
         self::$tableExists = $known;
     }
 
+    public static function recordMany(iterable $bookings): void
+    {
+        if (!self::tableExists()) {
+            return;
+        }
+
+        try {
+            $now = now();
+            $rows = [];
+            $bookings = collect($bookings);
+            $companies = self::companiesOf($bookings->pluck('location_id')->all());
+
+            foreach ($bookings as $booking) {
+                $rows[] = [
+                    'booking_id' => $booking->id,
+                    'location_id' => $booking->location_id,
+                    'company_id' => $companies[(int) $booking->location_id] ?? null,
+                    'removed_at' => $now,
+                ];
+            }
+
+            foreach (array_chunk($rows, 500) as $chunk) {
+                static::insert($chunk);
+            }
+
+            static::where('removed_at', '<', now()->subHours(self::KEEP_HOURS))->delete();
+        } catch (\Throwable $e) {
+            Log::warning('Removed bookings could not be recorded for open admin lists', [
+                'count' => isset($rows) ? count($rows) : null,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    public static function recordMovedFrom(Booking $booking, ?int $fromLocationId): void
+    {
+        if ($fromLocationId === null || (int) $fromLocationId === (int) $booking->location_id || !self::tableExists()) {
+            return;
+        }
+
+        try {
+            static::create([
+                'booking_id' => $booking->id,
+                'location_id' => $fromLocationId,
+                'company_id' => self::companiesOf([$fromLocationId])[(int) $fromLocationId] ?? null,
+                'removed_at' => now(),
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('A moved booking could not be recorded for the old location\'s admin lists', [
+                'booking_id' => $booking->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
     public static function record(Booking $booking): void
     {
         try {
             static::create([
                 'booking_id' => $booking->id,
                 'location_id' => $booking->location_id,
+                'company_id' => self::companiesOf([$booking->location_id])[(int) $booking->location_id] ?? null,
                 'removed_at' => now(),
             ]);
 
@@ -58,5 +115,12 @@ class BookingTombstone extends Model
                 'error' => $e->getMessage(),
             ]);
         }
+    }
+
+    private static function companiesOf(array $locationIds): array
+    {
+        $locationIds = array_values(array_unique(array_filter(array_map('intval', $locationIds))));
+
+        return $locationIds === [] ? [] : Location::whereIn('id', $locationIds)->pluck('company_id', 'id')->all();
     }
 }

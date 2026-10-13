@@ -234,30 +234,47 @@ class EventController extends Controller
         return response()->json($event);
     }
 
-    public function getAvailableDates(Event $event): JsonResponse
+    public function getAvailableDates(Request $request, Event $event): JsonResponse
     {
-        return response()->json(['dates' => $event->getAvailableDates()]);
+        $dates = $event->getAvailableDates();
+        $payload = ['dates' => $dates];
+
+        if ($request->boolean('include_blocked')) {
+            $payload['blocked_dates'] = array_values(array_diff($event->getAvailableDates(false), $dates));
+        }
+
+        return response()->json($payload);
     }
 
-    public function getAvailableTimeSlots(Event $event, string $date): JsonResponse
+    public function getAvailableTimeSlots(Request $request, Event $event, string $date): JsonResponse
     {
         if (!$event->isDateValid($date)) {
             return response()->json(['message' => 'Date is not valid for this event'], 422);
         }
 
         $slots = $event->getAvailableTimeSlotsForDate($date);
+        $includeBlocked = $request->boolean('include_blocked');
+        $blockedSlots = $includeBlocked
+            ? array_values(array_diff($event->getAvailableTimeSlotsForDate($date, false), $slots))
+            : [];
 
         $remaining = null;
 
         if ($event->max_tickets_per_slot !== null) {
             $taken = $event->getBookedTicketsBySlot($date);
             $remaining = [];
-            foreach ($slots as $slot) {
+            foreach (array_merge($slots, $blockedSlots) as $slot) {
                 $remaining[$slot] = max(0, $event->max_tickets_per_slot - ($taken[$slot] ?? 0));
             }
         }
 
-        return response()->json(['date' => $date, 'time_slots' => $slots, 'remaining_tickets' => $remaining]);
+        $payload = ['date' => $date, 'time_slots' => $slots, 'remaining_tickets' => $remaining];
+
+        if ($includeBlocked) {
+            $payload['blocked_time_slots'] = $blockedSlots;
+        }
+
+        return response()->json($payload);
     }
 
     public function eventsGroupedByName(Request $request): JsonResponse

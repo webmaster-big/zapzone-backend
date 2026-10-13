@@ -31,6 +31,11 @@ class GiftCard extends Model
         'created_by',
         'location_id',
         'deleted',
+        'checkout_key',
+    ];
+
+    protected $hidden = [
+        'checkout_key',
     ];
 
     protected $casts = [

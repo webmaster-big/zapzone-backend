@@ -11,6 +11,19 @@ class Room extends Model
 {
     use HasFactory;
 
+    protected static function booted(): void
+    {
+        static::deleting(function (Room $room) {
+            Booking::touchUpcoming('room_id', $room->id);
+        });
+
+        static::updated(function (Room $room) {
+            if ($room->wasChanged('name')) {
+                Booking::touchUpcoming('room_id', $room->id);
+            }
+        });
+    }
+
     protected $fillable = [
         'location_id',
         'name',

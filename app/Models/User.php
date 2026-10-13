@@ -40,6 +40,16 @@ class User extends Authenticatable
                         ->where('is_active', true)
                         ->update(['is_active' => false]);
                 }
+            } elseif ($user->wasChanged('password')) {
+                $actor = request()->user('sanctum');
+                $currentToken = $actor instanceof User && (int) $actor->id === (int) $user->id
+                    ? $actor->currentAccessToken()
+                    : null;
+                $keepTokenId = $currentToken instanceof \Laravel\Sanctum\PersonalAccessToken ? $currentToken->id : null;
+
+                $user->tokens()
+                    ->when($keepTokenId, fn ($tokens) => $tokens->where('id', '!=', $keepTokenId))
+                    ->delete();
             }
         });
     }

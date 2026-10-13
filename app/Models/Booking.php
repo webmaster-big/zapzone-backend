@@ -35,6 +35,13 @@ class Booking extends Model
             BookingTombstone::record($booking);
         });
 
+        static::updated(function (Booking $booking) {
+            if ($booking->wasChanged('location_id')) {
+                $original = $booking->getOriginal('location_id');
+                BookingTombstone::recordMovedFrom($booking, $original !== null ? (int) $original : null);
+            }
+        });
+
         static::forceDeleting(function (Booking $booking) {
             try {
                 app(\App\Services\MembershipBenefitService::class)->reverseForRedeemable($booking, 'checkout_deleted');
@@ -148,6 +155,14 @@ class Booking extends Model
     public static function statusAfterPayment(?string $current): string
     {
         return in_array($current, ['checked-in', 'completed'], true) ? $current : 'confirmed';
+    }
+
+    public static function touchUpcoming(string $column, int $id): void
+    {
+        \Illuminate\Support\Facades\DB::table('bookings')
+            ->where($column, $id)
+            ->where('booking_date', '>=', now()->subDay()->toDateString())
+            ->update(['updated_at' => now()]);
     }
 
     public function customer(): BelongsTo

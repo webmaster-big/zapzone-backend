@@ -47,6 +47,7 @@ class Membership extends Model
         'photo_taken_at' => 'datetime',
         'recurring_billing_authorized_at' => 'datetime',
         'terms_accepted_at' => 'datetime',
+        'charge_outcome_unknown_at' => 'datetime',
         'recurring_billing_authorized' => 'boolean',
         'terms_accepted' => 'boolean',
         'is_comped' => 'boolean',

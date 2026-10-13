@@ -30,7 +30,27 @@ class CustomerNotificationController extends Controller
             return response()->json(['success' => false, 'message' => 'Notification not found'], 404);
         }
 
+        if (!$customer && $this->denyForeignRecord($notification, 'notification')) {
+            return response()->json(['success' => false, 'message' => 'Notification not found'], 404);
+        }
+
         return null;
+    }
+
+    private function customerNotificationsFor(Request $request, $customerId)
+    {
+        $query = CustomerNotification::where('customer_id', $customerId);
+
+        if (!$this->signedInCustomer($request)) {
+            $this->applyAuthScope($query, $request);
+            $staff = $this->resolveAuthUser($request);
+            if ($staff && $staff->company_id) {
+                $query->where(fn ($scoped) => $scoped->whereNull('location_id')
+                    ->orWhereIn('location_id', \App\Models\Location::where('company_id', $staff->company_id)->select('id')));
+            }
+        }
+
+        return $query;
     }
 
     public function index(Request $request): JsonResponse
@@ -222,7 +242,7 @@ class CustomerNotificationController extends Controller
             ], 422);
         }
 
-        CustomerNotification::where('customer_id', $customerId)
+        $this->customerNotificationsFor($request, $customerId)
             ->where('status', 'unread')
             ->update([
                 'status' => 'read',
@@ -246,7 +266,7 @@ class CustomerNotificationController extends Controller
             ], 422);
         }
 
-        $count = CustomerNotification::where('customer_id', $customerId)
+        $count = $this->customerNotificationsFor($request, $customerId)
             ->unread()
             ->count();
 

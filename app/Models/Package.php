@@ -69,6 +69,16 @@ class Package extends Model
 
     protected static function booted(): void
     {
+        static::forceDeleting(function (Package $package) {
+            Booking::touchUpcoming('package_id', $package->id);
+        });
+
+        static::updated(function (Package $package) {
+            if ($package->wasChanged(['name', 'category', 'display_label', 'is_escape_room'])) {
+                Booking::touchUpcoming('package_id', $package->id);
+            }
+        });
+
         static::saving(function (Package $package) {
             if (!self::supportsEscapeRoomFlag()) {
                 $package->offsetUnset('is_escape_room');
@@ -177,6 +187,13 @@ class Package extends Model
         }
 
         return $this->resolvedScheduleForDate[$date];
+    }
+
+    public function overnightUntilMinute(string $date): ?int
+    {
+        $schedule = $this->scheduleForDate($date);
+
+        return $schedule ? DayOff::overnightUntil($schedule->time_slot_start, $schedule->time_slot_end) : null;
     }
 
     public function forgetResolvedSchedules(): void

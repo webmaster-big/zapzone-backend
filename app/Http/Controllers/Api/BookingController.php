@@ -21,7 +21,6 @@ use App\Models\Booking;
 use App\Models\BookingAttraction;
 use App\Models\BookingInternalNote;
 use App\Models\BookingInternalNoteRevision;
-use App\Models\DayOff;
 use App\Models\BookingAddOn;
 use App\Models\Contact;
 use App\Models\CustomerNotification;
@@ -193,14 +192,30 @@ class BookingController extends Controller
             ? \App\Models\BookingTombstone::query()->where('removed_at', '>=', $since)
             : null;
         $locationFilter = $request->has('location_id') && is_scalar($request->location_id) ? $request->location_id : null;
+        $companyLocations = $authUser && $authUser->company_id
+            ? \App\Models\Location::where('company_id', $authUser->company_id)->select('id')
+            : null;
 
-        foreach (array_filter([$trashed, $removed]) as $query) {
-            $this->applyAuthScope($query, $request);
+        $this->applyAuthScope($trashed, $request);
 
-            if ($authUser && $authUser->company_id) {
-                $query->whereIn($query->getModel()->qualifyColumn('location_id'), \App\Models\Location::where('company_id', $authUser->company_id)->select('id'));
+        if ($companyLocations) {
+            $trashed->whereIn('bookings.location_id', $companyLocations);
+        }
+
+        if ($removed) {
+            if ($authUser && in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
+                $removed->where('location_id', $authUser->location_id);
             }
 
+            if ($companyLocations) {
+                $removed->where(function ($inCompany) use ($authUser, $companyLocations) {
+                    $inCompany->where('company_id', $authUser->company_id)
+                        ->orWhere(fn ($unstamped) => $unstamped->whereNull('company_id')->whereIn('location_id', $companyLocations));
+                });
+            }
+        }
+
+        foreach (array_filter([$trashed, $removed]) as $query) {
             if ($locationFilter !== null) {
                 $query->where($query->getModel()->qualifyColumn('location_id'), $locationFilter);
             }
@@ -369,6 +384,10 @@ class BookingController extends Controller
 
                     $total = (clone $query)->count();
                     $deletedIds = $this->bookingIdsDeletedSince($request, $authUser, $since);
+                    if ($deletedIds) {
+                        $stillListed = (clone $query)->whereIn('bookings.id', $deletedIds)->pluck('bookings.id')->map(fn ($id) => (int) $id)->all();
+                        $deletedIds = array_values(array_diff($deletedIds, $stillListed));
+                    }
                     $query->whereIn('bookings.id', $changedIds);
                     $onlyBelowCursorId($query);
 
@@ -700,17 +719,34 @@ class BookingController extends Controller
         $bookingEndTime = Carbon::parse($bookingTime)
             ->addMinutes($this->getDurationInMinutes($validated['duration'], $validated['duration_unit']))
             ->format('H:i');
-        $closureBlocked = !empty($validated['package_id'])
-            ? DayOff::isTimeSlotBlockedForPackage($bookingLocationId, (int) $validated['package_id'], $bookingDate, $bookingTime, $bookingEndTime)
-            : DayOff::isTimeSlotBlocked($bookingLocationId, $bookingDate, $bookingTime, $bookingEndTime);
-        if (!$closureBlocked && !empty($validated['room_id'])) {
-            $closureBlocked = DayOff::isTimeSlotBlockedForRoom($bookingLocationId, (int) $validated['room_id'], $bookingDate, $bookingTime, $bookingEndTime);
+        if (! $isStaff && !empty($validated['room_id']) && !empty($validated['package_id'])) {
+            $packageRoomIds = \App\Models\Package::query()->select(['id'])->whereKey($validated['package_id'])->first()?->rooms()->pluck('rooms.id')->map(fn ($id) => (int) $id)->all() ?? [];
+
+            if ($packageRoomIds !== [] && ! in_array((int) $validated['room_id'], $packageRoomIds, true)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'That space is not part of this package. Please choose another time.',
+                ], 422);
+            }
         }
-        if ($closureBlocked) {
-            return response()->json([
-                'success' => false,
-                'message' => 'The selected date or time is closed. Please choose another slot.',
-            ], 422);
+
+        $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
+        $blockedPackageId = !empty($validated['package_id']) ? (int) $validated['package_id'] : null;
+        $blockedRoomId = !empty($validated['room_id']) ? (int) $validated['room_id'] : null;
+        $addedAttractionIds = array_column($attractionLines, 'id');
+        $blockedPeriods = $blockGuard->forPackageBooking(
+            $bookingLocationId,
+            $blockedPackageId,
+            $blockedRoomId,
+            $bookingDate,
+            $bookingTime,
+            $bookingEndTime,
+            $addedAttractionIds
+        );
+        $closedMessage = $blockGuard->addedAttractionsMessage($blockedPeriods, $blockedPackageId, $blockedRoomId, $addedAttractionIds)
+            ?? 'The selected date or time is closed. Please choose another slot.';
+        if ($refusal = $blockGuard->refusal($request, $blockedPeriods, $closedMessage)) {
+            return $refusal;
         }
 
         $requestCarriesCode = !empty($validated['gift_card_code']) || !empty($validated['gift_card_id'])
@@ -753,6 +789,11 @@ class BookingController extends Controller
                     : "This booking already went through (reference {$earlierAttempt->reference_number}), so your card was not charged again. Please check your email for your confirmation.",
                 'reference_number' => $earlierAttempt->reference_number,
                 'booking_id' => $earlierAttempt->id,
+                'checkout_token' => $isStaff
+                    || $checkoutKey
+                    || (($alreadyBookedAsker = $request->user('sanctum')) instanceof \App\Models\Customer && (int) $earlierAttempt->customer_id === (int) $alreadyBookedAsker->id)
+                    ? \App\Support\CheckoutToken::for('booking', $earlierAttempt->id)
+                    : null,
                 'confirmation_pending' => $earlierAttempt->status === 'confirmed'
                     && empty($earlierAttempt->qr_code_path)
                     && !$this->bookingWasCharged($earlierAttempt),
@@ -772,7 +813,12 @@ class BookingController extends Controller
                 ? ['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']
                 : ['package', 'location', 'room', 'attractions', 'addOns']);
             if (! $isStaff) {
-                $earlierAttempt->makeHidden(['internal_notes', 'notes', 'special_requests', 'guest_name', 'guest_phone', 'guest_address', 'guest_city', 'guest_state', 'guest_zip', 'guest_country', 'customer_id', 'created_by', 'overlap_override_by']);
+                $earlierAttempt->makeHidden(['internal_notes', 'notes', 'special_requests', 'guest_name', 'guest_phone', 'guest_address', 'guest_city', 'guest_state', 'guest_zip', 'guest_country', 'customer_id', 'created_by', 'overlap_override_by', 'applied_discounts', 'gift_card_id', 'promo_id', 'membership_id']);
+
+                $replayAsker = $request->user('sanctum');
+                if (! $checkoutKey && ! ($replayAsker instanceof \App\Models\Customer && (int) $earlierAttempt->customer_id === (int) $replayAsker->id)) {
+                    $earlierAttempt->makeHidden(['reference_number']);
+                }
             }
             Log::info('Duplicate booking prevented (existing pending found)', [
                 'existing_booking_id' => $earlierAttempt->id,
@@ -784,6 +830,11 @@ class BookingController extends Controller
                 'success' => true,
                 'message' => 'Booking already exists',
                 'data' => $earlierAttempt,
+                'checkout_token' => $isStaff
+                    || $checkoutKey
+                    || (($replayRequester = $request->user('sanctum')) instanceof \App\Models\Customer && (int) $earlierAttempt->customer_id === (int) $replayRequester->id)
+                    ? \App\Support\CheckoutToken::for('booking', $earlierAttempt->id)
+                    : null,
             ], 200);
         }
 
@@ -804,12 +855,16 @@ class BookingController extends Controller
         $alreadyBooked = (!$isStaff && !$bookAnother) ? $this->paidBookingAtThisTime($validated) : null;
         if ($alreadyBooked) {
             $bookedWhen = Carbon::parse($alreadyBooked->booking_date)->format('M j') . ' at ' . Carbon::parse($alreadyBooked->booking_time)->format('g:i A');
+            $sameTimeAsker = $request->user('sanctum');
+            $askerOwnsIt = $sameTimeAsker instanceof \App\Models\Customer && (int) $alreadyBooked->customer_id === (int) $sameTimeAsker->id;
 
             return response()->json([
                 'success' => false,
                 'code' => 'BOOKED_SAME_TIME',
-                'message' => "You already have " . ($alreadyBooked->package?->name ?? 'this') . " booked for {$bookedWhen} (reference {$alreadyBooked->reference_number}). Do you want to book another one for the same time?",
-                'reference_number' => $alreadyBooked->reference_number,
+                'message' => "You already have " . ($alreadyBooked->package?->name ?? 'this') . " booked for {$bookedWhen}"
+                    . ($askerOwnsIt ? " (reference {$alreadyBooked->reference_number})" : '')
+                    . ". Do you want to book another one for the same time?",
+                'reference_number' => $askerOwnsIt ? $alreadyBooked->reference_number : null,
             ], 409);
         }
 
@@ -893,7 +948,7 @@ class BookingController extends Controller
                         'booking_overlap_override',
                         'bookings',
                         'An overlapping booking was saved with a manager override: '.implode(', ', $slotConflicts),
-                        auth()->id(),
+                        \App\Support\StaffActor::id(),
                         $bookingLocationId,
                         'room',
                         (int) $validated['room_id'],
@@ -1144,11 +1199,25 @@ class BookingController extends Controller
 
             return $created;
             });
+        } catch (\Illuminate\Database\QueryException $e) {
+            Log::error('Booking save failed', ['error' => $e->getMessage()]);
+
+            return response()->json(['success' => false, 'message' => 'We could not save this right now. Please try again.'], 422);
         } catch (\RuntimeException $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
         }
 
         $this->rememberCheckoutKey($checkoutKey, $booking);
+
+        $blockGuard->recordBookedInside($request, $blockedPeriods, 'booking', (int) $booking->id, [
+            'label' => 'Booking',
+            'reference' => $booking->reference_number,
+            'booking_date' => $bookingDate,
+            'booking_time' => $bookingTime,
+            'package_id' => $booking->package_id,
+            'room_id' => $booking->room_id,
+            'guest_name' => $booking->guest_name,
+        ]);
 
         // Create a pending waiver if a template covers this booking's package/attractions,
         // so the confirmation email/SMS can include the {{waiver_link}}. Non-fatal.
@@ -1212,7 +1281,7 @@ class BookingController extends Controller
                 'location_id' => $booking->location_id,
                 'type' => 'booking',
                 'priority' => 'medium',
-                'user_id' => $booking->created_by ?? auth()->id(),
+                'user_id' => $booking->created_by ?? \App\Support\StaffActor::id(),
                 'title' => 'New Booking Received',
                 'message' => "{$customerName} — {$formattedDate} at {$formattedTime} • $" . number_format($booking->total_amount, 2) . " ({$booking->reference_number})",
                 'status' => 'unread',
@@ -1319,7 +1388,7 @@ class BookingController extends Controller
                     source: 'booking',
                     tags: ['booking', 'customer'],
                     locationId: $booking->location_id,
-                    createdBy: $booking->created_by ?? auth()->id()
+                    createdBy: $booking->created_by ?? \App\Support\StaffActor::id()
                 );
             }
         } catch (\Exception $e) {
@@ -1356,6 +1425,7 @@ class BookingController extends Controller
             'success' => true,
             'message' => 'Booking created successfully',
             'data' => $booking,
+            'checkout_token' => \App\Support\CheckoutToken::for('booking', $booking->id),
         ], 201);
     }
 
@@ -1378,7 +1448,7 @@ class BookingController extends Controller
                     $booking,
                     $validated['membership_applied'],
                     $booking->location_id,
-                    auth()->id()
+                    \App\Support\StaffActor::id()
                 );
                 return;
             }
@@ -1399,7 +1469,7 @@ class BookingController extends Controller
                     $booking,
                     $quote['applied'],
                     $booking->location_id,
-                    auth()->id()
+                    \App\Support\StaffActor::id()
                 );
             }
         } catch (\Throwable $e) {
@@ -1689,6 +1759,47 @@ class BookingController extends Controller
         $sendEmail = !isset($validated['send_email']) || $validated['send_email'] !== false;
 
         $staffStoring = app(\App\Services\AddOnRuleService::class)->isStaff($request->user('sanctum'));
+
+        if (! $staffStoring && ! \App\Support\CheckoutToken::presented($request, 'booking', $booking->id)) {
+            if ($sendEmail
+                && $booking->status === 'confirmed'
+                && empty($booking->qr_code_path)
+                && empty($booking->created_by)
+                && $booking->created_at?->gt(now()->subMinutes(30))
+                && \Illuminate\Support\Facades\Cache::add('booking-confirmation-without-code:' . $booking->id, true, now()->addDay())) {
+                $booking->load(['customer', 'package', 'location.company', 'room', 'creator', 'attractions', 'addOns']);
+                $confirmationSent = false;
+
+                if ($booking->customer?->email ?? $booking->guest_email) {
+                    try {
+                        app(EmailNotificationService::class)->triggerBookingNotification($booking, EmailNotification::TRIGGER_BOOKING_CONFIRMED);
+                        $confirmationSent = true;
+                    } catch (\Exception $e) {
+                        Log::error('Failed to send booking confirmation email', [
+                            'booking_id' => $booking->id,
+                            'error' => $e->getMessage(),
+                        ]);
+                    }
+                }
+
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Confirmation sent',
+                    'data' => [
+                        'qr_code_path' => null,
+                        'qr_code_url' => null,
+                        'email_sent' => $confirmationSent,
+                        'email_error' => null,
+                        'recipient_email' => null,
+                    ],
+                ]);
+            }
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Only the checkout that made this booking can set its check-in code.',
+            ], 403);
+        }
 
         if (! $staffStoring && (! empty($booking->qr_code_path) || ($booking->created_at && $booking->created_at->lt(now()->subDay())))) {
             Log::info('QR code store without a staff login ignored: the booking already has one or is not new', [
@@ -2100,28 +2211,54 @@ class BookingController extends Controller
             || (float) $targetDuration !== (float) $booking->duration
             || (string) $targetDurationUnit !== (string) $booking->duration_unit;
 
+        $currentAttractionIds = $booking->attractions()->pluck('attractions.id')->map(fn ($id) => (int) $id)->all();
+        $targetAttractionIds = $attractionLines === null ? $currentAttractionIds : array_column($attractionLines, 'id');
+        $attractionsAdded = array_diff($targetAttractionIds, $currentAttractionIds) !== [];
+
         $closureInputsChanged = $slotMoved
             || (int) $targetPackageId !== (int) $booking->package_id
-            || $targetLocationId !== (int) $booking->location_id;
+            || $targetLocationId !== (int) $booking->location_id
+            || $attractionsAdded
+            || $booking->status === 'cancelled';
+
+        $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
+        $blockedPeriods = collect();
 
         if ($closureInputsChanged && $targetStatus !== 'cancelled' && Carbon::parse($targetDate)->gte(Carbon::today())) {
             $targetEndTime = Carbon::parse($targetTime)
                 ->addMinutes($this->getDurationInMinutes($targetDuration, $targetDurationUnit))
                 ->format('H:i');
 
-            $closureBlocked = ! empty($targetPackageId)
-                ? DayOff::isTimeSlotBlockedForPackage($targetLocationId, (int) $targetPackageId, $targetDate, $targetTime, $targetEndTime)
-                : DayOff::isTimeSlotBlocked($targetLocationId, $targetDate, $targetTime, $targetEndTime);
+            $blockedPackageId = ! empty($targetPackageId) ? (int) $targetPackageId : null;
+            $blockedRoomId = ! empty($targetRoomId) ? (int) $targetRoomId : null;
 
-            if (! $closureBlocked && ! empty($targetRoomId)) {
-                $closureBlocked = DayOff::isTimeSlotBlockedForRoom($targetLocationId, (int) $targetRoomId, $targetDate, $targetTime, $targetEndTime);
+            $blockedPeriods = $blockGuard->forPackageBooking(
+                $targetLocationId,
+                $blockedPackageId,
+                $blockedRoomId,
+                $targetDate,
+                $targetTime,
+                $targetEndTime,
+                $targetAttractionIds
+            );
+
+            $packageLocationId = $blockedPackageId
+                ? (int) \App\Models\Package::query()->whereKey($blockedPackageId)->value('location_id')
+                : null;
+
+            if ($packageLocationId && $packageLocationId !== $targetLocationId) {
+                $blockedPeriods = $blockedPeriods
+                    ->merge($blockGuard->forPackageBooking($packageLocationId, $blockedPackageId, null, $targetDate, $targetTime, $targetEndTime, $targetAttractionIds))
+                    ->unique('id')
+                    ->sortBy('id')
+                    ->values();
             }
 
-            if ($closureBlocked) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'The selected date or time is closed. Please choose another slot.',
-                ], 422);
+            $closedMessage = $blockGuard->addedAttractionsMessage($blockedPeriods, $blockedPackageId, $blockedRoomId, $targetAttractionIds)
+                ?? 'The selected date or time is closed. Please choose another slot.';
+
+            if ($refusal = $blockGuard->refusal($request, $blockedPeriods, $closedMessage, 'This change')) {
+                return $refusal;
             }
         }
 
@@ -2402,6 +2539,17 @@ class BookingController extends Controller
         }
 
         $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
+
+        $blockGuard->recordBookedInside($request, $blockedPeriods, 'booking', (int) $booking->id, [
+            'label' => 'Booking',
+            'reference' => $booking->reference_number,
+            'booking_date' => $targetDate,
+            'booking_time' => $targetTime,
+            'package_id' => $booking->package_id,
+            'room_id' => $booking->room_id,
+            'guest_name' => $booking->guest_name,
+            'moved' => true,
+        ]);
 
         if ($request->boolean('send_notification')) {
             $this->sendNotificationEmail($booking, 'updated');
@@ -2817,6 +2965,19 @@ class BookingController extends Controller
         ], fn ($value) => $value !== null));
     }
 
+    private function blockLogDetails(Booking $booking, array $extra = []): array
+    {
+        return [
+            'label' => 'Booking',
+            'reference' => $booking->reference_number,
+            'booking_date' => $booking->booking_date ? Carbon::parse($booking->booking_date)->toDateString() : null,
+            'booking_time' => $booking->booking_time instanceof \DateTimeInterface ? $booking->booking_time->format('H:i') : $booking->booking_time,
+            'package_id' => $booking->package_id,
+            'room_id' => $booking->room_id,
+            'guest_name' => $booking->guest_name,
+        ] + $extra;
+    }
+
     public function updateLocation(Request $request, Booking $booking): JsonResponse
     {
         $validated = $request->validate([
@@ -2880,24 +3041,25 @@ class BookingController extends Controller
         $duration = $booking->duration ?? 2;
         $durationUnit = $booking->duration_unit ?? 'hours';
 
+        $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
+        $blockedPeriods = collect();
+
         if ($booking->status !== 'cancelled' && Carbon::parse($bookingDate)->gte(Carbon::today())) {
             $endTime = Carbon::parse($startTime)
                 ->addMinutes($this->getDurationInMinutes($duration, $durationUnit))
                 ->format('H:i');
 
-            $closureBlocked = ! empty($booking->package_id)
-                ? DayOff::isTimeSlotBlockedForPackage($newLocationId, (int) $booking->package_id, $bookingDate, $startTime, $endTime)
-                : DayOff::isTimeSlotBlocked($newLocationId, $bookingDate, $startTime, $endTime);
+            $blockedPeriods = $blockGuard->forPackageBooking(
+                $newLocationId,
+                ! empty($booking->package_id) ? (int) $booking->package_id : null,
+                $roomId ? (int) $roomId : null,
+                $bookingDate,
+                $startTime,
+                $endTime
+            );
 
-            if (! $closureBlocked && $roomId) {
-                $closureBlocked = DayOff::isTimeSlotBlockedForRoom($newLocationId, (int) $roomId, $bookingDate, $startTime, $endTime);
-            }
-
-            if ($closureBlocked) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'The destination location is closed at this booking\'s date and time. Choose another location, or reschedule the booking first.',
-                ], 422);
+            if ($refusal = $blockGuard->refusal($request, $blockedPeriods, 'The destination location is closed at this booking\'s date and time. Choose another location, or reschedule the booking first.', 'Moving this booking')) {
+                return $refusal;
             }
         }
 
@@ -2989,6 +3151,17 @@ class BookingController extends Controller
 
         $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
 
+        $blockGuard->recordBookedInside($request, $blockedPeriods, 'booking', (int) $booking->id, [
+            'label' => 'Booking',
+            'reference' => $booking->reference_number,
+            'booking_date' => $bookingDate,
+            'booking_time' => $startTime,
+            'package_id' => $booking->package_id,
+            'room_id' => $booking->room_id,
+            'guest_name' => $booking->guest_name,
+            'moved_to_location_id' => $newLocationId,
+        ]);
+
         return response()->json([
             'success' => true,
             'message' => 'Booking location updated successfully.',
@@ -3016,11 +3189,20 @@ class BookingController extends Controller
             return response()->json(['success' => false, 'message' => 'This record was cancelled and its gift card refunded. It cannot be reactivated - create a new one so the gift card is redeemed again.'], 422);
         }
 
+        $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
+        $reactivatedInside = collect();
+
         if ($previousStatus === 'cancelled' && $validated['status'] !== 'cancelled') {
             try {
                 app(\App\Services\SlotCapacityGuard::class)->assertBookingFits($booking, 'booking.updateStatus');
             } catch (\RuntimeException $e) {
                 return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+            }
+
+            $reactivatedInside = $blockGuard->forExistingBooking($booking);
+
+            if ($refusal = $blockGuard->refusal($request, $reactivatedInside, 'The selected date or time is closed. Please choose another slot.', 'Reactivating this booking')) {
+                return $refusal;
             }
         }
 
@@ -3085,6 +3267,8 @@ class BookingController extends Controller
                 ]);
                 break;
         }
+
+        $blockGuard->recordBookedInside($request, $reactivatedInside, 'booking', (int) $booking->id, $this->blockLogDetails($booking, ['reactivated' => true]));
 
         if ($booking->customer_id && $notificationData) {
             CustomerNotification::create([
@@ -3342,6 +3526,12 @@ class BookingController extends Controller
         ]);
 
         $this->applyBookingSearch($query, $validated['query']);
+
+        $this->applyAuthScope($query, $request);
+        $searcher = $this->resolveAuthUser($request);
+        if ($searcher && $searcher->company_id) {
+            $query->whereIn('bookings.location_id', \App\Models\Location::where('company_id', $searcher->company_id)->select('id'));
+        }
 
         $bookings = $query
             ->orderBy('booking_date', 'desc')
@@ -3689,7 +3879,9 @@ class BookingController extends Controller
             }
 
             if (!app(\App\Services\AddOnRuleService::class)->isStaff(request()->user('sanctum'))
-                && ($booking->status !== 'pending' || $this->bookingWasCharged($booking))) {
+                && ($booking->status !== 'pending'
+                    || $this->bookingWasCharged($booking)
+                    || !\App\Support\CheckoutToken::presented(request(), 'booking', $booking->id))) {
                 Log::warning('Public booking delete refused: only an unpaid pending booking can be rolled back', [
                     'id' => $booking->id,
                     'status' => $booking->status,
@@ -3710,7 +3902,7 @@ class BookingController extends Controller
             $deletedBy = null;
             $user = null;
             try {
-                $authUser = auth()->user();
+                $authUser = \App\Support\StaffActor::current();
                 if ($authUser instanceof User) {
                     $deletedBy = $authUser->id;
                     $user = $authUser;
@@ -3768,6 +3960,8 @@ class BookingController extends Controller
                 'success' => true,
                 'message' => 'Booking deleted successfully',
             ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            throw $e;
         } catch (\Exception $e) {
             Log::error('Booking delete failed with exception', [
                 'id' => $id,
@@ -3776,13 +3970,17 @@ class BookingController extends Controller
             ]);
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to delete booking: ' . $e->getMessage(),
+                'message' => \App\Support\StaffActor::current() ? 'Failed to delete booking: ' . $e->getMessage() : 'This booking could not be removed right now.',
             ], 500);
         }
     }
 
     public function summary(Booking $booking)
     {
+        if ($denied = $this->denyForeignRecord($booking, 'booking')) {
+            return $denied;
+        }
+
         $booking->load(['customer', 'package', 'location', 'room', 'attractions', 'addOns', 'payments']);
 
         $pdf = Pdf::loadView('exports.booking-summary', [
@@ -3799,6 +3997,10 @@ class BookingController extends Controller
 
     public function summaryView(Booking $booking)
     {
+        if ($denied = $this->denyForeignRecord($booking, 'booking')) {
+            return $denied;
+        }
+
         $booking->load(['customer', 'package', 'location', 'room', 'attractions', 'addOns', 'payments']);
 
         $pdf = Pdf::loadView('exports.booking-summary', [
@@ -4264,9 +4466,11 @@ class BookingController extends Controller
             ], 422);
         }
 
-        $booking = Booking::onlyTrashed()->findOrFail($id);
+        $booking = Booking::onlyTrashed()->whereIn('location_id', $this->staffLocationIds(request()))->findOrFail($id);
 
         $changeReason = $this->resolveChangeReason(request(), self::CHANGE_GUEST_VISIBLE);
+        $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
+        $restoredInside = collect();
 
         if ($booking->status !== 'cancelled') {
             try {
@@ -4274,9 +4478,16 @@ class BookingController extends Controller
             } catch (\RuntimeException $e) {
                 return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
             }
+
+            $restoredInside = $blockGuard->forExistingBooking($booking);
+
+            if ($refusal = $blockGuard->refusal(request(), $restoredInside, 'The selected date or time is closed. Please choose another slot.', 'Restoring this booking')) {
+                return $refusal;
+            }
         }
 
         $booking->restore();
+        $blockGuard->recordBookedInside(request(), $restoredInside, 'booking', (int) $booking->id, $this->blockLogDetails($booking, ['restored' => true]));
         $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
         $this->followUpAfterRestore($booking);
 
@@ -4322,7 +4533,7 @@ class BookingController extends Controller
 
     public function forceDelete(int $id): JsonResponse
     {
-        $booking = Booking::onlyTrashed()->findOrFail($id);
+        $booking = Booking::onlyTrashed()->whereIn('location_id', $this->staffLocationIds(request()))->findOrFail($id);
 
         $changeReason = $this->resolveChangeReason(request(), self::CHANGE_GUEST_VISIBLE);
 
@@ -4382,10 +4593,19 @@ class BookingController extends Controller
 
         $changeReason = $this->resolveChangeReason($request, self::CHANGE_GUEST_VISIBLE);
 
-        $bookings = Booking::onlyTrashed()->whereIn('id', $validated['ids'])->get();
+        $bookings = Booking::onlyTrashed()->whereIn('id', $validated['ids'])->whereIn('location_id', $this->staffLocationIds($request))->get();
         $restoredCount = 0;
         $blocked = [];
         $guard = app(\App\Services\SlotCapacityGuard::class);
+        $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
+        $insideBlocks = $bookings
+            ->reject(fn (Booking $booking) => $booking->status === 'cancelled')
+            ->mapWithKeys(fn (Booking $booking) => [$booking->id => $blockGuard->forExistingBooking($booking)])
+            ->filter(fn ($blocks) => $blocks->isNotEmpty());
+
+        if ($refusal = $blockGuard->refusal($request, $insideBlocks->flatten(1)->unique('id')->sortBy('id')->values(), 'The selected date or time is closed. Please choose another slot.', 'Restoring these bookings')) {
+            return $refusal;
+        }
 
         foreach ($bookings as $booking) {
             if ($booking->status !== 'cancelled') {
@@ -4398,6 +4618,10 @@ class BookingController extends Controller
             }
 
             $booking->restore();
+
+            if ($insideBlocks->has($booking->id)) {
+                $blockGuard->recordBookedInside($request, $insideBlocks->get($booking->id), 'booking', (int) $booking->id, $this->blockLogDetails($booking, ['restored' => true]));
+            }
             $this->followUpAfterRestore($booking);
             $restoredCount++;
 
@@ -4445,6 +4669,8 @@ class BookingController extends Controller
     {
         Log::info('Booking public force delete request', ['id' => $id, 'ip' => request()->ip()]);
 
+        $staff = \App\Support\StaffActor::current();
+
         try {
             $booking = Booking::withTrashed()->find($id);
 
@@ -4462,6 +4688,13 @@ class BookingController extends Controller
                 ], 403);
             }
 
+            if (!$staff && !\App\Support\CheckoutToken::presented(request(), 'booking', $booking->id)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Only the checkout that made this booking can remove it.',
+                ], 403);
+            }
+
             if ($this->bookingWasCharged($booking)) {
                 Log::warning('Public force delete refused: the booking has payments', ['id' => $booking->id, 'ip' => request()->ip()]);
 
@@ -4470,6 +4703,9 @@ class BookingController extends Controller
                     'message' => 'This booking has payments, so it cannot be removed this way.',
                 ], 403);
             }
+
+            $purgingTrash = $staff && $booking->trashed();
+            $changeReason = $purgingTrash ? $this->resolveChangeReason(request(), self::CHANGE_GUEST_VISIBLE) : null;
 
             try {
                 $gcalService = new GoogleCalendarService($booking->location_id);
@@ -4499,24 +4735,46 @@ class BookingController extends Controller
                 ]);
             }
 
-            $this->reverseGiftCardFor($booking, \App\Models\Payment::TYPE_BOOKING, 'payment_error_cleanup');
+            $this->reverseGiftCardFor($booking, \App\Models\Payment::TYPE_BOOKING, $purgingTrash ? 'booking_deleted' : 'payment_error_cleanup');
 
             $booking->forceDelete();
 
-            ActivityLog::log(
-                action: 'Booking Force Deleted (Payment Error)',
-                category: 'delete',
-                description: "Pending booking {$referenceNumber} force deleted due to payment error",
-                userId: null,
-                locationId: $locationId,
-                entityType: 'booking',
-                entityId: $bookingId,
-                metadata: [
-                    'reason' => 'payment_error_cleanup',
-                    'reference_number' => $referenceNumber,
-                    'deleted_at' => now()->toIso8601String(),
-                ]
-            );
+            if ($purgingTrash) {
+                ActivityLog::log(
+                    action: 'Booking Permanently Deleted',
+                    category: 'delete',
+                    description: "Booking {$referenceNumber} permanently deleted",
+                    userId: $staff->id,
+                    locationId: $locationId,
+                    entityType: 'booking',
+                    entityId: $bookingId,
+                    metadata: [
+                        'deleted_by' => [
+                            'user_id' => $staff->id,
+                            'name' => $staff->first_name . ' ' . $staff->last_name,
+                            'email' => $staff->email,
+                        ],
+                        'deleted_at' => now()->toIso8601String(),
+                        'reference_number' => $referenceNumber,
+                    ],
+                    reason: $changeReason
+                );
+            } else {
+                ActivityLog::log(
+                    action: 'Booking Force Deleted (Payment Error)',
+                    category: 'delete',
+                    description: "Pending booking {$referenceNumber} force deleted due to payment error",
+                    userId: $staff?->id,
+                    locationId: $locationId,
+                    entityType: 'booking',
+                    entityId: $bookingId,
+                    metadata: [
+                        'reason' => 'payment_error_cleanup',
+                        'reference_number' => $referenceNumber,
+                        'deleted_at' => now()->toIso8601String(),
+                    ]
+                );
+            }
 
             Log::info('Booking force deleted successfully', ['id' => $bookingId, 'reference' => $referenceNumber]);
 
@@ -4524,6 +4782,8 @@ class BookingController extends Controller
                 'success' => true,
                 'message' => 'Booking permanently deleted',
             ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            throw $e;
         } catch (\Exception $e) {
             Log::error('Booking public force delete failed', [
                 'id' => $id,
@@ -4532,7 +4792,7 @@ class BookingController extends Controller
             ]);
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to force delete booking: ' . $e->getMessage(),
+                'message' => $staff ? 'Failed to force delete booking: ' . $e->getMessage() : 'This booking could not be removed right now.',
             ], 500);
         }
     }
@@ -4548,6 +4808,14 @@ class BookingController extends Controller
         $locationId = (int) $request->location_id;
         $createdBy = auth()->id();
         $skipDuplicates = $request->boolean('skip_duplicates', true);
+
+        $scopedLocation = $this->scopedLocation($request, $locationId);
+        if ($scopedLocation instanceof JsonResponse) {
+            return $scopedLocation;
+        }
+
+        $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
+        $insideBlocks = collect();
 
         try {
             $service = new \App\Services\BookingCsvImportService();
@@ -4570,10 +4838,33 @@ class BookingController extends Controller
             try {
                 $result = $service->processRows($rows, $locationId, $createdBy, $skipDuplicates);
 
+                $insideBlocks = collect($result['bookings'] ?? [])
+                    ->reject(fn (Booking $booking) => $booking->status === 'cancelled')
+                    ->mapWithKeys(fn (Booking $booking) => [$booking->id => $blockGuard->forExistingBooking($booking)])
+                    ->filter(fn ($blocks) => $blocks->isNotEmpty());
+
+                $refusal = $blockGuard->refusal(
+                    $request,
+                    $insideBlocks->flatten(1)->unique('id')->sortBy('id')->values(),
+                    'Some of these bookings fall inside a blocked period.',
+                    'Importing these bookings'
+                );
+
+                if ($refusal) {
+                    \Illuminate\Support\Facades\DB::rollBack();
+
+                    return $refusal;
+                }
+
                 \Illuminate\Support\Facades\DB::commit();
             } catch (\Exception $e) {
                 \Illuminate\Support\Facades\DB::rollBack();
                 throw $e;
+            }
+
+            foreach ($insideBlocks as $bookingId => $blocks) {
+                $imported = collect($result['bookings'])->firstWhere('id', $bookingId);
+                $blockGuard->recordBookedInside($request, $blocks, 'booking', (int) $bookingId, $this->blockLogDetails($imported, ['imported' => true]));
             }
 
             $currentUser = auth()->user();

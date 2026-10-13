@@ -21,23 +21,43 @@ class PackageTimeSlotController extends Controller
 
     private const SLOTS_RECONNECT_AFTER_MS = 30000;
 
+    private const GUEST_HIDDEN_FIELDS = ['notes', 'customer_id', 'booking_id', 'user_id'];
+
+    private function staffActor(Request $request): ?\App\Models\User
+    {
+        $actor = $request->user('sanctum');
+
+        return app(\App\Services\AddOnRuleService::class)->isStaff($actor) ? $actor : null;
+    }
+
     private function slotRelationsFor(Request $request): array
     {
-        return app(\App\Services\AddOnRuleService::class)->isStaff($request->user('sanctum'))
+        return $this->staffActor($request)
             ? ['package', 'room', 'booking', 'customer', 'user']
             : ['package', 'room'];
     }
 
+    private function staffMaySee(\App\Models\User $staff, PackageTimeSlot $slot): bool
+    {
+        $location = $slot->package?->location;
+
+        if (in_array($staff->role, ['location_manager', 'attendant'], true) && $staff->location_id) {
+            return $location && (int) $location->id === (int) $staff->location_id;
+        }
+
+        return !$staff->company_id || ($location && (int) $location->company_id === (int) $staff->company_id);
+    }
+
     public function index(Request $request): JsonResponse
     {
+        $staff = $this->staffActor($request);
         $query = PackageTimeSlot::with($this->slotRelationsFor($request));
 
-        $authUser = $this->resolveAuthUser($request);
-        if ($authUser) {
-            if (in_array($authUser->role, ['location_manager', 'attendant'], true) && $authUser->location_id) {
-                $query->whereHas('package', fn($p) => $p->where('location_id', $authUser->location_id));
-            } elseif ($authUser->company_id) {
-                $query->whereHas('package.location', fn($l) => $l->where('company_id', $authUser->company_id));
+        if ($staff) {
+            if (in_array($staff->role, ['location_manager', 'attendant'], true) && $staff->location_id) {
+                $query->whereHas('package', fn($p) => $p->where('location_id', $staff->location_id));
+            } elseif ($staff->company_id) {
+                $query->whereHas('package.location', fn($l) => $l->where('company_id', $staff->company_id));
             }
         }
 
@@ -53,7 +73,7 @@ class PackageTimeSlotController extends Controller
             $query->byDate($request->date);
         }
 
-        if ($request->has('customer_id')) {
+        if ($staff && $request->has('customer_id')) {
             $query->byCustomer($request->customer_id);
         }
 
@@ -67,6 +87,12 @@ class PackageTimeSlotController extends Controller
 
         $perPage = max(1, min((int) $request->get('per_page', 15), 100));
         $timeSlots = $query->paginate($perPage);
+
+        if (!$staff) {
+            foreach ($timeSlots->items() as $slot) {
+                $slot->makeHidden(self::GUEST_HIDDEN_FIELDS);
+            }
+        }
 
         return response()->json([
             'success' => true,
@@ -84,6 +110,13 @@ class PackageTimeSlotController extends Controller
 
     public function store(Request $request): JsonResponse
     {
+        if (!$this->staffActor($request)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Time slots are booked through a booking.',
+            ], 403);
+        }
+
         $validated = $request->validate([
             'package_id' => 'required|exists:packages,id',
             'room_id' => 'required|exists:rooms,id',
@@ -97,6 +130,70 @@ class PackageTimeSlotController extends Controller
             'status' => 'sometimes|in:booked,completed,cancelled,no_show',
             'notes' => 'nullable|string',
         ]);
+
+        $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
+        $slotLocationId = (int) Package::query()->whereKey($validated['package_id'])->value('location_id');
+        $isStaff = $blockGuard->isStaff($request, $slotLocationId);
+        $booking = \App\Models\Booking::find($validated['booking_id']);
+
+        if (! $booking) {
+            return response()->json([
+                'success' => false,
+                'message' => 'That booking could not be found.',
+            ], 422);
+        }
+
+        $existing = PackageTimeSlot::where('booking_id', $booking->id)->first();
+
+        if ($existing) {
+            $existing->load($isStaff ? ['package', 'room', 'booking', 'customer'] : ['package', 'room']);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Time slot already booked',
+                'data' => $isStaff ? $existing : $existing->makeHidden(['customer_id', 'user_id', 'notes']),
+            ]);
+        }
+
+        if (! $isStaff) {
+            $bookingTime = $booking->booking_time instanceof \DateTimeInterface
+                ? $booking->booking_time->format('H:i')
+                : substr((string) $booking->booking_time, 0, 5);
+
+            $matchesBooking = (int) $booking->package_id === (int) $validated['package_id']
+                && (int) $booking->customer_id === (int) $validated['customer_id']
+                && \Carbon\Carbon::parse($booking->booking_date)->toDateString() === \Carbon\Carbon::parse($validated['booked_date'])->toDateString()
+                && $bookingTime === $validated['time_slot_start']
+                && $booking->status !== 'cancelled'
+                && Package::query()->select(['id'])->whereKey($validated['package_id'])->first()?->rooms()->whereKey($validated['room_id'])->exists();
+
+            if (! $matchesBooking) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This time slot does not match its booking.',
+                ], 422);
+            }
+
+            $validated['duration'] = $booking->duration;
+            $validated['duration_unit'] = $booking->duration_unit;
+            $validated['user_id'] = null;
+            $validated['status'] = 'booked';
+        }
+
+        $slotBlocks = $blockGuard->forPackageBooking(
+            $slotLocationId,
+            (int) $validated['package_id'],
+            (int) $validated['room_id'],
+            \Carbon\Carbon::parse($validated['booked_date'])->toDateString(),
+            $validated['time_slot_start'],
+            \Carbon\Carbon::parse($validated['time_slot_start'])
+                ->addMinutes(\App\Services\AvailabilityBlockGuard::durationMinutes($validated['duration'], $validated['duration_unit']))
+                ->format('H:i')
+        );
+
+        if ($refusal = $blockGuard->refusal($request, $slotBlocks, 'That space is closed at that time. Please choose another time.', 'This time slot')) {
+            return $refusal;
+        }
 
         $conflict = $this->checkTimeSlotConflict(
             $validated['room_id'],
@@ -127,18 +224,35 @@ class PackageTimeSlotController extends Controller
         }
 
         $timeSlot = PackageTimeSlot::create($validated);
+        $blockGuard->recordBookedInside($request, $slotBlocks, 'package_time_slot', (int) $timeSlot->id, [
+            'label' => 'Space time slot',
+            'reference' => '#' . $timeSlot->id,
+            'booking_id' => $booking->id,
+            'room_id' => (int) $validated['room_id'],
+            'booked_date' => \Carbon\Carbon::parse($validated['booked_date'])->toDateString(),
+            'time_slot_start' => $validated['time_slot_start'],
+        ]);
         $timeSlot->load(array_values(array_diff($this->slotRelationsFor($request), ['user'])));
 
         return response()->json([
             'success' => true,
             'message' => 'Time slot booked successfully',
-            'data' => $timeSlot,
+            'data' => $isStaff ? $timeSlot : $timeSlot->makeHidden(['customer_id', 'user_id', 'notes']),
         ], 201);
     }
 
     public function show(Request $request, PackageTimeSlot $packageTimeSlot): JsonResponse
     {
+        $staff = $this->staffActor($request);
         $packageTimeSlot->load($this->slotRelationsFor($request));
+
+        if ($staff && !$this->staffMaySee($staff, $packageTimeSlot->loadMissing('package.location'))) {
+            return response()->json(['success' => false, 'message' => 'Time slot not found'], 404);
+        }
+
+        if (!$staff) {
+            $packageTimeSlot->makeHidden(self::GUEST_HIDDEN_FIELDS);
+        }
 
         return response()->json([
             'success' => true,
@@ -157,11 +271,43 @@ class PackageTimeSlotController extends Controller
             'notes' => 'nullable|string',
         ]);
 
+        $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
+        $slotLocationId = (int) (Package::query()->whereKey($packageTimeSlot->package_id)->value('location_id')
+            ?? \App\Models\Room::query()->whereKey($packageTimeSlot->room_id)->value('location_id'));
+
+        if (! in_array($slotLocationId, $this->staffLocationIds($request), true)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Forbidden: that time slot belongs to another location',
+            ], 403);
+        }
+
+        $slotBlocks = collect();
+
         if (isset($validated['booked_date']) || isset($validated['time_slot_start']) ||
             isset($validated['duration']) || isset($validated['duration_unit'])) {
 
             $newDate = $validated['booked_date'] ?? $packageTimeSlot->booked_date;
             $newStartTime = $validated['time_slot_start'] ?? $packageTimeSlot->time_slot_start;
+            $blockStart = substr((string) $newStartTime, 0, 5);
+
+            $slotBlocks = $blockGuard->forPackageBooking(
+                $slotLocationId,
+                $packageTimeSlot->package_id ? (int) $packageTimeSlot->package_id : null,
+                $packageTimeSlot->room_id ? (int) $packageTimeSlot->room_id : null,
+                \Carbon\Carbon::parse($newDate)->toDateString(),
+                $blockStart,
+                \Carbon\Carbon::parse($blockStart)
+                    ->addMinutes(\App\Services\AvailabilityBlockGuard::durationMinutes(
+                        $validated['duration'] ?? $packageTimeSlot->duration,
+                        $validated['duration_unit'] ?? $packageTimeSlot->duration_unit
+                    ))
+                    ->format('H:i')
+            );
+
+            if ($refusal = $blockGuard->refusal($request, $slotBlocks, 'That space is closed at that time. Please choose another time.', 'Moving this time slot')) {
+                return $refusal;
+            }
 
             $conflict = $this->checkTimeSlotConflict(
                 $packageTimeSlot->room_id,
@@ -212,6 +358,13 @@ class PackageTimeSlotController extends Controller
         $changeReason = $this->resolveChangeReason($request, self::CHANGE_GUEST_VISIBLE);
 
         $packageTimeSlot->update($validated);
+        $blockGuard->recordBookedInside($request, $slotBlocks, 'package_time_slot', (int) $packageTimeSlot->id, [
+            'label' => 'Space time slot',
+            'reference' => '#' . $packageTimeSlot->id,
+            'booking_id' => $packageTimeSlot->booking_id,
+            'room_id' => $packageTimeSlot->room_id,
+            'moved' => true,
+        ]);
         $packageTimeSlot->load(['package', 'room', 'booking', 'customer']);
 
         if ($changes !== [] && $packageTimeSlot->booking_id) {
@@ -279,9 +432,11 @@ class PackageTimeSlotController extends Controller
         ]);
     }
 
-    public function getAvailableSlotsAuto(int $packageId, string $date)
+    public function getAvailableSlotsAuto(Request $request, int $packageId, string $date)
     {
-        return response()->stream(function () use ($packageId, $date) {
+        $includeBlocked = $request->boolean('include_blocked');
+
+        return response()->stream(function () use ($packageId, $date, $includeBlocked) {
             echo "retry: " . self::SLOTS_RECONNECT_AFTER_MS . "\n\n";
 
             try {
@@ -290,7 +445,7 @@ class PackageTimeSlotController extends Controller
                 $this->forgetSlotLookups();
 
                 echo "data: " . json_encode([
-                    'available_slots' => $this->generateAvailableSlotsWithRooms($package, $date),
+                    'available_slots' => $this->generateAvailableSlotsWithRooms($package, $date, false, $includeBlocked),
                     'package' => [
                         'id' => $package->id,
                         'name' => $package->name,
@@ -308,7 +463,6 @@ class PackageTimeSlotController extends Controller
 
                 echo "event: error\n";
                 echo "data: " . json_encode([
-                    'error' => $e->getMessage(),
                     'message' => 'Failed to load available time slots'
                 ]) . "\n\n";
             }

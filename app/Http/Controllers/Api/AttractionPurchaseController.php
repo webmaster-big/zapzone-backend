@@ -9,7 +9,6 @@ use App\Http\Traits\LimitsListingsToRequester;
 use App\Models\AttractionPurchase;
 use App\Models\AttractionPurchaseAddOn;
 use App\Models\Attraction;
-use App\Models\DayOff;
 use App\Mail\AttractionPurchaseReceipt;
 use App\Services\GmailApiService;
 use App\Models\EmailNotification;
@@ -255,9 +254,11 @@ class AttractionPurchaseController extends Controller
 
     public function store(Request $request, DiscountService $discounts): JsonResponse
     {
+        $staffCaller = app(\App\Services\AddOnRuleService::class)->isStaff($request->user('sanctum'));
+
         $validated = $request->validate([
             'attraction_id' => 'required|exists:attractions,id',
-            'customer_id' => 'nullable|exists:customers,id',
+            'customer_id' => $staffCaller ? 'nullable|exists:customers,id' : 'nullable|integer',
             'membership_id' => 'nullable|exists:memberships,id',
             'membership_applied' => 'nullable|array',
             'membership_applied.*.membership_plan_benefit_id' => 'nullable|integer',
@@ -266,7 +267,7 @@ class AttractionPurchaseController extends Controller
             'membership_applied.*.value_applied' => 'nullable|numeric',
 
             'guest_name' => 'required_without:customer_id|string|max:255',
-            'guest_email' => 'required_without:customer_id|email|max:255',
+            'guest_email' => $staffCaller ? 'nullable|email|max:255' : 'required_without:customer_id|email|max:255',
             'guest_phone' => 'nullable|string|max:20',
             'guest_address' => 'nullable|string|max:255',
             'guest_city' => 'nullable|string|max:100',
@@ -386,17 +387,44 @@ class AttractionPurchaseController extends Controller
         if (!empty($validated['customer_id'])) {
             $duplicateQuery->where('customer_id', $validated['customer_id']);
         } else {
-            $duplicateQuery->where('guest_email', $validated['guest_email'] ?? null);
+            $duplicateQuery->whereNull('customer_id')->where('guest_email', $validated['guest_email'] ?? null);
         }
+
+        $attractionLocationId = Attraction::query()->whereKey($validated['attraction_id'])->value('location_id');
+        $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
+        $blockedPeriods = collect();
+
+        if (!empty($validated['scheduled_date']) && $attractionLocationId) {
+            $scheduledDate = Carbon::parse($validated['scheduled_date'])->toDateString();
+            $attractionId = (int) $validated['attraction_id'];
+            $blockedPeriods = $blockGuard->forAttraction(
+                (int) $attractionLocationId,
+                $attractionId,
+                $scheduledDate,
+                !empty($validated['scheduled_time']) ? substr((string) $validated['scheduled_time'], 0, 5) : null
+            );
+            if ($refusal = $blockGuard->refusal($request, $blockedPeriods, 'The selected date or time is closed for this attraction. Please choose another.', 'This purchase')) {
+                return $refusal;
+            }
+        }
+
+        $buyerIdentifiable = !empty($validated['customer_id']) || trim((string) ($validated['guest_email'] ?? '')) !== '';
 
         $requestCarriesCode = !empty($validated['gift_card_code']) || !empty($validated['gift_card_id'])
             || !empty($validated['promo_code']) || !empty($validated['promo_id']);
 
-        $existingPending = $requestCarriesCode ? null : $duplicateQuery->first();
+        if ($requestCarriesCode) {
+            $existingPending = null;
+        } elseif ($checkoutKey) {
+            $existingPending = $earlierAttempt ? $duplicateQuery->whereKey($earlierAttempt->id)->first() : null;
+        } else {
+            $existingPending = $buyerIdentifiable ? $duplicateQuery->first() : null;
+        }
         if ($existingPending) {
+            $blockGuard->recordBookedInside($request, $blockedPeriods, 'attraction_purchase', (int) $existingPending->id, $this->blockLogDetails($existingPending));
             $existingPending->load($isStaff ? ['attraction', 'customer', 'createdBy', 'addOns'] : ['attraction', 'addOns']);
             if (! $isStaff) {
-                $existingPending->makeHidden(['guest_name', 'guest_phone', 'guest_address', 'guest_city', 'guest_state', 'guest_zip', 'guest_country', 'customer_id', 'created_by', 'notes', 'transaction_id']);
+                $existingPending->makeHidden(['guest_name', 'guest_phone', 'guest_address', 'guest_city', 'guest_state', 'guest_zip', 'guest_country', 'customer_id', 'created_by', 'notes', 'transaction_id', 'applied_discounts', 'gift_card_id', 'promo_id', 'membership_id']);
             }
             Log::info('Duplicate attraction purchase prevented (existing pending found)', [
                 'existing_purchase_id' => $existingPending->id,
@@ -408,6 +436,9 @@ class AttractionPurchaseController extends Controller
                 'success' => true,
                 'message' => 'Attraction purchase already exists',
                 'data' => $existingPending,
+                'checkout_token' => $this->provesReplayOwner($request, $isStaff, $earlierAttempt, $existingPending)
+                    ? \App\Support\CheckoutToken::for('attraction_purchase', $existingPending->id)
+                    : null,
             ], 200);
         }
 
@@ -425,7 +456,7 @@ class AttractionPurchaseController extends Controller
             $validated['amount_paid'] = 0;
         }
 
-        $validated['created_by'] = auth()->id() ?? null;
+        $validated['created_by'] = \App\Support\StaffActor::id() ?? null;
 
         $attractionModel = Attraction::find($validated['attraction_id']);
         $attractionLocationId = $attractionModel?->location_id;
@@ -463,20 +494,6 @@ class AttractionPurchaseController extends Controller
             ]);
             if ($rejection) {
                 return response()->json(['success' => false, 'code' => 'PRICE_MISMATCH', 'message' => $rejection], 422);
-            }
-        }
-
-        if (!empty($validated['scheduled_date']) && $attractionLocationId) {
-            $scheduledDate = Carbon::parse($validated['scheduled_date'])->toDateString();
-            $attractionId = (int) $validated['attraction_id'];
-            $closureBlocked = !empty($validated['scheduled_time'])
-                ? DayOff::isTimeSlotBlockedForAttraction($attractionLocationId, $attractionId, $scheduledDate, $validated['scheduled_time'])
-                : DayOff::isDateBlockedForAttraction($attractionLocationId, $attractionId, $scheduledDate);
-            if ($closureBlocked) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'The selected date or time is closed for this attraction. Please choose another.',
-                ], 422);
             }
         }
 
@@ -610,6 +627,10 @@ class AttractionPurchaseController extends Controller
 
             return $created;
             });
+        } catch (\Illuminate\Database\QueryException $e) {
+            Log::error('Attraction purchase save failed', ['error' => $e->getMessage()]);
+
+            return response()->json(['success' => false, 'message' => 'We could not save this right now. Please try again.'], 422);
         } catch (\RuntimeException $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
         }
@@ -619,13 +640,32 @@ class AttractionPurchaseController extends Controller
 
         $this->rememberPurchaseCheckoutKey($checkoutKey, $purchase);
 
+        $blockGuard->recordBookedInside($request, $blockedPeriods, 'attraction_purchase', (int) $purchase->id, [
+            'label' => 'Attraction purchase',
+            'reference' => '#' . $purchase->id,
+            'scheduled_date' => $purchase->scheduled_date?->toDateString(),
+            'scheduled_time' => $purchase->scheduled_time?->format('H:i'),
+            'attraction_id' => $purchase->attraction_id,
+            'guest_name' => $purchase->guest_name,
+        ]);
+
         app(PurchaseCompletionService::class)->completeAttractionPurchase($purchase, $validated);
 
         return response()->json([
             'success' => true,
             'message' => 'Attraction purchase created successfully',
             'data' => $purchase,
+            'checkout_token' => \App\Support\CheckoutToken::for('attraction_purchase', $purchase->id),
         ], 201);
+    }
+
+    private function provesReplayOwner(Request $request, bool $isStaff, ?AttractionPurchase $keyed, AttractionPurchase $replayed): bool
+    {
+        $requester = $request->user('sanctum');
+
+        return $isStaff
+            || ($keyed && (int) $keyed->id === (int) $replayed->id)
+            || ($requester instanceof \App\Models\Customer && (int) $replayed->customer_id === (int) $requester->id);
     }
 
     private function purchaseForCheckoutKey(string $checkoutKey): ?AttractionPurchase
@@ -694,7 +734,7 @@ class AttractionPurchaseController extends Controller
                     $purchase,
                     $validated['membership_applied'],
                     $locationId,
-                    auth()->id()
+                    \App\Support\StaffActor::id()
                 );
                 return;
             }
@@ -716,7 +756,7 @@ class AttractionPurchaseController extends Controller
                     $purchase,
                     $quote['applied'],
                     $locationId,
-                    auth()->id()
+                    \App\Support\StaffActor::id()
                 );
             }
         } catch (\Throwable $e) {
@@ -960,10 +1000,14 @@ class AttractionPurchaseController extends Controller
             'additional_addons.*.price_at_purchase' => 'nullable|numeric|min:0',
         ]);
 
+        $inactiveStatuses = [AttractionPurchase::STATUS_CANCELLED, AttractionPurchase::STATUS_REFUNDED];
         $slotTouched = array_intersect(array_keys($validated), ['quantity', 'scheduled_date', 'scheduled_time', 'attraction_id']) !== []
-            || (isset($validated['status']) && $attractionPurchase->status === AttractionPurchase::STATUS_CANCELLED && $validated['status'] !== AttractionPurchase::STATUS_CANCELLED);
+            || (isset($validated['status']) && in_array($attractionPurchase->status, $inactiveStatuses, true) && ! in_array($validated['status'], $inactiveStatuses, true));
 
-        if ($slotTouched && ($validated['status'] ?? $attractionPurchase->status) !== AttractionPurchase::STATUS_CANCELLED) {
+        $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
+        $blockedPeriods = collect();
+
+        if ($slotTouched && ! in_array($validated['status'] ?? $attractionPurchase->status, $inactiveStatuses, true)) {
             $closureAttraction = \App\Models\Attraction::find($validated['attraction_id'] ?? $attractionPurchase->attraction_id);
             $closureDate = isset($validated['scheduled_date'])
                 ? Carbon::parse($validated['scheduled_date'])->toDateString()
@@ -971,17 +1015,21 @@ class AttractionPurchaseController extends Controller
             $closureTime = isset($validated['scheduled_time'])
                 ? substr((string) $validated['scheduled_time'], 0, 5)
                 : $attractionPurchase->scheduled_time?->format('H:i');
+            $movesIntoNewSlot = $closureDate !== $attractionPurchase->scheduled_date?->toDateString()
+                || $closureTime !== $attractionPurchase->scheduled_time?->format('H:i')
+                || (int) ($closureAttraction?->id ?? 0) !== (int) $attractionPurchase->attraction_id
+                || in_array($attractionPurchase->status, [AttractionPurchase::STATUS_CANCELLED, AttractionPurchase::STATUS_REFUNDED], true);
 
-            if ($closureAttraction && $closureAttraction->location_id && $closureDate && Carbon::parse($closureDate)->gte(Carbon::today())) {
-                $closureBlocked = $closureTime
-                    ? DayOff::isTimeSlotBlockedForAttraction((int) $closureAttraction->location_id, (int) $closureAttraction->id, $closureDate, $closureTime)
-                    : DayOff::isDateBlockedForAttraction((int) $closureAttraction->location_id, (int) $closureAttraction->id, $closureDate);
+            if ($movesIntoNewSlot && $closureAttraction && $closureAttraction->location_id && $closureDate && Carbon::parse($closureDate)->gte(Carbon::today())) {
+                $blockedPeriods = $blockGuard->forAttraction(
+                    (int) $closureAttraction->location_id,
+                    (int) $closureAttraction->id,
+                    $closureDate,
+                    $closureTime
+                );
 
-                if ($closureBlocked) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'The selected date or time is closed for this attraction. Please choose another.',
-                    ], 422);
+                if ($refusal = $blockGuard->refusal($request, $blockedPeriods, 'The selected date or time is closed for this attraction. Please choose another.', 'This change')) {
+                    return $refusal;
                 }
             }
 
@@ -1070,6 +1118,16 @@ class AttractionPurchaseController extends Controller
 
         $attractionPurchase->load(['attraction', 'customer', 'createdBy', 'addOns']);
 
+        $blockGuard->recordBookedInside($request, $blockedPeriods, 'attraction_purchase', (int) $attractionPurchase->id, [
+            'label' => 'Attraction purchase',
+            'reference' => '#' . $attractionPurchase->id,
+            'scheduled_date' => $attractionPurchase->scheduled_date?->toDateString(),
+            'scheduled_time' => $attractionPurchase->scheduled_time?->format('H:i'),
+            'attraction_id' => $attractionPurchase->attraction_id,
+            'guest_name' => $attractionPurchase->guest_name,
+            'moved' => true,
+        ]);
+
         $customerName = $attractionPurchase->customer ? "{$attractionPurchase->customer->first_name} {$attractionPurchase->customer->last_name}" : $attractionPurchase->guest_name;
         $currentUser = auth()->user();
         ActivityLog::log(
@@ -1134,7 +1192,8 @@ class AttractionPurchaseController extends Controller
             if (!app(\App\Services\AddOnRuleService::class)->isStaff(request()->user('sanctum'))
                 && ($attractionPurchase->status !== AttractionPurchase::STATUS_PENDING
                     || $attractionPurchase->checked_in_at !== null
-                    || $attractionPurchase->payments()->whereIn('status', ['completed', 'refunded'])->exists())) {
+                    || $attractionPurchase->payments()->whereIn('status', ['completed', 'refunded'])->exists()
+                    || !\App\Support\CheckoutToken::presented(request(), 'attraction_purchase', $attractionPurchase->id))) {
                 Log::warning('Public attraction purchase delete refused: only an unpaid pending purchase can be rolled back', [
                     'id' => $attractionPurchase->id,
                     'status' => $attractionPurchase->status,
@@ -1150,7 +1209,7 @@ class AttractionPurchaseController extends Controller
             $userId = null;
             $user = null;
             try {
-                $authUser = auth()->user();
+                $authUser = \App\Support\StaffActor::current();
                 if ($authUser instanceof User) {
                     $userId = $authUser->id;
                     $user = $authUser;
@@ -1218,7 +1277,7 @@ class AttractionPurchaseController extends Controller
             ]);
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to delete attraction purchase: ' . $e->getMessage(),
+                'message' => \App\Support\StaffActor::current() ? 'Failed to delete attraction purchase: ' . $e->getMessage() : 'This purchase could not be removed right now.',
             ], 500);
         }
     }
@@ -1250,6 +1309,8 @@ class AttractionPurchaseController extends Controller
         }
 
         $inactive = [AttractionPurchase::STATUS_CANCELLED, AttractionPurchase::STATUS_REFUNDED];
+        $reactivatedInside = collect();
+        $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
 
         if (isset($validated['status']) && in_array($previousStatus, $inactive, true) && !in_array($validated['status'], $inactive, true)) {
             if ($this->giftCardWasReversedFor(\App\Models\Payment::TYPE_ATTRACTION_PURCHASE, (int) $attractionPurchase->id)) {
@@ -1261,9 +1322,17 @@ class AttractionPurchaseController extends Controller
             } catch (\RuntimeException $e) {
                 return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
             }
+
+            $reactivatedInside = $blockGuard->forExistingAttractionPurchase($attractionPurchase);
+
+            if ($refusal = $blockGuard->refusal($request, $reactivatedInside, 'The selected date or time is closed for this attraction. Please choose another.', 'Reactivating this purchase')) {
+                return $refusal;
+            }
         }
 
         $attractionPurchase->update($validated);
+
+        $blockGuard->recordBookedInside($request, $reactivatedInside, 'attraction_purchase', (int) $attractionPurchase->id, $this->blockLogDetails($attractionPurchase, ['reactivated' => true]));
 
         if (isset($validated['status'])
             && in_array($validated['status'], $inactive, true)
@@ -1277,6 +1346,18 @@ class AttractionPurchaseController extends Controller
             'message' => 'Attraction purchase status updated successfully',
             'data' => $attractionPurchase->fresh(['attraction', 'customer', 'createdBy', 'addOns']),
         ]);
+    }
+
+    private function blockLogDetails(AttractionPurchase $purchase, array $extra = []): array
+    {
+        return [
+            'label' => 'Attraction purchase',
+            'reference' => '#' . $purchase->id,
+            'scheduled_date' => $purchase->scheduled_date?->toDateString(),
+            'scheduled_time' => $purchase->scheduled_time?->format('H:i'),
+            'attraction_id' => $purchase->attraction_id,
+            'guest_name' => $purchase->guest_name,
+        ] + $extra;
     }
 
     public function markAsConfirmed(AttractionPurchase $attractionPurchase): JsonResponse
@@ -1302,15 +1383,25 @@ class AttractionPurchaseController extends Controller
             ], 400);
         }
 
+        $reactivatedInside = collect();
+        $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
+
         if (in_array($attractionPurchase->status, [AttractionPurchase::STATUS_CANCELLED, AttractionPurchase::STATUS_REFUNDED], true)) {
             try {
                 app(\App\Services\SlotCapacityGuard::class)->assertAttractionPurchaseFits($attractionPurchase, 'attraction_purchase.markAsConfirmed');
             } catch (\RuntimeException $e) {
                 return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
             }
+
+            $reactivatedInside = $blockGuard->forExistingAttractionPurchase($attractionPurchase);
+
+            if ($refusal = $blockGuard->refusal(request(), $reactivatedInside, 'The selected date or time is closed for this attraction. Please choose another.', 'Reactivating this purchase')) {
+                return $refusal;
+            }
         }
 
         $attractionPurchase->update(['status' => AttractionPurchase::STATUS_CONFIRMED]);
+        $blockGuard->recordBookedInside(request(), $reactivatedInside, 'attraction_purchase', (int) $attractionPurchase->id, $this->blockLogDetails($attractionPurchase, ['reactivated' => true]));
         $attractionPurchase->load(['attraction', 'customer', 'createdBy', 'addOns']);
 
         return response()->json([
@@ -1798,9 +1889,20 @@ public function checkIn(Request $request, int $id): JsonResponse
             ], 422);
         }
 
-        $purchase = AttractionPurchase::onlyTrashed()->findOrFail($id);
+        $purchase = AttractionPurchase::onlyTrashed()
+            ->whereIn('attraction_id', Attraction::query()->withoutGlobalScopes()->whereIn('location_id', $this->staffLocationIds(request()))->pluck('id'))
+            ->findOrFail($id);
+        $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
+        $restoredInside = in_array($purchase->status, [AttractionPurchase::STATUS_CANCELLED, AttractionPurchase::STATUS_REFUNDED], true)
+            ? collect()
+            : $blockGuard->forExistingAttractionPurchase($purchase);
+
+        if ($refusal = $blockGuard->refusal(request(), $restoredInside, 'The selected date or time is closed for this attraction. Please choose another.', 'Restoring this purchase')) {
+            return $refusal;
+        }
 
         $purchase->restore();
+        $blockGuard->recordBookedInside(request(), $restoredInside, 'attraction_purchase', (int) $purchase->id, $this->blockLogDetails($purchase, ['restored' => true]));
         $purchase->load(['attraction', 'customer', 'createdBy', 'addOns']);
 
         $currentUser = auth()->user();
@@ -1841,7 +1943,9 @@ public function checkIn(Request $request, int $id): JsonResponse
 
     public function forceDelete(int $id): JsonResponse
     {
-        $purchase = AttractionPurchase::onlyTrashed()->findOrFail($id);
+        $purchase = AttractionPurchase::onlyTrashed()
+            ->whereIn('attraction_id', Attraction::query()->withoutGlobalScopes()->whereIn('location_id', $this->staffLocationIds(request()))->pluck('id'))
+            ->findOrFail($id);
 
         $attractionName = $purchase->attraction->name ?? 'Unknown';
         $purchaseId = $purchase->id;
@@ -1883,12 +1987,28 @@ public function checkIn(Request $request, int $id): JsonResponse
             'ids.*' => 'required|integer',
         ]);
 
-        $purchases = AttractionPurchase::onlyTrashed()->whereIn('id', $validated['ids'])->get();
+        $purchases = AttractionPurchase::onlyTrashed()
+            ->whereIn('id', $validated['ids'])
+            ->whereIn('attraction_id', Attraction::query()->withoutGlobalScopes()->whereIn('location_id', $this->staffLocationIds($request))->pluck('id'))
+            ->get();
         $restoredCount = 0;
+        $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
+        $insideBlocks = $purchases
+            ->reject(fn (AttractionPurchase $purchase) => in_array($purchase->status, [AttractionPurchase::STATUS_CANCELLED, AttractionPurchase::STATUS_REFUNDED], true))
+            ->mapWithKeys(fn (AttractionPurchase $purchase) => [$purchase->id => $blockGuard->forExistingAttractionPurchase($purchase)])
+            ->filter(fn ($blocks) => $blocks->isNotEmpty());
+
+        if ($refusal = $blockGuard->refusal($request, $insideBlocks->flatten(1)->unique('id')->sortBy('id')->values(), 'The selected date or time is closed for this attraction. Please choose another.', 'Restoring these purchases')) {
+            return $refusal;
+        }
 
         foreach ($purchases as $purchase) {
             $purchase->restore();
             $restoredCount++;
+
+            if ($insideBlocks->has($purchase->id)) {
+                $blockGuard->recordBookedInside($request, $insideBlocks->get($purchase->id), 'attraction_purchase', (int) $purchase->id, $this->blockLogDetails($purchase, ['restored' => true]));
+            }
         }
 
         $currentUser = auth()->user();
@@ -1921,6 +2041,8 @@ public function checkIn(Request $request, int $id): JsonResponse
     {
         Log::info('Attraction purchase public force delete request', ['id' => $id, 'ip' => request()->ip()]);
 
+        $staff = \App\Support\StaffActor::current();
+
         try {
             $attractionPurchase = AttractionPurchase::withTrashed()->find($id);
 
@@ -1935,6 +2057,13 @@ public function checkIn(Request $request, int $id): JsonResponse
                 return response()->json([
                     'success' => false,
                     'message' => 'Only pending attraction purchases can be force deleted',
+                ], 403);
+            }
+
+            if (!$staff && !\App\Support\CheckoutToken::presented(request(), 'attraction_purchase', $attractionPurchase->id)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Only the checkout that made this purchase can remove it.',
                 ], 403);
             }
 
@@ -1956,24 +2085,47 @@ public function checkIn(Request $request, int $id): JsonResponse
             $purchaseId = $attractionPurchase->id;
             $locationId = $attractionPurchase->attraction->location_id ?? null;
 
-            $this->reverseGiftCardFor($attractionPurchase, \App\Models\Payment::TYPE_ATTRACTION_PURCHASE, 'payment_error_cleanup');
+            $purgingTrash = $staff && $attractionPurchase->trashed();
+
+            $this->reverseGiftCardFor($attractionPurchase, \App\Models\Payment::TYPE_ATTRACTION_PURCHASE, $purgingTrash ? 'purchase_deleted' : 'payment_error_cleanup');
 
             $attractionPurchase->forceDelete();
 
-            ActivityLog::log(
-                action: 'Attraction Purchase Force Deleted (Payment Error)',
-                category: 'delete',
-                description: "Pending attraction purchase force deleted: {$attractionName}",
-                userId: null,
-                locationId: $locationId,
-                entityType: 'attraction_purchase',
-                entityId: $purchaseId,
-                metadata: [
-                    'reason' => 'payment_error_cleanup',
-                    'attraction_name' => $attractionName,
-                    'deleted_at' => now()->toIso8601String(),
-                ]
-            );
+            if ($purgingTrash) {
+                ActivityLog::log(
+                    action: 'Attraction Purchase Permanently Deleted',
+                    category: 'delete',
+                    description: "Attraction purchase permanently deleted: {$attractionName}",
+                    userId: $staff->id,
+                    locationId: $locationId,
+                    entityType: 'attraction_purchase',
+                    entityId: $purchaseId,
+                    metadata: [
+                        'deleted_by' => [
+                            'user_id' => $staff->id,
+                            'name' => $staff->first_name . ' ' . $staff->last_name,
+                            'email' => $staff->email,
+                        ],
+                        'attraction_name' => $attractionName,
+                        'deleted_at' => now()->toIso8601String(),
+                    ]
+                );
+            } else {
+                ActivityLog::log(
+                    action: 'Attraction Purchase Force Deleted (Payment Error)',
+                    category: 'delete',
+                    description: "Pending attraction purchase force deleted: {$attractionName}",
+                    userId: $staff?->id,
+                    locationId: $locationId,
+                    entityType: 'attraction_purchase',
+                    entityId: $purchaseId,
+                    metadata: [
+                        'reason' => 'payment_error_cleanup',
+                        'attraction_name' => $attractionName,
+                        'deleted_at' => now()->toIso8601String(),
+                    ]
+                );
+            }
 
             Log::info('Attraction purchase force deleted successfully', ['id' => $purchaseId, 'attraction' => $attractionName]);
 
@@ -1989,7 +2141,7 @@ public function checkIn(Request $request, int $id): JsonResponse
             ]);
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to force delete attraction purchase: ' . $e->getMessage(),
+                'message' => $staff ? 'Failed to force delete attraction purchase: ' . $e->getMessage() : 'This purchase could not be removed right now.',
             ], 500);
         }
     }

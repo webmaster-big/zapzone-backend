@@ -14,6 +14,15 @@ class Customer extends Model
 {
     use HasFactory, Notifiable, HasApiTokens;
 
+    protected static function booted(): void
+    {
+        static::deleting(function (Customer $customer) {
+            BookingTombstone::recordMany(
+                Booking::withTrashed()->where('customer_id', $customer->id)->get(['id', 'location_id'])
+            );
+        });
+    }
+
     protected $fillable = [
         'first_name',
         'last_name',

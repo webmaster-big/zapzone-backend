@@ -102,6 +102,12 @@ class Location extends Model
 
     protected static function booted(): void
     {
+        static::deleting(function (Location $location) {
+            BookingTombstone::recordMany(
+                Booking::withTrashed()->where('location_id', $location->id)->get(['id', 'location_id'])
+            );
+        });
+
         static::creating(function (Location $location) {
             if (blank($location->slug)) {
                 $location->slug = LocationSlug::unique(

@@ -43,16 +43,17 @@ class ShareableTokenController extends Controller
                     ], 403);
                 }
             } else {
+                $staffRole = \App\Http\Middleware\EnsureStaff::effectiveRole($staff);
                 $roleProblem = match (true) {
-                    $staff->role === 'attendant' => 'Attendants cannot send invitations.',
-                    $staff->role === 'location_manager' && $validated['role'] === 'company_admin' => 'Location managers cannot invite company admins.',
+                    $staffRole === 'attendant' => 'Attendants cannot send invitations.',
+                    $staffRole === 'location_manager' && $validated['role'] === 'company_admin' => 'Location managers cannot invite company admins.',
                     default => null,
                 };
 
                 if ($roleProblem !== null) {
                     Log::warning('Shareable token requested outside inviter role', [
                         'inviter_id' => $staff->id,
-                        'inviter_role' => $staff->role,
+                        'inviter_role' => $staffRole,
                         'role' => $validated['role'],
                         'problem' => $roleProblem,
                         'enforced' => $enforce,
@@ -66,13 +67,13 @@ class ShareableTokenController extends Controller
                     $validated['company_id'] = $staff->company_id;
                 }
 
-                if ($staff->role === 'location_manager' && !$staff->location_id) {
+                if ($staffRole === 'location_manager' && !$staff->location_id) {
                     return response()->json(['success' => false, 'message' => 'Your account has no location yet, so it cannot send invitations.'], 403);
                 }
-                if ($staff->role === 'location_manager' && empty($validated['location_id'])) {
+                if ($staffRole === 'location_manager' && empty($validated['location_id'])) {
                     $validated['location_id'] = $staff->location_id;
                 }
-                if ($staff->role === 'location_manager' && $staff->location_id
+                if ($staffRole === 'location_manager' && $staff->location_id
                     && !empty($validated['location_id']) && (int) $validated['location_id'] !== (int) $staff->location_id) {
                     Log::warning('Location manager invited outside own location', [
                         'inviter_id' => $staff->id,

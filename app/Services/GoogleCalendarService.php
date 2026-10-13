@@ -85,7 +85,45 @@ class GoogleCalendarService
 
     public function getAuthUrl(): string
     {
-        return $this->getClient()->createAuthUrl();
+        $client = $this->getClient();
+
+        if ($this->locationId) {
+            $client->setState(self::signedState((int) $this->locationId));
+        }
+
+        return $client->createAuthUrl();
+    }
+
+    public static function signedState(int $locationId): string
+    {
+        $nonce = \Illuminate\Support\Str::random(40);
+        \Illuminate\Support\Facades\Cache::put('gcal-oauth-state:' . $nonce, $locationId, now()->addMinutes(30));
+
+        return base64_encode(json_encode([
+            'location_id' => $locationId,
+            'nonce' => $nonce,
+            'sig' => hash_hmac('sha256', $locationId . '|' . $nonce, (string) config('app.key')),
+        ]));
+    }
+
+    public static function locationFromState(?string $state): ?int
+    {
+        $data = json_decode(base64_decode((string) $state), true);
+
+        if (!is_array($data) || empty($data['location_id']) || empty($data['nonce']) || empty($data['sig'])
+            || !is_scalar($data['location_id']) || !is_string($data['nonce']) || !is_string($data['sig'])) {
+            return null;
+        }
+
+        $expected = hash_hmac('sha256', (int) $data['location_id'] . '|' . $data['nonce'], (string) config('app.key'));
+
+        if (!hash_equals($expected, (string) $data['sig'])) {
+            return null;
+        }
+
+        $issuedFor = \Illuminate\Support\Facades\Cache::pull('gcal-oauth-state:' . $data['nonce']);
+
+        return $issuedFor !== null && (int) $issuedFor === (int) $data['location_id'] ? (int) $data['location_id'] : null;
     }
 
     public function handleCallback(string $code): GoogleCalendarSetting

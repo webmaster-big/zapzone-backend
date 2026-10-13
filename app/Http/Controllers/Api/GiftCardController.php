@@ -401,6 +401,7 @@ class GiftCardController extends Controller
             'customer_id' => ['nullable', 'integer', 'exists:customers,id'],
             'opaque_data.dataDescriptor' => ['required_if:payment_method,authorize.net', 'string', 'max:255'],
             'opaque_data.dataValue' => ['required_if:payment_method,authorize.net', 'string'],
+            'checkout_key' => ['nullable', 'string', 'max:64', 'regex:/^[A-Za-z0-9-]+$/'],
         ]);
 
         $principal = $request->user() ?: \Illuminate\Support\Facades\Auth::guard('sanctum')->user();
@@ -451,14 +452,39 @@ class GiftCardController extends Controller
             (string) ($staff?->id ?? 'guest'),
         ]));
 
+        $checkoutKey = !empty($validated['checkout_key']) ? $validated['checkout_key'] : null;
+
+        if ($checkoutKey && ($keyed = GiftCard::where('checkout_key', $checkoutKey)->latest('id')->first())) {
+            if ($keyed->status === 'active') {
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Gift card already purchased.',
+                    'data' => $this->purchasePayload($keyed, $keyed->location ?? $location, null, $keyed->purchaser_email ?: $validated['purchaser_email']),
+                    'duplicate' => true,
+                ], 200);
+            }
+
+            return response()->json([
+                'success' => false,
+                'code' => 'ATTEMPT_IN_PROGRESS',
+                'message' => 'We are still confirming your earlier payment for this gift card, so your card was not charged again. Please check your email or call us before trying again.',
+            ], 409);
+        }
+
         if ($existingId = \Illuminate\Support\Facades\Cache::get($fingerprint)) {
             $existing = GiftCard::find($existingId);
 
             if ($existing) {
+                $sameBuyer = $staff
+                    || ($principal instanceof \App\Models\Customer && (int) $existing->purchased_by_customer_id === (int) $principal->id);
+                $payload = $this->purchasePayload($existing, $existing->location ?? $location, null, $existing->purchaser_email ?: $validated['purchaser_email']);
+
                 return response()->json([
                     'success' => true,
-                    'message' => 'Gift card already purchased.',
-                    'data' => $this->purchasePayload($existing, $location, null, $validated['purchaser_email']),
+                    'message' => $sameBuyer
+                        ? 'Gift card already purchased.'
+                        : 'This gift card was already purchased a moment ago, so your card was not charged again. The code was emailed to ' . $validated['purchaser_email'] . '.',
+                    'data' => $sameBuyer ? $payload : \Illuminate\Support\Arr::except($payload, ['code']),
                     'duplicate' => true,
                 ], 200);
             }
@@ -489,6 +515,7 @@ class GiftCardController extends Controller
             'purchaser_phone' => $validated['purchaser_phone'] ?? null,
             'purchase_amount' => $amount,
             'deleted' => false,
+            'checkout_key' => $checkoutKey,
         ]);
 
         $transactionId = 'GC-' . strtoupper(Str::random(10));
@@ -528,7 +555,9 @@ class GiftCardController extends Controller
             );
 
             if (!$result['success']) {
-                $card->forceDelete();
+                if (($result['error'] ?? null) !== \App\Services\Payments\AuthorizeNetGateway::NO_ANSWER_MESSAGE) {
+                    $card->forceDelete();
+                }
                 $lock->release();
 
                 return response()->json([

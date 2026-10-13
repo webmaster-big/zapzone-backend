@@ -845,6 +845,8 @@ class MembershipController extends Controller
 
     public function freeze(Request $request, Membership $membership): JsonResponse
     {
+        abort_unless($this->ownerOrStaff($membership), 403);
+
         $data = $request->validate([
             'until' => 'nullable|date|after:today',
             'note'  => 'nullable|string',
@@ -857,6 +859,8 @@ class MembershipController extends Controller
 
     public function cancel(Request $request, Membership $membership): JsonResponse
     {
+        abort_unless($this->ownerOrStaff($membership), 403);
+
         $data = $request->validate([
             'effective' => ['nullable', Rule::in(['immediate', 'end_of_term'])],
             'note'      => 'nullable|string',
@@ -932,13 +936,7 @@ class MembershipController extends Controller
             'effective'          => ['nullable', Rule::in(['immediate','next_cycle'])],
             'note'               => 'nullable|string',
         ]);
-        // Customers may only change their own membership; staff can change any.
-        $customer = $this->resolveCustomer();
-        $authUser = $this->resolveAuthUser($request);
-        abort_unless(
-            ($customer && (int) $customer->id === (int) $membership->customer_id) || $authUser,
-            403
-        );
+        abort_unless($this->ownerOrStaff($membership), 403);
         $before = ['membership_plan_id' => $membership->membership_plan_id];
         $membership->membership_plan_id = $data['membership_plan_id'];
         $membership->save();
@@ -1056,11 +1054,7 @@ class MembershipController extends Controller
 
     public function updatePaymentMethod(Request $request, Membership $membership): JsonResponse
     {
-        $customer = $this->resolveCustomer();
-        $isStaff = Auth::guard('sanctum')->user() instanceof User;
-
-        $ownsIt = $customer && (int) $customer->id === (int) $membership->customer_id;
-        abort_unless($ownsIt || $isStaff, 403);
+        abort_unless($this->ownerOrStaff($membership), 403);
 
         $data = $request->validate([
             'payment_method_label'       => 'required|string|max:120',
@@ -1139,7 +1133,7 @@ class MembershipController extends Controller
 
     public function retryPayment(Request $request, Membership $membership): JsonResponse
     {
-        abort_unless(Auth::guard('sanctum')->user() instanceof User, 403);
+        abort_unless(Auth::guard('sanctum')->user() instanceof User && $this->ownerOrStaff($membership), 403);
 
         $lastFailed = $membership->membershipPayments()->where('status', 'failed')->latest()->first();
         $attempt = ($lastFailed?->retry_attempt ?? 0) + 1;
@@ -1150,6 +1144,14 @@ class MembershipController extends Controller
                     'success' => false,
                     'message' => 'This membership has no billing amount set, so there is nothing to charge.',
                 ], 422);
+            }
+
+            if ($membership->charge_outcome_unknown_at && $membership->charge_outcome_unknown_at->gt(now()->subMinutes(15))) {
+                return response()->json([
+                    'success' => false,
+                    'code' => 'CHARGE_OUTCOME_UNKNOWN',
+                    'message' => 'The last charge for this membership got no answer from Authorize.Net, so it may have gone through. Check the transaction in Authorize.Net before charging again.',
+                ], 409);
             }
 
             $recentlyCharged = $membership->membershipPayments()
@@ -1186,8 +1188,19 @@ class MembershipController extends Controller
                 $membership->payment_profile_token,
                 (float) $membership->billing_amount,
                 'MB' . $membership->id . '-' . $attempt,
-                'Membership renewal - ' . ($membership->plan->name ?? 'membership')
+                'Membership renewal - ' . ($membership->plan->name ?? 'membership'),
+                $membership->home_location_id ? (int) $membership->home_location_id : null
             );
+
+            if (! $result['success'] && ($result['error'] ?? null) === AuthorizeNetGateway::NO_ANSWER_MESSAGE) {
+                $membership->forceFill(['charge_outcome_unknown_at' => now()])->save();
+
+                return response()->json([
+                    'success' => false,
+                    'code' => 'CHARGE_OUTCOME_UNKNOWN',
+                    'message' => 'Authorize.Net did not answer, so we cannot tell whether the saved card was charged. Check the transaction in Authorize.Net before charging again.',
+                ], 409);
+            }
 
             if ($result['success']) {
                 $this->rememberCard($membership, $result);
@@ -1221,15 +1234,11 @@ class MembershipController extends Controller
 
     public function payments(Request $request, Membership $membership): JsonResponse
     {
-        $customer = $this->resolveCustomer();
-        $authUser = $this->resolveAuthUser($request);
-
-        $ownsIt = $customer && (int) $customer->id === (int) $membership->customer_id;
-        abort_unless($ownsIt || $authUser, 403);
+        abort_unless($this->ownerOrStaff($membership), 403);
 
         $payments = $membership->membershipPayments()
             ->latest()
-            ->paginate((int) $request->get('per_page', 20));
+            ->paginate(min(100, max(1, (int) $request->get('per_page', 20))));
 
         return response()->json(['success' => true, 'data' => $payments]);
     }
@@ -1238,6 +1247,7 @@ class MembershipController extends Controller
     {
         $authUser = $this->resolveAuthUser($request);
         abort_unless($authUser && in_array($authUser->role, ['company_admin', 'location_manager']), 403);
+        abort_unless($this->ownerOrStaff($membership), 403);
 
         abort_unless($membershipPayment->membership_id === $membership->id, 404);
 
@@ -1390,6 +1400,7 @@ class MembershipController extends Controller
     {
         $authUser = $this->resolveAuthUser($request);
         abort_unless($authUser && in_array($authUser->role, ['company_admin', 'location_manager']), 403);
+        abort_unless($this->ownerOrStaff($membership), 403);
 
         abort_unless($membershipPayment->membership_id === $membership->id, 404);
 
@@ -1669,6 +1680,24 @@ class MembershipController extends Controller
     {
         $user = Auth::guard('sanctum')->user();
         return $user instanceof Customer ? $user : null;
+    }
+
+    private function ownerOrStaff(Membership $membership): bool
+    {
+        $actor = Auth::guard('sanctum')->user();
+
+        if ($actor instanceof Customer) {
+            return (int) $actor->id === (int) $membership->customer_id;
+        }
+
+        if (! app(\App\Services\AddOnRuleService::class)->isStaff($actor)) {
+            return false;
+        }
+
+        $inScope = Membership::whereKey($membership->id);
+        $this->applyMembershipScope(request(), $inScope);
+
+        return $inScope->exists();
     }
 
     private function resolveValidLocations(?MembershipPlan $plan, ?Membership $membership = null): array

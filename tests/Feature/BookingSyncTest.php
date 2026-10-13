@@ -135,24 +135,143 @@ class BookingSyncTest extends TestCase
         }
     }
 
-    public function test_a_booking_moved_out_of_a_managers_location_shows_up_as_a_count_mismatch(): void
+    public function test_a_booking_moved_out_of_a_managers_location_leaves_their_list_and_stays_in_the_admins(): void
     {
-        $token = $this->tokenFor($this->staff('location_manager', $this->brighton));
+        $managerToken = $this->tokenFor($this->staff('location_manager', $this->brighton));
+        $adminToken = $this->tokenFor($this->staff('company_admin', $this->brighton));
         $this->book($this->brighton);
         $moved = $this->book($this->brighton);
 
         $this->travel(10)->minutes();
-        $first = $this->list($token, ['sync' => 1]);
-        $this->assertCount(2, $first['bookings']);
+        $managerFirst = $this->list($managerToken, ['sync' => 1]);
+        $adminFirst = $this->list($adminToken, ['sync' => 1]);
+        $this->assertCount(2, $managerFirst['bookings']);
 
         $this->travel(7)->minutes();
         $moved->update(['location_id' => $this->canton->id, 'package_id' => $this->packages[$this->canton->id]->id]);
 
-        $changes = $this->list($token, ['updated_since' => $first['sync']['cursor']]);
+        $managerChanges = $this->list($managerToken, ['updated_since' => $managerFirst['sync']['cursor']]);
+        $this->assertSame([], $managerChanges['bookings']);
+        $this->assertSame([$moved->id], $managerChanges['sync']['deleted_ids']);
+        $this->assertSame(1, $managerChanges['sync']['total']);
 
-        $this->assertSame([], $changes['bookings']);
-        $this->assertSame([], $changes['sync']['deleted_ids']);
+        $adminChanges = $this->list($adminToken, ['updated_since' => $adminFirst['sync']['cursor']]);
+        $this->assertSame([$moved->id], array_column($adminChanges['bookings'], 'id'));
+        $this->assertSame([], $adminChanges['sync']['deleted_ids'], 'the booking only moved, so a company-wide list keeps it');
+
+        $this->travel(1)->minutes();
+        $moved->update(['location_id' => $this->brighton->id, 'package_id' => $this->packages[$this->brighton->id]->id]);
+
+        $back = $this->list($managerToken, ['updated_since' => $managerFirst['sync']['cursor']]);
+        $this->assertSame([$moved->id], array_column($back['bookings'], 'id'));
+        $this->assertSame([], $back['sync']['deleted_ids'], 'a booking moved back is never listed as both changed and removed');
+        $this->assertSame(2, $back['sync']['total']);
+    }
+
+    public function test_bookings_removed_with_their_customer_are_dropped_from_open_lists(): void
+    {
+        $managerToken = $this->tokenFor($this->staff('location_manager', $this->brighton));
+        $customer = Customer::create([
+            'first_name' => 'Pat',
+            'last_name' => 'Guest',
+            'email' => 'pat@example.com',
+            'phone' => '7345550000',
+            'password' => bcrypt('secret-password'),
+            'status' => 'active',
+        ]);
+        $theirs = $this->book($this->brighton);
+        $theirs->update(['customer_id' => $customer->id]);
+        $kept = $this->book($this->brighton);
+
+        $this->travel(10)->minutes();
+        $first = $this->list($managerToken, ['sync' => 1]);
+
+        $this->travel(1)->minutes();
+        $customer->delete();
+
+        $changes = $this->list($managerToken, ['updated_since' => $first['sync']['cursor']]);
+        $this->assertSame([$theirs->id], $changes['sync']['deleted_ids']);
         $this->assertSame(1, $changes['sync']['total']);
+        $this->assertNotContains($kept->id, $changes['sync']['deleted_ids']);
+    }
+
+    public function test_bookings_removed_with_their_location_reach_the_company_admins_list_and_no_one_elses(): void
+    {
+        $adminToken = $this->tokenFor($this->staff('company_admin', $this->brighton));
+        $rivalToken = $this->tokenFor($this->staff('company_admin', $this->rival));
+        $gone = [$this->book($this->canton)->id, $this->book($this->canton)->id];
+        $kept = $this->book($this->brighton);
+
+        $this->travel(10)->minutes();
+        $first = $this->list($adminToken, ['sync' => 1]);
+        $rivalFirst = $this->list($rivalToken, ['sync' => 1]);
+
+        $this->travel(1)->minutes();
+        $this->canton->delete();
+
+        $changes = $this->list($adminToken, ['updated_since' => $first['sync']['cursor']]);
+        $this->assertEqualsCanonicalizing($gone, $changes['sync']['deleted_ids']);
+        $this->assertNotContains($kept->id, $changes['sync']['deleted_ids']);
+        $this->assertSame([], $this->list($rivalToken, ['updated_since' => $rivalFirst['sync']['cursor']])['sync']['deleted_ids']);
+    }
+
+    public function test_renaming_a_package_or_room_refreshes_its_upcoming_bookings_but_a_reorder_does_not(): void
+    {
+        $token = $this->tokenFor($this->staff('location_manager', $this->brighton));
+        $package = $this->packages[$this->brighton->id];
+        $room = \App\Models\Room::create(['location_id' => $this->brighton->id, 'name' => 'Room A', 'capacity' => 20, 'is_available' => true]);
+        $upcoming = $this->book($this->brighton);
+        $upcoming->update(['room_id' => $room->id]);
+        $past = $this->book($this->brighton);
+        $past->update(['room_id' => $room->id, 'booking_date' => now()->subDays(10)->toDateString()]);
+        $changedAfter = function (callable $edit) use ($token): array {
+            $this->travel(10)->minutes();
+            $cursor = $this->list($token, ['sync' => 1])['sync']['cursor'];
+            $this->travel(7)->minutes();
+            $edit();
+
+            return array_column($this->list($token, ['updated_since' => $cursor])['bookings'], 'id');
+        };
+
+        $this->assertSame([], $changedAfter(fn () => $package->update(['display_order' => 5])));
+        $this->assertSame([$upcoming->id], $changedAfter(fn () => $package->update(['category' => 'birthday'])));
+        $this->assertSame([$upcoming->id], $changedAfter(fn () => $package->update(['name' => 'Arcade Bash'])));
+        $this->assertSame([$upcoming->id], $changedAfter(fn () => $room->update(['name' => 'Room B'])));
+        $this->assertSame([$upcoming->id], $changedAfter(fn () => $room->delete()));
+    }
+
+    public function test_a_payment_or_a_removed_room_brings_its_bookings_into_the_changes_but_a_timestamp_only_package_save_does_not(): void
+    {
+        $token = $this->tokenFor($this->staff('location_manager', $this->brighton));
+        $room = \App\Models\Room::create(['location_id' => $this->brighton->id, 'name' => 'Room A', 'capacity' => 20, 'is_available' => true]);
+        $byRoom = $this->book($this->brighton);
+        $byRoom->update(['room_id' => $room->id]);
+        $byPayment = $this->book($this->brighton);
+        $untouched = $this->book($this->brighton);
+
+        $this->travel(10)->minutes();
+        $cursor = $this->list($token, ['sync' => 1])['sync']['cursor'];
+
+        $this->travel(7)->minutes();
+        $this->packages[$this->brighton->id]->touch();
+        $room->delete();
+        \App\Models\Payment::create([
+            'location_id' => $this->brighton->id,
+            'amount' => 50,
+            'currency' => 'USD',
+            'method' => 'in-store',
+            'status' => 'completed',
+            'transaction_id' => 'TXN' . uniqid(),
+            'payable_type' => \App\Models\Payment::TYPE_BOOKING,
+            'payable_id' => $byPayment->id,
+            'paid_at' => now(),
+        ]);
+
+        $changed = array_column($this->list($token, ['updated_since' => $cursor])['bookings'], 'id');
+
+        $this->assertEqualsCanonicalizing([$byRoom->id, $byPayment->id], $changed);
+        $this->assertNotContains($untouched->id, $changed, 'a package save that changes nothing the list shows never sends every one of its bookings to every open list again');
+        $this->assertNull(Booking::findOrFail($byRoom->id)->room_id);
     }
 
     public function test_the_overlap_catches_a_save_that_landed_just_before_the_cursor(): void
