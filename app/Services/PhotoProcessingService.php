@@ -30,6 +30,7 @@ class PhotoProcessingService
     public const SLIDESHOW_QUALITY = 84;
     public const THUMBNAIL_QUALITY = 72;
     public const MAX_SOURCE_PIXELS = 60000000;
+    public const OVERLAY_EXACT_FIT_TOLERANCE = 0.03;
 
     protected const FONT_CANDIDATES = [
         'vendor/dompdf/dompdf/lib/fonts/DejaVuSans-Bold.ttf',
@@ -235,15 +236,32 @@ class PhotoProcessingService
         $layerW = imagesx($layer);
         $layerH = imagesy($layer);
 
-        $scale = max($canvasW / $layerW, $canvasH / $layerH);
-        $targetW = (int) round($layerW * $scale);
-        $targetH = (int) round($layerH * $scale);
-        $dstX = (int) round(($canvasW - $targetW) / 2);
-        $dstY = (int) round(($canvasH - $targetH) / 2);
+        [$dstX, $dstY, $targetW, $targetH] = $this->overlayPlacement($canvasW, $canvasH, $layerW, $layerH);
 
         imagealphablending($canvas, true);
         imagecopyresampled($canvas, $layer, $dstX, $dstY, 0, 0, $targetW, $targetH, $layerW, $layerH);
         imagedestroy($layer);
+    }
+
+    public function overlayPlacement(int $canvasW, int $canvasH, int $layerW, int $layerH): array
+    {
+        $canvasRatio = $canvasW / $canvasH;
+        $layerRatio = $layerW / $layerH;
+
+        if (abs($canvasRatio - $layerRatio) / $layerRatio <= self::OVERLAY_EXACT_FIT_TOLERANCE) {
+            return [0, 0, $canvasW, $canvasH];
+        }
+
+        $scale = max($canvasW / $layerW, $canvasH / $layerH);
+        $targetW = (int) round($layerW * $scale);
+        $targetH = (int) round($layerH * $scale);
+
+        return [
+            (int) round(($canvasW - $targetW) / 2),
+            (int) round(($canvasH - $targetH) / 2),
+            $targetW,
+            $targetH,
+        ];
     }
 
     protected function applyDateLayer(
@@ -446,15 +464,24 @@ class PhotoProcessingService
 
         $rotated = match ($orientation) {
             3 => imagerotate($image, 180, 0),
-            6 => imagerotate($image, -90, 0),
-            8 => imagerotate($image, 90, 0),
+            5, 6 => imagerotate($image, -90, 0),
+            7, 8 => imagerotate($image, 90, 0),
             default => null,
         };
 
+        if ($rotated === false) {
+            return $image;
+        }
+
         if ($rotated) {
             imagedestroy($image);
+            $image = $rotated;
+        }
 
-            return $rotated;
+        if (in_array($orientation, [2, 5, 7], true)) {
+            imageflip($image, IMG_FLIP_HORIZONTAL);
+        } elseif ($orientation === 4) {
+            imageflip($image, IMG_FLIP_VERTICAL);
         }
 
         return $image;
