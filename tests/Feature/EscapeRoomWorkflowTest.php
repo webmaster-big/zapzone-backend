@@ -2925,15 +2925,16 @@ class EscapeRoomWorkflowTest extends TestCase
             . '?room=' . $this->morgue->id . '&time=14:00&date=' . $escapeBooking->booking_date->toDateString()
             . '&sig=' . app(EscapeRoomSessionService::class)->gameLinkSignature($this->location->id, $this->morgue->id, $escapeBooking->booking_date->toDateString(), '14:00');
         $this->assertSame($gameLink, $escape['escape_room_checkin_link']);
-        $this->assertStringContainsString('Every player signs their own waiver.', $escape['waiver_section']);
+        $this->assertStringContainsString('Every adult player signs their own waiver.', $escape['waiver_section']);
+        $this->assertStringContainsString('Players under 18 need a parent or guardian to sign for them.', $escape['waiver_section']);
         $this->assertStringContainsString(e($gameLink), $escape['waiver_section']);
         $this->assertStringContainsString('any time before the game', $escape['waiver_section']);
-        $this->assertStringContainsString('Every player signs their own waiver', $escape['waiver_line']);
+        $this->assertStringContainsString('Every adult player signs their own waiver (under-18s need a parent or guardian)', $escape['waiver_line']);
         $this->assertStringContainsString('any time before the game: ' . $gameLink, $escape['waiver_line']);
 
         $party = app(EmailNotificationService::class)->buildVariables($partyBooking->fresh(), 'booking', false);
         $this->assertSame('', $party['escape_room_checkin_link']);
-        $this->assertStringNotContainsString('Every player signs', $party['waiver_section']);
+        $this->assertStringNotContainsString('Every adult player signs', $party['waiver_section']);
         $this->assertStringContainsString('Complete Your Waiver', $party['waiver_section']);
 
         $this->escapeWaiver->update(['status' => WaiverTemplate::STATUS_DRAFT]);

@@ -46,7 +46,7 @@
                             @if($escapeRoomCheckIn !== '')
                             <p style="margin: 0 0 16px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #4b5563;"><strong>{{ $hostName }}</strong> has invited you to play <strong>{{ $packageName }}</strong>, an escape room, with their group.</p>
 
-                            <p style="margin: 0 0 16px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #4b5563;">Every player signs a short waiver before the game. After the game, your group photo and finish time are emailed to everyone who signed. You can sign on your phone now or any time before the game: <a href="{{ $escapeRoomCheckIn }}" style="color: #1e40af;">{{ $escapeRoomCheckIn }}</a></p>
+                            <p style="margin: 0 0 16px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #4b5563;">Every adult player signs a short waiver before the game, and players under 18 need a parent or guardian to sign for them. After the game, your group photo and finish time are emailed to everyone who signed. You can sign on your phone now or any time before the game: <a href="{{ $escapeRoomCheckIn }}" style="color: #1e40af;">{{ $escapeRoomCheckIn }}</a></p>
                             @else
                             <p style="margin: 0 0 16px 0; padding: 0; font-size: 14px; line-height: 1.6; color: #4b5563;"><strong>{{ $hostName }}</strong> has invited you to a <strong>{{ $packageName }}</strong> event. We would love for you to join us for a fun celebration!</p>
                             @endif

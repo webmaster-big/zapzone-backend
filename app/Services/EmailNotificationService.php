@@ -677,7 +677,7 @@ class EmailNotificationService
                 $variables['waiver_section'] = $this->escapeRoomWaiverSectionHtml($link, $checkInLink);
                 $variables['waiver_line'] = trim(
                     ($link ? 'Your waiver: ' . $link . ' ' : '')
-                    . 'Every player signs their own waiver, any time before the game: ' . $checkInLink
+                    . 'Every adult player signs their own waiver (under-18s need a parent or guardian), any time before the game: ' . $checkInLink
                 );
             }
         }
@@ -700,7 +700,7 @@ class EmailNotificationService
 
         return <<<HTML
 <div style="margin: 24px 0; padding: 20px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; text-align: center;">
-    <p style="margin: 0 0 10px 0; font-size: 14px; color: #1e3a8a; line-height: 1.5;"><strong>Every player signs their own waiver.</strong> Your group photo and finish time are emailed after the game to everyone who signed.</p>
+    <p style="margin: 0 0 10px 0; font-size: 14px; color: #1e3a8a; line-height: 1.5;"><strong>Every adult player signs their own waiver.</strong> Players under 18 need a parent or guardian to sign for them. Your group photo and finish time are emailed after the game to everyone who signed.</p>
     <p style="margin: 0 0 14px 0; font-size: 14px; color: #1e3a8a; line-height: 1.5;">{$signNow}The rest of your group can sign on their phones any time before the game here: <a href="{$checkIn}" style="color: #1e40af;">{$checkIn}</a></p>
     {$button}
 </div>

@@ -7,6 +7,7 @@ use App\Http\Traits\ScopesByAuthUser;
 use App\Models\ActivityLog;
 use App\Models\Waiver;
 use App\Models\WaiverDeletionLog;
+use App\Models\WaiverMinor;
 use App\Models\WaiverSetting;
 use App\Models\WaiverTemplate;
 use App\Services\WaiverCheckInService;
@@ -168,18 +169,52 @@ class WaiverController extends Controller
                 $query->orderByDesc('submitted_at')->orderByDesc('id');
             }
 
+            $coverage = $request->boolean('with_coverage') ? $this->coverageOf($query) : null;
+
             $waivers = $query->paginate($request->integer('per_page', 25));
+
+            $data = [
+                'waivers' => $waivers->items(),
+                'pagination' => $this->paginationMeta($waivers),
+            ];
+
+            if ($coverage !== null) {
+                $data['coverage'] = $coverage;
+            }
 
             return response()->json([
                 'success' => true,
-                'data' => [
-                    'waivers' => $waivers->items(),
-                    'pagination' => $this->paginationMeta($waivers),
-                ],
+                'data' => $data,
             ]);
         } catch (\Throwable $e) {
             return $this->error('Failed to fetch waivers', $e);
         }
+    }
+
+    private function coverageOf($query): array
+    {
+        $signed = (clone $query)->reorder()->where('waivers.status', Waiver::STATUS_COMPLETED);
+        $checkedInSum = DB::raw('COALESCE(SUM(CASE WHEN waivers.checked_in_at IS NOT NULL THEN 1 ELSE 0 END), 0) as checked_in');
+
+        $forms = (clone $signed)->toBase()
+            ->select([DB::raw('COUNT(*) as total'), $checkedInSum])
+            ->first();
+
+        $minors = WaiverMinor::query()->toBase()
+            ->join('waivers', 'waivers.id', '=', 'waiver_minors.waiver_id')
+            ->whereIn('waiver_minors.waiver_id', (clone $signed)->select('waivers.id'))
+            ->select([DB::raw('COUNT(*) as total'), $checkedInSum])
+            ->first();
+
+        $formsSigned = (int) ($forms->total ?? 0);
+        $minorsCovered = (int) ($minors->total ?? 0);
+
+        return [
+            'forms_signed' => $formsSigned,
+            'people_covered' => $formsSigned + $minorsCovered,
+            'minors_covered' => $minorsCovered,
+            'people_checked_in' => (int) ($forms->checked_in ?? 0) + (int) ($minors->checked_in ?? 0),
+        ];
     }
 
     private function escapeRoomRelations(): array
@@ -830,9 +865,12 @@ class WaiverController extends Controller
                     'submitted_at' => $w->submitted_at?->toIso8601String(),
                     'checked_in_at' => $w->checked_in_at?->toIso8601String(),
                     'minors' => $w->minors->map(fn ($m) => trim($m->first_name . ' ' . $m->last_name))->values(),
+                    'people_covered' => $w->status === Waiver::STATUS_COMPLETED ? 1 + $w->minors->count() : 0,
                     // pending links can be re-sent/opened by staff; completed have none
                     'signing_url' => $w->status === Waiver::STATUS_PENDING ? $w->signing_url : null,
                 ]);
+
+            $signed = $waivers->where('status', Waiver::STATUS_COMPLETED);
 
             return response()->json([
                 'success' => true,
@@ -840,9 +878,12 @@ class WaiverController extends Controller
                     'waivers' => $waivers,
                     'summary' => [
                         'total' => $waivers->count(),
-                        'completed' => $waivers->where('status', Waiver::STATUS_COMPLETED)->count(),
+                        'completed' => $signed->count(),
                         'pending' => $waivers->where('status', Waiver::STATUS_PENDING)->count(),
                         'checked_in' => $waivers->whereNotNull('checked_in_at')->count(),
+                        'people_covered' => (int) $signed->sum('people_covered'),
+                        'minors_covered' => (int) $signed->sum(fn (array $w) => $w['people_covered'] - 1),
+                        'people_checked_in' => (int) $signed->whereNotNull('checked_in_at')->sum('people_covered'),
                     ],
                 ],
             ]);

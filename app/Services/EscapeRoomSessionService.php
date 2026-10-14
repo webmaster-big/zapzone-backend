@@ -663,7 +663,7 @@ class EscapeRoomSessionService
     {
         return Waiver::withoutHeavyColumns()
             ->with([
-                'minors:id,waiver_id',
+                'minors:id,waiver_id,first_name,last_name',
                 'booking' => fn ($query) => $query->select(['id', 'reference_number', 'package_id', 'location_id', 'booking_date', 'booking_time', 'status', 'guest_name', 'customer_id']),
             ])
             ->where('status', Waiver::STATUS_COMPLETED);
@@ -1763,15 +1763,20 @@ class EscapeRoomSessionService
             ->orderBy('session_time')
             ->limit(20)
             ->get()
-            ->map(fn (EscapeRoomSession $session) => [
-                'session_id' => $session->id,
-                'date' => $session->dateKey(),
-                'time' => $session->timeKey(),
-                'time_label' => $this->timeLabel($session->timeKey()),
-                'room_name' => $session->package?->name,
-                'players' => $this->membership($session)['included']->count(),
-                'has_photo' => $session->photo_session_id !== null,
-            ])
+            ->map(function (EscapeRoomSession $session) {
+                $included = $this->membership($session)['included'];
+
+                return [
+                    'session_id' => $session->id,
+                    'date' => $session->dateKey(),
+                    'time' => $session->timeKey(),
+                    'time_label' => $this->timeLabel($session->timeKey()),
+                    'room_name' => $session->package?->name,
+                    'players' => $included->count(),
+                    'people_covered' => (int) $included->sum(fn (Waiver $waiver) => $this->peopleOn($waiver)),
+                    'has_photo' => $session->photo_session_id !== null,
+                ];
+            })
             ->filter(fn (array $game) => $game['players'] > 0 || $game['has_photo'])
             ->values()
             ->all();
@@ -1800,7 +1805,9 @@ class EscapeRoomSessionService
 
         $sessionIds = $sessions->pluck('id')->all();
 
-        $signedCounts = $this->signedCountsBySlot($sessions, $bookings);
+        $coverage = $this->signedCountsBySlot($sessions, $bookings);
+        $signedCounts = $coverage['forms'];
+        $peopleCounts = $coverage['people'];
 
         $pendingCounts = $bookings->isEmpty() ? collect() : Waiver::whereIn('booking_id', $bookings->pluck('id'))
             ->where('status', Waiver::STATUS_PENDING)
@@ -1888,6 +1895,7 @@ class EscapeRoomSessionService
                     ])->values()->all(),
                     'players_booked' => (int) $slotBookings->sum('participants'),
                     'signed' => $signed,
+                    'people_covered' => (int) ($peopleCounts[$key] ?? 0),
                     'unsigned' => (int) $slotBookings->sum(fn (Booking $booking) => (int) ($pendingCounts[$booking->id] ?? 0)),
                     'photos' => $photos,
                     'sent' => $sent,
@@ -1923,8 +1931,12 @@ class EscapeRoomSessionService
 
     protected function signedCountsBySlot(Collection $sessions, Collection $bookings): array
     {
-        $counts = [];
+        $counts = ['forms' => [], 'people' => []];
         $sessionsById = $sessions->keyBy('id');
+        $add = function (string $key, Waiver $waiver) use (&$counts): void {
+            $counts['forms'][$key] = ($counts['forms'][$key] ?? 0) + 1;
+            $counts['people'][$key] = ($counts['people'][$key] ?? 0) + $this->peopleOn($waiver);
+        };
 
         $attached = $sessionsById->isEmpty() ? collect() : $this->membersQuery()
             ->whereIn('escape_room_session_id', $sessionsById->keys()->all())
@@ -1934,8 +1946,7 @@ class EscapeRoomSessionService
             $session = $sessionsById->get($waiver->escape_room_session_id);
 
             if ($session && $this->exclusionReason($waiver, $session) === null) {
-                $key = $session->package_id . '|' . $session->timeKey();
-                $counts[$key] = ($counts[$key] ?? 0) + 1;
+                $add($session->package_id . '|' . $session->timeKey(), $waiver);
             }
         }
 
@@ -1946,12 +1957,16 @@ class EscapeRoomSessionService
             $time = $booking ? $this->bookingTime($booking) : null;
 
             if ($time && (int) $waiver->location_id === (int) $booking->location_id) {
-                $key = $booking->package_id . '|' . $time;
-                $counts[$key] = ($counts[$key] ?? 0) + 1;
+                $add($booking->package_id . '|' . $time, $waiver);
             }
         }
 
         return $counts;
+    }
+
+    protected function peopleOn(Waiver $waiver): int
+    {
+        return 1 + ($waiver->relationLoaded('minors') ? $waiver->minors->count() : $waiver->minors()->count());
     }
 
     protected function slotStatus(?EscapeRoomSession $session, int $signed, int $photos, int $problems = 0, int $sent = 0): string
@@ -2033,6 +2048,9 @@ class EscapeRoomSessionService
                 'reference_number' => $waiver->reference_number,
                 'name' => trim(($waiver->adult_first_name ?? '') . ' ' . ($waiver->adult_last_name ?? '')),
                 'minors' => $waiver->relationLoaded('minors') ? $waiver->minors->count() : 0,
+                'minor_names' => $waiver->relationLoaded('minors')
+                    ? $waiver->minors->map(fn ($minor) => trim(($minor->first_name ?? '') . ' ' . ($minor->last_name ?? '')))->values()->all()
+                    : [],
                 'email_masked' => $hasEmail ? WaiverProfileService::maskEmail($waiver->adult_email) : null,
                 'has_email' => $hasEmail,
                 'photo_release' => $waiver->photo_video_consent,

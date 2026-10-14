@@ -9,6 +9,7 @@ use App\Models\WaiverAdEvent;
 use App\Models\WaiverAdSend;
 use App\Models\WaiverBulkInvite;
 use App\Models\WaiverDeletionLog;
+use App\Models\WaiverMinor;
 use App\Models\WaiverTemplateAd;
 use App\Support\DateRange;
 use Illuminate\Http\JsonResponse;
@@ -154,6 +155,13 @@ class WaiverReportController extends Controller
         $this->applyAuthScope($q, $request);
         $this->applyDateRange($q, $request);
 
+        $minors = WaiverMinor::query()
+            ->join('waivers', 'waivers.id', '=', 'waiver_minors.waiver_id')
+            ->whereIn('waiver_minors.waiver_id', (clone $q)->select('waivers.id'))
+            ->selectRaw('waivers.package_id as group_key, COUNT(*) as total')
+            ->groupBy('waivers.package_id')
+            ->pluck('total', 'group_key');
+
         $rows = $q->selectRaw('package_id as group_key, COUNT(*) as total')
             ->groupBy('package_id')
             ->orderByDesc('total')
@@ -167,6 +175,7 @@ class WaiverReportController extends Controller
             'key' => $r->group_key,
             'label' => $labels[$r->group_key] ?? 'Escape room',
             'count' => (int) $r->total,
+            'participants_covered' => (int) $r->total + (int) ($minors[$r->group_key] ?? 0),
         ])->all();
     }
 
