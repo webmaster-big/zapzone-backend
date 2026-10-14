@@ -4035,4 +4035,83 @@ class EscapeRoomWorkflowTest extends TestCase
 
         $this->assertFalse((bool) $photo->fresh()->slideshow_eligible);
     }
+
+    public function test_an_escape_room_sign_in_gets_no_check_in_code_but_keeps_its_reference_for_staff(): void
+    {
+        $response = $this->sign($this->morgue, '14:00')->assertCreated();
+
+        $this->assertArrayHasKey('reference_number', $response->json('data'));
+        $this->assertNull($response->json('data.reference_number'));
+
+        $waiver = Waiver::findOrFail($response->json('data.id'));
+        $this->assertMatchesRegularExpression('/^WV\d{8}[A-Z0-9]{6}$/', (string) $waiver->reference_number);
+        $this->assertStringNotContainsString((string) $waiver->reference_number, $response->getContent());
+    }
+
+    public function test_a_booking_link_for_an_escape_room_says_so_and_returns_no_check_in_code(): void
+    {
+        $pending = app(WaiverService::class)->ensureForBooking($this->makeBooking($this->morgue, '16:00'));
+
+        $this->getJson("/api/waivers/access/{$pending->access_token}")
+            ->assertOk()
+            ->assertJsonPath('data.template.kind', WaiverTemplate::KIND_ESCAPE_ROOM);
+
+        $response = $this->signViaLink($pending)->assertOk();
+
+        $this->assertNull($response->json('data.reference_number'));
+        $this->assertMatchesRegularExpression('/^WV\d{8}[A-Z0-9]{6}$/', (string) $pending->fresh()->reference_number);
+        $this->assertStringNotContainsString((string) $pending->fresh()->reference_number, $response->getContent());
+    }
+
+    public function test_an_escape_room_waiver_without_a_game_still_says_it_is_one_and_gets_no_code(): void
+    {
+        $booking = $this->makeBooking($this->morgue, '16:00');
+        $pending = app(WaiverService::class)->ensureForBooking($booking);
+        $this->assertSame($this->escapeWaiver->id, $pending->waiver_template_id);
+        Waiver::whereKey($pending->id)->update(['booking_id' => null]);
+
+        $this->getJson("/api/waivers/access/{$pending->access_token}")
+            ->assertOk()
+            ->assertJsonPath('data.escape_room', null)
+            ->assertJsonPath('data.template.kind', WaiverTemplate::KIND_ESCAPE_ROOM);
+
+        $this->assertNull($this->signViaLink($pending)->assertOk()->json('data.reference_number'));
+    }
+
+    public function test_standard_waivers_keep_their_check_in_code(): void
+    {
+        $pending = app(WaiverService::class)->ensureForBooking($this->makeBooking($this->party, '16:00'));
+
+        $this->getJson("/api/waivers/access/{$pending->access_token}")
+            ->assertOk()
+            ->assertJsonPath('data.template.kind', WaiverTemplate::KIND_STANDARD);
+
+        $viaLink = $this->signViaLink($pending)->assertOk();
+        $this->assertSame($pending->fresh()->reference_number, $viaLink->json('data.reference_number'));
+        $this->assertMatchesRegularExpression('/^WV\d{8}[A-Z0-9]{6}$/', (string) $viaLink->json('data.reference_number'));
+
+        $this->getJson("/api/waivers/kiosk/{$this->general->id}")
+            ->assertOk()
+            ->assertJsonPath('data.template.kind', WaiverTemplate::KIND_STANDARD);
+
+        $atKiosk = $this->postJson("/api/waivers/kiosk/{$this->general->id}/submit", $this->signPayload([
+            'adult_first_name' => 'Robin',
+            'adult_email' => 'robin@example.test',
+            'typed_legal_name' => 'Robin Player',
+            'location_id' => $this->location->id,
+        ]))->assertCreated();
+
+        $this->assertSame(
+            Waiver::findOrFail($atKiosk->json('data.id'))->reference_number,
+            $atKiosk->json('data.reference_number')
+        );
+        $this->assertMatchesRegularExpression('/^WV\d{8}[A-Z0-9]{6}$/', (string) $atKiosk->json('data.reference_number'));
+    }
+
+    public function test_the_escape_room_check_in_form_says_it_is_an_escape_room_waiver(): void
+    {
+        $this->getJson("/api/waivers/escape-room/{$this->location->id}/rooms/{$this->morgue->id}")
+            ->assertOk()
+            ->assertJsonPath('data.template.kind', WaiverTemplate::KIND_ESCAPE_ROOM);
+    }
 }

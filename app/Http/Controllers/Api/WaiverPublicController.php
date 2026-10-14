@@ -157,7 +157,7 @@ class WaiverPublicController extends Controller
             'message' => 'Waiver completed. Thank you!',
             'data' => [
                 'id' => $completed->id,
-                'reference_number' => $completed->reference_number,
+                'reference_number' => $template->isEscapeRoom() ? null : $completed->reference_number,
                 'status' => $completed->status,
                 'ad' => $ad,
             ],
@@ -688,7 +688,7 @@ class WaiverPublicController extends Controller
             'message' => 'Waiver completed.',
             'data' => [
                 'id' => $completed->id,
-                'reference_number' => $completed->reference_number,
+                'reference_number' => null,
                 'room_name' => $room->name,
                 'session_time' => $choice['time'],
                 'session_time_label' => $service->timeLabel($choice['time']),
@@ -991,6 +991,7 @@ class WaiverPublicController extends Controller
         return [
             'id' => $template->id,
             'title' => $template->title,
+            'kind' => $template->isEscapeRoom() ? WaiverTemplate::KIND_ESCAPE_ROOM : WaiverTemplate::KIND_STANDARD,
             'version' => $version?->version,
             'highlight_points' => $this->waivers->render(
                 ($clauses['highlight_points'] ?? null) ?: ($template->highlight_points ?? ''),
