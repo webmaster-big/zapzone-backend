@@ -372,6 +372,66 @@ class CheckoutConcernService
             ->exists();
     }
 
+    /**
+     * hasPaidSince() for a whole page of concerns at once, so the staff list can show
+     * which guests went on to book without a query per row. Keyed by concern id.
+     *
+     * @param  iterable<CheckoutConcern>  $concerns
+     * @return array<int, bool>
+     */
+    public function completedBookingFlags(iterable $concerns): array
+    {
+        $concerns = collect($concerns);
+        $emailOf = fn (CheckoutConcern $concern) => strtolower(trim((string) $concern->email));
+
+        $flags = $concerns->mapWithKeys(fn (CheckoutConcern $concern) => [$concern->id => false])->all();
+
+        $withEmail = $concerns->filter(fn (CheckoutConcern $concern) => $emailOf($concern) !== '');
+        if ($withEmail->isEmpty()) {
+            return $flags;
+        }
+
+        $emails = $withEmail->map($emailOf)->unique()->values()->all();
+        $locationIds = $withEmail->pluck('location_id')->unique()->values()->all();
+        $emailList = implode(',', array_fill(0, count($emails), '?'));
+
+        $lastPaidAt = [];
+        $collect = function ($query, string $table, string $locationColumn) use (&$lastPaidAt, $emails, $emailList, $locationIds) {
+            $rows = $query
+                ->whereRaw("LOWER({$table}.guest_email) IN ({$emailList})", $emails)
+                ->where("{$table}.amount_paid", '>', 0)
+                ->whereIn($locationColumn, $locationIds)
+                ->selectRaw("{$locationColumn} as paid_location_id, LOWER({$table}.guest_email) as paid_email, MAX({$table}.created_at) as last_paid_at")
+                ->groupByRaw("{$locationColumn}, LOWER({$table}.guest_email)")
+                ->toBase()
+                ->get();
+
+            foreach ($rows as $row) {
+                $key = $row->paid_location_id . '|' . $row->paid_email;
+                $paidAt = \Illuminate\Support\Carbon::parse($row->last_paid_at);
+                if (!isset($lastPaidAt[$key]) || $paidAt->greaterThan($lastPaidAt[$key])) {
+                    $lastPaidAt[$key] = $paidAt;
+                }
+            }
+        };
+
+        $collect(\App\Models\Booking::query(), 'bookings', 'bookings.location_id');
+        $collect(\App\Models\EventPurchase::query(), 'event_purchases', 'event_purchases.location_id');
+        $collect(\App\Models\TicketOrder::query(), 'ticket_orders', 'ticket_orders.location_id');
+        $collect(
+            \App\Models\AttractionPurchase::query()->join('attractions', 'attractions.id', '=', 'attraction_purchases.attraction_id'),
+            'attraction_purchases',
+            'attractions.location_id',
+        );
+
+        foreach ($withEmail as $concern) {
+            $paidAt = $lastPaidAt[$concern->location_id . '|' . $emailOf($concern)] ?? null;
+            $flags[$concern->id] = $paidAt !== null && $concern->created_at !== null && $paidAt->greaterThanOrEqualTo($concern->created_at);
+        }
+
+        return $flags;
+    }
+
     protected function singleLine(?string $value): string
     {
         return trim(str_replace(["\r", "\n", "\0"], ' ', (string) $value));

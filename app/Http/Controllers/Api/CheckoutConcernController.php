@@ -211,6 +211,13 @@ class CheckoutConcernController extends Controller
 
         $concerns = $query->orderByDesc('created_at')->orderByDesc('id')->paginate($request->get('per_page', 20));
 
+        // Staff filter leads by whether the guest went on to book, instead of checking
+        // each one against the bookings list by hand.
+        $completed = $this->concerns->completedBookingFlags($concerns->items());
+        foreach ($concerns->items() as $concern) {
+            $concern->setAttribute('completed_booking', $completed[$concern->id] ?? false);
+        }
+
         return response()->json([
             'success' => true,
             'data' => [

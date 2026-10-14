@@ -807,6 +807,60 @@ class CheckoutConcernTest extends TestCase
         $this->assertSame($this->location->id, $rows[0]['location_id']);
     }
 
+    public function test_the_list_flags_guests_who_went_on_to_book(): void
+    {
+        $this->postJson('/api/checkout-concerns/abandoned', $this->abandonPayload())->assertStatus(200);
+        $this->postJson('/api/checkout-concerns/abandoned', $this->abandonPayload([
+            'name' => 'Riley Chen',
+            'phone' => '810-555-0144',
+            'email' => 'riley@example.com',
+        ]))->assertStatus(200);
+
+        $this->travel(2)->days();
+
+        AttractionPurchase::create([
+            'attraction_id' => $this->makeAttraction()->id,
+            'guest_name' => 'Sam Ortiz',
+            'guest_email' => 'SAM@example.com',
+            'quantity' => 2,
+            'total_amount' => 40,
+            'amount_paid' => 40,
+            'purchase_date' => now()->toDateString(),
+            'payment_status' => 'paid',
+        ]);
+
+        $rows = collect($this->actingAs($this->manager, 'sanctum')
+            ->getJson('/api/checkout-concerns')
+            ->assertStatus(200)
+            ->json('data.concerns'))
+            ->keyBy('email');
+
+        $this->assertTrue($rows['sam@example.com']['completed_booking']);
+        $this->assertFalse($rows['riley@example.com']['completed_booking']);
+    }
+
+    public function test_a_purchase_made_before_the_concern_is_not_a_completed_booking(): void
+    {
+        AttractionPurchase::create([
+            'attraction_id' => $this->makeAttraction()->id,
+            'guest_name' => 'Sam Ortiz',
+            'guest_email' => 'sam@example.com',
+            'quantity' => 2,
+            'total_amount' => 40,
+            'amount_paid' => 40,
+            'purchase_date' => now()->toDateString(),
+            'payment_status' => 'paid',
+        ]);
+
+        $this->travel(1)->days();
+        $this->postJson('/api/checkout-concerns/abandoned', $this->abandonPayload())->assertStatus(200);
+
+        $this->actingAs($this->manager, 'sanctum')
+            ->getJson('/api/checkout-concerns')
+            ->assertStatus(200)
+            ->assertJsonPath('data.concerns.0.completed_booking', false);
+    }
+
     public function test_staff_can_mark_a_concern_handled(): void
     {
         $this->postJson('/api/checkout-concerns', $this->schedulePayload())->assertStatus(201);
