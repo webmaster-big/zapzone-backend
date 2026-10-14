@@ -10,6 +10,7 @@ use App\Models\WaiverProfile;
 use App\Models\WaiverSetting;
 use App\Models\WaiverTemplate;
 use App\Services\WaiverService;
+use App\Support\PreviewImage;
 use App\Support\UserAgentParser;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -520,12 +521,15 @@ class WaiverPublicController extends Controller
         $today = $service->today($location);
         $linked = $this->linkedEscapeRoomGame($request, $location);
         $date = $linked['date'] ?? $today;
+        $pendingImages = [];
+        $roomImage = $this->roomImagePresenter($pendingImages);
 
         $rooms = $linked
             ? collect([[
                 'id' => $linked['room']->id,
                 'name' => $linked['room']->name,
                 'duration_minutes' => max(1, $linked['room']->getDurationInMinutes()),
+                ...$roomImage($linked['room']),
                 'times' => $linked['times'],
             ]])
             : $service->roomsAt($location)
@@ -534,9 +538,12 @@ class WaiverPublicController extends Controller
                     'id' => $room->id,
                     'name' => $room->name,
                     'duration_minutes' => max(1, $room->getDurationInMinutes()),
+                    ...$roomImage($room),
                     'times' => $service->guestTimes($location, $room, $request->boolean('recent') ? \App\Services\EscapeRoomSessionService::SUBMIT_GRACE_MINUTES : 0),
                 ])
                 ->values();
+
+        PreviewImage::generateLater($pendingImages);
 
         $settings = WaiverSetting::forCompany($location->company_id);
 
@@ -708,6 +715,23 @@ class WaiverPublicController extends Controller
     private function escapeRooms(): \App\Services\EscapeRoomSessionService
     {
         return app(\App\Services\EscapeRoomSessionService::class);
+    }
+
+    private function roomImagePresenter(array &$pendingImages): \Closure
+    {
+        return function (\App\Models\Package $room) use (&$pendingImages): array {
+            $display = PreviewImage::forDisplay($room->image);
+
+            if ($display['pending']) {
+                $pendingImages[] = $display['source'];
+            }
+
+            return [
+                'image' => $display['image'],
+                'image_preview' => $display['preview'],
+                'image_pending' => $display['pending'],
+            ];
+        };
     }
 
     private function escapeRoomOnly(): JsonResponse

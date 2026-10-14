@@ -52,6 +52,7 @@ class EscapeRoomSessionService
         'min_participants',
         'max_participants',
         'display_order',
+        'image',
     ];
 
     public const EXCLUDED_BOOKING_REMOVED = 'booking_removed';

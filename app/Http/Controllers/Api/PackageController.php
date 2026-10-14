@@ -18,6 +18,7 @@ use App\Models\SpecialPricing;
 use App\Models\User;
 use App\Support\DataUriImage;
 use App\Support\LocationSlug;
+use App\Support\PreviewImage;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
@@ -370,7 +371,7 @@ class PackageController extends Controller
                 ], 422);
             }
 
-            $this->deleteReplacedImages($package->image, $newImages);
+            $this->deleteReplacedImages($package->image, $newImages, (int) $package->id);
             $validated['image'] = $newImages;
         }
 
@@ -550,11 +551,11 @@ class PackageController extends Controller
         $packageId = $package->id;
         $locationId = $package->location_id;
 
-        if ($package->image && is_array($package->image)) {
-            foreach ($package->image as $image) {
-                if (file_exists(storage_path('app/public/' . $image))) {
-                    unlink(storage_path('app/public/' . $image));
-                }
+        $images = is_array($package->image) ? $package->image : (is_string($package->image) ? [$package->image] : []);
+
+        foreach ($images as $image) {
+            if (is_string($image)) {
+                $this->deleteImageIfUnused($image, $packageId);
             }
         }
 
@@ -956,7 +957,7 @@ class PackageController extends Controller
         return $paths === [] ? null : $paths;
     }
 
-    private function deleteReplacedImages(mixed $oldImages, ?array $newImages): void
+    private function deleteReplacedImages(mixed $oldImages, ?array $newImages, int $packageId): void
     {
         $old = is_array($oldImages) ? $oldImages : (is_string($oldImages) ? [$oldImages] : []);
 
@@ -965,10 +966,34 @@ class PackageController extends Controller
                 continue;
             }
 
-            $path = storage_path('app/public/' . $image);
-            if (is_file($path)) {
-                unlink($path);
-            }
+            $this->deleteImageIfUnused($image, $packageId);
+        }
+    }
+
+    private function deleteImageIfUnused(string $image, int $packageId): void
+    {
+        if ($image === '' || DataUriImage::isDataUri($image) || str_contains($image, '..')) {
+            return;
+        }
+
+        $stillInUse = Package::withTrashed()
+            ->where('id', '!=', $packageId)
+            ->whereJsonContains('image', $image)
+            ->exists();
+
+        if ($stillInUse) {
+            return;
+        }
+
+        PreviewImage::forget($image);
+
+        if (!str_starts_with($image, 'images/packages/')) {
+            return;
+        }
+
+        $path = storage_path('app/public/' . $image);
+        if (is_file($path)) {
+            unlink($path);
         }
     }
 

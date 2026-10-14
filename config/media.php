@@ -5,6 +5,8 @@ return [
 
     'max_path_length' => (int) env('MEDIA_MAX_IMAGE_PATH_LENGTH', 2048),
 
+    'preview_fallback_max_bytes' => (int) env('MEDIA_PREVIEW_FALLBACK_MAX_BYTES', 1572864),
+
     'downscale' => [
         'enabled' => (bool) env('MEDIA_DOWNSCALE_ENABLED', false),
         'max_width' => (int) env('MEDIA_DOWNSCALE_MAX_WIDTH', 1920),

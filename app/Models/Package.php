@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Support\DataUriImage;
+use App\Support\PreviewImage;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -86,6 +87,12 @@ class Package extends Model
 
             if (DataUriImage::contains($package->image)) {
                 $package->image = DataUriImage::externalize($package->image, 'images/packages');
+            }
+        });
+
+        static::saved(function (Package $package) {
+            if ($package->is_escape_room && ($package->wasRecentlyCreated || $package->wasChanged(['image', 'is_escape_room']))) {
+                PreviewImage::generateLater([PreviewImage::primary($package->image)]);
             }
         });
     }
