@@ -3,8 +3,10 @@
 namespace App\Console\Commands;
 
 use App\Models\Company;
+use App\Models\PhotoDelivery;
 use App\Models\SmsNotification;
 use App\Models\SmsNotificationLog;
+use App\Services\PhotoDeliveryService;
 use App\Services\SmsService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
@@ -271,8 +273,42 @@ class DiagnoseSms extends Command
 
             $parts = $forChannel->map(fn ($r) => "{$r->status} {$r->total}")->implode(', ');
             $sent = (int) ($forChannel->firstWhere('status', 'sent')->total ?? 0);
-            $colour = $sent > 0 ? 'green' : 'red';
+            $colour = $channel === 'sms' ? 'yellow' : ($sent > 0 ? 'green' : 'red');
             $this->line("   <fg={$colour}>{$label}</>: {$parts}");
+        }
+
+        if (\Illuminate\Support\Facades\Schema::hasColumn('photo_deliveries', 'provider_sid')) {
+            $service = app(PhotoDeliveryService::class);
+            $stats = $service->recentTextStats(null);
+
+            $this->newLine();
+            $this->line('   What happened to photo texts after the provider accepted them:');
+            $this->line(sprintf(
+                '   received on the phone %d · delivered %d · waiting for the carrier %d · never confirmed %d · not delivered %d · refused %d',
+                $stats['received'],
+                $stats['delivered'],
+                $stats['awaiting_carrier'],
+                $stats['unconfirmed'],
+                $stats['not_delivered'],
+                $stats['failed']
+            ));
+
+            if ($stats['top_problem']) {
+                $this->line('   <fg=red>most common problem</>  code ' . $stats['top_problem']['code'] . ' (' . $stats['top_problem']['count'] . '): '
+                    . ($stats['top_problem']['meaning'] ?? 'see the provider console'));
+            }
+
+            $companyIds = PhotoDelivery::where('channel', 'sms')->where('created_at', '>=', $window)->distinct()->pluck('company_id')->filter();
+
+            foreach (Company::whereIn('id', $companyIds)->get() as $company) {
+                $texting = $service->textingStatus($company->id);
+                $colour = match ($texting['state']) {
+                    'verified' => 'green',
+                    'failing' => 'red',
+                    default => 'yellow',
+                };
+                $this->line("   <fg={$colour}>{$texting['headline']}</> for {$company->company_name}" . ($texting['note'] ? ': ' . $texting['note'] : '.'));
+            }
         }
 
         $failures = DB::table('photo_deliveries')
@@ -548,6 +584,31 @@ class DiagnoseSms extends Command
             ->limit($limit)
             ->get(['recipient_phone', 'provider_sid', 'created_at']);
 
+        if (\Illuminate\Support\Facades\Schema::hasColumn('photo_deliveries', 'provider_sid')) {
+            $photoTexts = PhotoDelivery::whereNotNull('provider_sid')
+                ->where('status', PhotoDelivery::STATUS_SENT)
+                ->latest()
+                ->limit($limit)
+                ->get(['destination', 'provider_sid', 'created_at'])
+                ->map(fn (PhotoDelivery $d) => (object) [
+                    'recipient_phone' => $d->destination,
+                    'provider_sid' => $d->provider_sid,
+                    'created_at' => $d->created_at,
+                ]);
+
+            $recent = collect($recent->all())
+                ->map(fn ($log) => (object) [
+                    'recipient_phone' => $log->recipient_phone,
+                    'provider_sid' => $log->provider_sid,
+                    'created_at' => $log->created_at,
+                ])
+                ->concat($photoTexts)
+                ->sortByDesc(fn ($log) => $log->created_at?->getTimestamp() ?? 0)
+                ->take($limit)
+                ->values();
+            $this->line('   (booking, waiver and photo texts together)');
+        }
+
         if ($recent->isEmpty()) {
             $this->line('   <fg=yellow>none</>     no accepted messages with a provider id to look up');
 
@@ -609,19 +670,63 @@ class DiagnoseSms extends Command
             $this->line('   · 30005  that number does not exist');
         }
 
-        $delivered = $tally['delivered'] ?? 0;
-
         $this->newLine();
-        if ($delivered === 0) {
-            $this->line('   <fg=red>Nothing in this sample reached a phone.</> The provider is accepting messages');
-            $this->line('   and something downstream is dropping every one, which is what sender');
-            $this->line('   registration fixes. The codes above say which.');
-        } elseif ($problems !== []) {
-            $this->line("   <fg=yellow>{$delivered} of {$recent->count()} arrived.</> The rest were dropped after acceptance.");
-        } else {
-            $this->line('   <fg=green>Everything in this sample arrived.</> Texting is genuinely working, so a');
-            $this->line('   missing message is worth chasing per-recipient rather than system-wide.');
+        foreach ($this->deliveryVerdict($tally, $recent->count(), array_column($problems, 'code')) as $line) {
+            $this->line($line);
         }
+    }
+
+    public function deliveryVerdict(array $tally, int $looked, array $problemCodes): array
+    {
+        $dropped = count($problemCodes);
+        $delivered = ($tally['delivered'] ?? 0) + ($tally['read'] ?? 0);
+        $unreadable = $tally['could not look up'] ?? 0;
+        $unanswered = max(0, $looked - $delivered - $dropped - $unreadable);
+        $noAnswer = ($unanswered > 0 ? " {$unanswered} have no answer from the carrier yet." : '')
+            . ($unreadable > 0 ? " {$unreadable} could not be looked up." : '');
+        $senderProblem = array_intersect(array_map('strval', $problemCodes), SmsService::SENDER_PROBLEM_CODES) !== [];
+
+        if ($looked > 0 && $unreadable === $looked) {
+            return [
+                '   <fg=yellow>The provider could not be asked about any of these messages.</> Check the',
+                '   account settings and the network, then run this again.',
+            ];
+        }
+
+        if ($delivered === 0 && $dropped > 0) {
+            return [
+                "   <fg=red>None of the {$looked} reached a phone that the carrier could confirm.</> {$dropped} were",
+                $senderProblem
+                    ? '   dropped after the provider accepted them, which is what sender registration fixes.'
+                    : '   dropped after the provider accepted them for reasons on the guests\' side.',
+                '   The codes above say which.' . $noAnswer,
+            ];
+        }
+
+        if ($dropped > 0) {
+            return ["   <fg=yellow>{$delivered} of {$looked} arrived and {$dropped} were dropped after acceptance.</>" . $noAnswer];
+        }
+
+        if ($delivered < $looked) {
+            $lines = ["   <fg=yellow>{$delivered} of {$looked} are confirmed delivered.</>"];
+
+            if ($unanswered > 0) {
+                $lines[] = "   The carrier has not reported on {$unanswered}, so they are not proven to have arrived.";
+            }
+
+            if ($unreadable > 0) {
+                $lines[] = "   {$unreadable} could not be looked up with the provider.";
+            }
+
+            $lines[] = '   Ask a guest to confirm one on their phone.';
+
+            return $lines;
+        }
+
+        return [
+            '   <fg=green>Everything in this sample arrived.</> Texting is genuinely working, so a',
+            '   missing message is worth chasing per-recipient rather than system-wide.',
+        ];
     }
 
     protected function maskPhone(string $phone): string

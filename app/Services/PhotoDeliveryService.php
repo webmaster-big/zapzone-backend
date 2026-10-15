@@ -9,6 +9,8 @@ use App\Models\Notification;
 use App\Models\PhotoDelivery;
 use App\Models\PhotoMessageTemplate;
 use App\Models\PhotoSession;
+use App\Models\SmsSenderVerification;
+use App\Models\User;
 use App\Models\Waiver;
 use App\Support\OperatingDay;
 use Illuminate\Support\Collection;
@@ -17,11 +19,19 @@ use Illuminate\Support\Facades\Mail;
 
 class PhotoDeliveryService
 {
+    public const SETTLE_WINDOW_DAYS = 7;
+
+    public const RECENT_TEXT_DAYS = 14;
+
     protected SmsService $sms;
+
+    protected bool $lastLookupFailed = false;
+
+    protected array $senderBlockedMemo = [];
 
     public function __construct()
     {
-        $this->sms = new SmsService();
+        $this->sms = app(SmsService::class);
     }
 
     public function smsAvailable(): bool
@@ -42,21 +52,811 @@ class PhotoDeliveryService
         return $useGmailApi ? 'gmail_api' : (string) config('mail.default', 'smtp');
     }
 
-    public function channelDiagnostics(): array
+    public function channelDiagnostics(?int $companyId = null, bool $withStats = true): array
     {
+        $texting = $companyId ? $this->textingStatus($companyId, $withStats) : $this->configuredTextingStatus();
+
         return [
             'sms_available' => $this->smsAvailable(),
             'email_available' => $this->emailAvailable(),
             'email_transport' => $this->emailTransport(),
-            'sms_note' => $this->smsAvailable()
-                ? null
-                : 'Text messaging is not switched on yet, so photo links go out by email only. Your administrator can enable it in the site settings.',
+            'sms_status' => $texting,
+            'sms_note' => $texting['note'],
             'email_note' => $this->emailAvailable()
                 ? null
                 : 'Email is not switched on yet, so messages are written to the site log instead of being delivered. Your administrator can enable it in the site settings.',
             'photo_link_base' => $this->photoLinkBase(),
             'photo_link_note' => $this->photoLinkNote(),
         ];
+    }
+
+    protected function configuredTextingStatus(): array
+    {
+        $sender = SmsService::senderNumber();
+        $configured = $this->smsAvailable();
+
+        return [
+            'state' => $configured ? 'unverified' : 'not_configured',
+            'headline' => $configured ? 'Texting not confirmed yet' : 'Texting is switched off',
+            'note' => $configured ? null : 'Text messaging is not switched on yet, so photo links go out by email only. Your administrator can enable it in the site settings.',
+            'sender' => $sender,
+            'sender_kind' => SmsService::senderKind($sender),
+            'verified' => null,
+            'problem' => null,
+            'recent' => $this->emptyTextStats(),
+        ];
+    }
+
+    protected function emptyTextStats(int $days = self::RECENT_TEXT_DAYS): array
+    {
+        return [
+            'days' => $days,
+            'attempted' => 0,
+            'received' => 0,
+            'delivered' => 0,
+            'awaiting_carrier' => 0,
+            'unconfirmed' => 0,
+            'not_delivered' => 0,
+            'failed' => 0,
+            'skipped' => 0,
+            'top_problem' => null,
+        ];
+    }
+
+    protected function emailFallbackNote(): string
+    {
+        return $this->emailAvailable()
+            ? 'Guests with an email address on their waiver also get the email. For a guest with only a phone number, show the direct staff QR code instead.'
+            : 'Email is not switched on either, so show the guest the direct staff QR code instead.';
+    }
+
+    public function textingStatus(?int $companyId, bool $withStats = true): array
+    {
+        $sender = SmsService::senderNumber();
+        $status = $this->configuredTextingStatus();
+
+        if (!$this->smsAvailable()) {
+            return $status;
+        }
+
+        if ($withStats) {
+            $status['recent'] = $this->recentTextStats($companyId);
+        }
+
+        $verification = $companyId && $sender
+            ? SmsSenderVerification::activeFor($companyId, $sender)->with(['confirmer', 'location'])->latest('confirmed_at')->first()
+            : null;
+
+        if ($verification) {
+            $status['verified'] = [
+                'at' => $verification->confirmed_at?->toIso8601String(),
+                'method' => $verification->method,
+                'by_name' => $verification->confirmer
+                    ? trim(($verification->confirmer->first_name ?? '') . ' ' . ($verification->confirmer->last_name ?? ''))
+                    : null,
+                'location_name' => $verification->location?->name,
+                'photo_delivery_id' => $verification->photo_delivery_id,
+            ];
+        }
+
+        $problem = $this->recentSenderProblem($companyId);
+        $status['problem'] = $problem;
+
+        if ($problem) {
+            return array_merge($status, [
+                'state' => 'failing',
+                'headline' => 'Texts are not reaching phones',
+                'note' => 'Recent photo texts are not reaching guests\' phones: ' . $problem['meaning'] . ' ' . $this->emailFallbackNote(),
+            ]);
+        }
+
+        if ($verification) {
+            return array_merge($status, [
+                'state' => 'verified',
+                'headline' => 'Texting confirmed working',
+                'note' => null,
+            ]);
+        }
+
+        $pending = $companyId && $sender ? $this->pendingStaffReceipt($companyId, $sender) : null;
+
+        return array_merge($status, [
+            'state' => 'unverified',
+            'headline' => 'Texting not confirmed yet',
+            'pending_receipt' => $pending,
+            'note' => $pending
+                ? sprintf(
+                    'A staff member saw a photo text on a guest\'s phone on %s. Texting shows as confirmed once the phone carrier reports that text delivered, or after %d hours if the carrier reports no problem. ',
+                    $pending['at_label'],
+                    PhotoDelivery::CARRIER_CHECK_HOURS
+                ) . $this->emailFallbackNote()
+                : 'Photo texts are being sent, but no guest has confirmed receiving one on their phone yet, so texting is not confirmed as working. ' . $this->emailFallbackNote(),
+        ]);
+    }
+
+    protected function pendingStaffReceipt(int $companyId, string $sender): ?array
+    {
+        $lastReset = $this->latestResetFor($companyId);
+
+        $receipt = PhotoDelivery::where('company_id', $companyId)
+            ->where('channel', PhotoDelivery::CHANNEL_SMS)
+            ->where('status', PhotoDelivery::STATUS_SENT)
+            ->where('receipt_confirmed_via', PhotoDelivery::RECEIPT_VIA_STAFF)
+            ->where('provider_from', $sender)
+            ->where('sent_at', '>=', now()->subHours(PhotoDelivery::CARRIER_CHECK_HOURS)->subDays(self::SETTLE_WINDOW_DAYS))
+            ->when($lastReset, fn ($q) => $q->where('sent_at', '>', $lastReset))
+            ->where(function ($q) {
+                $q->whereNull('provider_status')->orWhereNotIn('provider_status', SmsService::NOT_DELIVERED_STATUSES);
+            })
+            ->whereNotExists(function ($q) {
+                $q->selectRaw('1')
+                    ->from('sms_sender_verifications')
+                    ->whereColumn('sms_sender_verifications.provider_sid', 'photo_deliveries.provider_sid');
+            })
+            ->latest('receipt_confirmed_at')
+            ->first();
+
+        if (!$receipt) {
+            return null;
+        }
+
+        return [
+            'photo_delivery_id' => $receipt->id,
+            'at' => $receipt->receipt_confirmed_at?->toIso8601String(),
+            'at_label' => $receipt->receipt_confirmed_at?->format('M j') ?? 'a recent day',
+            'settles_after' => $receipt->sent_at?->copy()->addHours(PhotoDelivery::CARRIER_CHECK_HOURS)->toIso8601String(),
+        ];
+    }
+
+    public function recentTextStats(?int $companyId, int $days = self::RECENT_TEXT_DAYS): array
+    {
+        $query = PhotoDelivery::where('channel', PhotoDelivery::CHANNEL_SMS)
+            ->whereNull('duplicate_of_id')
+            ->where('created_at', '>=', now()->subDays($days));
+
+        if ($companyId) {
+            $query->where('company_id', $companyId);
+        }
+
+        $rows = $query->latest('id')->limit(1000)->get();
+        $byOutcome = $rows->groupBy(fn (PhotoDelivery $d) => $d->outcome())->map->count();
+        $count = fn (string $outcome) => (int) ($byOutcome[$outcome] ?? 0);
+
+        $problem = $rows
+            ->filter(fn (PhotoDelivery $d) => in_array($d->outcome(), [PhotoDelivery::OUTCOME_NOT_DELIVERED, PhotoDelivery::OUTCOME_FAILED], true)
+                && $d->provider_error_code !== null)
+            ->groupBy('provider_error_code')
+            ->map->count()
+            ->sortDesc();
+
+        $topCode = $problem->keys()->first();
+
+        return [
+            'days' => $days,
+            'attempted' => $rows->whereNotIn('status', [PhotoDelivery::STATUS_SKIPPED, PhotoDelivery::STATUS_CANCELED, PhotoDelivery::STATUS_SCHEDULED])->count(),
+            'received' => $count(PhotoDelivery::OUTCOME_RECEIVED),
+            'delivered' => $count(PhotoDelivery::OUTCOME_DELIVERED),
+            'awaiting_carrier' => $count(PhotoDelivery::OUTCOME_AWAITING),
+            'unconfirmed' => $count(PhotoDelivery::OUTCOME_UNCONFIRMED),
+            'not_delivered' => $count(PhotoDelivery::OUTCOME_NOT_DELIVERED),
+            'failed' => $count(PhotoDelivery::OUTCOME_FAILED),
+            'skipped' => $count(PhotoDelivery::OUTCOME_SKIPPED),
+            'top_problem' => $topCode === null ? null : [
+                'code' => (string) $topCode,
+                'meaning' => SmsService::meaningOf((string) $topCode),
+                'count' => (int) $problem->first(),
+            ],
+        ];
+    }
+
+    protected function settledTextsQuery(?string $sender)
+    {
+        return PhotoDelivery::where('channel', PhotoDelivery::CHANNEL_SMS)
+            ->whereNull('duplicate_of_id')
+            ->where('created_at', '>=', now()->subDays(self::RECENT_TEXT_DAYS))
+            ->where(function ($q) use ($sender) {
+                $q->where('provider_from', $sender)
+                    ->orWhere(function ($refused) {
+                        $refused->whereNull('provider_from')->where('status', PhotoDelivery::STATUS_FAILED);
+                    });
+            })
+            ->where(function ($q) {
+                $q->whereNotNull('receipt_confirmed_at')
+                    ->orWhereIn('provider_status', SmsService::FINAL_STATUSES)
+                    ->orWhere(function ($failed) {
+                        $failed->where('status', PhotoDelivery::STATUS_FAILED)->whereNotNull('provider_error_code');
+                    });
+            })
+            ->where(function ($q) {
+                $q->whereNull('provider_error_code')->orWhereNotIn('provider_error_code', SmsService::GUEST_PROBLEM_CODES);
+            })
+            ->orderByRaw("CASE WHEN status = 'failed' THEN updated_at ELSE COALESCE(sent_at, created_at) END DESC")
+            ->orderByDesc('id');
+    }
+
+    public function senderBlockedNow(): bool
+    {
+        $sender = SmsService::senderNumber();
+
+        if ($sender === null) {
+            return false;
+        }
+
+        return $this->senderBlockCode() !== null;
+    }
+
+    public function senderBlockCode(): ?string
+    {
+        $sender = SmsService::senderNumber();
+
+        if ($sender === null) {
+            return null;
+        }
+
+        if (!array_key_exists($sender, $this->senderBlockedMemo)) {
+            $latest = $this->latestDecisiveText($sender);
+            $this->senderBlockedMemo[$sender] = $this->isSenderBlock($latest) ? (string) $latest->provider_error_code : null;
+        }
+
+        return $this->senderBlockedMemo[$sender];
+    }
+
+    protected function latestDecisiveText(?string $sender): ?PhotoDelivery
+    {
+        return $this->settledTextsQuery($sender)
+            ->where(function ($q) {
+                $q->whereNotNull('receipt_confirmed_at')
+                    ->orWhereIn('provider_status', ['delivered', 'read'])
+                    ->orWhereIn('provider_error_code', SmsService::SENDER_PROBLEM_CODES);
+            })
+            ->first();
+    }
+
+    protected function isSenderBlock(?PhotoDelivery $delivery): bool
+    {
+        return $delivery !== null
+            && !$delivery->reachedGuest()
+            && in_array((string) $delivery->provider_error_code, SmsService::SENDER_PROBLEM_CODES, true);
+    }
+
+    public function blockedNow(PhotoDelivery $delivery): bool
+    {
+        return $delivery->isText() && $this->senderBlockedNow();
+    }
+
+    public function retryWouldHelp(PhotoDelivery $delivery): bool
+    {
+        return $delivery->retryIsUseful() && !$this->blockedNow($delivery);
+    }
+
+    protected function recentSenderProblem(?int $companyId): ?array
+    {
+        $sender = SmsService::senderNumber();
+
+        $latestAnywhere = $this->latestDecisiveText($sender);
+        $blockedEverywhere = $this->isSenderBlock($latestAnywhere);
+
+        $settled = $companyId
+            ? $this->settledTextsQuery($sender)->where('company_id', $companyId)->limit(10)->get()
+            : $this->settledTextsQuery($sender)->limit(10)->get();
+
+        $lastThreeMissed = $settled->count() >= 3 && $settled->take(3)->every(fn (PhotoDelivery $d) => !$d->reachedGuest());
+
+        if (!$blockedEverywhere && !$lastThreeMissed) {
+            return null;
+        }
+
+        $missed = $settled->reject(fn (PhotoDelivery $d) => $d->reachedGuest());
+        $code = $blockedEverywhere
+            ? (string) $latestAnywhere->provider_error_code
+            : (string) ($missed->pluck('provider_error_code')->filter(fn ($c) => in_array((string) $c, SmsService::SENDER_PROBLEM_CODES, true))->countBy()->sortDesc()->keys()->first()
+                ?? $missed->pluck('provider_error_code')->filter()->countBy()->sortDesc()->keys()->first()
+                ?? '');
+        $seen = $blockedEverywhere ? $latestAnywhere : $settled->first();
+
+        return [
+            'code' => $code !== '' ? $code : null,
+            'meaning' => SmsService::meaningOf($code) ?? 'The phone carriers are not delivering them.',
+            'seen_at' => ($seen->sent_at ?? $seen->created_at)?->toIso8601String(),
+        ];
+    }
+
+    public function lookupIsDue(PhotoDelivery $delivery): bool
+    {
+        return $delivery->provider_checked_at === null
+            || $delivery->provider_checked_at->lessThanOrEqualTo(now()->subSeconds(10));
+    }
+
+    public function refreshCarrierStatus(PhotoDelivery $delivery, bool $force = false): PhotoDelivery
+    {
+        $this->lastLookupFailed = false;
+        $this->senderBlockedMemo = [];
+
+        if (!$delivery->isText() || $delivery->provider_sid === null || SmsService::isFinalStatus($delivery->provider_status)) {
+            return $delivery;
+        }
+
+        if (!$force && !$this->lookupIsDue($delivery)) {
+            return $delivery;
+        }
+
+        $sid = $delivery->provider_sid;
+
+        try {
+            $message = $this->sms->fetchMessage($sid);
+        } catch (\Throwable $e) {
+            $this->lastLookupFailed = true;
+            Log::warning('Could not check a photo text with the provider', [
+                'delivery_id' => $delivery->id,
+                'error' => $e->getMessage(),
+            ]);
+            PhotoDelivery::whereKey($delivery->id)->where('provider_sid', $sid)->update(['provider_checked_at' => now()]);
+
+            return $delivery->fresh() ?? $delivery;
+        }
+
+        $status = $message['status'] !== '' ? $message['status'] : $delivery->provider_status;
+        $changes = [
+            'provider_status' => $status,
+            'provider_error_code' => $message['error_code'],
+            'provider_checked_at' => now(),
+        ];
+
+        if (in_array($status, ['delivered', 'read'], true)) {
+            $changes['delivered_at'] = $delivery->delivered_at ?? now();
+        }
+
+        PhotoDelivery::whereKey($delivery->id)->where('provider_sid', $sid)->update($changes);
+
+        if (in_array($status, SmsService::NOT_DELIVERED_STATUSES, true)) {
+            $this->withdrawReceiptFor($delivery->id, $sid, 'The phone carrier later reported this text as not delivered.');
+        }
+
+        $fresh = $delivery->fresh() ?? $delivery;
+
+        if ($fresh->provider_sid === $sid && $fresh->carrierSaysDelivered() && $fresh->receipt_confirmed_at !== null) {
+            $this->recordVerification($fresh, $fresh->receipt_confirmed_via === PhotoDelivery::RECEIPT_VIA_LINK
+                ? SmsSenderVerification::METHOD_GUEST_OPENED_LINK
+                : SmsSenderVerification::METHOD_STAFF_CONFIRMED, $fresh->receipt_confirmed_by);
+        }
+
+        return $fresh;
+    }
+
+    protected function withdrawReceiptFor(int $deliveryId, string $sid, string $reason): void
+    {
+        PhotoDelivery::whereKey($deliveryId)
+            ->where('provider_sid', $sid)
+            ->whereNotNull('receipt_confirmed_at')
+            ->update([
+                'receipt_confirmed_at' => null,
+                'receipt_confirmed_by' => null,
+                'receipt_confirmed_via' => null,
+            ]);
+
+        SmsSenderVerification::where('photo_delivery_id', $deliveryId)
+            ->where('provider_sid', $sid)
+            ->whereNull('revoked_at')
+            ->update([
+                'revoked_at' => now(),
+                'revoke_reason' => $reason,
+            ]);
+    }
+
+    public function refreshAwaiting(Collection $deliveries, int $limit = 10, float $budgetSeconds = 6.0): Collection
+    {
+        $startedAt = microtime(true);
+        $refreshed = [];
+        $looked = 0;
+
+        $candidates = $deliveries
+            ->filter(fn (PhotoDelivery $d) => $d->isAwaitingCarrier() && $this->lookupIsDue($d))
+            ->sortBy(fn (PhotoDelivery $d) => $d->provider_checked_at?->getTimestamp() ?? 0);
+
+        foreach ($candidates as $delivery) {
+            if ($looked >= $limit || microtime(true) - $startedAt > $budgetSeconds) {
+                break;
+            }
+
+            $looked++;
+            $refreshed[$delivery->id] = $this->refreshCarrierStatus($delivery);
+
+            if ($this->lastLookupFailed) {
+                break;
+            }
+        }
+
+        return $deliveries->map(fn (PhotoDelivery $d) => $refreshed[$d->id] ?? $d);
+    }
+
+    public function settleUnansweredReceipts(?float $deadline = null, int $limit = 25): int
+    {
+        $sender = SmsService::senderNumber();
+
+        if ($sender === null) {
+            return 0;
+        }
+
+        $settled = 0;
+        $windowEnd = now()->subHours(PhotoDelivery::CARRIER_CHECK_HOURS);
+
+        $candidates = PhotoDelivery::where('channel', PhotoDelivery::CHANNEL_SMS)
+            ->where('status', PhotoDelivery::STATUS_SENT)
+            ->whereNotNull('provider_sid')
+            ->where('receipt_confirmed_via', PhotoDelivery::RECEIPT_VIA_STAFF)
+            ->where('provider_from', $sender)
+            ->where('sent_at', '<', $windowEnd)
+            ->where('sent_at', '>=', $windowEnd->copy()->subDays(self::SETTLE_WINDOW_DAYS))
+            ->where(function ($q) {
+                $q->whereNull('provider_status')->orWhereNotIn('provider_status', SmsService::FINAL_STATUSES);
+            })
+            ->whereNotExists(function ($q) {
+                $q->selectRaw('1')
+                    ->from('sms_sender_verifications')
+                    ->whereColumn('sms_sender_verifications.provider_sid', 'photo_deliveries.provider_sid');
+            })
+            ->whereNotExists(function ($q) {
+                $q->selectRaw('1')
+                    ->from('sms_sender_verifications')
+                    ->whereColumn('sms_sender_verifications.company_id', 'photo_deliveries.company_id')
+                    ->where('sms_sender_verifications.method', SmsSenderVerification::METHOD_RESET)
+                    ->whereColumn('sms_sender_verifications.revoked_at', '>=', 'photo_deliveries.sent_at');
+            })
+            ->orderByRaw('provider_checked_at IS NOT NULL, provider_checked_at ASC')
+            ->orderByDesc('sent_at')
+            ->limit($limit)
+            ->get();
+
+        $failuresInARow = 0;
+
+        foreach ($candidates as $delivery) {
+            if ($deadline !== null && microtime(true) > $deadline) {
+                break;
+            }
+
+            $sid = $delivery->provider_sid;
+            $checked = $this->refreshCarrierStatus($delivery, true);
+
+            if ($this->lastLookupFailed) {
+                if (++$failuresInARow >= 3) {
+                    break;
+                }
+
+                continue;
+            }
+
+            $failuresInARow = 0;
+
+            if ($checked->provider_sid !== $sid
+                || $checked->status !== PhotoDelivery::STATUS_SENT
+                || $checked->receipt_confirmed_at === null
+                || $checked->carrierSaysNotDelivered()) {
+                continue;
+            }
+
+            if ($checked->carrierSaysDelivered()
+                || $this->recordVerification($checked, SmsSenderVerification::METHOD_STAFF_CONFIRMED, $checked->receipt_confirmed_by)) {
+                $settled += SmsSenderVerification::where('provider_sid', $sid)->whereNull('revoked_at')->exists() ? 1 : 0;
+            }
+        }
+
+        return $settled;
+    }
+
+    public function confirmReceipt(PhotoDelivery $delivery, ?User $user, string $via = PhotoDelivery::RECEIPT_VIA_STAFF): array
+    {
+        $byStaff = $via === PhotoDelivery::RECEIPT_VIA_STAFF;
+        $allowed = $byStaff ? $delivery->canConfirmReceipt() : $delivery->canRecordGuestReceipt();
+
+        if (!$allowed) {
+            return ['recorded' => false, 'verified' => false, 'delivery' => $delivery];
+        }
+
+        $written = PhotoDelivery::whereKey($delivery->id)
+            ->where('status', PhotoDelivery::STATUS_SENT)
+            ->where('provider_sid', $delivery->provider_sid)
+            ->when(!$byStaff, fn ($q) => $q->where('link_nonce', $delivery->link_nonce))
+            ->whereNull('receipt_confirmed_at')
+            ->where(function ($q) {
+                $q->whereNull('provider_status')->orWhereNotIn('provider_status', SmsService::NOT_DELIVERED_STATUSES);
+            })
+            ->update([
+                'receipt_confirmed_at' => now(),
+                'receipt_confirmed_by' => $byStaff ? $user?->id : null,
+                'receipt_confirmed_via' => $via,
+                'updated_at' => now(),
+            ]);
+
+        $fresh = $delivery->fresh() ?? $delivery;
+
+        if ($written !== 1) {
+            return ['recorded' => false, 'verified' => false, 'delivery' => $fresh];
+        }
+
+        $verified = !$byStaff || $fresh->carrierSaysDelivered()
+            ? $this->recordVerification(
+                $fresh,
+                $byStaff ? SmsSenderVerification::METHOD_STAFF_CONFIRMED : SmsSenderVerification::METHOD_GUEST_OPENED_LINK,
+                $byStaff ? $user?->id : null
+            )
+            : false;
+
+        ActivityLog::log(
+            'photo_text_receipt_confirmed',
+            'photos',
+            sprintf(
+                $byStaff
+                    ? 'Confirmed the guest received the photo text for photo session #%d'
+                    : 'A guest opened the photo link from the text for photo session #%d',
+                $fresh->photo_session_id
+            ),
+            $byStaff ? $user?->id : null,
+            $fresh->location_id,
+            'photo_delivery',
+            $fresh->id,
+            ['via' => $via, 'confirmed_texting' => $verified]
+        );
+
+        return ['recorded' => true, 'verified' => $verified, 'delivery' => $fresh];
+    }
+
+    protected function recordVerification(PhotoDelivery $delivery, string $method, ?int $userId): bool
+    {
+        if (!$delivery->company_id || !$delivery->provider_sid || !$delivery->senderIsCurrent()) {
+            return false;
+        }
+
+        $sender = SmsService::senderNumber();
+
+        if ($delivery->carrierSaysNotDelivered()) {
+            return false;
+        }
+
+        $lastReset = $this->latestResetFor((int) $delivery->company_id);
+
+        if ($lastReset && $delivery->sent_at && $delivery->sent_at->lessThanOrEqualTo($lastReset)) {
+            return false;
+        }
+
+        if (SmsSenderVerification::where('provider_sid', $delivery->provider_sid)->whereNull('revoked_at')->exists()) {
+            return false;
+        }
+
+        $verification = SmsSenderVerification::create([
+            'company_id' => $delivery->company_id,
+            'location_id' => $delivery->location_id,
+            'sender' => $sender,
+            'photo_delivery_id' => $delivery->id,
+            'provider_sid' => $delivery->provider_sid,
+            'method' => $method,
+            'confirmed_by' => $userId,
+            'confirmed_at' => now(),
+        ]);
+
+        $current = PhotoDelivery::find($delivery->id);
+        $resetSince = $delivery->sent_at !== null && SmsSenderVerification::where('company_id', $delivery->company_id)
+            ->where('method', SmsSenderVerification::METHOD_RESET)
+            ->where('revoked_at', '>=', $delivery->sent_at)
+            ->exists();
+
+        if (!$current
+            || $current->provider_sid !== $delivery->provider_sid
+            || $current->status !== PhotoDelivery::STATUS_SENT
+            || $current->receipt_confirmed_at === null
+            || $current->carrierSaysNotDelivered()
+            || $resetSince) {
+            $verification->forceFill([
+                'revoked_at' => now(),
+                'revoke_reason' => 'The text changed while this confirmation was being recorded.',
+            ])->save();
+
+            return false;
+        }
+
+        return true;
+    }
+
+    public function resetVerification(int $companyId, ?int $userId, string $reason, ?int $locationId = null): int
+    {
+        $marker = SmsSenderVerification::create([
+            'company_id' => $companyId,
+            'location_id' => $locationId,
+            'sender' => SmsService::senderNumber() ?? '',
+            'method' => SmsSenderVerification::METHOD_RESET,
+            'confirmed_by' => $userId,
+            'confirmed_at' => now(),
+            'revoked_at' => now(),
+            'revoked_by' => $userId,
+            'revoke_reason' => mb_substr($reason, 0, 255),
+        ]);
+
+        return SmsSenderVerification::where('company_id', $companyId)
+            ->whereNull('revoked_at')
+            ->whereKeyNot($marker->id)
+            ->update([
+                'revoked_at' => now(),
+                'revoked_by' => $userId,
+                'revoke_reason' => mb_substr($reason, 0, 255),
+            ]);
+    }
+
+    public function recordLinkOpen(PhotoSession $session, ?string $ref): void
+    {
+        $delivery = PhotoDelivery::fromLinkRef($session->id, $ref);
+
+        if (!$delivery || $delivery->status !== PhotoDelivery::STATUS_SENT || $delivery->isDuplicate()) {
+            return;
+        }
+
+        if ($delivery->opened_at === null) {
+            PhotoDelivery::whereKey($delivery->id)->whereNull('opened_at')->update(['opened_at' => now()]);
+            $delivery->opened_at = now();
+        }
+
+        if ($delivery->canRecordGuestReceipt()) {
+            $this->confirmReceipt($delivery, null, PhotoDelivery::RECEIPT_VIA_LINK);
+        } elseif ($delivery->receipt_confirmed_via === PhotoDelivery::RECEIPT_VIA_STAFF
+            && $delivery->provider_sid !== null
+            && !$delivery->carrierSaysNotDelivered()) {
+            $this->upgradeStaffReceiptToLink($delivery);
+        }
+    }
+
+    protected function upgradeStaffReceiptToLink(PhotoDelivery $delivery): void
+    {
+        $written = PhotoDelivery::whereKey($delivery->id)
+            ->where('status', PhotoDelivery::STATUS_SENT)
+            ->where('provider_sid', $delivery->provider_sid)
+            ->where('link_nonce', $delivery->link_nonce)
+            ->where('receipt_confirmed_via', PhotoDelivery::RECEIPT_VIA_STAFF)
+            ->where(function ($q) {
+                $q->whereNull('provider_status')->orWhereNotIn('provider_status', SmsService::NOT_DELIVERED_STATUSES);
+            })
+            ->update([
+                'receipt_confirmed_via' => PhotoDelivery::RECEIPT_VIA_LINK,
+                'receipt_confirmed_by' => null,
+                'updated_at' => now(),
+            ]);
+
+        if ($written !== 1) {
+            return;
+        }
+
+        $fresh = $delivery->fresh() ?? $delivery;
+        $verified = $this->recordVerification($fresh, SmsSenderVerification::METHOD_GUEST_OPENED_LINK, null);
+
+        ActivityLog::log(
+            'photo_text_receipt_confirmed',
+            'photos',
+            sprintf('A guest opened the photo link from the text for photo session #%d', $fresh->photo_session_id),
+            null,
+            $fresh->location_id,
+            'photo_delivery',
+            $fresh->id,
+            ['via' => PhotoDelivery::RECEIPT_VIA_LINK, 'confirmed_texting' => $verified, 'after_staff_receipt' => true]
+        );
+    }
+
+    public function summarizeOutcome(Collection $deliveries, ?int $companyId = null): array
+    {
+        $real = $deliveries->reject(fn (PhotoDelivery $d) => $d->isDuplicate())->values();
+        $attempted = $real->reject(fn (PhotoDelivery $d) => $d->status === PhotoDelivery::STATUS_SKIPPED)->values();
+        $outcomes = $attempted->map(fn (PhotoDelivery $d) => $d->outcome());
+
+        $good = $outcomes->filter(fn ($o) => in_array($o, [
+            PhotoDelivery::OUTCOME_SENT,
+            PhotoDelivery::OUTCOME_DELIVERED,
+            PhotoDelivery::OUTCOME_RECEIVED,
+            PhotoDelivery::OUTCOME_AWAITING,
+            PhotoDelivery::OUTCOME_UNCONFIRMED,
+        ], true))->count();
+        $bad = $outcomes->filter(fn ($o) => in_array($o, [PhotoDelivery::OUTCOME_FAILED, PhotoDelivery::OUTCOME_NOT_DELIVERED], true))->count();
+        $awaiting = $outcomes->filter(fn ($o) => $o === PhotoDelivery::OUTCOME_AWAITING)->count();
+        $pending = $attempted->filter(fn (PhotoDelivery $d) => $d->isAwaitingCarrier())->count();
+        $scheduled = $outcomes->filter(fn ($o) => $o === PhotoDelivery::OUTCOME_SCHEDULED)->count();
+        $texts = $attempted->filter(fn (PhotoDelivery $d) => $d->isText());
+        $textReached = $texts->filter(fn (PhotoDelivery $d) => $d->reachedGuest())->count();
+        $failureAdvice = $this->failureAdvice($attempted);
+
+        if ($attempted->isEmpty()) {
+            $reason = $real->pluck('error')->filter()->first();
+
+            return $this->outcomeSummary('failed', 'Nothing was sent', $reason ?: 'None of the selected guests could be contacted.', 0, $deliveries, $companyId);
+        }
+
+        if ($scheduled === $attempted->count()) {
+            return $this->outcomeSummary('scheduled', 'Scheduled for 9:00 AM tomorrow', 'Nothing goes out until 9:00 AM tomorrow in this location\'s time zone. The delivery log shows how it went after that.', 0, $deliveries, $companyId);
+        }
+
+        if ($bad === 0) {
+            $message = $awaiting > 0
+                ? 'Everything was accepted for delivery. This screen updates when the phone carrier confirms the text reached the phone.'
+                : ($texts->isNotEmpty() && $textReached === $texts->count()
+                    ? 'Everything went out, and the text reached the phone.'
+                    : ($texts->isEmpty()
+                        ? 'The email was handed to the email service.'
+                        : 'Everything went out. The phone carrier has not confirmed whether the text arrived.'));
+
+            if ($awaiting === 0 && $pending > 0) {
+                $message = 'Recorded as received. The phone carrier has not confirmed delivery yet, so this screen keeps checking.';
+            }
+
+            return $this->outcomeSummary('sent', $awaiting > 0 ? 'Sent, waiting for the carrier' : 'Photos sent', $message, $pending, $deliveries, $companyId);
+        }
+
+        if ($good === 0) {
+            return $this->outcomeSummary('failed', 'The photos could not be sent', 'Nothing reached the guest. ' . $failureAdvice, $pending, $deliveries, $companyId);
+        }
+
+        return $this->outcomeSummary(
+            'partial',
+            'Sent, but not by every method',
+            sprintf('%d of %d messages went out. The one%s marked in red did not. ', $good, $good + $bad, $bad === 1 ? '' : 's') . $failureAdvice,
+            $pending,
+            $deliveries,
+            $companyId
+        );
+    }
+
+    protected function failureAdvice(Collection $attempted): string
+    {
+        $bad = $attempted->filter(fn (PhotoDelivery $d) => in_array($d->outcome(), [PhotoDelivery::OUTCOME_FAILED, PhotoDelivery::OUTCOME_NOT_DELIVERED], true));
+        $blocked = $bad->filter(fn (PhotoDelivery $d) => $this->blockedNow($d));
+        $retryable = $bad->filter(fn (PhotoDelivery $d) => $d->canRetry()
+            && $this->retryWouldHelp($d)
+            && !($blocked->isNotEmpty() && $d->isText()));
+
+        if ($blocked->isNotEmpty()) {
+            return (in_array((string) $this->senderBlockCode(), SmsService::CARRIER_BLOCK_CODES, true)
+                    ? 'The phone carriers are blocking texts from this number, so sending the text again will not help.'
+                    : 'The texting account or number is not set up correctly, so no text can go out until an administrator fixes it.')
+                . ($retryable->isNotEmpty() ? ' Retry can still send the email again.' : '');
+        }
+
+        return $retryable->isNotEmpty()
+            ? 'Each message below says why, and Retry sends it again.'
+            : 'Each message below says why. Sending it again to the same number or address will not help.';
+    }
+
+    protected function outcomeSummary(string $result, string $headline, string $message, int $carrierPending, Collection $deliveries, ?int $companyId): array
+    {
+        $texting = $this->smsAvailable() ? $this->textingStatus($companyId, false) : null;
+        $confirmableRows = $deliveries->filter(fn (PhotoDelivery $d) => $d->canConfirmReceipt());
+        $confirmable = $confirmableRows->pluck('id')->values()->all();
+        $canConfirmTexting = $confirmableRows->contains(fn (PhotoDelivery $d) => $this->receiptCanVerify($d));
+
+        return [
+            'result' => $result,
+            'headline' => $headline,
+            'message' => $message,
+            'texts_blocked' => $deliveries->contains(fn (PhotoDelivery $d) => $this->blockedNow($d)
+                && in_array($d->outcome(), [PhotoDelivery::OUTCOME_FAILED, PhotoDelivery::OUTCOME_NOT_DELIVERED], true)),
+            'carrier_pending' => $carrierPending,
+            'delivery_ids' => $deliveries->pluck('id')->values()->all(),
+            'confirmable_ids' => $confirmable,
+            'texting_state' => $texting['state'] ?? 'not_configured',
+            'ask_for_receipt' => $canConfirmTexting && in_array($texting['state'] ?? null, ['unverified', 'failing'], true),
+        ];
+    }
+
+    public function receiptCanVerify(PhotoDelivery $delivery): bool
+    {
+        if (!$delivery->company_id || !$delivery->senderIsCurrent()) {
+            return false;
+        }
+
+        $lastReset = $this->latestResetFor((int) $delivery->company_id);
+
+        return $lastReset === null || ($delivery->sent_at !== null && $delivery->sent_at->greaterThan($lastReset));
+    }
+
+    protected function latestResetFor(int $companyId): ?\Illuminate\Support\Carbon
+    {
+        $at = SmsSenderVerification::where('company_id', $companyId)
+            ->where('method', SmsSenderVerification::METHOD_RESET)
+            ->max('revoked_at');
+
+        return $at ? \Illuminate\Support\Carbon::parse($at) : null;
     }
 
     public function photoLinkBase(): string
@@ -106,7 +906,8 @@ class PhotoDeliveryService
             'first_name' => 'there',
             'location_name' => $location->name ?? 'Zap Zone',
             'photo_date' => now($tz)->format('M j, Y'),
-            'photo_link' => $this->photoLinkBase() . '/photos/sample-link',
+            'photo_link' => $this->photoLinkBase() . '/photos/' . str_pad('sample-link-', 48, 'x')
+                . '?r=' . base_convert((string) ((int) PhotoDelivery::max('id') + 1), 10, 36) . '-00000000',
             'expires_on' => now($tz)->addDays(30)->format('M j, Y'),
             'business_name' => $location->company?->company_name ?? 'Zap Zone',
             'support_contact' => (string) config('photos.support_contact'),
@@ -161,13 +962,17 @@ class PhotoDeliveryService
                 return ['success' => false, 'message' => 'The text message wording is empty. Add it under Message wording below.'];
             }
 
-            $sid = $this->sms->sendSms($this->normalizePhone($destination), '[Test] ' . $body);
+            $sent = $this->sms->sendMessage($this->normalizePhone($destination), '[Test] ' . $body);
+            $size = SmsService::segmentInfo($body);
 
             return [
                 'success' => true,
-                'message' => 'Test text sent to ' . $this->normalizePhone($destination) . '. It should arrive within a few seconds.',
-                'provider_reference' => $sid,
-                'characters' => mb_strlen($body),
+                'message' => 'The text provider accepted the test for ' . $sent['to'] . '. Checking whether the phone carrier delivers it…',
+                'provider_reference' => $sent['sid'],
+                'provider_status' => $sent['status'],
+                'characters' => $size['characters'],
+                'segments' => $size['segments'],
+                'encoding' => $size['encoding'],
             ];
         } catch (\Throwable $e) {
             Log::warning('Photo channel test failed', [
@@ -178,7 +983,7 @@ class PhotoDeliveryService
 
             return [
                 'success' => false,
-                'message' => 'The message could not be sent. The provider said: ' . mb_substr($e->getMessage(), 0, 400),
+                'message' => 'The message could not be sent. ' . SmsService::describeFailure($e),
             ];
         }
     }
@@ -254,6 +1059,7 @@ class PhotoDeliveryService
 
         $seen = [];
         $created = [];
+        $rows = [];
         $skippedWaiverIds = [];
 
         foreach ($waivers as $waiver) {
@@ -263,7 +1069,7 @@ class PhotoDeliveryService
             // A channel present on the waiver that this site cannot send is recorded so the
             // delivery log explains the gap, rather than silently dropping the contact.
             foreach (array_diff($this->contactChannelsOnRecord($waiver), $channels) as $unsupported) {
-                PhotoDelivery::create([
+                $rows[] = PhotoDelivery::create([
                     'photo_session_id' => $session->id,
                     'company_id' => $session->company_id,
                     'location_id' => $session->location_id,
@@ -311,6 +1117,7 @@ class PhotoDeliveryService
                     'scheduled_for' => $primary ? null : $scheduledFor,
                     'created_by' => $userId,
                 ]);
+                $rows[] = $delivery;
 
                 if (!$primary) {
                     $seen[$key] = $delivery;
@@ -341,6 +1148,7 @@ class PhotoDeliveryService
         return [
             'created' => count($created),
             'skipped_waiver_ids' => $skippedWaiverIds,
+            'deliveries' => PhotoDelivery::whereIn('id', collect($rows)->pluck('id'))->orderBy('id')->get(),
         ];
     }
 
@@ -420,24 +1228,37 @@ class PhotoDeliveryService
         return $sent;
     }
 
-    public function claimForSending(PhotoDelivery $delivery): ?PhotoDelivery
+    public function claimForSending(PhotoDelivery $delivery, string $expectedStatus = PhotoDelivery::STATUS_QUEUED): ?PhotoDelivery
     {
         $seen = $delivery->getRawOriginal('updated_at');
         $now = now()->format('Y-m-d H:i:s');
 
-        $claimed = \Illuminate\Support\Facades\DB::update(
-            'UPDATE photo_deliveries SET updated_at = IF(updated_at >= ?, DATE_ADD(updated_at, INTERVAL 1 SECOND), ?) WHERE id = ? AND status = ? AND updated_at = ?',
-            [$now, $now, $delivery->id, PhotoDelivery::STATUS_QUEUED, $seen]
-        );
+        $claimed = $seen === null
+            ? \Illuminate\Support\Facades\DB::update(
+                'UPDATE photo_deliveries SET updated_at = ? WHERE id = ? AND status = ? AND updated_at IS NULL',
+                [$now, $delivery->id, $expectedStatus]
+            )
+            : \Illuminate\Support\Facades\DB::update(
+                'UPDATE photo_deliveries SET updated_at = IF(updated_at >= ?, DATE_ADD(updated_at, INTERVAL 1 SECOND), ?) WHERE id = ? AND status = ? AND updated_at = ?',
+                [$now, $now, $delivery->id, $expectedStatus, $seen]
+            );
 
-        return $claimed === 1 ? $delivery->fresh() : null;
+        if ($claimed !== 1) {
+            return null;
+        }
+
+        $fresh = $delivery->fresh();
+        $fresh?->setRelations($delivery->getRelations());
+
+        return $fresh;
     }
 
     public function queueKioskDeliveries(PhotoSession $session): array
     {
         $created = [];
 
-        if ($this->validEmail($session->kiosk_contact_email) && $this->emailAvailable()) {
+        if ($this->validEmail($session->kiosk_contact_email)) {
+            $emailReady = $this->emailAvailable();
             $created[] = PhotoDelivery::create([
                 'photo_session_id' => $session->id,
                 'company_id' => $session->company_id,
@@ -446,7 +1267,8 @@ class PhotoDeliveryService
                 'channel' => PhotoDelivery::CHANNEL_EMAIL,
                 'destination' => strtolower(trim((string) $session->kiosk_contact_email)),
                 'recipient_name' => $session->kiosk_contact_name,
-                'status' => PhotoDelivery::STATUS_QUEUED,
+                'status' => $emailReady ? PhotoDelivery::STATUS_QUEUED : PhotoDelivery::STATUS_SKIPPED,
+                'error' => $emailReady ? null : 'Email is not switched on yet.',
             ]);
         }
 
@@ -501,6 +1323,12 @@ class PhotoDeliveryService
         $isEscapeRoom = $delivery->kind === PhotoDelivery::KIND_ESCAPE_ROOM;
         $emailLog = null;
 
+        $delivery->forceFill(['link_nonce' => strtolower(\Illuminate\Support\Str::random(12))])->saveQuietly();
+
+        if ($delivery->channel === PhotoDelivery::CHANNEL_SMS) {
+            $this->retirePreviousText($delivery);
+        }
+
         try {
             if ($isEscapeRoom && $delivery->channel === PhotoDelivery::CHANNEL_EMAIL) {
                 $followUps = app(VisitFollowUpService::class);
@@ -538,25 +1366,49 @@ class PhotoDeliveryService
                     );
                 }
 
-                $this->sms->sendSms($delivery->destination, $body);
+                $textSent = $this->sms->sendMessage($delivery->destination, $body);
             }
 
-            $delivery->update([
+            $this->writeSendResult($delivery, array_merge([
                 'status' => PhotoDelivery::STATUS_SENT,
                 'sent_at' => now(),
                 'attempts' => $delivery->attempts + 1,
                 'error' => null,
-            ]);
+                'opened_at' => null,
+            ], isset($textSent) ? [
+                'provider_sid' => $textSent['sid'],
+                'provider_from' => $textSent['from'],
+                'provider_status' => $textSent['status'],
+                'provider_error_code' => null,
+                'provider_checked_at' => null,
+                'delivered_at' => null,
+                'receipt_confirmed_at' => null,
+                'receipt_confirmed_by' => null,
+                'receipt_confirmed_via' => null,
+            ] : []));
 
             return true;
         } catch (\Throwable $e) {
             $emailLog?->markAsFailed(mb_substr($e->getMessage(), 0, 1000));
 
-            $delivery->update([
+            $isText = $delivery->channel === PhotoDelivery::CHANNEL_SMS;
+
+            $this->writeSendResult($delivery, array_merge([
                 'status' => PhotoDelivery::STATUS_FAILED,
                 'attempts' => $delivery->attempts + 1,
-                'error' => mb_substr($e->getMessage(), 0, 1000),
-            ]);
+                'error' => mb_substr($isText ? SmsService::describeFailure($e) : $e->getMessage(), 0, 1000),
+                'opened_at' => null,
+            ], $isText ? [
+                'provider_sid' => null,
+                'provider_from' => SmsService::senderNumber(),
+                'provider_status' => null,
+                'provider_error_code' => SmsService::failureCode($e),
+                'provider_checked_at' => null,
+                'delivered_at' => null,
+                'receipt_confirmed_at' => null,
+                'receipt_confirmed_by' => null,
+                'receipt_confirmed_via' => null,
+            ] : []));
 
             Log::error('Photo delivery failed', [
                 'delivery_id' => $delivery->id,
@@ -581,6 +1433,48 @@ class PhotoDeliveryService
 
             return false;
         }
+    }
+
+    protected function writeSendResult(PhotoDelivery $delivery, array $attributes): void
+    {
+        $attributes['updated_at'] = now();
+        $this->senderBlockedMemo = [];
+
+        PhotoDelivery::whereKey($delivery->id)->update($attributes);
+
+        $delivery->forceFill($attributes)->syncOriginal();
+    }
+
+    protected function retirePreviousText(PhotoDelivery $delivery): void
+    {
+        $previous = PhotoDelivery::find($delivery->id);
+
+        if (!$previous || $previous->provider_sid === null || $previous->carrierSaysDelivered()) {
+            return;
+        }
+
+        $verified = SmsSenderVerification::where('photo_delivery_id', $delivery->id)
+            ->where('provider_sid', $previous->provider_sid)
+            ->whereNull('revoked_at')
+            ->exists();
+
+        if (!$verified) {
+            return;
+        }
+
+        $checked = $this->refreshCarrierStatus($previous, true);
+
+        if (!$this->lastLookupFailed && $checked->provider_sid === $previous->provider_sid && $checked->carrierSaysDelivered()) {
+            return;
+        }
+
+        SmsSenderVerification::where('photo_delivery_id', $delivery->id)
+            ->where('provider_sid', $previous->provider_sid)
+            ->whereNull('revoked_at')
+            ->update([
+                'revoked_at' => now(),
+                'revoke_reason' => 'The photo was sent again before the phone carrier confirmed the earlier text.',
+            ]);
     }
 
     public function retry(PhotoDelivery $delivery, ?int $userId = null): bool
@@ -668,7 +1562,7 @@ class PhotoDeliveryService
             'first_name' => $firstName !== '' ? $firstName : 'there',
             'location_name' => $location?->name ?? 'Zap Zone',
             'photo_date' => ($session->captured_at ?: $session->created_at)->copy()->setTimezone($tz)->format('M j, Y'),
-            'photo_link' => $this->photoLink($session),
+            'photo_link' => $this->photoLink($session, $delivery),
             'expires_on' => $session->access_expires_at?->copy()->setTimezone($tz)->format('M j, Y') ?? '',
             'business_name' => $location?->company?->company_name ?? 'Zap Zone',
             'support_contact' => (string) config('photos.support_contact'),
@@ -726,9 +1620,11 @@ class PhotoDeliveryService
         return $attachments;
     }
 
-    public function photoLink(PhotoSession $session): string
+    public function photoLink(PhotoSession $session, ?PhotoDelivery $delivery = null): string
     {
-        return rtrim((string) config('app.frontend_url'), '/') . '/photos/' . $session->access_token;
+        $link = rtrim((string) config('app.frontend_url'), '/') . '/photos/' . $session->access_token;
+
+        return $delivery && $delivery->exists ? $link . '?r=' . $delivery->linkRef() : $link;
     }
 
     protected function templateKind(string $deliveryKind): string

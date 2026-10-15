@@ -73,6 +73,23 @@ trait PresentsPhotos
             'opened_at' => $delivery->opened_at?->toIso8601String(),
             'attempts' => $delivery->attempts,
             'error' => $delivery->error,
+            'outcome' => $delivery->outcome(),
+            'outcome_tone' => $delivery->outcomeTone(),
+            'outcome_label' => $delivery->outcomeLabel(),
+            'outcome_detail' => $delivery->outcomeDetail(),
+            'provider_reference' => $delivery->provider_sid,
+            'provider_status' => $delivery->provider_status,
+            'provider_error_code' => $delivery->provider_error_code,
+            'delivered_at' => $delivery->delivered_at?->toIso8601String(),
+            'receipt_confirmed_at' => $delivery->receipt_confirmed_at?->toIso8601String(),
+            'receipt_confirmed_via' => $delivery->receipt_confirmed_via,
+            'receipt_confirmed_by_name' => $delivery->relationLoaded('receiptConfirmer') && $delivery->receiptConfirmer
+                ? trim(($delivery->receiptConfirmer->first_name ?? '') . ' ' . ($delivery->receiptConfirmer->last_name ?? ''))
+                : null,
+            'awaiting_carrier' => $delivery->outcome() === PhotoDelivery::OUTCOME_AWAITING,
+            'carrier_pending' => $delivery->isAwaitingCarrier(),
+            'can_confirm_receipt' => $delivery->canConfirmReceipt(),
+            'retry_useful' => $this->photoDeliveryServiceForPresenting()->retryWouldHelp($delivery),
             'can_retry' => $delivery->canRetry(),
             'can_cancel' => $delivery->canCancel(),
             'created_at' => $delivery->created_at?->toIso8601String(),
@@ -166,5 +183,12 @@ trait PresentsPhotos
     protected function sessionPhotoLink(PhotoSession $session): string
     {
         return rtrim((string) config('app.frontend_url'), '/') . '/photos/' . $session->access_token;
+    }
+
+    protected function photoDeliveryServiceForPresenting(): \App\Services\PhotoDeliveryService
+    {
+        return property_exists($this, 'deliveries') && $this->deliveries instanceof \App\Services\PhotoDeliveryService
+            ? $this->deliveries
+            : app(\App\Services\PhotoDeliveryService::class);
     }
 }

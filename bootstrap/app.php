@@ -35,6 +35,8 @@ return Application::configure(basePath: dirname(__DIR__))
         // Send photo links that staff scheduled for 9:00 AM the next day in the location's time zone.
         $schedule->command('photos:send-scheduled')->everyFifteenMinutes()->withoutOverlapping(10);
 
+        $schedule->command('photos:check-text-delivery')->everyFiveMinutes()->withoutOverlapping(10)->runInBackground();
+
         // Close each location's slideshow queue at the 6:00 AM operating-day cutoff and open the next one.
         $schedule->command('photos:roll-queues')->hourly()->withoutOverlapping(10);
 

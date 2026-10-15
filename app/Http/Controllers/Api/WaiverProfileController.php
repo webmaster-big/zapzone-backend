@@ -161,7 +161,14 @@ class WaiverProfileController extends Controller
 
         if ($request->has('phone')) {
             $phone = trim((string) ($validated['phone'] ?? ''));
-            $digits = WaiverProfile::digitsFor($phone);
+            $stored = WaiverProfile::storedPhoneFor($phone);
+            if ($stored === null && $phone !== trim((string) $waiverProfile->phone_raw)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => WaiverProfile::phoneProblem($phone),
+                ], 422);
+            }
+            $digits = WaiverProfile::digitsFor($stored ?? $phone);
             if (!$digits) {
                 return response()->json([
                     'success' => false,

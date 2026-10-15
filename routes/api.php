@@ -914,12 +914,16 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('photo-deliveries',                          [PhotoDeliveryController::class, 'index']);
         Route::post('photo-deliveries/{photoDelivery}/retry',   [PhotoDeliveryController::class, 'retry'])->whereNumber('photoDelivery');
         Route::post('photo-deliveries/{photoDelivery}/cancel',  [PhotoDeliveryController::class, 'cancel'])->whereNumber('photoDelivery');
+        Route::post('photo-deliveries/status',                  [PhotoDeliveryController::class, 'refreshStatus']);
+        Route::post('photo-deliveries/{photoDelivery}/confirm-receipt', [PhotoDeliveryController::class, 'confirmReceipt'])->whereNumber('photoDelivery');
 
         // Settings, passcodes and message templates
         Route::get('photo-settings',                 [PhotoSettingController::class, 'show'])->middleware('photo.staff:company_admin|admin|location_manager');
         Route::put('photo-settings',                 [PhotoSettingController::class, 'update'])->middleware('photo.staff:company_admin|admin|location_manager');
         Route::post('photo-settings/passcode',       [PhotoSettingController::class, 'rotatePasscode'])->middleware('photo.staff:company_admin|admin|location_manager');
         Route::post('photo-settings/test-message',   [PhotoSettingController::class, 'sendTestMessage'])->middleware(['photo.staff:company_admin|admin|location_manager', 'throttle:photo-test-message']);
+        Route::post('photo-settings/test-message/status', [PhotoSettingController::class, 'testMessageStatus'])->middleware('photo.staff:company_admin|admin|location_manager');
+        Route::post('photo-settings/texting/reset',  [PhotoSettingController::class, 'resetTextingVerification'])->middleware('photo.staff:company_admin|admin');
         Route::get('photo-templates',                [PhotoSettingController::class, 'templates'])->middleware('photo.staff:company_admin|admin|location_manager');
         Route::put('photo-templates/{photoMessageTemplate}',       [PhotoSettingController::class, 'updateTemplate'])->whereNumber('photoMessageTemplate')->middleware('photo.staff:company_admin|admin|location_manager');
         Route::post('photo-templates/{photoMessageTemplate}/reset', [PhotoSettingController::class, 'resetTemplate'])->whereNumber('photoMessageTemplate')->middleware('photo.staff:company_admin|admin|location_manager');

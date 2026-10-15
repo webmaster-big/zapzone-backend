@@ -6,6 +6,7 @@ use App\Models\PhotoDelivery;
 use App\Services\PhotoDeliveryService;
 use App\Support\OperatingDay;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
 class SendScheduledPhotoDeliveries extends Command
@@ -38,8 +39,20 @@ class SendScheduledPhotoDeliveries extends Command
                 continue;
             }
 
+            $lock = Cache::lock('photo-delivery-send:' . $delivery->id, 600);
+
+            if (!$lock->get()) {
+                continue;
+            }
+
             try {
-                if ($deliveries->send($delivery)) {
+                $claimed = $deliveries->claimForSending($delivery, $delivery->status);
+
+                if (!$claimed) {
+                    continue;
+                }
+
+                if ($deliveries->send($claimed)) {
                     $sent++;
                     if ($isRetry) {
                         $retried++;
@@ -53,6 +66,8 @@ class SendScheduledPhotoDeliveries extends Command
                     'delivery_id' => $delivery->id,
                     'error' => $e->getMessage(),
                 ]);
+            } finally {
+                $lock->release();
             }
         }
 

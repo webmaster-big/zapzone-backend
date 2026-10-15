@@ -308,8 +308,7 @@ class WaiverPublicController extends Controller
             $data['adult_first_name'] = $profile->first_name;
             $data['adult_last_name'] = $profile->last_name;
             $data['adult_email'] = $profile->email ?: ($data['adult_email'] ?? null);
-            $data['adult_phone'] = $profile->phone_digits
-                ?: ($profile->phone_e164 ?: ($profile->phone_raw ?: ($data['adult_phone'] ?? null)));
+            $data['adult_phone'] = $this->phoneFromProfile($profile) ?? ($data['adult_phone'] ?? null);
             $savedDob = $profile->date_of_birth?->toDateString();
             if ($savedDob && substr((string) ($data['adult_dob'] ?? ''), 0, 10) !== $savedDob) {
                 \Illuminate\Support\Facades\Log::warning('Returning-customer submit rejected; date of birth does not match the saved record', [
@@ -806,7 +805,8 @@ class WaiverPublicController extends Controller
                 continue; // need at least one channel
             }
 
-            $phone = filled($row['phone'] ?? null) ? WaiverProfile::digitsFor($row['phone']) : null;
+            $phone = filled($row['phone'] ?? null) ? WaiverProfile::storedPhoneFor($row['phone']) : null;
+            $phone = $phone !== null && str_starts_with($phone, '+') ? null : $phone;
 
             // A number SmsService cannot dial is not a channel. When it is the only one the row has,
             // the invite would be reported as sent and silently never arrive, so say so instead.
@@ -1075,6 +1075,24 @@ class WaiverPublicController extends Controller
         return false;
     }
 
+    private function phoneFromProfile(WaiverProfile $profile): ?string
+    {
+        $raw = trim((string) $profile->phone_raw);
+        $stored = $raw !== '' ? WaiverProfile::storedPhoneFor($raw) : null;
+
+        if ($stored !== null && str_starts_with($stored, '+')) {
+            return $stored;
+        }
+
+        if ($raw !== ''
+            && WaiverProfile::needsCountryCode($raw)
+            && Waiver::where('waiver_profile_id', $profile->id)->where('adult_phone', $raw)->exists()) {
+            return $raw;
+        }
+
+        return $profile->phone_digits ?: ($profile->phone_e164 ?: ($raw !== '' ? $raw : null));
+    }
+
     private function requireTenDigitPhone(array &$data): ?JsonResponse
     {
         $given = $data['adult_phone'] ?? null;
@@ -1082,14 +1100,15 @@ class WaiverPublicController extends Controller
         // A North American number is stored as its ten digits, which is what the admin phone search and the
         // duplicate check compare against. Anything else has to be dialable to count, so a visiting family on a
         // foreign number can still sign while "555" still cannot.
-        $digits = WaiverProfile::digitsFor($given);
-        $dialable = $digits ?: \App\Services\SmsService::toE164($given);
+        $dialable = WaiverProfile::storedPhoneFor($given);
 
         if (!$dialable) {
+            $message = WaiverProfile::phoneProblem($given);
+
             return response()->json([
                 'success' => false,
-                'message' => 'Please enter a 10-digit phone number.',
-                'errors' => ['adult_phone' => ['Please enter a 10-digit phone number.']],
+                'message' => $message,
+                'errors' => ['adult_phone' => [$message]],
             ], 422);
         }
 

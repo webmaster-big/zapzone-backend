@@ -13,6 +13,7 @@ use App\Models\PhotoMessageTemplate;
 use App\Models\PhotoSession;
 use App\Models\SlideshowQueue;
 use App\Services\PhotoDeliveryService;
+use App\Services\SmsService;
 use App\Support\OperatingDay;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -59,7 +60,7 @@ class PhotoSettingController extends Controller
                     'operating_day_cutoff_hour' => OperatingDay::CUTOFF_HOUR,
                     'next_day_delivery_hour' => 9,
                 ],
-                'channels' => app(PhotoDeliveryService::class)->channelDiagnostics(),
+                'channels' => app(PhotoDeliveryService::class)->channelDiagnostics($location->company_id),
                 'options' => [
                     'date_formats' => $this->dateFormatOptions($location),
                     'date_positions' => LocationPhotoSetting::DATE_POSITIONS,
@@ -349,6 +350,10 @@ class PhotoSettingController extends Controller
             $validated['kind'] ?? PhotoMessageTemplate::KIND_IMMEDIATE
         );
 
+        if ($result['success'] && !empty($result['provider_reference'])) {
+            $result['check_token'] = $this->testCheckToken($request, $result['provider_reference'], now()->addMinutes(30)->getTimestamp());
+        }
+
         ActivityLog::log(
             'photo_channel_tested',
             'photos',
@@ -370,6 +375,123 @@ class PhotoSettingController extends Controller
             'message' => $result['message'],
             'data' => collect($result)->except(['success', 'message'])->all(),
         ], $result['success'] ? 200 : 422);
+    }
+
+    public function testMessageStatus(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'location_id' => ['required', 'integer', 'exists:locations,id'],
+            'provider_reference' => ['required', 'string', 'regex:/^SM[0-9a-fA-F]{32}$/'],
+            'check_token' => ['required', 'string', 'max:128'],
+        ]);
+
+        $location = $this->scopedLocation($request, $validated['location_id']);
+
+        if (!$location instanceof Location) {
+            return $location;
+        }
+
+        if (!SmsService::isConfigured()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Text messaging is not switched on, so there is nothing to check.',
+            ], 422);
+        }
+
+        $rateKey = 'photo-carrier-test:' . ($this->resolveAuthUser($request)?->id ?? $request->ip());
+
+        if (\Illuminate\Support\Facades\RateLimiter::tooManyAttempts($rateKey, 30)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Too many checks in a short time. Wait a minute and try again.',
+            ], 429);
+        }
+
+        \Illuminate\Support\Facades\RateLimiter::hit($rateKey, 60);
+
+        [$expiresAt] = explode('.', $validated['check_token'] . '.', 2);
+
+        if (!ctype_digit($expiresAt)
+            || (int) $expiresAt < now()->getTimestamp()
+            || !hash_equals($this->testCheckToken($request, $validated['provider_reference'], (int) $expiresAt), $validated['check_token'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'That is not a test text you sent from here recently.',
+            ], 404);
+        }
+
+        try {
+            $message = app(SmsService::class)->fetchMessage($validated['provider_reference']);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'The text provider could not be asked about that message right now. Try again in a moment.',
+            ], 502);
+        }
+
+        $status = $message['status'];
+        $final = SmsService::isFinalStatus($status);
+        $delivered = in_array($status, ['delivered', 'read'], true);
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'provider_status' => $status,
+                'provider_error_code' => $message['error_code'],
+                'final' => $final,
+                'delivered' => $delivered,
+                'message' => $delivered
+                    ? 'The phone carrier confirmed the test text reached the phone. A test on its own does not confirm texting for guests: send a real photo to a guest and confirm they received it.'
+                    : ($final
+                        ? 'The test text was not delivered. ' . (SmsService::meaningOf($message['error_code']) ?? 'The phone carrier did not say why.')
+                        : 'The phone carrier has not confirmed delivery yet.'),
+            ],
+        ]);
+    }
+
+    public function resetTextingVerification(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'location_id' => ['required', 'integer', 'exists:locations,id'],
+            'reason' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        $location = $this->scopedLocation($request, $validated['location_id']);
+
+        if (!$location instanceof Location) {
+            return $location;
+        }
+
+        $service = app(PhotoDeliveryService::class);
+        $userId = $this->resolveAuthUser($request)?->id;
+        $reason = trim((string) ($validated['reason'] ?? '')) ?: 'Reset from photo settings';
+        $cleared = $service->resetVerification($location->company_id, $userId, $reason, $location->id);
+
+        ActivityLog::log(
+            'photo_texting_verification_reset',
+            'photos',
+            sprintf('Marked photo texting as not confirmed for %s', $location->company?->company_name ?? 'the company'),
+            $userId,
+            $location->id,
+            'location',
+            $location->id,
+            ['cleared' => $cleared, 'reason' => $reason]
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Texting is marked as not confirmed. It will show as confirmed again once a guest receives a photo text on their phone.',
+            'data' => $service->textingStatus($location->company_id),
+        ]);
+    }
+
+    protected function testCheckToken(Request $request, string $reference, int $expiresAt): string
+    {
+        return $expiresAt . '.' . hash_hmac(
+            'sha256',
+            'photo-test-text|' . ($this->resolveAuthUser($request)?->id ?? 'guest') . '|' . strtolower($reference) . '|' . $expiresAt,
+            (string) config('app.key')
+        );
     }
 
     protected function dateFormatOptions(Location $location): array

@@ -478,6 +478,9 @@ class PhotoPublicController extends Controller
             ], 410);
         }
 
+        $linkRef = $request->query('r');
+        $this->deliveries->recordLinkOpen($session, is_string($linkRef) ? $linkRef : null);
+
         if ($session->requiresContactBeforeAccess()) {
             return response()->json([
                 'success' => true,
@@ -491,8 +494,6 @@ class PhotoPublicController extends Controller
                 ],
             ]);
         }
-
-        $this->markOpened($session);
 
         return response()->json([
             'success' => true,
@@ -528,8 +529,6 @@ class PhotoPublicController extends Controller
         }
 
         if ($session->kiosk_contact_at !== null) {
-            $this->markOpened($session);
-
             return response()->json([
                 'success' => true,
                 'message' => 'Your details were already received.',
@@ -550,18 +549,24 @@ class PhotoPublicController extends Controller
             'phone.min' => 'Please enter a valid mobile number.',
         ]);
 
-        if (!$this->deliveries->validPhone($validated['phone'])) {
+        $phone = \App\Models\WaiverProfile::storedPhoneFor($validated['phone']);
+
+        if ($phone === null || !$this->deliveries->validPhone($phone)) {
+            $problem = \App\Models\WaiverProfile::needsCountryCode($validated['phone'])
+                ? \App\Models\WaiverProfile::COUNTRY_CODE_NEEDED
+                : 'Please enter a valid mobile number. Start a number from outside the US or Canada with + and its country code.';
+
             return response()->json([
                 'success' => false,
-                'message' => 'Please enter a valid mobile number.',
-                'errors' => ['phone' => ['Please enter a valid mobile number.']],
+                'message' => $problem,
+                'errors' => ['phone' => [$problem]],
             ], 422);
         }
 
         $session->forceFill([
             'kiosk_contact_name' => trim($validated['name']),
             'kiosk_contact_email' => strtolower(trim($validated['email'])),
-            'kiosk_contact_phone' => trim($validated['phone']),
+            'kiosk_contact_phone' => $phone,
             'kiosk_marketing_consent' => $request->boolean('marketing_consent'),
             'kiosk_contact_at' => now(),
         ])->save();
@@ -580,7 +585,6 @@ class PhotoPublicController extends Controller
         );
 
         $session = $session->fresh(['location.company', 'photos']);
-        $this->markOpened($session);
 
         return response()->json([
             'success' => true,
@@ -650,6 +654,7 @@ class PhotoPublicController extends Controller
                 ? trim(explode(' ', trim($session->kiosk_contact_name))[0] ?? '')
                 : null,
             'asked_for_details' => $session->source === PhotoSession::SOURCE_KIOSK,
+            'link_sent_by' => $session->source === PhotoSession::SOURCE_KIOSK ? $this->kioskLinkChannels($session) : null,
             'photo_date' => ($session->captured_at ?: $session->created_at)->copy()->setTimezone($tz)->format('M j, Y'),
             'expires_at' => $session->access_expires_at?->toIso8601String(),
             'expires_on_label' => $session->access_expires_at?->copy()->setTimezone($tz)->format('M j, Y'),
@@ -724,12 +729,28 @@ class PhotoPublicController extends Controller
         ];
     }
 
-    protected function markOpened(PhotoSession $session): void
+    protected function kioskLinkChannels(PhotoSession $session): array
     {
-        PhotoDelivery::where('photo_session_id', $session->id)
-            ->whereNull('opened_at')
+        $email = strtolower(trim((string) $session->kiosk_contact_email));
+        $phone = $this->deliveries->normalizePhone($session->kiosk_contact_phone);
+
+        $sent = PhotoDelivery::where('photo_session_id', $session->id)
+            ->whereNull('duplicate_of_id')
             ->where('status', PhotoDelivery::STATUS_SENT)
-            ->update(['opened_at' => now()]);
+            ->get()
+            ->filter(fn (PhotoDelivery $delivery) => $delivery->kind === PhotoDelivery::KIND_KIOSK
+                || $delivery->destination === ($delivery->isText() ? $phone : $email))
+            ->reject(fn (PhotoDelivery $delivery) => $delivery->carrierSaysNotDelivered());
+
+        $texted = $sent->contains(fn (PhotoDelivery $delivery) => $delivery->isText());
+
+        return [
+            'email' => $sent->contains(fn (PhotoDelivery $delivery) => !$delivery->isText()),
+            'sms' => $texted,
+            'sms_reliable' => $texted
+                && ($sent->contains(fn (PhotoDelivery $delivery) => $delivery->isText() && $delivery->reachedGuest())
+                    || $this->deliveries->textingStatus($session->company_id, false)['state'] === 'verified'),
+        ];
     }
 
     protected function guardKioskSession(

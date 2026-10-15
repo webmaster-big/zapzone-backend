@@ -229,6 +229,8 @@ class PhotoReportController extends Controller
     {
         $deliveries = $this->deliveriesQuery($request, $from, $to);
         $real = (clone $deliveries)->real();
+        $texts = (clone $real)->where('channel', PhotoDelivery::CHANNEL_SMS)->where('status', PhotoDelivery::STATUS_SENT);
+        $reach = $this->sessionReach(clone $real);
 
         return [
             'total' => (clone $real)->where('status', '!=', PhotoDelivery::STATUS_SKIPPED)->count(),
@@ -239,8 +241,29 @@ class PhotoReportController extends Controller
             'escape_room' => (clone $real)->where('kind', PhotoDelivery::KIND_ESCAPE_ROOM)->count(),
             'email_sent' => (clone $real)->where('channel', PhotoDelivery::CHANNEL_EMAIL)->where('status', PhotoDelivery::STATUS_SENT)->count(),
             'email_failed' => (clone $real)->where('channel', PhotoDelivery::CHANNEL_EMAIL)->where('status', PhotoDelivery::STATUS_FAILED)->count(),
-            'sms_sent' => (clone $real)->where('channel', PhotoDelivery::CHANNEL_SMS)->where('status', PhotoDelivery::STATUS_SENT)->count(),
+            'sms_accepted_by_provider' => (clone $texts)->count(),
+            'sms_delivered_to_phone' => (clone $texts)->where(function ($q) {
+                $q->whereNull('provider_status')->orWhereNotIn('provider_status', \App\Services\SmsService::NOT_DELIVERED_STATUSES);
+            })->where(function ($q) {
+                $q->whereNotNull('receipt_confirmed_at')->orWhereIn('provider_status', ['delivered', 'read']);
+            })->count(),
+            'sms_received_confirmed' => (clone $texts)->whereNotNull('receipt_confirmed_at')->where(function ($q) {
+                $q->whereNull('provider_status')->orWhereNotIn('provider_status', \App\Services\SmsService::NOT_DELIVERED_STATUSES);
+            })->count(),
+            'sms_not_delivered' => (clone $texts)->whereIn('provider_status', \App\Services\SmsService::NOT_DELIVERED_STATUSES)->count(),
+            'sms_arrival_unconfirmed' => (clone $texts)->whereNull('receipt_confirmed_at')->where(function ($q) {
+                $q->whereNull('provider_status')->orWhereNotIn('provider_status', \App\Services\SmsService::FINAL_STATUSES);
+            })->count(),
             'sms_failed' => (clone $real)->where('channel', PhotoDelivery::CHANNEL_SMS)->where('status', PhotoDelivery::STATUS_FAILED)->count(),
+            'sessions_email_sent_and_text_arrived' => $reach['email_and_text'],
+            'sessions_email_sent_text_did_not_arrive' => $reach['email_text_missed'],
+            'sessions_email_sent_text_unconfirmed' => $reach['email_text_unconfirmed'],
+            'sessions_email_sent_no_text' => $reach['email_no_text'],
+            'sessions_text_arrived_no_email' => $reach['text_only'],
+            'sessions_text_unconfirmed_no_email' => $reach['text_unconfirmed_only'],
+            'sessions_text_did_not_arrive_no_email' => $reach['text_missed_only'],
+            'sessions_nothing_sent' => $reach['nothing'],
+            'sessions_waiting_to_send' => $reach['waiting'],
             'scheduled_pending' => (clone $real)->where('status', PhotoDelivery::STATUS_SCHEDULED)->count(),
             'canceled' => (clone $real)->where('status', PhotoDelivery::STATUS_CANCELED)->count(),
             'deduped' => (clone $deliveries)->whereNotNull('duplicate_of_id')->count(),
@@ -248,6 +271,44 @@ class PhotoReportController extends Controller
             'link_opens' => (clone $real)->whereNotNull('opened_at')->count(),
             'downloads' => (int) (clone $this->photos($request, $from, $to))->sum('download_count'),
         ];
+    }
+
+    protected function sessionReach($real): array
+    {
+        $notDelivered = "'" . implode("','", \App\Services\SmsService::NOT_DELIVERED_STATUSES) . "'";
+        $isText = "photo_deliveries.channel = 'sms'";
+        $textMissed = "({$isText} AND (photo_deliveries.status = 'failed' OR (photo_deliveries.status = 'sent' AND photo_deliveries.provider_status IN ({$notDelivered}))))";
+        $textArrived = "({$isText} AND photo_deliveries.status = 'sent' AND (photo_deliveries.provider_status IS NULL OR photo_deliveries.provider_status NOT IN ({$notDelivered})) AND (photo_deliveries.receipt_confirmed_at IS NOT NULL OR photo_deliveries.provider_status IN ('delivered', 'read')))";
+
+        $perSession = $real
+            ->reorder()
+            ->select('photo_deliveries.photo_session_id')
+            ->selectRaw(
+                "MAX(CASE WHEN photo_deliveries.status = 'scheduled' OR (photo_deliveries.status = 'queued' AND photo_deliveries.updated_at >= ?) THEN 1 ELSE 0 END) AS pending",
+                [now()->subMinutes(\App\Services\EscapeRoomSessionService::STUCK_AFTER_MINUTES)]
+            )
+            ->selectRaw("MAX(CASE WHEN photo_deliveries.channel = 'email' AND photo_deliveries.status = 'sent' THEN 1 ELSE 0 END) AS email_sent")
+            ->selectRaw("SUM(CASE WHEN {$isText} AND photo_deliveries.status IN ('sent', 'failed') THEN 1 ELSE 0 END) AS texts")
+            ->selectRaw("MAX(CASE WHEN {$textArrived} THEN 1 ELSE 0 END) AS text_arrived")
+            ->selectRaw("SUM(CASE WHEN {$textMissed} THEN 1 ELSE 0 END) AS texts_missed")
+            ->groupBy('photo_deliveries.photo_session_id');
+
+        $row = \Illuminate\Support\Facades\DB::query()->fromSub($perSession->toBase(), 'reach')
+            ->selectRaw('SUM(CASE WHEN email_sent = 1 AND text_arrived = 1 THEN 1 ELSE 0 END) AS email_and_text')
+            ->selectRaw('SUM(CASE WHEN email_sent = 1 AND texts = 0 THEN 1 ELSE 0 END) AS email_no_text')
+            ->selectRaw('SUM(CASE WHEN email_sent = 1 AND texts > 0 AND text_arrived = 0 AND texts_missed = texts THEN 1 ELSE 0 END) AS email_text_missed')
+            ->selectRaw('SUM(CASE WHEN email_sent = 1 AND texts > 0 AND text_arrived = 0 AND texts_missed < texts THEN 1 ELSE 0 END) AS email_text_unconfirmed')
+            ->selectRaw('SUM(CASE WHEN email_sent = 0 AND text_arrived = 1 THEN 1 ELSE 0 END) AS text_only')
+            ->selectRaw('SUM(CASE WHEN email_sent = 0 AND texts > 0 AND text_arrived = 0 AND texts_missed < texts THEN 1 ELSE 0 END) AS text_unconfirmed_only')
+            ->selectRaw('SUM(CASE WHEN email_sent = 0 AND texts > 0 AND text_arrived = 0 AND texts_missed = texts THEN 1 ELSE 0 END) AS text_missed_only')
+            ->selectRaw('SUM(CASE WHEN email_sent = 0 AND texts = 0 AND pending = 0 THEN 1 ELSE 0 END) AS nothing')
+            ->selectRaw('SUM(CASE WHEN email_sent = 0 AND texts = 0 AND pending = 1 THEN 1 ELSE 0 END) AS waiting')
+            ->first();
+
+        return collect([
+            'email_and_text', 'email_no_text', 'email_text_missed', 'email_text_unconfirmed',
+            'text_only', 'text_unconfirmed_only', 'text_missed_only', 'nothing', 'waiting',
+        ])->mapWithKeys(fn ($key) => [$key => (int) ($row->{$key} ?? 0)])->all();
     }
 
     protected function qr(Request $request, string $from, string $to): array

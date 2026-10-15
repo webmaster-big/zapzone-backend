@@ -28,7 +28,7 @@ class WaiverProfileService
 
     public function lookup(int $companyId, ?string $phone, ?string $lastName = null): array
     {
-        $digits = WaiverProfile::digitsFor($phone);
+        $digits = WaiverProfile::digitsFor(WaiverProfile::storedPhoneFor($phone) ?? $phone);
         if (!$digits) {
             return ['status' => self::STATUS_NOT_FOUND];
         }

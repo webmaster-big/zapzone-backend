@@ -499,11 +499,12 @@ class PhotoSessionController extends Controller
             ]
         );
 
+        $outcome = $this->deliveries->summarizeOutcome($result['deliveries'], $photoSession->company_id);
+
         return response()->json([
             'success' => true,
-            'message' => $schedule === PhotoSession::SCHEDULE_NEXT_DAY
-                ? 'Scheduled for 9:00 AM tomorrow in this location\'s time zone.'
-                : 'Sent through every available contact method.',
+            'message' => $outcome['headline'] . '. ' . $outcome['message'],
+            'outcome' => $outcome,
             'data' => $this->presentSession($photoSession->fresh()),
         ]);
     }
@@ -590,7 +591,7 @@ class PhotoSessionController extends Controller
                     'kiosk_countdown_seconds' => (int) $setting->kiosk_countdown_seconds,
                     'kiosk_idle_seconds' => PhotoSession::KIOSK_IDLE_SECONDS,
                 ],
-                'channels' => $this->deliveries->channelDiagnostics(),
+                'channels' => $this->deliveries->channelDiagnostics($location->company_id, false),
                 'retention_days' => $setting->retention_days,
             ],
         ]);

@@ -350,9 +350,12 @@ class PhotoLibraryController extends Controller
             ['waiver_ids' => $waivers->pluck('id')->all(), 'deliveries_created' => $result['created']]
         );
 
+        $outcome = $this->deliveries->summarizeOutcome($result['deliveries'], $session->company_id);
+
         return response()->json([
             'success' => true,
-            'message' => 'Sent using the normal waiver message delivery flow.',
+            'message' => $outcome['headline'] . '. ' . $outcome['message'],
+            'outcome' => $outcome,
             'data' => $this->presentSession($session->fresh(), true),
         ]);
     }
