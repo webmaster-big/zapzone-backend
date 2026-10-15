@@ -196,6 +196,17 @@ class EmailNotification extends Model
         return \App\Support\SchemaSupport::hasColumn('email_notifications', 'excluded_emails');
     }
 
+    public static function scrubEmail(mixed $email): mixed
+    {
+        if (!is_string($email)) {
+            return $email;
+        }
+
+        $visible = preg_replace('/[\p{Cc}\p{Cf}]/u', '', $email);
+
+        return $visible === null ? $email : (preg_replace('/^[\s\p{Z}]+|[\s\p{Z}.,;]+$/u', '', $visible) ?? $visible);
+    }
+
     public static function normalizeEmails(mixed $emails): array
     {
         if (!is_array($emails)) {

@@ -126,6 +126,8 @@ class EmailNotificationController extends Controller
         $allEntityTypes = array_keys(EmailNotification::getEntityTypes());
         $allRecipientTypes = array_keys(EmailNotification::getRecipientTypes());
 
+        $this->scrubExcludedEmails($request);
+
         $validated = $request->validate([
             'name' => 'required|string|max:255',
             'description' => 'nullable|string',
@@ -291,6 +293,8 @@ class EmailNotificationController extends Controller
         $allTriggerTypes = array_keys(EmailNotification::getAllTriggerTypes());
         $allEntityTypes = array_keys(EmailNotification::getEntityTypes());
         $allRecipientTypes = array_keys(EmailNotification::getRecipientTypes());
+
+        $this->scrubExcludedEmails($request);
 
         $validated = $request->validate([
             'name' => 'sometimes|required|string|max:255',
@@ -1259,6 +1263,13 @@ HTML;
             'data' => $defaults,
             'count' => $defaults->count(),
         ]);
+    }
+
+    private function scrubExcludedEmails(Request $request): void
+    {
+        if (is_array($request->input('excluded_emails'))) {
+            $request->merge(['excluded_emails' => array_map(EmailNotification::scrubEmail(...), $request->input('excluded_emails'))]);
+        }
     }
 
     protected function applyVisitRules(array &$validated, ?EmailNotification $existing, $user): ?JsonResponse

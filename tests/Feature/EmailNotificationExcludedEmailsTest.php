@@ -295,6 +295,30 @@ class EmailNotificationExcludedEmailsTest extends TestCase
         $this->assertSame([], $notification->fresh()->excluded_emails);
     }
 
+    public function test_pasted_invisible_characters_and_stray_punctuation_are_cleaned_before_validation(): void
+    {
+        $notification = $this->makeNotification($this->company, [EmailNotification::RECIPIENT_COMPANY_ADMIN]);
+
+        $this->actingAs($this->admin, 'sanctum')
+            ->putJson("/api/email-notifications/{$notification->id}", ['excluded_emails' => [
+                "\u{200B}Webmaster@BestInGames.com",
+                " ops@zapzone.test;",
+                "\u{00A0}front\u{00AD}desk@zapzone.test\u{2060}",
+                "\u{FEFF}reports@zapzone.test.",
+            ]])
+            ->assertOk();
+
+        $this->assertSame(
+            ['webmaster@bestingames.com', 'ops@zapzone.test', 'frontdesk@zapzone.test', 'reports@zapzone.test'],
+            $notification->fresh()->excluded_emails
+        );
+
+        $this->actingAs($this->admin, 'sanctum')
+            ->putJson("/api/email-notifications/{$notification->id}", ['excluded_emails' => ["\u{1F600}@zapzone.test"]])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('excluded_emails.0');
+    }
+
     public function test_built_in_notifications_accept_an_excluded_list(): void
     {
         DefaultEmailNotificationSeeder::seedForCompany($this->company);
