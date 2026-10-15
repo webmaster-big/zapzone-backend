@@ -284,6 +284,12 @@ class EmailNotificationService
         }
 
         try {
+            $companyId = $purchase->location?->company_id;
+
+            if ($companyId && EmailNotification::findDefault($companyId, EmailNotification::DEFAULT_EVENT_CONFIRMATION_CUSTOMER)?->excludesEmail($customerEmail)) {
+                return;
+            }
+
             $mailable = new \App\Mail\EventPurchaseConfirmation($purchase);
             $htmlBody = $mailable->render();
             $subject = 'Event Purchase Confirmation - ' . ($purchase->reference_number ?? '');
@@ -450,8 +456,8 @@ class EmailNotificationService
         }
 
         $seen = [];
-        return array_values(array_filter($recipients, function ($recipient) use (&$seen) {
-            if (in_array($recipient['email'], $seen)) {
+        return array_values(array_filter($recipients, function ($recipient) use (&$seen, $notification) {
+            if (in_array($recipient['email'], $seen) || $notification->excludesEmail($recipient['email'])) {
                 return false;
             }
             $seen[] = $recipient['email'];
@@ -504,8 +510,8 @@ class EmailNotificationService
         }
 
         $seen = [];
-        return array_filter($recipients, function ($recipient) use (&$seen) {
-            if (in_array($recipient['email'], $seen)) {
+        return array_filter($recipients, function ($recipient) use (&$seen, $notification) {
+            if (in_array($recipient['email'], $seen) || $notification->excludesEmail($recipient['email'])) {
                 return false;
             }
             $seen[] = $recipient['email'];
@@ -1190,6 +1196,10 @@ HTML;
                 );
             }
 
+            if ($defaultNotification?->excludesEmail($customerEmail)) {
+                return;
+            }
+
             if ($defaultNotification && $defaultNotification->is_active) {
                 $subject = $this->replaceVariables($defaultNotification->getEffectiveSubject(), $variables);
                 $body = $this->replaceVariables($defaultNotification->getEffectiveBody(), $variables);
@@ -1240,6 +1250,10 @@ HTML;
                     $companyId,
                     EmailNotification::DEFAULT_PURCHASE_CONFIRMATION_CUSTOMER
                 );
+            }
+
+            if ($defaultNotification?->excludesEmail($customerEmail)) {
+                return;
             }
 
             if ($defaultNotification && $defaultNotification->is_active) {

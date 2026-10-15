@@ -135,6 +135,7 @@ class EmailNotification extends Model
         'default_body',
         'recipient_types',
         'custom_emails',
+        'excluded_emails',
         'include_qr_code',
         'is_active',
         'is_default',
@@ -147,6 +148,7 @@ class EmailNotification extends Model
         'entity_ids' => 'array',
         'recipient_types' => 'array',
         'custom_emails' => 'array',
+        'excluded_emails' => 'array',
         'include_qr_code' => 'boolean',
         'is_active' => 'boolean',
         'is_default' => 'boolean',
@@ -187,6 +189,30 @@ class EmailNotification extends Model
     public static function supportsFollowUpSettings(): bool
     {
         return \App\Support\SchemaSupport::hasColumn('email_notifications', 'activity_filter');
+    }
+
+    public static function supportsExcludedEmails(): bool
+    {
+        return \App\Support\SchemaSupport::hasColumn('email_notifications', 'excluded_emails');
+    }
+
+    public static function normalizeEmails(mixed $emails): array
+    {
+        if (!is_array($emails)) {
+            return [];
+        }
+
+        return array_values(array_unique(array_filter(
+            array_map(fn ($email) => is_scalar($email) ? strtolower(trim((string) $email)) : '', $emails),
+            fn ($email) => $email !== ''
+        )));
+    }
+
+    public function excludesEmail(mixed $email): bool
+    {
+        $email = is_scalar($email) ? strtolower(trim((string) $email)) : '';
+
+        return $email !== '' && in_array($email, self::normalizeEmails($this->excluded_emails), true);
     }
 
     public function coversActivity(\App\Support\CompletedVisit $visit): bool

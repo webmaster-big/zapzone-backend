@@ -167,6 +167,16 @@ class CheckoutConcernService
             default => \App\Models\EmailNotification::TRIGGER_CHECKOUT_ABANDONED,
         };
 
+        $templates = \App\Models\EmailNotification::where('company_id', $concern->company_id)
+            ->forTrigger($triggerType)
+            ->where(fn ($query) => $query->whereNull('location_id')->orWhere('location_id', $concern->location_id))
+            ->get();
+
+        $emails = array_values(array_filter(
+            $emails,
+            fn ($email) => $templates->every(fn ($template) => !$template->excludesEmail($email))
+        ));
+
         Log::info('Alerting venue staff about a checkout concern', [
             'checkout_concern_id' => $concern->id,
             'kind' => $concern->kind,

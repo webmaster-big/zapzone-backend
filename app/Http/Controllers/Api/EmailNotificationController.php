@@ -140,6 +140,8 @@ class EmailNotificationController extends Controller
             'recipient_types.*' => [Rule::in($allRecipientTypes)],
             'custom_emails' => 'nullable|array',
             'custom_emails.*' => 'email',
+            'excluded_emails' => 'nullable|array',
+            'excluded_emails.*' => 'email',
             'include_qr_code' => 'boolean',
             'is_active' => 'boolean',
             'location_id' => 'nullable|exists:locations,id',
@@ -197,6 +199,9 @@ class EmailNotificationController extends Controller
                   'from_name' => $validated['from_name'] ?? null,
                   'review_url' => $validated['review_url'] ?? null,
                   'activity_filter' => $validated['activity_filter'] ?? null,
+              ] : [])
+              + (EmailNotification::supportsExcludedEmails() ? [
+                  'excluded_emails' => EmailNotification::normalizeEmails($validated['excluded_emails'] ?? []),
               ] : []));
 
             DB::commit();
@@ -300,6 +305,8 @@ class EmailNotificationController extends Controller
             'recipient_types.*' => [Rule::in($allRecipientTypes)],
             'custom_emails' => 'nullable|array',
             'custom_emails.*' => 'email',
+            'excluded_emails' => 'nullable|array',
+            'excluded_emails.*' => 'email',
             'include_qr_code' => 'boolean',
             'is_active' => 'boolean',
             'location_id' => 'nullable|exists:locations,id',
@@ -313,7 +320,7 @@ class EmailNotificationController extends Controller
         ]);
 
         if ($emailNotification->is_default) {
-            $allowedDefaultFields = ['subject', 'body', 'is_active', 'include_qr_code', 'recipient_types', 'custom_emails', 'send_before_hours', 'send_after_hours', 'description', 'promo_id', 'from_name', 'review_url'];
+            $allowedDefaultFields = ['subject', 'body', 'is_active', 'include_qr_code', 'recipient_types', 'custom_emails', 'excluded_emails', 'send_before_hours', 'send_after_hours', 'description', 'promo_id', 'from_name', 'review_url'];
             $validated = array_intersect_key($validated, array_flip($allowedDefaultFields));
         }
 
@@ -339,6 +346,12 @@ class EmailNotificationController extends Controller
 
         if (!EmailNotification::supportsFollowUpSettings()) {
             unset($validated['from_name'], $validated['review_url'], $validated['activity_filter']);
+        }
+
+        if (!EmailNotification::supportsExcludedEmails()) {
+            unset($validated['excluded_emails']);
+        } elseif (array_key_exists('excluded_emails', $validated)) {
+            $validated['excluded_emails'] = EmailNotification::normalizeEmails($validated['excluded_emails']);
         }
 
         try {
@@ -1321,6 +1334,7 @@ HTML;
         if ($existing === null || array_key_exists('recipient_types', $validated)) {
             $validated['recipient_types'] = [EmailNotification::RECIPIENT_CUSTOMER];
             $validated['custom_emails'] = [];
+            $validated['excluded_emails'] = [];
         }
 
         $validated['include_qr_code'] = false;
