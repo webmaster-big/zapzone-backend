@@ -7,6 +7,7 @@ use App\Models\Company;
 use App\Models\Customer;
 use App\Models\Event;
 use App\Models\Location;
+use App\Models\MembershipPlan;
 use App\Models\Package;
 use App\Models\Room;
 use App\Models\User;
@@ -291,6 +292,83 @@ class OnlineBookingGateTest extends TestCase
         $this->venues['closed']['location']->update(['show_on_main_page' => true]);
 
         $this->postJson('/api/bookings', $this->bookingPayload('closed'))->assertSuccessful();
+    }
+
+    private function giftCardPayload(string $venue, array $overrides = []): array
+    {
+        return array_merge([
+            'location_id' => $this->venues[$venue]['location']->id,
+            'amount' => 50,
+            'payment_method' => 'authorize.net',
+            'purchaser_name' => 'Gift Buyer',
+            'purchaser_email' => 'buyer.' . uniqid() . '@example.com',
+            'opaque_data' => ['dataDescriptor' => 'COMMON.ACCEPT.INAPP.PAYMENT', 'dataValue' => 'token'],
+        ], $overrides);
+    }
+
+    private function membershipPlan(): MembershipPlan
+    {
+        return MembershipPlan::create([
+            'company_id' => $this->company->id,
+            'location_id' => $this->venues['open']['location']->id,
+            'name' => 'Local Explorer',
+            'slug' => 'local-explorer-' . uniqid(),
+            'tier' => 'basic',
+            'price' => 29.99,
+            'billing_cycle' => 'monthly',
+            'is_active' => true,
+        ]);
+    }
+
+    public function test_gift_cards_for_a_turned_off_location_are_not_sold_online(): void
+    {
+        $before = DB::table('gift_cards')->count();
+
+        $this->postJson('/api/gift-cards/purchase', $this->giftCardPayload('closed'))
+            ->assertStatus(422)
+            ->assertJsonPath('code', OnlineBookingGate::CODE)
+            ->assertJsonPath('message', 'Gift cards for this location are not sold online right now. Please choose another location.');
+
+        $this->assertSame($before, DB::table('gift_cards')->count());
+
+        $this->assertNotRefusedByGate($this->postJson('/api/gift-cards/purchase', $this->giftCardPayload('open')));
+    }
+
+    public function test_staff_can_still_sell_a_gift_card_for_a_turned_off_location(): void
+    {
+        $response = $this->actingAs($this->staff(), 'sanctum')
+            ->postJson('/api/gift-cards/purchase', $this->giftCardPayload('closed', ['payment_method' => 'in-store', 'opaque_data' => null]));
+
+        $this->assertNotRefusedByGate($response);
+        $response->assertSuccessful();
+    }
+
+    public function test_a_membership_cannot_be_bought_online_with_a_turned_off_home_location(): void
+    {
+        $plan = $this->membershipPlan();
+        $token = $this->customerToken();
+        $before = DB::table('memberships')->count();
+
+        $this->withHeader('Authorization', "Bearer {$token}")
+            ->postJson('/api/memberships/purchase', [
+                'membership_plan_id' => $plan->id,
+                'home_location_id' => $this->venues['closed']['location']->id,
+                'terms_accepted' => true,
+                'recurring_billing_authorized' => true,
+            ])
+            ->assertStatus(422)
+            ->assertJsonPath('code', OnlineBookingGate::CODE)
+            ->assertJsonPath('message', 'Memberships for this home location are not sold online right now. Please choose another location.');
+
+        $this->assertSame($before, DB::table('memberships')->count());
+
+        $this->assertNotRefusedByGate($this->withHeader('Authorization', "Bearer {$token}")
+            ->postJson('/api/memberships/purchase', [
+                'membership_plan_id' => $plan->id,
+                'home_location_id' => $this->venues['open']['location']->id,
+                'terms_accepted' => true,
+                'recurring_billing_authorized' => true,
+            ]));
     }
 
     public function test_a_cart_mixing_in_a_turned_off_location_is_refused(): void

@@ -490,6 +490,10 @@ class GiftCardController extends Controller
             }
         }
 
+        if (\App\Support\OnlineBookingGate::closedFor($staff, [$location->id])) {
+            return \App\Support\OnlineBookingGate::refusal('Gift cards for this location are not sold online right now. Please choose another location.');
+        }
+
         $lock = \Illuminate\Support\Facades\Cache::lock($fingerprint . ':lock', 30);
 
         if (!$lock->get()) {

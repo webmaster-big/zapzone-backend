@@ -609,6 +609,10 @@ class MembershipController extends Controller
         }
         $homeLocId = $homeLocId ?? $plan->location_id;
 
+        if (\App\Support\OnlineBookingGate::closedFor($customer, [$homeLocId])) {
+            return \App\Support\OnlineBookingGate::refusal('Memberships for this home location are not sold online right now. Please choose another location.');
+        }
+
         $membership = Membership::create([
             'customer_id'                    => $customer->id,
             'membership_plan_id'             => $plan->id,

@@ -42,12 +42,12 @@ class OnlineBookingGate
             ->all();
     }
 
-    public static function refusal(): JsonResponse
+    public static function refusal(?string $message = null): JsonResponse
     {
         return response()->json([
             'success' => false,
             'code' => self::CODE,
-            'message' => 'This location is not taking online bookings right now. Please choose another location.',
+            'message' => $message ?? 'This location is not taking online bookings right now. Please choose another location.',
         ], 422);
     }
 }
