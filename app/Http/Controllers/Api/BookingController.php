@@ -753,6 +753,7 @@ class BookingController extends Controller
             || !empty($validated['promo_code']) || !empty($validated['promo_id']);
 
         $earlierAttempt = ($requestCarriesCode && !$checkoutKey) ? null : $this->earlierAttempt($validated, $checkoutKey);
+        $sameCheckoutTriedBefore = $checkoutKey && $earlierAttempt !== null;
 
         if ($earlierAttempt && $checkoutKey && !$this->isSameCheckout($earlierAttempt, $validated)) {
             if (!$isStaff && !$bookAnother
@@ -808,6 +809,26 @@ class BookingController extends Controller
             ], 409);
         }
 
+        if (\App\Support\OnlineBookingGate::packageClosedOnline($validated['package_id'] ?? null)
+            && ! app(\App\Services\AvailabilityBlockGuard::class)->isStaff(
+                $request,
+                \App\Support\OnlineBookingGate::packageLocationId($validated['package_id'] ?? null) ?? (int) $validated['location_id']
+            )) {
+            if ($earlierAttempt && $checkoutKey && $earlierAttempt->status === 'pending'
+                && $earlierAttempt->payment_method === 'authorize.net'
+                && !$this->bookingWasCharged($earlierAttempt)) {
+                if ($earlierAttempt->created_at && $earlierAttempt->created_at->gt(now()->subMinutes(2))) {
+                    return $this->attemptInProgressResponse();
+                }
+
+                if (!$this->releaseUnlessCharging($earlierAttempt, 'was released because its package can no longer be booked online')) {
+                    return $this->attemptInProgressResponse();
+                }
+            }
+
+            return \App\Support\OnlineBookingGate::packageRefusal($validated['package_id'] ?? null, $sameCheckoutTriedBefore);
+        }
+
         if ($earlierAttempt && !$requestCarriesCode && $this->isUnchangedRetryOf($earlierAttempt, $validated, $addOnLines, $attractionLines)) {
             $earlierAttempt->load($isStaff
                 ? ['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']
@@ -842,11 +863,7 @@ class BookingController extends Controller
             && $earlierAttempt->payment_method === 'authorize.net'
             && !$this->bookingWasCharged($earlierAttempt)) {
             if ($earlierAttempt->created_at && $earlierAttempt->created_at->gt(now()->subMinutes(2))) {
-                return response()->json([
-                    'success' => false,
-                    'code' => 'ATTEMPT_IN_PROGRESS',
-                    'message' => 'Your previous attempt is still being processed. Please wait a minute, check your email, and then try again.',
-                ], 409);
+                return $this->attemptInProgressResponse();
             }
 
             $this->releaseAbandonedAttempt($earlierAttempt, $isStaff ? $request->user('sanctum')?->id : null);
@@ -1602,7 +1619,7 @@ class BookingController extends Controller
             && strcasecmp(trim((string) $earlier->guest_name), trim((string) ($validated['guest_name'] ?? ''))) === 0;
     }
 
-    private function releaseAbandonedAttempt(Booking $booking, ?int $staffUserId = null): void
+    private function releaseAbandonedAttempt(Booking $booking, ?int $staffUserId = null, string $outcome = 'was replaced by a new attempt from the same checkout'): void
     {
         try {
             $gcalService = new GoogleCalendarService($booking->location_id);
@@ -1632,7 +1649,7 @@ class BookingController extends Controller
         ActivityLog::log(
             action: 'Booking Force Deleted (Abandoned Checkout)',
             category: 'delete',
-            description: "Unpaid checkout attempt {$referenceNumber} was replaced by a new attempt from the same checkout",
+            description: "Unpaid checkout attempt {$referenceNumber} {$outcome}",
             userId: $staffUserId,
             locationId: $locationId,
             entityType: 'booking',
@@ -1643,6 +1660,59 @@ class BookingController extends Controller
                 'deleted_at' => now()->toIso8601String(),
             ]
         );
+    }
+
+    private function releaseUnlessCharging(Booking $attempt, string $outcome): bool
+    {
+        try {
+            $chargeLock = \Illuminate\Support\Facades\Cache::lock('payable-charge:' . \App\Models\Payment::TYPE_BOOKING . ':' . $attempt->id, 900);
+            $locked = $chargeLock->get();
+        } catch (\Throwable $e) {
+            Log::warning('Charge lock unavailable, so the abandoned checkout attempt is left for the cleanup job', [
+                'booking_id' => $attempt->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return true;
+        }
+
+        if (!$locked) {
+            return false;
+        }
+
+        try {
+            $current = Booking::find($attempt->id);
+
+            if (!$current) {
+                return true;
+            }
+
+            if ($current->status !== 'pending' || $this->bookingWasCharged($current)) {
+                return false;
+            }
+
+            $this->releaseAbandonedAttempt($current, null, $outcome);
+
+            return true;
+        } finally {
+            try {
+                $chargeLock->release();
+            } catch (\Throwable $e) {
+                Log::warning('Could not release the charge lock after checking an abandoned checkout attempt', [
+                    'booking_id' => $attempt->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+    }
+
+    private function attemptInProgressResponse(): JsonResponse
+    {
+        return response()->json([
+            'success' => false,
+            'code' => 'ATTEMPT_IN_PROGRESS',
+            'message' => 'Your previous attempt is still being processed. Please wait a minute, check your email, and then try again.',
+        ], 409);
     }
 
     private function bookingWentThrough(Booking $booking): bool

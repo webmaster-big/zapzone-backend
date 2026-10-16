@@ -85,13 +85,13 @@ class MobileAvailabilityController extends Controller
             ])
             ->byLocation($locationId)
             ->active()
-            ->get([
+            ->get(array_merge([
                 'id', 'name', 'description', 'category',
                 'price', 'pricing_type', 'min_participants', 'max_participants',
                 'max_tickets_per_slot', 'participant_label', 'display_label',
                 'duration', 'duration_unit', 'image', 'display_order',
                 'location_id',
-            ]);
+            ], Package::tracksOnlineAvailability() ? ['available_online'] : []));
 
         $filteredPackages = $packages->filter(function ($package) use ($date) {
             return $package->availabilitySchedules->contains(fn($s) => $s->matchesDate($date));
@@ -115,6 +115,7 @@ class MobileAvailabilityController extends Controller
                 'duration' => $package->duration,
                 'duration_unit' => $package->duration_unit,
                 'image' => $package->image,
+                'available_online' => $package->isAvailableOnline(),
                 'total_slots' => count($availableSlots),
             ];
         });

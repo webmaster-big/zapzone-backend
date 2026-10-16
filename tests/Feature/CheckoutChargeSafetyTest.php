@@ -282,6 +282,21 @@ class CheckoutChargeSafetyTest extends TestCase
         return Booking::findOrFail($bookingId);
     }
 
+    public function test_a_booking_made_before_its_package_went_backend_only_can_still_be_paid(): void
+    {
+        $bookingId = $this->createBooking($this->roomOne);
+
+        $this->package->update(['available_online' => false]);
+
+        $this->gateway->replies[] = $this->transactionReply('1', '60200000091');
+        $this->postJson('/api/payments/charge', $this->chargePayload($bookingId))
+            ->assertOk()
+            ->assertJsonPath('success', true);
+
+        $this->assertSame('completed', Payment::where('payable_type', Payment::TYPE_BOOKING)->where('payable_id', $bookingId)->value('status'));
+        $this->assertNotNull(Booking::find($bookingId));
+    }
+
     public function test_a_guest_booking_a_second_space_at_the_same_time_is_asked_first_and_then_gets_its_own_booking(): void
     {
         $first = $this->bookAndPay($this->roomOne, '60200000001');
@@ -1979,6 +1994,10 @@ class CheckoutChargeSafetyTest extends TestCase
             ->assertStatus(201);
 
         $this->assertTrue(\App\Models\ActivityLog::where('action', 'Booking Force Deleted (Abandoned Checkout)')->where('entity_id', $firstId)->exists());
+        $this->assertStringEndsWith(
+            'was replaced by a new attempt from the same checkout',
+            (string) \App\Models\ActivityLog::where('action', 'Booking Force Deleted (Abandoned Checkout)')->where('entity_id', $firstId)->value('description')
+        );
     }
 
     public function test_a_pay_later_booking_is_never_released_by_a_changed_retry(): void

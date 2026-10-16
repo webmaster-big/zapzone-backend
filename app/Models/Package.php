@@ -36,6 +36,7 @@ class Package extends Model
         'price_per_additional_1hr',
         'image',
         'is_active',
+        'available_online',
         'display_order',
         'has_guest_of_honor',
         'add_ons_order',
@@ -61,6 +62,7 @@ class Package extends Model
         'image' => 'array',
         'add_ons_order' => 'array',
         'is_active' => 'boolean',
+        'available_online' => 'boolean',
         'display_order' => 'integer',
         'has_guest_of_honor' => 'boolean',
         'booking_window_days' => 'integer',
@@ -83,6 +85,10 @@ class Package extends Model
         static::saving(function (Package $package) {
             if (!self::supportsEscapeRoomFlag()) {
                 $package->offsetUnset('is_escape_room');
+            }
+
+            if (!self::tracksOnlineAvailability()) {
+                $package->offsetUnset('available_online');
             }
 
             if (DataUriImage::contains($package->image)) {
@@ -130,6 +136,29 @@ class Package extends Model
     public function scopeActive($query)
     {
         return $query->where('is_active', true);
+    }
+
+    public function scopeAvailableOnline($query)
+    {
+        return self::tracksOnlineAvailability()
+            ? $query->where($query->qualifyColumn('available_online'), true)
+            : $query;
+    }
+
+    public static function tracksOnlineAvailability(): bool
+    {
+        return \App\Support\SchemaSupport::hasColumn('packages', 'available_online');
+    }
+
+    public static function canChangeOnlineAvailability(mixed $actor): bool
+    {
+        return $actor instanceof User
+            && in_array(\App\Http\Middleware\EnsureStaff::effectiveRole($actor), ['company_admin', 'admin', 'location_manager'], true);
+    }
+
+    public function isAvailableOnline(): bool
+    {
+        return !self::tracksOnlineAvailability() || $this->available_online !== false;
     }
 
     public static function supportsEscapeRoomFlag(): bool

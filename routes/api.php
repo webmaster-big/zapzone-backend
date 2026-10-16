@@ -419,6 +419,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('packages/bulk-import', [PackageController::class, 'bulkImport'])->middleware('staff');
     Route::get('packages/category/{category}', [PackageController::class, 'getByCategory'])->middleware('staff');
     Route::patch('packages/{package}/toggle-status', [PackageController::class, 'toggleIsActiveStatus'])->middleware('staff');
+    Route::patch('packages/{package}/online-availability', [PackageController::class, 'updateOnlineAvailability'])->middleware('staff:company_admin|admin|location_manager');
     Route::post('packages/reorder', [PackageController::class, 'reorder'])->middleware('staff');
     Route::post('packages/{package}/attractions/attach', [PackageController::class, 'attachAttractions'])->middleware('staff');
     Route::post('packages/{package}/attractions/detach', [PackageController::class, 'detachAttractions'])->middleware('staff');

@@ -5,12 +5,17 @@ namespace App\Support;
 use App\Models\Attraction;
 use App\Models\Event;
 use App\Models\Location;
+use App\Models\Package;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 
 class OnlineBookingGate
 {
     public const CODE = 'LOCATION_NOT_BOOKABLE_ONLINE';
+
+    public const PACKAGE_CODE = 'PACKAGE_NOT_BOOKABLE_ONLINE';
+
+    public const REMOVED_PACKAGE_CODE = 'PACKAGE_NOT_AVAILABLE';
 
     public static function closedFor(mixed $actor, array $locationIds): bool
     {
@@ -25,6 +30,41 @@ class OnlineBookingGate
         }
 
         return Location::whereIn('id', $ids)->where('show_on_main_page', false)->exists();
+    }
+
+    public static function packageClosedOnline(mixed $packageId): bool
+    {
+        $id = (int) $packageId;
+
+        if ($id <= 0) {
+            return false;
+        }
+
+        $package = Package::withTrashed()->find($id);
+
+        return !$package || $package->trashed() || !$package->isAvailableOnline();
+    }
+
+    public static function packageLocationId(mixed $packageId): ?int
+    {
+        $id = (int) $packageId;
+        $locationId = $id > 0 ? Package::withTrashed()->whereKey($id)->value('location_id') : null;
+
+        return $locationId !== null ? (int) $locationId : null;
+    }
+
+    public static function packageRefusal(mixed $packageId = null, bool $previousAttempt = false): JsonResponse
+    {
+        $id = (int) $packageId;
+        $removed = $id > 0 && !Package::whereKey($id)->exists();
+
+        return response()->json([
+            'success' => false,
+            'code' => $removed ? self::REMOVED_PACKAGE_CODE : self::PACKAGE_CODE,
+            'message' => $removed
+                ? 'This package is no longer available. Please choose another package.'
+                : 'This package is not available for online booking. Please call the venue to book it.',
+        ] + ($previousAttempt ? ['previous_attempt' => true] : []), 422);
     }
 
     public static function cartLocationIds(array $items): array

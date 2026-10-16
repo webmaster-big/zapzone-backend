@@ -31,6 +31,7 @@ class MobilePackageResource extends JsonResource
             'partial_payment_fixed' => $this->partial_payment_fixed,
             'display_order' => $this->display_order,
             'is_active' => $this->is_active,
+            'available_online' => (bool) ($this->available_online ?? true),
             'created_at' => $this->created_at,
 
             'location' => $this->whenLoaded('location', function () {

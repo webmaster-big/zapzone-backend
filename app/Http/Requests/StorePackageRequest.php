@@ -39,6 +39,7 @@ class StorePackageRequest extends FormRequest
             'price_per_additional_1hr' => 'nullable|numeric|min:0|regex:/^\d+(\.\d{1,2})?$/',
             'image' => 'nullable|max:30000000',
             'is_active' => 'boolean',
+            'available_online' => 'sometimes|required|boolean',
             'has_guest_of_honor' => 'nullable|boolean',
             'add_ons_order' => 'nullable|array',
             'customer_notes' => 'nullable|string',

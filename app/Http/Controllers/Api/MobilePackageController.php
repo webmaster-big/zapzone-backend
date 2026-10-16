@@ -43,7 +43,7 @@ class MobilePackageController extends Controller
     public function index(Request $request): JsonResponse
     {
         $query = Package::query()
-            ->select(self::LIGHTWEIGHT_COLUMNS)
+            ->select(array_merge(self::LIGHTWEIGHT_COLUMNS, Package::tracksOnlineAvailability() ? ['available_online'] : []))
             ->with(['location:id,name']);
 
         $this->applyMobileScope($query, $request);

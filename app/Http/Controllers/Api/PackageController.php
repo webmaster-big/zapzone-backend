@@ -114,7 +114,8 @@ class PackageController extends Controller
 
         $query = Package::with(['location', 'availabilitySchedules'])
             ->select(['id', 'name', 'description', 'price', 'pricing_type', 'category', 'min_participants', 'max_participants', 'max_tickets_per_slot', 'participant_label', 'display_label', 'duration', 'location_id', 'is_active', 'display_order', 'package_type', 'duration_unit', 'price_per_additional'])
-            ->where('is_active', true);
+            ->where('is_active', true)
+            ->availableOnline();
 
         if ($search) {
             $query->where(function ($q) use ($search) {
@@ -244,6 +245,53 @@ class PackageController extends Controller
         return null;
     }
 
+    private function guardOnlineAvailabilityChange(Request $request, array $validated, ?Package $package): ?JsonResponse
+    {
+        if (!array_key_exists('available_online', $validated)) {
+            return null;
+        }
+
+        $current = $package ? $package->isAvailableOnline() : true;
+
+        if ((bool) $validated['available_online'] === $current || Package::canChangeOnlineAvailability($request->user())) {
+            return null;
+        }
+
+        return response()->json([
+            'success' => false,
+            'message' => 'Only a location manager or an administrator can change whether customers can book this package online.',
+            'errors' => ['available_online' => ['Only a location manager or an administrator can change this.']],
+        ], 403);
+    }
+
+    private function logOnlineAvailabilityChange(Package $package): void
+    {
+        $online = $package->isAvailableOnline();
+        $currentUser = auth()->user();
+
+        ActivityLog::log(
+            action: $online ? 'Package Available Online' : 'Package Made Backend Only',
+            category: 'update',
+            description: $online
+                ? ($package->is_active
+                    ? "Package '{$package->name}' can be seen and booked online again"
+                    : "Package '{$package->name}' can be booked online once it is switched on")
+                : "Package '{$package->name}' is backend only: hidden from the booking site and not bookable online",
+            userId: auth()->id(),
+            locationId: $package->location_id,
+            entityType: 'package',
+            entityId: $package->id,
+            metadata: [
+                'available_online' => $online,
+                'changed_by' => [
+                    'user_id' => auth()->id(),
+                    'name' => $currentUser ? $currentUser->first_name . ' ' . $currentUser->last_name : null,
+                    'email' => $currentUser?->email,
+                ],
+            ]
+        );
+    }
+
     public function store(StorePackageRequest $request): JsonResponse
     {
         $validated = $request->validated();
@@ -251,6 +299,10 @@ class PackageController extends Controller
         $location = $this->scopedLocation($request, $validated['location_id']);
         if ($location instanceof JsonResponse) {
             return $location;
+        }
+
+        if ($denied = $this->guardOnlineAvailabilityChange($request, $validated, null)) {
+            return $denied;
         }
 
         if ($denied = $this->assertRelationsMatchLocation((int) $location->id, $validated)) {
@@ -294,6 +346,10 @@ class PackageController extends Controller
         }
 
         $package = Package::create($validated);
+
+        if (!$package->isAvailableOnline()) {
+            $this->logOnlineAvailabilityChange($package);
+        }
 
         if (isset($validated['attraction_ids']) && is_array($validated['attraction_ids'])) {
             foreach ($validated['attraction_ids'] as $attractionId) {
@@ -355,6 +411,12 @@ class PackageController extends Controller
             }
         }
 
+        if ($denied = $this->guardOnlineAvailabilityChange($request, $validated, $package)) {
+            return $denied;
+        }
+
+        $wasAvailableOnline = $package->isAvailableOnline();
+
         if ($denied = $this->assertRelationsMatchLocation($targetLocationId, $validated)) {
             return $denied;
         }
@@ -399,6 +461,10 @@ class PackageController extends Controller
         }
 
         $package->update($validated);
+
+        if ($package->isAvailableOnline() !== $wasAvailableOnline) {
+            $this->logOnlineAvailabilityChange($package);
+        }
 
         if (isset($validated['attraction_ids'])) {
             PackageAttraction::where('package_id', $package->id)->delete();
@@ -674,6 +740,43 @@ class PackageController extends Controller
         ]);
     }
 
+    public function updateOnlineAvailability(Request $request, Package $package): JsonResponse
+    {
+        $validated = $request->validate([
+            'available_online' => 'required|boolean',
+        ]);
+
+        $location = $this->scopedLocation($request, $package->location_id);
+        if ($location instanceof JsonResponse) {
+            return $location;
+        }
+
+        if (!Package::tracksOnlineAvailability()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Front-End Availability is not switched on for this server yet. Please try again after the next update.',
+            ], 503);
+        }
+
+        $package->available_online = (bool) $validated['available_online'];
+
+        if ($package->isDirty('available_online')) {
+            $package->save();
+            $this->logOnlineAvailabilityChange($package);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => $package->available_online
+                ? ($package->is_active ? 'Customers can see and book this package online.' : 'Customers can book this package online once it is switched on.')
+                : 'This package is now backend only. Customers cannot see or book it online.',
+            'data' => [
+                'package_id' => $package->id,
+                'available_online' => (bool) $package->available_online,
+            ],
+        ]);
+    }
+
     public function attachAttractions(Request $request, Package $package): JsonResponse
     {
         $validated = $request->validate([
@@ -759,6 +862,7 @@ class PackageController extends Controller
             'packages.*.price_per_additional_1hr' => 'nullable|numeric|min:0',
             'packages.*.image' => 'nullable|max:30000000',
             'packages.*.is_active' => 'nullable|boolean',
+            'packages.*.available_online' => 'sometimes|required|boolean',
             'packages.*.has_guest_of_honor' => 'nullable|boolean',
             'packages.*.package_type' => 'nullable|string',
             'packages.*.partial_payment_percentage' => 'nullable|numeric|min:0|max:100',
@@ -792,9 +896,14 @@ class PackageController extends Controller
 
         $importedPackages = [];
         $errors = [];
+        $mayHidePackages = Package::canChangeOnlineAvailability($request->user());
 
         foreach ($validated['packages'] as $index => $packageData) {
             try {
+                if (array_key_exists('available_online', $packageData) && !$packageData['available_online'] && !$mayHidePackages) {
+                    throw new \InvalidArgumentException('This package is backend only. Only a location manager or an administrator can import a backend-only package.');
+                }
+
                 $packageData['image'] = $this->normalizeImages($packageData['image'] ?? null);
 
                 $minParticipants = $packageData['min_participants'] ?? null;
@@ -839,6 +948,10 @@ class PackageController extends Controller
                 }
 
                 $package = Package::create($packageData);
+
+                if (!$package->isAvailableOnline()) {
+                    $this->logOnlineAvailabilityChange($package);
+                }
 
                 if (!empty($attractionIds)) {
                     foreach ($attractionIds as $attractionId) {
