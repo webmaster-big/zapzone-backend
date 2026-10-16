@@ -17,10 +17,52 @@ class Customer extends Model
     protected static function booted(): void
     {
         static::deleting(function (Customer $customer) {
-            BookingTombstone::recordMany(
-                Booking::withTrashed()->where('customer_id', $customer->id)->get(['id', 'location_id'])
-            );
+            if ($customer->hasMembershipHistory()) {
+                return false;
+            }
+
+            $customer->keepHistoryAsGuest();
         });
+    }
+
+    public function hasMembershipHistory(): bool
+    {
+        return Membership::where('customer_id', $this->id)->exists()
+            || MembershipGroup::where('payer_customer_id', $this->id)->exists()
+            || MembershipPayment::where('customer_id', $this->id)->exists()
+            || MembershipVisit::where('customer_id', $this->id)->exists()
+            || MembershipBenefitRedemption::where('customer_id', $this->id)->exists();
+    }
+
+    public function keepHistoryAsGuest(): void
+    {
+        $guest = array_filter([
+            'guest_name' => trim(($this->first_name ?? '') . ' ' . ($this->last_name ?? '')),
+            'guest_email' => $this->email,
+            'guest_phone' => $this->phone,
+        ], fn ($value) => $value !== null && $value !== '');
+
+        foreach ([Booking::class, AttractionPurchase::class, EventPurchase::class] as $model) {
+            $model::withTrashed()->where('customer_id', $this->id)->get()->each(function (Model $record) use ($guest) {
+                foreach ($guest as $column => $value) {
+                    if ($record->getAttribute($column) === null || $record->getAttribute($column) === '') {
+                        $record->setAttribute($column, $value);
+                    }
+                }
+
+                $record->forceFill(['customer_id' => null])->save();
+            });
+        }
+
+        foreach ([Payment::class, PackageTimeSlot::class] as $model) {
+            $query = in_array(\Illuminate\Database\Eloquent\SoftDeletes::class, class_uses_recursive($model), true)
+                ? $model::withTrashed()
+                : $model::query();
+
+            $query->where('customer_id', $this->id)->get()->each(
+                fn (Model $record) => $record->forceFill(['customer_id' => null])->save()
+            );
+        }
     }
 
     protected $fillable = [

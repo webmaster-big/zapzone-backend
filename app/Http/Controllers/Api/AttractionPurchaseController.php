@@ -474,6 +474,9 @@ class AttractionPurchaseController extends Controller
             'attraction_purchase'
         );
         if (! $checkoutMembership) {
+            if (app(MembershipBenefitService::class)->refusesDroppedClaim($validated)) {
+                return response()->json(['success' => false, 'message' => MembershipBenefitService::DROPPED_CLAIM_MESSAGE], 422);
+            }
             unset($validated['membership_id'], $validated['membership_applied']);
         }
 
@@ -957,6 +960,10 @@ class AttractionPurchaseController extends Controller
 
     public function show(AttractionPurchase $attractionPurchase): JsonResponse
     {
+        if ($denied = $this->denyStaffElsewhere($this->purchaseLocationId($attractionPurchase), 'purchase')) {
+            return $denied;
+        }
+
         $attractionPurchase->load(['attraction', 'customer', 'createdBy', 'addOns', 'customFieldResponses', 'payments']);
 
         return response()->json([
@@ -967,6 +974,10 @@ class AttractionPurchaseController extends Controller
 
     public function update(Request $request, AttractionPurchase $attractionPurchase): JsonResponse
     {
+        if ($denied = $this->denyStaffElsewhere($this->purchaseLocationId($attractionPurchase), 'purchase')) {
+            return $denied;
+        }
+
         $validated = $request->validate([
             'attraction_id' => 'sometimes|exists:attractions,id',
             'customer_id' => 'sometimes|nullable|exists:customers,id',
@@ -999,6 +1010,11 @@ class AttractionPurchaseController extends Controller
             'additional_addons.*.quantity' => 'nullable|integer|min:1',
             'additional_addons.*.price_at_purchase' => 'nullable|numeric|min:0',
         ]);
+
+        if (isset($validated['attraction_id']) && (int) $validated['attraction_id'] !== (int) $attractionPurchase->attraction_id
+            && ($denied = $this->denyStaffElsewhere(Attraction::query()->withoutGlobalScopes()->whereKey($validated['attraction_id'])->value('location_id'), 'attraction'))) {
+            return $denied;
+        }
 
         $inactiveStatuses = [AttractionPurchase::STATUS_CANCELLED, AttractionPurchase::STATUS_REFUNDED];
         $slotTouched = array_intersect(array_keys($validated), ['quantity', 'scheduled_date', 'scheduled_time', 'attraction_id']) !== []
@@ -1189,6 +1205,14 @@ class AttractionPurchaseController extends Controller
                 ], 422);
             }
 
+            $rollingBackOwnCheckout = $attractionPurchase->status === AttractionPurchase::STATUS_PENDING
+                && $attractionPurchase->checked_in_at === null
+                && ! $attractionPurchase->payments()->whereIn('status', ['completed', 'refunded'])->exists()
+                && \App\Support\CheckoutToken::presented(request(), 'attraction_purchase', $attractionPurchase->id);
+            if (! $rollingBackOwnCheckout && ($denied = $this->denyStaffElsewhere($this->purchaseLocationId($attractionPurchase), 'purchase'))) {
+                return $denied;
+            }
+
             if (!app(\App\Services\AddOnRuleService::class)->isStaff(request()->user('sanctum'))
                 && ($attractionPurchase->status !== AttractionPurchase::STATUS_PENDING
                     || $attractionPurchase->checked_in_at !== null
@@ -1284,6 +1308,10 @@ class AttractionPurchaseController extends Controller
 
     public function updateStatus(Request $request, AttractionPurchase $attractionPurchase): JsonResponse
     {
+        if ($denied = $this->denyStaffElsewhere($this->purchaseLocationId($attractionPurchase), 'purchase')) {
+            return $denied;
+        }
+
         $validated = $request->validate([
             'status' => ['required', Rule::in(AttractionPurchase::STATUSES)],
             'amount_paid' => 'nullable|numeric|min:0',
@@ -1362,6 +1390,10 @@ class AttractionPurchaseController extends Controller
 
     public function markAsConfirmed(AttractionPurchase $attractionPurchase): JsonResponse
     {
+        if ($denied = $this->denyStaffElsewhere($this->purchaseLocationId($attractionPurchase), 'purchase')) {
+            return $denied;
+        }
+
         if ($attractionPurchase->ticket_order_id !== null) {
             return response()->json([
                 'success' => false,
@@ -1413,6 +1445,10 @@ class AttractionPurchaseController extends Controller
 
     public function cancel(AttractionPurchase $attractionPurchase): JsonResponse
     {
+        if ($denied = $this->denyStaffElsewhere($this->purchaseLocationId($attractionPurchase), 'purchase')) {
+            return $denied;
+        }
+
         if ($attractionPurchase->ticket_order_id !== null) {
             return response()->json([
                 'success' => false,
@@ -1456,7 +1492,10 @@ class AttractionPurchaseController extends Controller
 
     public function statistics(Request $request): JsonResponse
     {
-        $query = AttractionPurchase::query();
+        $query = AttractionPurchase::query()->whereIn(
+            'attraction_id',
+            Attraction::query()->withoutGlobalScopes()->whereIn('location_id', $this->staffLocationIds($request))->pluck('id')
+        );
 
         if ($request->filled('start_date')) {
             $query->where('purchase_date', '>=', $request->start_date);
@@ -1510,6 +1549,7 @@ class AttractionPurchaseController extends Controller
     {
         $purchases = AttractionPurchase::with(['attraction', 'createdBy'])
             ->where('customer_id', $customerId)
+            ->whereIn('attraction_id', $this->staffAttractionIds())
             ->orderBy('purchase_date', 'desc')
             ->get();
 
@@ -1523,6 +1563,7 @@ class AttractionPurchaseController extends Controller
     {
         $purchases = AttractionPurchase::with(['customer', 'createdBy'])
             ->where('attraction_id', $attractionId)
+            ->whereIn('attraction_id', $this->staffAttractionIds())
             ->orderBy('purchase_date', 'desc')
             ->get();
 
@@ -1620,6 +1661,10 @@ public function checkIn(Request $request, int $id): JsonResponse
                 'success' => false,
                 'message' => 'Staff sign-in is required to check in tickets.',
             ], 403);
+        }
+
+        if ($denied = $this->denyStaffElsewhere($this->purchaseLocationId($purchase), 'ticket')) {
+            return $denied;
         }
 
         $authUser = $this->resolveAuthUser($request);
@@ -1749,6 +1794,16 @@ public function checkIn(Request $request, int $id): JsonResponse
         ]);
 
         $purchases = AttractionPurchase::with('attraction')->whereIn('id', $validated['ids'])->get();
+
+        foreach ($purchases as $purchase) {
+            if ($this->denyStaffElsewhere($this->purchaseLocationId($purchase), 'purchase')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Some of these purchases belong to another location, so nothing was deleted.',
+                ], 403);
+            }
+        }
+
         $deletedCount = 0;
         $locationIds = [];
 
@@ -2053,6 +2108,11 @@ public function checkIn(Request $request, int $id): JsonResponse
                 ], 404);
             }
 
+            $rollingBackOwnCheckout = ! $attractionPurchase->trashed() && \App\Support\CheckoutToken::presented(request(), 'attraction_purchase', $attractionPurchase->id);
+            if ($staff && ! $rollingBackOwnCheckout && ($denied = $this->denyStaffElsewhere($this->purchaseLocationId($attractionPurchase), 'purchase'))) {
+                return $denied;
+            }
+
             if (!$attractionPurchase->trashed() && $attractionPurchase->status !== AttractionPurchase::STATUS_PENDING) {
                 return response()->json([
                     'success' => false,
@@ -2146,6 +2206,17 @@ public function checkIn(Request $request, int $id): JsonResponse
         }
     }
 
+    private function staffAttractionIds(): array
+    {
+        return Attraction::query()->withoutGlobalScopes()->whereIn('location_id', $this->staffLocationIds(request()))->pluck('id')->all();
+    }
+
+    private function purchaseLocationId(AttractionPurchase $purchase): ?int
+    {
+        $locationId = Attraction::query()->withoutGlobalScopes()->whereKey($purchase->attraction_id)->value('location_id');
+
+        return $locationId !== null ? (int) $locationId : null;
+    }
 }
 
 

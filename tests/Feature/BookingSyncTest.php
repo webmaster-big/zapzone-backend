@@ -168,7 +168,7 @@ class BookingSyncTest extends TestCase
         $this->assertSame(2, $back['sync']['total']);
     }
 
-    public function test_bookings_removed_with_their_customer_are_dropped_from_open_lists(): void
+    public function test_a_deleted_customers_bookings_stay_in_open_lists_as_guest_bookings(): void
     {
         $managerToken = $this->tokenFor($this->staff('location_manager', $this->brighton));
         $customer = Customer::create([
@@ -180,7 +180,7 @@ class BookingSyncTest extends TestCase
             'status' => 'active',
         ]);
         $theirs = $this->book($this->brighton);
-        $theirs->update(['customer_id' => $customer->id]);
+        $theirs->update(['customer_id' => $customer->id, 'guest_name' => null, 'guest_email' => null]);
         $kept = $this->book($this->brighton);
 
         $this->travel(10)->minutes();
@@ -190,9 +190,14 @@ class BookingSyncTest extends TestCase
         $customer->delete();
 
         $changes = $this->list($managerToken, ['updated_since' => $first['sync']['cursor']]);
-        $this->assertSame([$theirs->id], $changes['sync']['deleted_ids']);
-        $this->assertSame(1, $changes['sync']['total']);
-        $this->assertNotContains($kept->id, $changes['sync']['deleted_ids']);
+        $this->assertSame([], $changes['sync']['deleted_ids']);
+        $this->assertSame(2, $changes['sync']['total']);
+        $changed = collect($changes['bookings'])->firstWhere('id', $theirs->id);
+        $this->assertNotNull($changed, 'the booking is sent again so open lists show it without the account');
+        $this->assertNull($changed['customer_id']);
+        $this->assertSame('Pat Guest', $changed['guest_name']);
+        $this->assertSame('pat@example.com', $changed['guest_email']);
+        $this->assertNotContains($kept->id, array_column($changes['bookings'], 'id'));
     }
 
     public function test_bookings_removed_with_their_location_reach_the_company_admins_list_and_no_one_elses(): void

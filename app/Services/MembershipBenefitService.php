@@ -229,6 +229,15 @@ class MembershipBenefitService
         });
     }
 
+    public const DROPPED_CLAIM_MESSAGE = 'That membership cannot be used here. It may have expired, belong to someone else, or not cover this location. Remove the membership and try again.';
+
+    public function refusesDroppedClaim(array $validated): bool
+    {
+        return (string) config('checkout.membership_hardening', 'log') === 'enforce'
+            && ! empty($validated['membership_id'])
+            && ! empty($validated['membership_applied']);
+    }
+
     public function membershipForCheckout(mixed $membershipId, mixed $actor, ?int $customerId, ?int $locationId, string $context): ?Membership
     {
         if (empty($membershipId)) {

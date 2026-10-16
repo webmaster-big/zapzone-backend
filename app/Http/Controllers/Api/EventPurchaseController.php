@@ -270,6 +270,9 @@ class EventPurchaseController extends Controller
                 'event_purchase'
             );
             if (! $checkoutMembership) {
+                if (app(MembershipBenefitService::class)->refusesDroppedClaim($validated)) {
+                    return response()->json(['success' => false, 'message' => MembershipBenefitService::DROPPED_CLAIM_MESSAGE], 422);
+                }
                 unset($validated['membership_id'], $validated['membership_applied']);
             }
 
@@ -776,6 +779,10 @@ class EventPurchaseController extends Controller
 
     public function show(EventPurchase $eventPurchase): JsonResponse
     {
+        if ($denied = $this->denyStaffElsewhere($eventPurchase->location_id, 'purchase')) {
+            return $denied;
+        }
+
         return response()->json(
             $eventPurchase->load(['event', 'customer', 'location:id,name', 'addOns', 'customFieldResponses', 'payments'])
         );
@@ -1037,6 +1044,14 @@ class EventPurchaseController extends Controller
                     'success' => false,
                     'message' => 'This purchase belongs to order ' . $eventPurchase->ticketOrder?->reference_number . ' and cannot be deleted on its own. Cancel or refund the whole order instead.',
                 ], 422);
+            }
+
+            $rollingBackOwnCheckout = $eventPurchase->status === 'pending'
+                && $eventPurchase->checked_in_at === null
+                && ! $eventPurchase->payments()->whereIn('status', ['completed', 'refunded'])->exists()
+                && \App\Support\CheckoutToken::presented(request(), 'event_purchase', $eventPurchase->id);
+            if (! $rollingBackOwnCheckout && ($denied = $this->denyStaffElsewhere($eventPurchase->location_id, 'purchase'))) {
+                return $denied;
             }
 
             if (!app(\App\Services\AddOnRuleService::class)->isStaff(request()->user('sanctum'))
@@ -1510,6 +1525,11 @@ class EventPurchaseController extends Controller
                     'success' => false,
                     'message' => 'Event purchase not found',
                 ], 404);
+            }
+
+            $rollingBackOwnCheckout = ! $eventPurchase->trashed() && \App\Support\CheckoutToken::presented(request(), 'event_purchase', $eventPurchase->id);
+            if ($staff && ! $rollingBackOwnCheckout && ($denied = $this->denyStaffElsewhere($eventPurchase->location_id, 'purchase'))) {
+                return $denied;
             }
 
             if (!$eventPurchase->trashed() && $eventPurchase->status !== 'pending') {

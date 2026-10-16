@@ -149,19 +149,82 @@ trait ScopesByAuthUser
     {
         $authUser = $this->resolveAuthUser($request);
 
-        if (! $authUser instanceof \App\Models\User || ! $authUser->company_id) {
+        return $authUser instanceof \App\Models\User ? $this->locationIdsFor($authUser) : [];
+    }
+
+    protected function denyStaffElsewhere($locationId, string $what = 'record')
+    {
+        $staff = \App\Support\StaffActor::current();
+
+        if (! $staff) {
+            return null;
+        }
+
+        if ($locationId !== null && in_array((int) $locationId, $this->locationIdsFor($staff), true)) {
+            return null;
+        }
+
+        $elsewhere = $locationId !== null ? $this->otherWorkLocation($staff, $locationId) : null;
+
+        if ($elsewhere) {
+            return response()->json([
+                'success' => false,
+                'message' => "That {$what} belongs to {$elsewhere->name}. Switch to {$elsewhere->name} in the sidebar to work with it.",
+                'switch_location_id' => (int) $elsewhere->id,
+            ], 403);
+        }
+
+        return response()->json([
+            'success' => false,
+            'message' => "Forbidden: that {$what} belongs to another location",
+        ], 403);
+    }
+
+    private function locationIdsFor(User $user): array
+    {
+        if (! $user->company_id) {
             return [];
         }
 
-        if (in_array(\App\Http\Middleware\EnsureStaff::effectiveRole($authUser), ['location_manager', 'attendant'], true)) {
-            return $authUser->location_id ? [(int) $authUser->location_id] : [];
+        if (in_array(\App\Http\Middleware\EnsureStaff::effectiveRole($user), ['location_manager', 'attendant'], true)) {
+            $locationId = $this->loweredAccountTerminalLocation($user) ?? $user->location_id;
+
+            return $locationId ? [(int) $locationId] : [];
         }
 
         return \App\Models\Location::query()
-            ->where('company_id', $authUser->company_id)
+            ->where('company_id', $user->company_id)
             ->pluck('id')
             ->map(fn ($id) => (int) $id)
             ->all();
+    }
+
+    private function loweredAccountTerminalLocation(User $user): ?int
+    {
+        if (in_array((string) $user->role, ['location_manager', 'attendant'], true)) {
+            return null;
+        }
+
+        try {
+            $token = $user->currentAccessToken();
+            $abilities = is_object($token) ? ($token->abilities ?? null) : null;
+        } catch (\Throwable $e) {
+            return null;
+        }
+
+        foreach ((array) $abilities as $ability) {
+            if (is_string($ability) && str_starts_with($ability, 'terminal:')) {
+                $locationId = \App\Models\StaffTerminal::query()
+                    ->whereKey((int) substr($ability, 9))
+                    ->where('company_id', $user->company_id)
+                    ->whereNull('revoked_at')
+                    ->value('location_id');
+
+                return $locationId !== null ? (int) $locationId : null;
+            }
+        }
+
+        return null;
     }
 
     private function otherWorkLocation(?User $authUser, $locationId): ?\App\Models\Location

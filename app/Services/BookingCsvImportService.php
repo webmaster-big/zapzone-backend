@@ -369,7 +369,7 @@ class BookingCsvImportService
         }
 
         if ($room && $package) {
-            PackageTimeSlot::create([
+            (new PackageTimeSlot())->allowOverlap()->fill([
                 'package_id' => $package->id,
                 'booking_id' => $booking->id,
                 'room_id' => $room->id,
@@ -381,7 +381,7 @@ class BookingCsvImportService
                 'duration_unit' => $durationUnit,
                 'status' => $status === 'cancelled' ? 'cancelled' : 'booked',
                 'notes' => $notes ?: null,
-            ]);
+            ])->save();
         }
 
         if (!empty($parsed['addons'])) {

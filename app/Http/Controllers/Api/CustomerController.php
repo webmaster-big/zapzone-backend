@@ -431,7 +431,14 @@ class CustomerController extends Controller
         $customerName = $customer->first_name . ' ' . $customer->last_name;
         $customerId = $customer->id;
 
-        $customer->delete();
+        if ($customer->hasMembershipHistory()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This customer has a membership, so their account cannot be deleted. Deactivate them instead; their membership history is kept.',
+            ], 409);
+        }
+
+        \Illuminate\Support\Facades\DB::transaction(fn () => $customer->delete());
 
         ActivityLog::log(
             action: 'Customer Deleted',

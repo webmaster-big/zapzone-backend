@@ -250,12 +250,13 @@ class LocationChangeRequestController extends Controller
         $fromLocationId = $booking->location_id;
         $reviewerId = $authUser->id;
         $reviewNotes = $request->input('review_notes');
+        $overlapLetThrough = !empty($conflicts);
         try {
-            DB::transaction(function () use ($booking, $newLocationId, $roomId, $locationChangeRequest, $reviewerId, $reviewNotes) {
+            DB::transaction(function () use ($booking, $newLocationId, $roomId, $locationChangeRequest, $reviewerId, $reviewNotes, $overlapLetThrough) {
                 $booking->location_id = $newLocationId;
                 $booking->room_id = $roomId;
                 $booking->save();
-                $this->syncTimeSlot($booking, $roomId);
+                $this->syncTimeSlot($booking, $roomId, $overlapLetThrough);
 
                 $locationChangeRequest->update([
                     'status' => LocationChangeRequest::STATUS_APPROVED,
@@ -271,7 +272,7 @@ class LocationChangeRequestController extends Controller
             } catch (\Throwable $e) {
                 \Illuminate\Support\Facades\Log::warning('Booking follow-up emails could not follow the approved move', ['booking_id' => $booking->id, 'error' => $e->getMessage()]);
             }
-        } catch (QueryException $e) {
+        } catch (QueryException|\App\Exceptions\SlotTakenException $e) {
             Log::warning('Location change approval failed', ['request_id' => $locationChangeRequest->id, 'error' => $e->getMessage()]);
             return response()->json([
                 'success' => false,
@@ -432,14 +433,14 @@ class LocationChangeRequestController extends Controller
         return $conflicts;
     }
 
-    private function syncTimeSlot(Booking $booking, ?int $roomId): void
+    private function syncTimeSlot(Booking $booking, ?int $roomId, bool $overlapLetThrough = false): void
     {
         $timeSlot = PackageTimeSlot::where('booking_id', $booking->id)->first();
         if ($roomId) {
             if ($timeSlot) {
-                $timeSlot->update(['room_id' => $roomId]);
+                $timeSlot->allowOverlap($overlapLetThrough)->update(['room_id' => $roomId]);
             } else {
-                PackageTimeSlot::create([
+                (new PackageTimeSlot())->allowOverlap($overlapLetThrough)->fill([
                     'package_id' => $booking->package_id,
                     'booking_id' => $booking->id,
                     'room_id' => $roomId,
@@ -450,7 +451,7 @@ class LocationChangeRequestController extends Controller
                     'duration' => $booking->duration,
                     'duration_unit' => $booking->duration_unit,
                     'status' => 'booked',
-                ]);
+                ])->save();
             }
         } elseif ($timeSlot) {
             $timeSlot->delete();

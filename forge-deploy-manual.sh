@@ -75,7 +75,6 @@ echo ""
 cd current
 echo "Clearing caches..."
 php artisan config:clear
-php artisan cache:clear
 php artisan route:clear
 php artisan view:clear
 echo "✓ Caches cleared"

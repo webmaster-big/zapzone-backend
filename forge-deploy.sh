@@ -26,7 +26,6 @@ $FORGE_PHP artisan db:seed --class=DefaultPhotoMessageTemplateSeeder --force
 $FORGE_PHP artisan config:clear
 $FORGE_PHP artisan route:clear
 $FORGE_PHP artisan view:clear
-$FORGE_PHP artisan cache:clear
 
 $FORGE_PHP artisan config:cache
 $FORGE_PHP artisan route:cache

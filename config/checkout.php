@@ -6,7 +6,7 @@ return [
     'enforce_for_staff' => (bool) env('CHECKOUT_ENFORCE_FOR_STAFF', false),
     'total_tolerance' => (float) env('CHECKOUT_TOTAL_TOLERANCE', 0.05),
     'log_channel' => env('CHECKOUT_LOG_CHANNEL'),
-    'membership_hardening' => env('CHECKOUT_MEMBERSHIP_HARDENING', 'log'),
+    'membership_hardening' => env('CHECKOUT_MEMBERSHIP_HARDENING', 'enforce'),
     'enforce_charge_within_due' => (bool) env('CHECKOUT_ENFORCE_CHARGE_WITHIN_DUE', false),
     'enforce_gateway_location' => (bool) env('CHECKOUT_ENFORCE_GATEWAY_LOCATION', false),
 ];

@@ -223,7 +223,14 @@ class PackageTimeSlotController extends Controller
             ], 422);
         }
 
-        $timeSlot = PackageTimeSlot::create($validated);
+        try {
+            $timeSlot = PackageTimeSlot::create($validated);
+        } catch (\App\Exceptions\SlotTakenException|\Illuminate\Database\UniqueConstraintViolationException) {
+            return response()->json([
+                'success' => false,
+                'message' => 'That start time is not available any more. Please choose another time.',
+            ], 422);
+        }
         $blockGuard->recordBookedInside($request, $slotBlocks, 'package_time_slot', (int) $timeSlot->id, [
             'label' => 'Space time slot',
             'reference' => '#' . $timeSlot->id,
@@ -357,7 +364,14 @@ class PackageTimeSlotController extends Controller
 
         $changeReason = $this->resolveChangeReason($request, self::CHANGE_GUEST_VISIBLE);
 
-        $packageTimeSlot->update($validated);
+        try {
+            $packageTimeSlot->update($validated);
+        } catch (\App\Exceptions\SlotTakenException|\Illuminate\Database\UniqueConstraintViolationException) {
+            return response()->json([
+                'success' => false,
+                'message' => 'That space is not free then — another booking already starts at that time.',
+            ], 422);
+        }
         $blockGuard->recordBookedInside($request, $slotBlocks, 'package_time_slot', (int) $packageTimeSlot->id, [
             'label' => 'Space time slot',
             'reference' => '#' . $packageTimeSlot->id,

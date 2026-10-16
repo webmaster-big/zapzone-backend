@@ -886,6 +886,7 @@ class BookingController extends Controller
         }
 
         $overlapOverride = [];
+        $overlapLetThrough = false;
 
         if (!empty($validated['room_id'])) {
             $slotConflicts = [];
@@ -914,6 +915,7 @@ class BookingController extends Controller
             // a booking being written down after the fact describes what already happened; refusing
             // it for clashing with the live schedule would make history unrecordable
             $recordingThePast = Carbon::parse($bookingDate)->lt(Carbon::today());
+            $overlapLetThrough = !empty($slotConflicts);
 
             if (!empty($slotConflicts) && ! $recordingThePast) {
                 // a manager's PIN, proved by a short-lived token, is what lets an overlap through
@@ -1019,6 +1021,9 @@ class BookingController extends Controller
             'booking'
         );
         if (! $checkoutMembership) {
+            if (app(MembershipBenefitService::class)->refusesDroppedClaim($validated)) {
+                return response()->json(['success' => false, 'message' => MembershipBenefitService::DROPPED_CLAIM_MESSAGE], 422);
+            }
             unset($validated['membership_id'], $validated['membership_applied']);
         }
 
@@ -1067,7 +1072,7 @@ class BookingController extends Controller
 
         try {
             $serverExpectedTotal = $serverExpectedTotal ?? null;
-            $booking = DB::transaction(function () use (&$validated, $discountItems, $request, $discounts, $customFieldAnswers, $rules, $isStaff, $addOnLines, $attractionLines, $serverExpectedTotal, $overlapOverride) {
+            $booking = DB::transaction(function () use (&$validated, $discountItems, $request, $discounts, $customFieldAnswers, $rules, $isStaff, $addOnLines, $attractionLines, $serverExpectedTotal, $overlapOverride, $overlapLetThrough) {
             $capPackage = null;
 
             if (!empty($validated['package_id'])) {
@@ -1214,8 +1219,36 @@ class BookingController extends Controller
                 );
             }
 
+            if (!empty($validated['room_id'])) {
+                (new PackageTimeSlot([
+                    'package_id' => $validated['package_id'],
+                    'booking_id' => $created->id,
+                    'room_id' => $validated['room_id'],
+                    'customer_id' => $validated['customer_id'] ?? null,
+                    'user_id' => $validated['created_by'] ?? null,
+                    'booked_date' => $validated['booking_date'],
+                    'time_slot_start' => $validated['booking_time'],
+                    'duration' => $validated['duration'],
+                    'duration_unit' => $validated['duration_unit'],
+                    'status' => 'booked',
+                    'notes' => $validated['notes'] ?? null,
+                ]))->allowOverlap($overlapLetThrough)->save();
+            }
+
             return $created;
             });
+        } catch (\App\Exceptions\SlotTakenException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $isStaff ? $e->getMessage() : 'Sorry — that time was taken while you were booking. Please pick another time.',
+            ], 409);
+        } catch (\Illuminate\Database\UniqueConstraintViolationException $e) {
+            Log::warning('Booking save lost a race for its space slot', ['error' => $e->getMessage()]);
+
+            return response()->json([
+                'success' => false,
+                'message' => $isStaff ? (new \App\Exceptions\SlotTakenException())->getMessage() : 'Sorry — that time was taken while you were booking. Please pick another time.',
+            ], 409);
         } catch (\Illuminate\Database\QueryException $e) {
             Log::error('Booking save failed', ['error' => $e->getMessage()]);
 
@@ -1247,22 +1280,6 @@ class BookingController extends Controller
             \Illuminate\Support\Facades\Log::warning('Failed to create waiver for booking', [
                 'booking_id' => $booking->id,
                 'error' => $e->getMessage(),
-            ]);
-        }
-
-        if (!empty($validated['room_id'])) {
-            PackageTimeSlot::create([
-                'package_id' => $validated['package_id'],
-                'booking_id' => $booking->id,
-                'room_id' => $validated['room_id'],
-                'customer_id' => $validated['customer_id'] ?? null,
-                'user_id' => $validated['created_by'] ?? null,
-                'booked_date' => $validated['booking_date'],
-                'time_slot_start' => $validated['booking_time'],
-                'duration' => $validated['duration'],
-                'duration_unit' => $validated['duration_unit'],
-                'status' => 'booked',
-                'notes' => $validated['notes'] ?? null,
             ]);
         }
 
@@ -2333,11 +2350,13 @@ class BookingController extends Controller
         }
 
         $overlapOverride = [];
+        $overlapLetThrough = false;
 
         if ($slotMoved && $targetRoomId && $targetStatus !== 'cancelled') {
             $slotConflicts = [];
+            $ownSlotId = PackageTimeSlot::where('booking_id', $booking->id)->value('id');
 
-            if ($this->checkTimeSlotConflict((int) $targetRoomId, $targetDate, $targetTime, $targetDuration, $targetDurationUnit, $booking->id)) {
+            if ($this->checkTimeSlotConflict((int) $targetRoomId, $targetDate, $targetTime, $targetDuration, $targetDurationUnit, $ownSlotId)) {
                 $slotConflicts[] = 'another booking already occupies this space';
             }
 
@@ -2346,7 +2365,7 @@ class BookingController extends Controller
             }
 
             // as on the create path, the area rule is a comfort rule: recorded, never refused
-            if ($this->checkAreaGroupStaggerConflict((int) $targetRoomId, $targetDate, $targetTime, $booking->id)) {
+            if ($this->checkAreaGroupStaggerConflict((int) $targetRoomId, $targetDate, $targetTime, $ownSlotId)) {
                 Log::info('Booking moved close to another space in the same area', [
                     'booking_id' => $booking->id,
                     'room_id' => $targetRoomId,
@@ -2357,6 +2376,7 @@ class BookingController extends Controller
             }
 
             $recordingThePast = Carbon::parse($targetDate)->lt(Carbon::today());
+            $overlapLetThrough = ! empty($slotConflicts);
 
             if (! empty($slotConflicts) && ! $recordingThePast) {
                 $overlapApprovedBy = \App\Http\Controllers\Api\OverridePinController::approverFromToken(
@@ -2518,7 +2538,7 @@ class BookingController extends Controller
         }
 
         try {
-            DB::transaction(function () use (&$validated, $booking, $slotFieldsTouched, $targetPackageId, $targetStatus, $rules, $isStaff, $addOnLines, $attractionLines) {
+            DB::transaction(function () use (&$validated, $booking, $slotFieldsTouched, $targetPackageId, $targetStatus, $rules, $isStaff, $addOnLines, $attractionLines, $overlapLetThrough) {
                 if ($slotFieldsTouched && $targetPackageId && $targetStatus !== 'cancelled') {
                     $capPackage = \App\Models\Package::where('id', $targetPackageId)->lockForUpdate()->first();
 
@@ -2579,7 +2599,7 @@ class BookingController extends Controller
                     $timeSlot = PackageTimeSlot::where('booking_id', $booking->id)->first();
 
                     if ($timeSlot) {
-                        $timeSlot->update([
+                        $timeSlot->allowOverlap($overlapLetThrough)->update([
                             'room_id' => $validated['room_id'] ?? $timeSlot->room_id,
                             'booked_date' => $validated['booking_date'] ?? $timeSlot->booked_date,
                             'time_slot_start' => $validated['booking_time'] ?? $timeSlot->time_slot_start,
@@ -2588,7 +2608,7 @@ class BookingController extends Controller
                             'notes' => $validated['notes'] ?? $timeSlot->notes,
                         ]);
                     } elseif (isset($validated['room_id']) && $validated['room_id']) {
-                        PackageTimeSlot::create([
+                        (new PackageTimeSlot())->allowOverlap($overlapLetThrough)->fill([
                             'package_id' => $validated['package_id'] ?? $booking->package_id,
                             'booking_id' => $booking->id,
                             'room_id' => $validated['room_id'],
@@ -2600,10 +2620,22 @@ class BookingController extends Controller
                             'duration_unit' => $validated['duration_unit'] ?? $booking->duration_unit,
                             'status' => 'booked',
                             'notes' => $validated['notes'] ?? null,
-                        ]);
+                        ])->save();
                     }
                 }
             });
+        } catch (\App\Exceptions\SlotTakenException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $isStaff ? $e->getMessage() : 'Sorry — that time is no longer free. Please pick another time.',
+            ], 409);
+        } catch (\Illuminate\Database\UniqueConstraintViolationException $e) {
+            Log::warning('Booking change lost a race for its space slot', ['booking_id' => $booking->id, 'error' => $e->getMessage()]);
+
+            return response()->json([
+                'success' => false,
+                'message' => $isStaff ? (new \App\Exceptions\SlotTakenException())->getMessage() : 'Sorry — that time is no longer free. Please pick another time.',
+            ], 409);
         } catch (\RuntimeException $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
         }
@@ -2794,6 +2826,10 @@ class BookingController extends Controller
 
     public function cancel(Request $request, Booking $booking): JsonResponse
     {
+        if ($denied = $this->denyStaffElsewhere($booking->location_id, 'booking')) {
+            return $denied;
+        }
+
         if (in_array($booking->status, ['completed', 'cancelled'])) {
             return response()->json([
                 'success' => false,
@@ -3158,8 +3194,9 @@ class BookingController extends Controller
         }
 
         $fromLocationId = $booking->location_id;
+        $overlapLetThrough = !empty($conflicts);
         try {
-            DB::transaction(function () use ($booking, $newLocationId, $roomId) {
+            DB::transaction(function () use ($booking, $newLocationId, $roomId, $overlapLetThrough) {
                 $booking->location_id = $newLocationId;
                 $booking->room_id = $roomId;
                 $booking->save();
@@ -3167,9 +3204,9 @@ class BookingController extends Controller
                 $timeSlot = PackageTimeSlot::where('booking_id', $booking->id)->first();
                 if ($roomId) {
                     if ($timeSlot) {
-                        $timeSlot->update(['room_id' => $roomId]);
+                        $timeSlot->allowOverlap($overlapLetThrough)->update(['room_id' => $roomId]);
                     } else {
-                        PackageTimeSlot::create([
+                        (new PackageTimeSlot())->allowOverlap($overlapLetThrough)->fill([
                             'package_id' => $booking->package_id,
                             'booking_id' => $booking->id,
                             'room_id' => $roomId,
@@ -3180,13 +3217,13 @@ class BookingController extends Controller
                             'duration' => $booking->duration,
                             'duration_unit' => $booking->duration_unit,
                             'status' => 'booked',
-                        ]);
+                        ])->save();
                     }
                 } elseif ($timeSlot) {
                     $timeSlot->delete();
                 }
             });
-        } catch (QueryException $e) {
+        } catch (QueryException|\App\Exceptions\SlotTakenException $e) {
             Log::warning('Booking location change failed', ['booking_id' => $booking->id, 'error' => $e->getMessage()]);
             return response()->json([
                 'success' => false,
@@ -3431,6 +3468,10 @@ class BookingController extends Controller
 
         public function updatePaymentStatus(Request $request, Booking $booking): JsonResponse
     {
+        if ($denied = $this->denyStaffElsewhere($booking->location_id, 'booking')) {
+            return $denied;
+        }
+
         $validated = $request->validate([
             'payment_status' => ['required', Rule::in(['paid', 'partial'])],
         ]);
@@ -3503,6 +3544,10 @@ class BookingController extends Controller
             'location_id' => 'required|exists:locations,id',
             'date' => 'required|date',
         ]);
+
+        if ($denied = $this->denyStaffElsewhere((int) $validated['location_id'], 'schedule')) {
+            return $denied;
+        }
 
         $bookings = Booking::with(['customer', 'package', 'room'])
             ->byLocation($validated['location_id'])
@@ -3621,9 +3666,19 @@ class BookingController extends Controller
             'ids.*' => 'required|integer|exists:bookings,id',
         ]);
 
+        $bookings = Booking::whereIn('id', $validated['ids'])->get();
+
+        foreach ($bookings as $booking) {
+            if ($this->denyStaffElsewhere($booking->location_id, 'booking')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Some of these bookings belong to another location, so nothing was deleted.',
+                ], 403);
+            }
+        }
+
         $changeReason = $this->resolveChangeReason($request, self::CHANGE_GUEST_VISIBLE);
 
-        $bookings = Booking::whereIn('id', $validated['ids'])->get();
         $deletedCount = 0;
         $locationIds = [];
 
@@ -3962,6 +4017,13 @@ class BookingController extends Controller
                     'success' => false,
                     'message' => 'Only an unpaid pending booking can be removed this way.',
                 ], 403);
+            }
+
+            $rollingBackOwnCheckout = $booking->status === 'pending'
+                && ! $this->bookingWasCharged($booking)
+                && \App\Support\CheckoutToken::presented(request(), 'booking', $booking->id);
+            if (! $rollingBackOwnCheckout && ($denied = $this->denyStaffElsewhere($booking->location_id, 'booking'))) {
+                return $denied;
             }
 
             // The unauthenticated checkout-rollback route also reaches this method;
@@ -4749,6 +4811,11 @@ class BookingController extends Controller
                     'success' => false,
                     'message' => 'Booking not found',
                 ], 404);
+            }
+
+            $rollingBackOwnCheckout = ! $booking->trashed() && \App\Support\CheckoutToken::presented(request(), 'booking', $booking->id);
+            if ($staff && ! $rollingBackOwnCheckout && ($denied = $this->denyStaffElsewhere($booking->location_id, 'booking'))) {
+                return $denied;
             }
 
             if (!$booking->trashed() && $booking->status !== 'pending') {

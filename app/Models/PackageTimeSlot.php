@@ -10,6 +10,62 @@ class PackageTimeSlot extends Model
 {
     use HasFactory;
 
+    private bool $overlapAllowed = false;
+
+    protected static function booted(): void
+    {
+        static::creating(function (PackageTimeSlot $slot) {
+            $slot->overlap_seq = $slot->freeOverlapSeq();
+        });
+
+        static::updating(function (PackageTimeSlot $slot) {
+            if ($slot->movesToAnotherStart()) {
+                $slot->overlap_seq = $slot->freeOverlapSeq();
+            }
+        });
+    }
+
+    private function movesToAnotherStart(): bool
+    {
+        if (! $this->isDirty(['room_id', 'booked_date', 'time_slot_start'])) {
+            return false;
+        }
+
+        return (int) $this->getOriginal('room_id') !== (int) $this->room_id
+            || Carbon::parse($this->getOriginal('booked_date'))->toDateString() !== Carbon::parse($this->booked_date)->toDateString()
+            || Carbon::parse($this->getOriginal('time_slot_start'))->format('H:i:s') !== Carbon::parse($this->time_slot_start)->format('H:i:s');
+    }
+
+    public function allowOverlap(bool $allowed = true): static
+    {
+        $this->overlapAllowed = $allowed;
+
+        return $this;
+    }
+
+    private function freeOverlapSeq(): int
+    {
+        $sharing = static::query()
+            ->where('room_id', $this->room_id)
+            ->whereDate('booked_date', Carbon::parse($this->booked_date)->toDateString())
+            ->where('time_slot_start', Carbon::parse($this->time_slot_start)->format('H:i:s'))
+            ->when($this->exists, fn ($query) => $query->whereKeyNot($this->getKey()))
+            ->get(['overlap_seq', 'status']);
+
+        if (! $this->overlapAllowed && ($this->status ?? 'booked') === 'booked' && $sharing->contains('status', 'booked')) {
+            throw new \App\Exceptions\SlotTakenException();
+        }
+
+        $taken = $sharing->pluck('overlap_seq')->map(fn ($seq) => (int) $seq)->all();
+        $seq = 0;
+
+        while (in_array($seq, $taken, true)) {
+            $seq++;
+        }
+
+        return $seq;
+    }
+
     protected $fillable = [
         'package_id',
         'room_id',
