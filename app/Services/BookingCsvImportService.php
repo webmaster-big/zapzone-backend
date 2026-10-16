@@ -31,6 +31,10 @@ class BookingCsvImportService
 
     protected const VALID_PAYMENT_METHODS = ['card', 'in-store', 'paylater', 'authorize.net'];
 
+    protected const NAME_FILLER_WORDS = ['a', 'an', 'and', 'the', 'of', 'for', 'with', 'package', 'packages', 'pkg'];
+
+    protected array $rowWarnings = [];
+
     public function parseFile(string $filePath, string $originalName = ''): array
     {
         $extension = strtolower(pathinfo($originalName ?: $filePath, PATHINFO_EXTENSION));
@@ -109,8 +113,11 @@ class BookingCsvImportService
         $skipped = 0;
         $errors = [];
         $importedBookings = [];
+        $warnings = [];
 
         foreach ($rows as $index => $row) {
+            $this->rowWarnings = [];
+
             try {
                 $result = $this->processRow($row, $index, $locationId, $createdBy, $skipDuplicates);
 
@@ -121,6 +128,10 @@ class BookingCsvImportService
 
                 $importedBookings[] = $result;
                 $imported++;
+
+                foreach ($this->rowWarnings as $message) {
+                    $warnings[$message][] = $index + 2;
+                }
             } catch (\Exception $e) {
                 $errors[] = [
                     'row' => $index + 2, // +2 for 1-based + header row
@@ -134,15 +145,19 @@ class BookingCsvImportService
             'imported' => $imported,
             'skipped' => $skipped,
             'errors' => $errors,
+            'warnings' => collect($warnings)->map(fn ($rowNumbers, $message) => [
+                'message' => $message,
+                'rows' => $rowNumbers,
+            ])->values()->all(),
             'bookings' => $importedBookings,
         ];
     }
 
     protected function processRow(array $row, int $index, int $locationId, ?int $createdBy, bool $skipDuplicates = true): ?Booking
     {
+        $row = $this->normalizeRow($row);
 
-
-        $appointmentDate = $this->parseDateTime($row['Appointment date'] ?? $row['appointment_date'] ?? null);
+        $appointmentDate = $this->parseDateTime($this->cell($row, 'appointment date'));
         if (!$appointmentDate) {
             throw new \RuntimeException('Invalid or missing appointment date');
         }
@@ -150,12 +165,12 @@ class BookingCsvImportService
         $bookingDate = $appointmentDate->format('Y-m-d');
         $bookingTime = $appointmentDate->format('H:i');
 
-        $createdDate = $this->parseDateTime($row['Created'] ?? $row['created'] ?? null);
+        $createdDate = $this->parseDateTime($this->cell($row, 'created'));
 
-        $customerName = trim($row['Customer name'] ?? $row['customer_name'] ?? '');
-        $customerEmail = trim($row['Customer email'] ?? $row['customer_email'] ?? '');
-        $customerPhone = trim($row['Customer phone'] ?? $row['customer_phone'] ?? '');
-        $customerAddress = trim($row['Customer address'] ?? $row['customer_address'] ?? '');
+        $customerName = trim((string) $this->cell($row, 'customer name'));
+        $customerEmail = trim((string) $this->cell($row, 'customer email'));
+        $customerPhone = trim((string) $this->cell($row, 'customer phone'));
+        $customerAddress = trim((string) $this->cell($row, 'customer address'));
 
         if (empty($customerName) && empty($customerEmail)) {
             throw new \RuntimeException('Customer name and email are both empty');
@@ -185,13 +200,14 @@ class BookingCsvImportService
             );
         }
 
-        $serviceRaw = trim((string) ($row['Service'] ?? $row['service'] ?? ''));
+        $serviceRaw = trim((string) $this->cell($row, 'service'));
         $parsed = $this->parseServiceAndAddons($serviceRaw);
         $packageName = $parsed['package_name'];
 
-        $package = Package::where('location_id', $locationId)->where('name', $packageName)->first();
-        if (!$package) {
-            $package = Package::where('location_id', $locationId)->where('name', 'LIKE', '%' . $packageName . '%')->first();
+        $package = null;
+        if ($packageName !== '') {
+            $package = Package::where('location_id', $locationId)->where('name', $packageName)->first()
+                ?? Package::where('location_id', $locationId)->where('name', 'LIKE', '%' . $packageName . '%')->first();
         }
         if (!$package && !empty($packageName)) {
             $basePackageName = trim(explode('|', $packageName)[0]);
@@ -200,7 +216,15 @@ class BookingCsvImportService
             }
         }
 
-        $roomName = trim((string) ($row['Party Area'] ?? $row['party_area'] ?? ''));
+        $packageMatchedByWords = false;
+        if (!$package && !empty($packageName)) {
+            $package = $this->matchPackageByWords($locationId, $packageName);
+            $packageMatchedByWords = $package !== null;
+        }
+
+        $csvStaff = trim((string) $this->cell($row, 'staff', 'staff member'));
+
+        $roomName = trim((string) $this->cell($row, 'party area'));
         $room = null;
         if (!empty($roomName) && strtolower($roomName) !== 'no area') {
             $room = Room::where('location_id', $locationId)
@@ -222,29 +246,33 @@ class BookingCsvImportService
             }
         }
 
-        $csvPersons = trim((string) ($row['Number of Persons'] ?? $row['number_of_persons'] ?? $row['Persons'] ?? $row['persons'] ?? $row['Participants'] ?? $row['participants'] ?? ''));
+        if (!$room && $roomName === '' && $csvStaff !== '') {
+            $room = Room::where('location_id', $locationId)
+                ->whereRaw('LOWER(name) = ?', [Str::lower($csvStaff)])
+                ->first();
+        }
+
+        $csvPersons = trim((string) $this->cell($row, 'number of persons', 'persons', 'number of participants', 'participants'));
         $csvPersonsInt = is_numeric($csvPersons) ? (int) $csvPersons : null;
 
-        $csvStaff = trim((string) ($row['Staff'] ?? $row['staff'] ?? $row['Staff Member'] ?? $row['staff_member'] ?? ''));
+        $csvInternalNote = trim((string) $this->cell($row, 'internal note', 'internal notes'));
 
-        $csvInternalNote = trim((string) ($row['Internal Note'] ?? $row['internal_note'] ?? $row['Internal Notes'] ?? $row['internal_notes'] ?? ''));
-
-        $duration = (int) ($row['Duration'] ?? $row['duration'] ?? 0);
+        $duration = (int) $this->cell($row, 'duration');
         $durationUnit = 'minutes';
 
-        $paymentRaw = trim((string) ($row['Payment'] ?? $row['payment'] ?? ''));
+        $paymentRaw = trim((string) $this->cell($row, 'payment'));
         $paymentInfo = $this->parsePayment($paymentRaw);
 
-        $statusRaw = strtolower(trim((string) ($row['Status'] ?? $row['status'] ?? 'pending')));
+        $statusRaw = strtolower(trim((string) ($this->cell($row, 'status') ?? 'pending')));
         $status = self::STATUS_MAP[$statusRaw] ?? 'pending';
 
-        $notes = trim((string) ($row['Notes'] ?? $row['notes'] ?? ''));
+        $notes = trim((string) $this->cell($row, 'notes'));
 
-        $guestOfHonorName = trim((string) ($row["Guest of Honor's Name"] ?? $row['guest_of_honor_name'] ?? ''));
-        $guestOfHonorAge = trim((string) ($row["Guest of Honor's Age (or General Age of Group)"] ?? $row['guest_of_honor_age'] ?? ''));
+        $guestOfHonorName = trim((string) $this->cell($row, "guest of honor's name", 'guest of honor name'));
+        $guestOfHonorAge = trim((string) $this->cell($row, "guest of honor's age (or general age of group)", "guest of honor's age", 'guest of honor age'));
         $guestOfHonorAge = is_numeric($guestOfHonorAge) ? (int) $guestOfHonorAge : null;
 
-        $externalId = trim((string) ($row['ID'] ?? $row['id'] ?? ''));
+        $externalId = trim((string) $this->cell($row, 'id'));
         if ($skipDuplicates) {
             $duplicateQuery = Booking::where('booking_date', $bookingDate)
                 ->where('booking_time', $bookingTime)
@@ -263,6 +291,8 @@ class BookingCsvImportService
             $referenceNumber = 'BK' . now()->format('Ymd') . strtoupper(Str::random(6));
         } while (Booking::where('reference_number', $referenceNumber)->exists());
 
+        $participants = $csvPersonsInt ?? ($package?->min_participants !== null ? $package->effectiveMinParticipants($bookingDate) : 10);
+
         $internalNotesParts = [];
 
         if (!empty($externalId)) {
@@ -271,10 +301,22 @@ class BookingCsvImportService
 
         if (!$package && !empty($packageName)) {
             $internalNotesParts[] = "Package not found: {$serviceRaw}";
+            $this->rowWarnings[] = "No package here matches \"{$packageName}\". Imported without a package.";
+        }
+
+        if ($packageMatchedByWords) {
+            $internalNotesParts[] = "Package matched by name: {$packageName} → {$package->name}";
+            $this->rowWarnings[] = "\"{$packageName}\" was matched to the package \"{$package->name}\".";
         }
 
         if (!$room && !empty($roomName) && strtolower($roomName) !== 'no area') {
             $internalNotesParts[] = "Space not found: {$roomName}";
+            $this->rowWarnings[] = "No space here is named \"{$roomName}\". Imported without a space.";
+        }
+
+        if ($csvPersonsInt === null) {
+            $internalNotesParts[] = "Number of persons missing from the file; set to {$participants}";
+            $this->rowWarnings[] = "The file has no number of persons. The guest count was set to {$participants}.";
         }
 
         if (!empty($csvStaff)) {
@@ -301,8 +343,6 @@ class BookingCsvImportService
 
         $completedAt = $status === 'completed' ? now() : null;
         $cancelledAt = $status === 'cancelled' ? now() : null;
-
-        $participants = $csvPersonsInt ?? ($package?->min_participants !== null ? $package->effectiveMinParticipants($bookingDate) : 10);
 
         if ($package) {
             $this->assertParticipants($package, $participants, $bookingDate);
@@ -674,15 +714,105 @@ class BookingCsvImportService
 
     protected function sanitizeRowForLog(array $row): array
     {
+        $row = $this->normalizeRow($row);
+
         return [
-            'ID' => $row['ID'] ?? $row['id'] ?? null,
-            'Customer name' => $row['Customer name'] ?? $row['customer_name'] ?? null,
-            'Customer email' => $row['Customer email'] ?? $row['customer_email'] ?? null,
-            'Service' => $row['Service'] ?? $row['service'] ?? null,
-            'Party Area' => $row['Party Area'] ?? $row['party_area'] ?? null,
-            'Appointment date' => $row['Appointment date'] ?? $row['appointment_date'] ?? null,
-            'Status' => $row['Status'] ?? $row['status'] ?? null,
+            'ID' => $this->cell($row, 'id'),
+            'Customer name' => $this->cell($row, 'customer name'),
+            'Customer email' => $this->cell($row, 'customer email'),
+            'Service' => $this->cell($row, 'service'),
+            'Party Area' => $this->cell($row, 'party area'),
+            'Appointment date' => $this->cell($row, 'appointment date'),
+            'Status' => $this->cell($row, 'status'),
         ];
+    }
+
+    protected function normalizeRow(array $row): array
+    {
+        $normalized = [];
+
+        foreach ($row as $header => $value) {
+            $key = $this->headerKey((string) $header);
+
+            if (!array_key_exists($key, $normalized) || $this->isBlank($normalized[$key])) {
+                $normalized[$key] = $value;
+            }
+        }
+
+        return $normalized;
+    }
+
+    protected function headerKey(string $header): string
+    {
+        $header = str_replace(["\u{2019}", "\u{2018}", '`'], "'", $header);
+
+        return mb_strtolower(trim(preg_replace('/[\s_]+/u', ' ', $header)));
+    }
+
+    protected function cell(array $row, string ...$keys): mixed
+    {
+        foreach ($keys as $key) {
+            if (array_key_exists($key, $row) && !$this->isBlank($row[$key])) {
+                return $row[$key];
+            }
+        }
+
+        return null;
+    }
+
+    protected function isBlank(mixed $value): bool
+    {
+        return $value === null || (is_string($value) && trim($value) === '');
+    }
+
+    protected function matchPackageByWords(int $locationId, string $name): ?Package
+    {
+        $wanted = $this->nameWords($name);
+        if ($wanted === []) {
+            return null;
+        }
+
+        $bestId = null;
+        $bestScore = 0;
+        $overlaps = [];
+
+        foreach (Package::where('location_id', $locationId)->get(['id', 'name']) as $candidate) {
+            $words = $this->nameWords((string) $candidate->name);
+            $shared = count(array_intersect($words, $wanted));
+            if ($shared === 0) {
+                continue;
+            }
+
+            $overlaps[$candidate->id] = $shared;
+
+            if ($shared < count($words) && $shared < count($wanted)) {
+                continue;
+            }
+
+            if ($shared > $bestScore) {
+                $bestId = $candidate->id;
+                $bestScore = $shared;
+            }
+        }
+
+        if ($bestId === null) {
+            return null;
+        }
+
+        foreach ($overlaps as $id => $shared) {
+            if ($id !== $bestId && $shared >= $bestScore) {
+                return null;
+            }
+        }
+
+        return Package::find($bestId);
+    }
+
+    protected function nameWords(string $name): array
+    {
+        $words = preg_split('/[^\p{L}\p{N}]+/u', mb_strtolower(html_entity_decode($name, ENT_QUOTES, 'UTF-8')), -1, PREG_SPLIT_NO_EMPTY);
+
+        return array_values(array_unique(array_diff($words, self::NAME_FILLER_WORDS)));
     }
 
     protected function assertParticipants(Package $package, int $participants, ?string $date = null): void

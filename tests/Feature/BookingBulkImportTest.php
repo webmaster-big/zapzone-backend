@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\AddOn;
 use App\Models\Booking;
 use App\Models\Company;
+use App\Models\Contact;
 use App\Models\Customer;
 use App\Models\Location;
 use App\Models\Package;
@@ -328,14 +329,14 @@ class BookingBulkImportTest extends TestCase
         $this->assertEquals(10, $booking->guest_of_honor_age);
         $this->assertEquals($this->package->id, $booking->package_id);
         $this->assertEquals($this->room->id, $booking->room_id);
-        $this->assertStringContainsString('bookly_id:1628', $booking->internal_notes);
-        $this->assertStringContainsString('Imported from Bookly CSV', $booking->internal_notes);
+        $this->assertStringContainsString('Bookly ID: 1628', $booking->fresh()->internal_notes);
+        $this->assertStringContainsString('[CSV Import]', $booking->fresh()->internal_notes);
 
-        // Verify customer was created
-        $customer = Customer::where('email', 'hao@test.com')->first();
-        $this->assertNotNull($customer);
-        $this->assertEquals('Hao', $customer->first_name);
-        $this->assertEquals('Wang', $customer->last_name);
+        $contact = Contact::where('email', 'hao@test.com')->first();
+        $this->assertNotNull($contact);
+        $this->assertEquals('Hao', $contact->first_name);
+        $this->assertEquals('Wang', $contact->last_name);
+        $this->assertNull($booking->customer_id);
 
         // Verify add-ons were attached
         $booking->load('addOns');
@@ -362,8 +363,7 @@ class BookingBulkImportTest extends TestCase
         $booking = $result['bookings'][0];
 
         $this->assertNull($booking->package_id);
-        $this->assertStringContainsString('UNMATCHED PACKAGE', $booking->internal_notes);
-        $this->assertStringContainsString('Nonexistent Package Name', $booking->internal_notes);
+        $this->assertStringContainsString('Package not found: Nonexistent Package Name', $booking->fresh()->internal_notes);
     }
 
     public function test_import_records_unmatched_room_in_internal_notes(): void
@@ -384,8 +384,7 @@ class BookingBulkImportTest extends TestCase
         $booking = $result['bookings'][0];
 
         $this->assertNull($booking->room_id);
-        $this->assertStringContainsString('UNMATCHED ROOM', $booking->internal_notes);
-        $this->assertStringContainsString('Super VIP Room Z', $booking->internal_notes);
+        $this->assertStringContainsString('Space not found: Super VIP Room Z', $booking->fresh()->internal_notes);
     }
 
     public function test_import_records_unmatched_addon_in_internal_notes(): void
@@ -405,8 +404,7 @@ class BookingBulkImportTest extends TestCase
         $this->assertEquals(1, $result['imported']);
         $booking = Booking::find($result['bookings'][0]->id);
 
-        $this->assertStringContainsString('UNMATCHED ADD-ON', $booking->internal_notes);
-        $this->assertStringContainsString('Nonexistent Fancy Addon', $booking->internal_notes);
+        $this->assertStringContainsString('Add-on not found: Nonexistent Fancy Addon', $booking->internal_notes);
     }
 
     public function test_import_skips_duplicate_bookly_id(): void
@@ -425,7 +423,7 @@ class BookingBulkImportTest extends TestCase
         $this->assertEquals(1, $result2['skipped']);
     }
 
-    public function test_import_reuses_existing_customer(): void
+    public function test_import_reuses_an_existing_contact_and_never_links_a_customer_account(): void
     {
         Customer::create([
             'email' => 'existing@example.com',
@@ -447,12 +445,29 @@ class BookingBulkImportTest extends TestCase
             $this->user->id
         );
 
-        $booking = $result['bookings'][0];
-        $this->assertEquals(
-            Customer::where('email', 'existing@example.com')->first()->id,
-            $booking->customer_id
+        Contact::create([
+            'company_id' => $this->company->id,
+            'location_id' => $this->location->id,
+            'email' => 'repeat@example.com',
+            'first_name' => 'Repeat',
+            'last_name' => 'Guest',
+        ]);
+
+        $repeat = $service->processRows(
+            [$this->makeRow([
+                'ID' => '6667',
+                'Customer name' => 'Another Name',
+                'Customer email' => 'repeat@example.com',
+            ])],
+            $this->location->id,
+            $this->user->id
         );
+
+        $this->assertNull($result['bookings'][0]->customer_id);
         $this->assertEquals(1, Customer::where('email', 'existing@example.com')->count());
+        $this->assertEquals(1, Contact::where('email', 'repeat@example.com')->count());
+        $this->assertEquals('Repeat', Contact::where('email', 'repeat@example.com')->value('first_name'));
+        $this->assertEquals(1, $repeat['imported']);
     }
 
     public function test_import_handles_missing_date(): void

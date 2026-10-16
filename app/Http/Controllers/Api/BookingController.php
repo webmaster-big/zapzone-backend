@@ -2537,8 +2537,10 @@ class BookingController extends Controller
             );
         }
 
+        $roomBefore = $booking->room_id;
+
         try {
-            DB::transaction(function () use (&$validated, $booking, $slotFieldsTouched, $targetPackageId, $targetStatus, $rules, $isStaff, $addOnLines, $attractionLines, $overlapLetThrough) {
+            DB::transaction(function () use (&$validated, $booking, $slotFieldsTouched, $targetPackageId, $targetStatus, $rules, $isStaff, $addOnLines, $attractionLines, $overlapLetThrough, $roomBefore, $slotMoved) {
                 if ($slotFieldsTouched && $targetPackageId && $targetStatus !== 'cancelled') {
                     $capPackage = \App\Models\Package::where('id', $targetPackageId)->lockForUpdate()->first();
 
@@ -2595,11 +2597,12 @@ class BookingController extends Controller
                     $booking->touch();
                 }
 
-                if (isset($validated['room_id']) || isset($validated['booking_date']) || isset($validated['booking_time']) || isset($validated['duration']) || isset($validated['duration_unit'])) {
+                if (isset($validated['room_id']) || isset($validated['booking_date']) || isset($validated['booking_time']) || isset($validated['duration']) || isset($validated['duration_unit']) || ! empty($validated['package_id'])) {
                     $timeSlot = PackageTimeSlot::where('booking_id', $booking->id)->first();
 
                     if ($timeSlot) {
                         $timeSlot->allowOverlap($overlapLetThrough)->update([
+                            'package_id' => $booking->package_id ?: $timeSlot->package_id,
                             'room_id' => $validated['room_id'] ?? $timeSlot->room_id,
                             'booked_date' => $validated['booking_date'] ?? $timeSlot->booked_date,
                             'time_slot_start' => $validated['booking_time'] ?? $timeSlot->time_slot_start,
@@ -2607,20 +2610,22 @@ class BookingController extends Controller
                             'duration_unit' => $validated['duration_unit'] ?? $timeSlot->duration_unit,
                             'notes' => $validated['notes'] ?? $timeSlot->notes,
                         ]);
-                    } elseif (isset($validated['room_id']) && $validated['room_id']) {
-                        (new PackageTimeSlot())->allowOverlap($overlapLetThrough)->fill([
-                            'package_id' => $validated['package_id'] ?? $booking->package_id,
+                    } elseif ($booking->room_id && $booking->package_id) {
+                        (new PackageTimeSlot())->allowOverlap($overlapLetThrough || ! $slotMoved)->fill([
+                            'package_id' => $booking->package_id,
                             'booking_id' => $booking->id,
-                            'room_id' => $validated['room_id'],
-                            'customer_id' => $validated['customer_id'] ?? $booking->customer_id,
+                            'room_id' => $booking->room_id,
+                            'customer_id' => $booking->customer_id,
                             'user_id' => $booking->created_by,
-                            'booked_date' => $validated['booking_date'] ?? $booking->booking_date,
-                            'time_slot_start' => $validated['booking_time'] ?? $booking->booking_time,
-                            'duration' => $validated['duration'] ?? $booking->duration,
-                            'duration_unit' => $validated['duration_unit'] ?? $booking->duration_unit,
-                            'status' => 'booked',
+                            'booked_date' => Carbon::parse($booking->booking_date)->toDateString(),
+                            'time_slot_start' => Carbon::parse($booking->booking_time)->format('H:i'),
+                            'duration' => $booking->duration,
+                            'duration_unit' => $booking->duration_unit,
+                            'status' => $booking->status === 'cancelled' ? 'cancelled' : 'booked',
                             'notes' => $validated['notes'] ?? null,
                         ])->save();
+                    } elseif (! empty($validated['room_id']) && (int) $validated['room_id'] !== (int) $roomBefore) {
+                        throw new \RuntimeException('Choose a package for this booking before giving it a space.');
                     }
                 }
             });
@@ -5024,6 +5029,7 @@ class BookingController extends Controller
                         'imported_count' => $result['imported'],
                         'skipped_count' => $result['skipped'],
                         'errors_count' => count($result['errors']),
+                        'warnings' => $result['warnings'],
                     ],
                 ]
             );
@@ -5035,6 +5041,7 @@ class BookingController extends Controller
                     'imported' => $result['imported'],
                     'skipped' => $result['skipped'],
                     'errors' => $result['errors'],
+                    'warnings' => $result['warnings'],
                     'total_rows' => count($rows),
                 ],
             ]);

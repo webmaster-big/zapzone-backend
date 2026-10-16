@@ -26,7 +26,10 @@ class BookingRepricer
             return null;
         }
 
-        $baseline = $this->expectationFor($booking, []);
+        $baseline = $this->expectationFor($booking, $booking->package_id ? [] : [
+            'package_id' => $intent['package_id'] ?? null,
+            'additional_attractions' => $this->storedAttractions($booking),
+        ]);
         if (! $baseline) {
             return null;
         }
