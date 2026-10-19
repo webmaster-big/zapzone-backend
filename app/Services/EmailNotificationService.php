@@ -1158,8 +1158,8 @@ HTML;
         if ($type === 'booking' && $entity->package && $entity->package->invitation_file) {
             $invitationFile = $entity->package->invitation_file;
             if (!str_starts_with($invitationFile, 'data:') && !str_starts_with($invitationFile, 'http')) {
-                $storagePath = storage_path('app/public/' . $invitationFile);
-                if (file_exists($storagePath)) {
+                $storagePath = \App\Models\Package::storedInvitationPath($invitationFile);
+                if ($storagePath !== null) {
                     $attachments[] = [
                         'data' => base64_encode(file_get_contents($storagePath)),
                         'filename' => 'invitation.' . pathinfo($storagePath, PATHINFO_EXTENSION),

@@ -809,24 +809,32 @@ class BookingController extends Controller
             ], 409);
         }
 
-        if (\App\Support\OnlineBookingGate::packageClosedOnline($validated['package_id'] ?? null)
-            && ! app(\App\Services\AvailabilityBlockGuard::class)->isStaff(
+        if (\App\Support\OnlineBookingGate::packageClosedOnline($validated['package_id'] ?? null)) {
+            $packageRemoved = \App\Support\OnlineBookingGate::packageRemoved($validated['package_id'] ?? null);
+            $staffAtPackage = app(\App\Services\AvailabilityBlockGuard::class)->isStaff(
                 $request,
                 \App\Support\OnlineBookingGate::packageLocationId($validated['package_id'] ?? null) ?? (int) $validated['location_id']
-            )) {
-            if ($earlierAttempt && $checkoutKey && $earlierAttempt->status === 'pending'
-                && $earlierAttempt->payment_method === 'authorize.net'
-                && !$this->bookingWasCharged($earlierAttempt)) {
-                if ($earlierAttempt->created_at && $earlierAttempt->created_at->gt(now()->subMinutes(2))) {
-                    return $this->attemptInProgressResponse();
+            );
+
+            if ($packageRemoved || !$staffAtPackage) {
+                if ($earlierAttempt && $checkoutKey && $earlierAttempt->status === 'pending'
+                    && $earlierAttempt->payment_method === 'authorize.net'
+                    && !$this->bookingWasCharged($earlierAttempt)) {
+                    if ($earlierAttempt->created_at && $earlierAttempt->created_at->gt(now()->subMinutes(2))) {
+                        return $this->attemptInProgressResponse();
+                    }
+
+                    if (!$this->releaseUnlessCharging(
+                        $earlierAttempt,
+                        $packageRemoved ? 'was released because its package was deleted' : 'was released because its package can no longer be booked online',
+                        $staffAtPackage ? $request->user('sanctum')?->id : null
+                    )) {
+                        return $this->attemptInProgressResponse();
+                    }
                 }
 
-                if (!$this->releaseUnlessCharging($earlierAttempt, 'was released because its package can no longer be booked online')) {
-                    return $this->attemptInProgressResponse();
-                }
+                return \App\Support\OnlineBookingGate::packageRefusal($validated['package_id'] ?? null, $sameCheckoutTriedBefore, $staffAtPackage);
             }
-
-            return \App\Support\OnlineBookingGate::packageRefusal($validated['package_id'] ?? null, $sameCheckoutTriedBefore);
         }
 
         if ($earlierAttempt && !$requestCarriesCode && $this->isUnchangedRetryOf($earlierAttempt, $validated, $addOnLines, $attractionLines)) {
@@ -866,7 +874,9 @@ class BookingController extends Controller
                 return $this->attemptInProgressResponse();
             }
 
-            $this->releaseAbandonedAttempt($earlierAttempt, $isStaff ? $request->user('sanctum')?->id : null);
+            if (!$this->releaseUnlessCharging($earlierAttempt, 'was replaced by a new attempt from the same checkout', $isStaff ? $request->user('sanctum')?->id : null, true)) {
+                return $this->attemptInProgressResponse();
+            }
         }
 
         $alreadyBooked = (!$isStaff && !$bookAnother) ? $this->paidBookingAtThisTime($validated) : null;
@@ -1679,7 +1689,7 @@ class BookingController extends Controller
         );
     }
 
-    private function releaseUnlessCharging(Booking $attempt, string $outcome): bool
+    private function releaseUnlessCharging(Booking $attempt, string $outcome, ?int $staffUserId = null, bool $newBookingFollows = false): bool
     {
         try {
             $chargeLock = \Illuminate\Support\Facades\Cache::lock('payable-charge:' . \App\Models\Payment::TYPE_BOOKING . ':' . $attempt->id, 900);
@@ -1687,10 +1697,11 @@ class BookingController extends Controller
         } catch (\Throwable $e) {
             Log::warning('Charge lock unavailable, so the abandoned checkout attempt is left for the cleanup job', [
                 'booking_id' => $attempt->id,
+                'new_booking_follows' => $newBookingFollows,
                 'error' => $e->getMessage(),
             ]);
 
-            return true;
+            return !$newBookingFollows;
         }
 
         if (!$locked) {
@@ -1704,11 +1715,11 @@ class BookingController extends Controller
                 return true;
             }
 
-            if ($current->status !== 'pending' || $this->bookingWasCharged($current)) {
+            if ($current->status !== 'pending' || $current->payment_method !== 'authorize.net' || $this->bookingWasCharged($current)) {
                 return false;
             }
 
-            $this->releaseAbandonedAttempt($current, null, $outcome);
+            $this->releaseAbandonedAttempt($current, $staffUserId, $outcome);
 
             return true;
         } finally {
@@ -2128,8 +2139,8 @@ class BookingController extends Controller
                 'sometimes',
                 'nullable',
                 'exists:packages,id',
-                function ($attribute, $value, $fail) {
-                    if ($value) {
+                function ($attribute, $value, $fail) use ($booking) {
+                    if ($value && (int) $value !== (int) $booking->package_id) {
                         $package = \App\Models\Package::find($value);
                         if ($package && !$package->is_active) {
                             $fail('The selected package is currently not available for booking.');
@@ -2194,6 +2205,16 @@ class BookingController extends Controller
             }
         }
 
+        if (!empty($validated['package_id'])
+            && (int) $validated['package_id'] !== (int) $booking->package_id
+            && \App\Support\OnlineBookingGate::packageRemoved($validated['package_id'])) {
+            return response()->json([
+                'success' => false,
+                'code' => \App\Support\OnlineBookingGate::REMOVED_PACKAGE_CODE,
+                'message' => 'That package was deleted, so this booking cannot be moved onto it. Please choose another package.',
+            ], 422);
+        }
+
         // Resolve the reason BEFORE the transaction. Resolving it afterwards meant a staff caller
         // who omitted it got a 422 with the booking already committed and NOTHING logged - worse
         // than logging without a reason. cancel() and updateLocation() already resolve up front.
@@ -2201,8 +2222,13 @@ class BookingController extends Controller
 
         if (($validated['status'] ?? null) === 'confirmed'
             && array_key_exists('amount_paid', $validated)
-            && in_array($booking->status, ['checked-in', 'completed'], true)) {
+            && in_array($booking->status, ['checked-in', 'completed', 'cancelled'], true)) {
             unset($validated['status']);
+        }
+
+        if ($booking->status === 'cancelled' && isset($validated['status']) && $validated['status'] !== 'cancelled'
+            && $this->giftCardWasReversedFor(\App\Models\Payment::TYPE_BOOKING, (int) $booking->id)) {
+            return response()->json(['success' => false, 'message' => 'This record was cancelled and its gift card refunded. It cannot be reactivated - create a new one so the gift card is redeemed again.'], 422);
         }
 
         $slotFieldsTouched = array_intersect_key($validated, array_flip(['participants', 'booking_date', 'booking_time', 'package_id'])) !== []
@@ -2298,6 +2324,15 @@ class BookingController extends Controller
             || (float) $targetDuration !== (float) $booking->duration
             || (string) $targetDurationUnit !== (string) $booking->duration_unit;
 
+        $leavesTheSpace = fn (?string $status) => in_array((string) $status, ['cancelled', 'completed'], true);
+        $reoccupying = $leavesTheSpace($booking->status) && ! $leavesTheSpace($targetStatus);
+        $slotStatusChanges = isset($validated['status']) && (string) $validated['status'] !== (string) $booking->status;
+        $slotStatusForTarget = match ((string) $targetStatus) {
+            'cancelled' => 'cancelled',
+            'completed' => 'completed',
+            default => 'booked',
+        };
+
         $currentAttractionIds = $booking->attractions()->pluck('attractions.id')->map(fn ($id) => (int) $id)->all();
         $targetAttractionIds = $attractionLines === null ? $currentAttractionIds : array_column($attractionLines, 'id');
         $attractionsAdded = array_diff($targetAttractionIds, $currentAttractionIds) !== [];
@@ -2352,7 +2387,7 @@ class BookingController extends Controller
         $overlapOverride = [];
         $overlapLetThrough = false;
 
-        if ($slotMoved && $targetRoomId && $targetStatus !== 'cancelled') {
+        if (($slotMoved || $reoccupying) && $targetRoomId && $targetStatus !== 'cancelled') {
             $slotConflicts = [];
             $ownSlotId = PackageTimeSlot::where('booking_id', $booking->id)->value('id');
 
@@ -2540,7 +2575,7 @@ class BookingController extends Controller
         $roomBefore = $booking->room_id;
 
         try {
-            DB::transaction(function () use (&$validated, $booking, $slotFieldsTouched, $targetPackageId, $targetStatus, $rules, $isStaff, $addOnLines, $attractionLines, $overlapLetThrough, $roomBefore, $slotMoved) {
+            DB::transaction(function () use (&$validated, $booking, $slotFieldsTouched, $targetPackageId, $targetStatus, $rules, $isStaff, $addOnLines, $attractionLines, $overlapLetThrough, $roomBefore, $slotMoved, $slotStatusChanges, $slotStatusForTarget) {
                 if ($slotFieldsTouched && $targetPackageId && $targetStatus !== 'cancelled') {
                     $capPackage = \App\Models\Package::where('id', $targetPackageId)->lockForUpdate()->first();
 
@@ -2597,7 +2632,9 @@ class BookingController extends Controller
                     $booking->touch();
                 }
 
-                if (isset($validated['room_id']) || isset($validated['booking_date']) || isset($validated['booking_time']) || isset($validated['duration']) || isset($validated['duration_unit']) || ! empty($validated['package_id'])) {
+                if (array_key_exists('room_id', $validated) && empty($validated['room_id'])) {
+                    PackageTimeSlot::where('booking_id', $booking->id)->delete();
+                } elseif (isset($validated['room_id']) || isset($validated['booking_date']) || isset($validated['booking_time']) || isset($validated['duration']) || isset($validated['duration_unit']) || ! empty($validated['package_id'])) {
                     $timeSlot = PackageTimeSlot::where('booking_id', $booking->id)->first();
 
                     if ($timeSlot) {
@@ -2621,12 +2658,16 @@ class BookingController extends Controller
                             'time_slot_start' => Carbon::parse($booking->booking_time)->format('H:i'),
                             'duration' => $booking->duration,
                             'duration_unit' => $booking->duration_unit,
-                            'status' => $booking->status === 'cancelled' ? 'cancelled' : 'booked',
+                            'status' => $slotStatusForTarget,
                             'notes' => $validated['notes'] ?? null,
                         ])->save();
                     } elseif (! empty($validated['room_id']) && (int) $validated['room_id'] !== (int) $roomBefore) {
                         throw new \RuntimeException('Choose a package for this booking before giving it a space.');
                     }
+                }
+
+                if ($slotStatusChanges) {
+                    PackageTimeSlot::where('booking_id', $booking->id)->update(['status' => $slotStatusForTarget]);
                 }
             });
         } catch (\App\Exceptions\SlotTakenException $e) {

@@ -2000,6 +2000,94 @@ class CheckoutChargeSafetyTest extends TestCase
         );
     }
 
+    public function test_a_changed_retry_waits_while_the_earlier_attempts_charge_is_running(): void
+    {
+        $firstId = $this->createBooking($this->roomOne, ['checkout_key' => 'attempt-locked']);
+        $this->travel(3)->minutes();
+
+        $charging = $this->chargeLock($firstId);
+        $this->assertTrue($charging->get());
+
+        $this->postJson('/api/bookings', $this->bookingPayload($this->roomOne, ['checkout_key' => 'attempt-locked', 'participants' => 3]))
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'ATTEMPT_IN_PROGRESS');
+        $this->assertNotNull(Booking::find($firstId), 'a booking whose charge is still running is kept');
+        $this->assertSame(1, Booking::count(), 'nothing new is booked while the first charge runs');
+
+        $charging->release();
+
+        $this->postJson('/api/bookings', $this->bookingPayload($this->roomOne, ['checkout_key' => 'attempt-locked', 'participants' => 3]))
+            ->assertStatus(201);
+        $this->assertNull(Booking::withTrashed()->find($firstId), 'once the charge has finished, the abandoned attempt is released as before');
+    }
+
+    public function test_a_changed_retry_waits_when_the_charge_lock_cannot_be_checked(): void
+    {
+        Cache::extend('charge-locks-down', fn () => Cache::repository(new class extends \Illuminate\Cache\ArrayStore {
+            public function lock($name, $seconds = 0, $owner = null)
+            {
+                if (str_starts_with($name, 'payable-charge:')) {
+                    throw new \RuntimeException('lock store down');
+                }
+
+                return parent::lock($name, $seconds, $owner);
+            }
+        }));
+        config(['cache.stores.charge-locks-down' => ['driver' => 'charge-locks-down'], 'cache.default' => 'charge-locks-down']);
+
+        $firstId = $this->createBooking($this->roomOne, ['checkout_key' => 'attempt-lockless']);
+        $this->travel(3)->minutes();
+
+        $this->postJson('/api/bookings', $this->bookingPayload($this->roomOne, ['checkout_key' => 'attempt-lockless', 'participants' => 3]))
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'ATTEMPT_IN_PROGRESS');
+        $this->assertNotNull(Booking::find($firstId), 'without the lock nothing is released');
+        $this->assertSame(1, Booking::count(), 'and nothing new is booked');
+    }
+
+    public function test_a_staff_members_changed_retry_records_who_released_the_earlier_attempt(): void
+    {
+        $staff = $this->staff();
+        $headers = ['Authorization' => 'Bearer ' . $staff->createToken('desk')->plainTextToken];
+        $firstId = (int) $this->postJson('/api/bookings', $this->bookingPayload($this->roomOne, ['checkout_key' => 'desk-card-attempt']), $headers)
+            ->assertStatus(201)
+            ->json('data.id');
+        $this->travel(3)->minutes();
+
+        $this->postJson('/api/bookings', $this->bookingPayload($this->roomOne, ['checkout_key' => 'desk-card-attempt', 'participants' => 3]), $headers)
+            ->assertStatus(201);
+
+        $this->assertNull(Booking::withTrashed()->find($firstId));
+        $this->assertSame($staff->id, (int) \App\Models\ActivityLog::where('action', 'Booking Force Deleted (Abandoned Checkout)')->where('entity_id', $firstId)->value('user_id'));
+    }
+
+    public function test_a_changed_retry_keeps_an_earlier_attempt_that_stopped_being_a_card_checkout_while_it_waited(): void
+    {
+        Cache::extend('switch-while-locking', fn () => Cache::repository(new class extends \Illuminate\Cache\ArrayStore {
+            public ?int $switchBooking = null;
+
+            public function lock($name, $seconds = 0, $owner = null)
+            {
+                if ($this->switchBooking !== null && $name === 'payable-charge:' . Payment::TYPE_BOOKING . ':' . $this->switchBooking) {
+                    Booking::whereKey($this->switchBooking)->update(['payment_method' => 'paylater']);
+                }
+
+                return parent::lock($name, $seconds, $owner);
+            }
+        }));
+        config(['cache.stores.switch-while-locking' => ['driver' => 'switch-while-locking'], 'cache.default' => 'switch-while-locking']);
+
+        $firstId = $this->createBooking($this->roomOne, ['checkout_key' => 'attempt-switched']);
+        $this->travel(3)->minutes();
+        Cache::store('switch-while-locking')->getStore()->switchBooking = $firstId;
+
+        $this->postJson('/api/bookings', $this->bookingPayload($this->roomOne, ['checkout_key' => 'attempt-switched', 'participants' => 3]))
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'ATTEMPT_IN_PROGRESS');
+        $this->assertSame('paylater', Booking::findOrFail($firstId)->payment_method, 'a booking switched to pay later is kept');
+        $this->assertSame(1, Booking::count(), 'and nothing new is booked on top of it in that moment');
+    }
+
     public function test_a_pay_later_booking_is_never_released_by_a_changed_retry(): void
     {
         $staff = $this->staff();

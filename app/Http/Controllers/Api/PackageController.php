@@ -10,6 +10,7 @@ use App\Http\Traits\ScopesByAuthUser;
 use App\Models\ActivityLog;
 use App\Models\Location;
 use App\Models\Package;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use App\Models\PackageAddOn;
 use App\Models\PackageAttraction;
@@ -245,6 +246,38 @@ class PackageController extends Controller
         return null;
     }
 
+    private function denyForeignPackage(Request $request, Package $package): ?JsonResponse
+    {
+        $location = $this->scopedLocation($request, $package->location_id);
+
+        return $location instanceof JsonResponse ? $location : null;
+    }
+
+    private function manageablePackageIds(Request $request, array $ids): array
+    {
+        $packages = Package::whereIn('id', $ids)->get(['id', 'location_id']);
+        $allowedLocationIds = $packages->pluck('location_id')
+            ->unique()
+            ->reject(fn ($locationId) => $this->scopedLocation($request, $locationId) instanceof JsonResponse)
+            ->map(fn ($locationId) => (int) $locationId)
+            ->all();
+
+        return $packages
+            ->filter(fn (Package $package) => in_array((int) $package->location_id, $allowedLocationIds, true))
+            ->pluck('id')
+            ->map(fn ($id) => (int) $id)
+            ->values()
+            ->all();
+    }
+
+    private function foreignPackagesRefusal(): JsonResponse
+    {
+        return response()->json([
+            'success' => false,
+            'message' => 'None of these packages can be changed. They may have been deleted, or belong to a location you do not manage.',
+        ], 403);
+    }
+
     private function guardOnlineAvailabilityChange(Request $request, array $validated, ?Package $package): ?JsonResponse
     {
         if (!array_key_exists('available_online', $validated)) {
@@ -322,7 +355,7 @@ class PackageController extends Controller
 
         if (isset($validated['invitation_file']) && !empty($validated['invitation_file'])) {
             try {
-                $validated['invitation_file'] = $this->handleFileUpload($validated['invitation_file'], 'invitations');
+                $validated['invitation_file'] = $this->storeInvitationFile($validated['invitation_file'], null);
             } catch (\Exception $e) {
                 Log::error('Failed to upload invitation file during package creation', [
                     'error' => $e->getMessage()
@@ -421,7 +454,13 @@ class PackageController extends Controller
             return $denied;
         }
 
+        $previousImages = $package->image;
+        $previousInvitation = $package->invitation_file;
+        $storedImages = [];
+
         if (array_key_exists('image', $validated)) {
+            $incomingImages = array_filter((array) ($validated['image'] ?? []), 'is_string');
+
             try {
                 $newImages = $this->normalizeImages($validated['image']);
             } catch (\Throwable $e) {
@@ -433,24 +472,13 @@ class PackageController extends Controller
                 ], 422);
             }
 
-            $this->deleteReplacedImages($package->image, $newImages, (int) $package->id);
+            $storedImages = array_values(array_diff($newImages ?? [], $incomingImages));
             $validated['image'] = $newImages;
         }
 
         if (isset($validated['invitation_file']) && !empty($validated['invitation_file'])) {
-            if ($package->invitation_file &&
-                !filter_var($package->invitation_file, FILTER_VALIDATE_URL) &&
-                strpos($package->invitation_file, 'data:') !== 0) {
-
-                $oldFilePath = storage_path('app/public/' . $package->invitation_file);
-                if (file_exists($oldFilePath)) {
-                    unlink($oldFilePath);
-                    Log::info('Deleted old invitation file', ['path' => $oldFilePath]);
-                }
-            }
-
             try {
-                $validated['invitation_file'] = $this->handleFileUpload($validated['invitation_file'], 'invitations');
+                $validated['invitation_file'] = $this->storeInvitationFile($validated['invitation_file'], $previousInvitation);
             } catch (\Exception $e) {
                 Log::error('Failed to upload invitation file during package update', [
                     'package_id' => $package->id,
@@ -460,7 +488,23 @@ class PackageController extends Controller
             }
         }
 
-        $package->update($validated);
+        try {
+            $package->update($validated);
+        } catch (\Throwable $e) {
+            foreach ($storedImages as $storedImage) {
+                $this->deleteImageIfUnused($storedImage, 0);
+            }
+
+            throw $e;
+        }
+
+        if (array_key_exists('image', $validated)) {
+            $this->deleteReplacedImages($previousImages, $validated['image'], (int) $package->id);
+        }
+
+        if (array_key_exists('invitation_file', $validated) && $previousInvitation && $previousInvitation !== $validated['invitation_file']) {
+            $this->deleteInvitationIfUnused($previousInvitation, (int) $package->id);
+        }
 
         if ($package->isAvailableOnline() !== $wasAvailableOnline) {
             $this->logOnlineAvailabilityChange($package);
@@ -508,6 +552,10 @@ class PackageController extends Controller
 
     public function destroy(Request $request, Package $package): JsonResponse
     {
+        if ($denied = $this->denyForeignPackage($request, $package)) {
+            return $denied;
+        }
+
         $packageName = $package->name;
         $packageId = $package->id;
         $locationId = $package->location_id;
@@ -545,8 +593,14 @@ class PackageController extends Controller
         ]);
     }
 
-    public function deletePackageAddOns( Package $package): JsonResponse
+    public function deletePackageAddOns(Request $request, $packageId): JsonResponse
     {
+        $package = Package::findOrFail($packageId);
+
+        if ($denied = $this->denyForeignPackage($request, $package)) {
+            return $denied;
+        }
+
         PackageAddOn::where('package_id', $package->id)->delete();
 
         return response()->json([
@@ -559,8 +613,9 @@ class PackageController extends Controller
     {
         $package = Package::withTrashed()->findOrFail($id);
 
-        $package->deleted_at = null;
-        $package->save();
+        if ($denied = $this->denyForeignPackage($request, $package)) {
+            return $denied;
+        }
 
         if (!$package->trashed()) {
             return response()->json([
@@ -605,6 +660,10 @@ class PackageController extends Controller
     public function forceDelete(Request $request, int $id): JsonResponse
     {
         $package = Package::withTrashed()->findOrFail($id);
+
+        if ($denied = $this->denyForeignPackage($request, $package)) {
+            return $denied;
+        }
 
         if (!$package->trashed()) {
             return response()->json([
@@ -724,9 +783,14 @@ class PackageController extends Controller
         ]);
     }
 
-    public function toggleIsActiveStatus($id): JsonResponse
+    public function toggleIsActiveStatus(Request $request, $id): JsonResponse
     {
         $package = Package::findOrFail($id);
+
+        if ($denied = $this->denyForeignPackage($request, $package)) {
+            return $denied;
+        }
+
         $package->is_active = !$package->is_active;
         $package->save();
 
@@ -779,10 +843,18 @@ class PackageController extends Controller
 
     public function attachAttractions(Request $request, Package $package): JsonResponse
     {
+        if ($denied = $this->denyForeignPackage($request, $package)) {
+            return $denied;
+        }
+
         $validated = $request->validate([
             'attraction_ids' => 'required|array',
             'attraction_ids.*' => 'exists:attractions,id',
         ]);
+
+        if ($denied = $this->assertRelationsMatchLocation((int) $package->location_id, $validated)) {
+            return $denied;
+        }
 
         $package->attractions()->attach($validated['attraction_ids']);
 
@@ -794,6 +866,10 @@ class PackageController extends Controller
 
     public function detachAttractions(Request $request, Package $package): JsonResponse
     {
+        if ($denied = $this->denyForeignPackage($request, $package)) {
+            return $denied;
+        }
+
         $validated = $request->validate([
             'attraction_ids' => 'required|array',
             'attraction_ids.*' => 'exists:attractions,id',
@@ -809,10 +885,18 @@ class PackageController extends Controller
 
     public function attachAddOns(Request $request, Package $package): JsonResponse
     {
+        if ($denied = $this->denyForeignPackage($request, $package)) {
+            return $denied;
+        }
+
         $validated = $request->validate([
             'addon_ids' => 'required|array',
             'addon_ids.*' => 'exists:add_ons,id',
         ]);
+
+        if ($denied = $this->assertRelationsMatchLocation((int) $package->location_id, $validated)) {
+            return $denied;
+        }
 
         $package->addOns()->attach($validated['addon_ids']);
 
@@ -824,6 +908,10 @@ class PackageController extends Controller
 
     public function detachAddOns(Request $request, Package $package): JsonResponse
     {
+        if ($denied = $this->denyForeignPackage($request, $package)) {
+            return $denied;
+        }
+
         $validated = $request->validate([
             'addon_ids' => 'required|array',
             'addon_ids.*' => 'exists:add_ons,id',
@@ -894,17 +982,24 @@ class PackageController extends Controller
             'packages.*.availability_schedules.*.is_active' => 'nullable|boolean',
         ]);
 
+        foreach ($validated['packages'] as $row) {
+            $location = $this->scopedLocation($request, $row['location_id']);
+            if ($location instanceof JsonResponse) {
+                return $location;
+            }
+        }
+
         $importedPackages = [];
         $errors = [];
         $mayHidePackages = Package::canChangeOnlineAvailability($request->user());
 
         foreach ($validated['packages'] as $index => $packageData) {
+            $storedImages = [];
+
             try {
                 if (array_key_exists('available_online', $packageData) && !$packageData['available_online'] && !$mayHidePackages) {
                     throw new \InvalidArgumentException('This package is backend only. Only a location manager or an administrator can import a backend-only package.');
                 }
-
-                $packageData['image'] = $this->normalizeImages($packageData['image'] ?? null);
 
                 $minParticipants = $packageData['min_participants'] ?? null;
                 if ($minParticipants !== null && isset($packageData['max_participants']) && (int) $packageData['max_participants'] < (int) $minParticipants) {
@@ -929,7 +1024,31 @@ class PackageController extends Controller
                     $roomIds = array_filter(array_column($packageData['rooms'], 'id'));
                 }
 
+                if ($denied = $this->assertRelationsMatchLocation((int) $packageData['location_id'], ['attraction_ids' => $attractionIds, 'addon_ids' => $addonIds, 'room_ids' => $roomIds])) {
+                    throw new \InvalidArgumentException($denied->getData(true)['message']);
+                }
+
                 $availabilitySchedules = $packageData['availability_schedules'] ?? [];
+
+                foreach (array_values($availabilitySchedules) as $scheduleNumber => $scheduleData) {
+                    $scheduleType = $scheduleData['availability_type'] ?? null;
+
+                    foreach ((array) ($scheduleData['day_configuration'] ?? []) as $day) {
+                        if (is_string($day) && trim($day) === '') {
+                            continue;
+                        }
+
+                        $validDay = is_string($day) && match ($scheduleType) {
+                            'weekly' => in_array(strtolower($day), \App\Support\CatalogRules::ALL_DAYS, true),
+                            'monthly' => (bool) preg_match('/^(first|second|third|fourth|last)-(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i', $day),
+                            default => true,
+                        };
+
+                        if (!$validDay) {
+                            throw new \InvalidArgumentException('Schedule ' . ($scheduleNumber + 1) . ' has "' . (is_string($day) ? $day : json_encode($day)) . '", which is not a valid day. Use a day name such as monday, or a pattern such as first-monday for a monthly schedule.');
+                        }
+                    }
+                }
 
                 unset(
                     $packageData['attraction_ids'],
@@ -947,83 +1066,97 @@ class PackageController extends Controller
                     unset($packageData['max_guests']);
                 }
 
-                $package = Package::create($packageData);
+                $incomingImages = array_filter((array) ($packageData['image'] ?? []), 'is_string');
+                $packageData['image'] = $this->normalizeImages($packageData['image'] ?? null);
+                $storedImages = array_values(array_diff($packageData['image'] ?? [], $incomingImages));
 
-                if (!$package->isAvailableOnline()) {
-                    $this->logOnlineAvailabilityChange($package);
-                }
+                $package = DB::transaction(function () use ($packageData, $attractionIds, $addonIds, $roomIds, $availabilitySchedules) {
+                    $package = Package::create($packageData);
 
-                if (!empty($attractionIds)) {
-                    foreach ($attractionIds as $attractionId) {
-                        PackageAttraction::create([
-                            'package_id' => $package->id,
-                            'attraction_id' => $attractionId,
-                        ]);
+                    if (!$package->isAvailableOnline()) {
+                        $this->logOnlineAvailabilityChange($package);
                     }
-                }
 
-                if (!empty($addonIds)) {
-                    foreach ($addonIds as $addonId) {
-                        PackageAddOn::create([
-                            'package_id' => $package->id,
-                            'add_on_id' => $addonId,
-                        ]);
-                    }
-                }
-
-                if (!empty($roomIds)) {
-                    foreach ($roomIds as $roomId) {
-                        PackageRoom::create([
-                            'package_id' => $package->id,
-                            'room_id' => $roomId,
-                        ]);
-                    }
-                }
-
-                if (!empty($availabilitySchedules)) {
-                    foreach ($availabilitySchedules as $scheduleData) {
-                        if (empty($scheduleData['availability_type']) ||
-                            empty($scheduleData['time_slot_start']) ||
-                            empty($scheduleData['time_slot_end']) ||
-                            empty($scheduleData['time_slot_interval'])) {
-                            continue;
+                    if (!empty($attractionIds)) {
+                        foreach ($attractionIds as $attractionId) {
+                            PackageAttraction::create([
+                                'package_id' => $package->id,
+                                'attraction_id' => $attractionId,
+                            ]);
                         }
+                    }
 
-                        $scheduleMin = $scheduleData['min_participants'] ?? null;
+                    if (!empty($addonIds)) {
+                        foreach ($addonIds as $addonId) {
+                            PackageAddOn::create([
+                                'package_id' => $package->id,
+                                'add_on_id' => $addonId,
+                            ]);
+                        }
+                    }
 
-                        if ($scheduleMin !== null) {
-                            $ceiling = $package->max_participants !== null ? (int) $package->max_participants : null;
-                            $cap = $package->effectiveTicketCap();
-                            $limit = $ceiling !== null && $cap !== null ? min($ceiling, $cap) : ($ceiling ?? $cap);
+                    if (!empty($roomIds)) {
+                        foreach ($roomIds as $roomId) {
+                            PackageRoom::create([
+                                'package_id' => $package->id,
+                                'room_id' => $roomId,
+                            ]);
+                        }
+                    }
 
-                            if ($limit !== null && (int) $scheduleMin > $limit) {
-                                $scheduleMin = null;
-                                Log::warning('Imported schedule minimum exceeds slot capacity and was ignored', [
-                                    'package_id' => $package->id,
-                                    'requested_min' => (int) ($scheduleData['min_participants'] ?? 0),
-                                    'limit' => $limit,
-                                ]);
+                    if (!empty($availabilitySchedules)) {
+                        foreach ($availabilitySchedules as $scheduleData) {
+                            if (empty($scheduleData['availability_type']) ||
+                                empty($scheduleData['time_slot_start']) ||
+                                empty($scheduleData['time_slot_end']) ||
+                                empty($scheduleData['time_slot_interval'])) {
+                                continue;
                             }
-                        }
 
-                        \App\Models\PackageAvailabilitySchedule::create([
-                            'package_id' => $package->id,
-                            'availability_type' => $scheduleData['availability_type'],
-                            'day_configuration' => $scheduleData['day_configuration'] ?? null,
-                            'time_slot_start' => $scheduleData['time_slot_start'],
-                            'time_slot_end' => $scheduleData['time_slot_end'],
-                            'time_slot_interval' => $scheduleData['time_slot_interval'],
-                            'min_participants' => $scheduleMin,
-                            'priority' => $scheduleData['priority'] ?? 0,
-                            'is_active' => $scheduleData['is_active'] ?? true,
-                        ]);
+                            $scheduleMin = $scheduleData['min_participants'] ?? null;
+
+                            if ($scheduleMin !== null) {
+                                $ceiling = $package->max_participants !== null ? (int) $package->max_participants : null;
+                                $cap = $package->effectiveTicketCap();
+                                $limit = $ceiling !== null && $cap !== null ? min($ceiling, $cap) : ($ceiling ?? $cap);
+
+                                if ($limit !== null && (int) $scheduleMin > $limit) {
+                                    $scheduleMin = null;
+                                    Log::warning('Imported schedule minimum exceeds slot capacity and was ignored', [
+                                        'package_id' => $package->id,
+                                        'requested_min' => (int) ($scheduleData['min_participants'] ?? 0),
+                                        'limit' => $limit,
+                                    ]);
+                                }
+                            }
+
+                            \App\Models\PackageAvailabilitySchedule::create([
+                                'package_id' => $package->id,
+                                'availability_type' => $scheduleData['availability_type'],
+                                'day_configuration' => $scheduleData['day_configuration'] ?? null,
+                                'time_slot_start' => $scheduleData['time_slot_start'],
+                                'time_slot_end' => $scheduleData['time_slot_end'],
+                                'time_slot_interval' => $scheduleData['time_slot_interval'],
+                                'min_participants' => $scheduleMin,
+                                'priority' => $scheduleData['priority'] ?? 0,
+                                'is_active' => $scheduleData['is_active'] ?? true,
+                            ]);
+                        }
                     }
-                }
+
+                    return $package;
+                });
+
+                $storedImages = [];
 
                 $package->load(['location', 'attractions', 'addOns', 'rooms', 'availabilitySchedules']);
                 $importedPackages[] = new PackageResource($package);
 
             } catch (\Exception $e) {
+                foreach ($storedImages as $storedImage) {
+                    $this->deleteImageIfUnused($storedImage, 0);
+                }
+
                 Log::error('Failed to import package', [
                     'index' => $index,
                     'name' => $packageData['name'] ?? 'Unknown',
@@ -1037,6 +1170,10 @@ class PackageController extends Controller
                     'error' => $e->getMessage(),
                 ];
             }
+        }
+
+        if ($importedPackages !== []) {
+            \App\Support\CacheGroups::flush([\App\Support\CacheGroups::PACKAGES, \App\Support\CacheGroups::LOCATIONS, \App\Support\CacheGroups::DASHBOARDS]);
         }
 
         $response = [
@@ -1056,15 +1193,58 @@ class PackageController extends Controller
         return response()->json($response, count($errors) > 0 ? 207 : 201);
     }
 
+    private function storeInvitationFile(mixed $value, ?string $current): ?string
+    {
+        if (!is_string($value) || trim($value) === '') {
+            return null;
+        }
+
+        if ($current !== null && $value === $current) {
+            return $current;
+        }
+
+        if (!str_starts_with($value, 'data:')) {
+            throw new \InvalidArgumentException('The invitation must be an uploaded file.');
+        }
+
+        return $this->handleFileUpload($value, 'invitations');
+    }
+
+    private function deleteInvitationIfUnused(string $path, int $packageId): void
+    {
+        $absolute = Package::storedInvitationPath($path);
+
+        if ($absolute === null || Package::withTrashed()->where('id', '!=', $packageId)->where('invitation_file', $path)->exists()) {
+            return;
+        }
+
+        unlink($absolute);
+        Log::info('Deleted old invitation file', ['path' => $absolute]);
+    }
+
     private function normalizeImages(mixed $images): ?array
     {
         $list = is_array($images) ? $images : [$images];
         $paths = [];
+        $stored = [];
 
-        foreach ($list as $image) {
-            if (is_string($image) && trim($image) !== '') {
-                $paths[] = $this->handleImageUpload($image);
+        try {
+            foreach ($list as $image) {
+                if (is_string($image) && trim($image) !== '') {
+                    $path = $this->handleImageUpload($image);
+                    $paths[] = $path;
+
+                    if (DataUriImage::isDataUri($image)) {
+                        $stored[] = $path;
+                    }
+                }
             }
+        } catch (\Throwable $e) {
+            foreach ($stored as $path) {
+                $this->deleteImageIfUnused($path, 0);
+            }
+
+            throw $e;
         }
 
         return $paths === [] ? null : $paths;
@@ -1222,6 +1402,16 @@ class PackageController extends Controller
             'room_id' => 'required|exists:rooms,id',
         ]);
 
+        $package = Package::findOrFail($validated['package_id']);
+
+        if ($denied = $this->denyForeignPackage($request, $package)) {
+            return $denied;
+        }
+
+        if ($denied = $this->assertRelationsMatchLocation((int) $package->location_id, ['room_ids' => [$validated['room_id']]])) {
+            return $denied;
+        }
+
         $packageRoom = PackageRoom::create($validated);
 
         return response()->json([
@@ -1250,6 +1440,10 @@ class PackageController extends Controller
 
     public function storeAvailabilitySchedule(Request $request, Package $package): JsonResponse
     {
+        if ($denied = $this->denyForeignPackage($request, $package)) {
+            return $denied;
+        }
+
         Log::info('Creating new availability schedule', [
             'package_id' => $package->id,
             'package_name' => $package->name,
@@ -1346,6 +1540,10 @@ class PackageController extends Controller
 
     public function updateAvailabilitySchedules(\App\Http\Requests\StorePackageAvailabilityScheduleRequest $request, Package $package): JsonResponse
     {
+        if ($denied = $this->denyForeignPackage($request, $package)) {
+            return $denied;
+        }
+
         Log::info('Bulk updating availability schedules', [
             'package_id' => $package->id,
             'package_name' => $package->name,
@@ -1367,21 +1565,27 @@ class PackageController extends Controller
             'existing_count' => $existingSchedulesCount,
         ]);
 
-        $package->availabilitySchedules()->delete();
+        $createdSchedules = DB::transaction(function () use ($package, $validated) {
+            $package->availabilitySchedules()->delete();
 
-        $createdSchedules = [];
-        foreach ($validated['schedules'] as $index => $scheduleData) {
-            $scheduleData['package_id'] = $package->id;
+            $createdSchedules = [];
+            foreach ($validated['schedules'] as $index => $scheduleData) {
+                $scheduleData['package_id'] = $package->id;
 
-            Log::info('Creating schedule', [
-                'index' => $index,
-                'package_id' => $package->id,
-                'availability_type' => $scheduleData['availability_type'],
-                'day_configuration' => $scheduleData['day_configuration'] ?? null,
-            ]);
+                Log::info('Creating schedule', [
+                    'index' => $index,
+                    'package_id' => $package->id,
+                    'availability_type' => $scheduleData['availability_type'],
+                    'day_configuration' => $scheduleData['day_configuration'] ?? null,
+                ]);
 
-            $createdSchedules[] = \App\Models\PackageAvailabilitySchedule::create($scheduleData);
-        }
+                $createdSchedules[] = \App\Models\PackageAvailabilitySchedule::create($scheduleData);
+            }
+
+            return $createdSchedules;
+        });
+
+        \App\Support\CacheGroups::flush([\App\Support\CacheGroups::PACKAGES]);
 
         Log::info('All schedules created successfully', [
             'package_id' => $package->id,
@@ -1425,8 +1629,12 @@ class PackageController extends Controller
         ]);
     }
 
-    public function deleteAvailabilitySchedule(Package $package, int $scheduleId): JsonResponse
+    public function deleteAvailabilitySchedule(Request $request, Package $package, int $scheduleId): JsonResponse
     {
+        if ($denied = $this->denyForeignPackage($request, $package)) {
+            return $denied;
+        }
+
         Log::info('Deleting availability schedule', [
             'package_id' => $package->id,
             'package_name' => $package->name,
@@ -1491,11 +1699,15 @@ class PackageController extends Controller
         $validated = $request->validate([
             'package_ids' => 'required|array|min:1',
             'package_ids.*' => 'required|integer|exists:packages,id',
-            'min_booking_notice_hours' => 'required|integer|min:0|max:8760', // max 1 year in hours
+            'min_booking_notice_hours' => 'present|nullable|integer|min:0|max:8760', // max 1 year in hours
         ]);
 
-        $packageIds = $validated['package_ids'];
+        $packageIds = $this->manageablePackageIds($request, $validated['package_ids']);
         $minBookingNoticeHours = $validated['min_booking_notice_hours'];
+
+        if ($packageIds === []) {
+            return $this->foreignPackagesRefusal();
+        }
 
         $tooShort = Package::whereIn('id', $packageIds)
             ->whereNotNull('booking_window_days')
@@ -1519,13 +1731,17 @@ class PackageController extends Controller
         $updatedCount = Package::whereIn('id', $packageIds)
             ->update(['min_booking_notice_hours' => $minBookingNoticeHours]);
 
+        \App\Support\CacheGroups::flush([\App\Support\CacheGroups::PACKAGES, \App\Support\CacheGroups::LOCATIONS]);
+
         $packageNames = Package::whereIn('id', $packageIds)->pluck('name')->toArray();
 
         $currentUser = auth()->user();
         ActivityLog::log(
             action: 'Bulk Package Min Booking Notice Updated',
             category: 'update',
-            description: "Updated min_booking_notice_hours to {$minBookingNoticeHours} hours for {$updatedCount} packages",
+            description: $minBookingNoticeHours === null
+                ? "Removed the minimum booking notice for {$updatedCount} packages"
+                : "Updated min_booking_notice_hours to {$minBookingNoticeHours} hours for {$updatedCount} packages",
             userId: auth()->id(),
             locationId: null,
             entityType: 'package',
@@ -1547,7 +1763,9 @@ class PackageController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => "{$updatedCount} package(s) updated successfully with minimum booking notice of {$minBookingNoticeHours} hours",
+            'message' => $minBookingNoticeHours === null
+                ? "{$updatedCount} package(s) now take last-minute bookings with no minimum notice"
+                : "{$updatedCount} package(s) updated successfully with minimum booking notice of {$minBookingNoticeHours} hours",
             'data' => [
                 'updated_count' => $updatedCount,
                 'min_booking_notice_hours' => $minBookingNoticeHours,
@@ -1564,10 +1782,22 @@ class PackageController extends Controller
             'items.*.display_order' => 'required|integer|min:0',
         ]);
 
+        $manageable = $this->manageablePackageIds($request, array_column($validated['items'], 'id'));
+
+        if ($manageable === []) {
+            return $this->foreignPackagesRefusal();
+        }
+
         foreach ($validated['items'] as $item) {
+            if (!in_array((int) $item['id'], $manageable, true)) {
+                continue;
+            }
+
             Package::where('id', $item['id'])
                 ->update(['display_order' => $item['display_order']]);
         }
+
+        \App\Support\CacheGroups::flush([\App\Support\CacheGroups::PACKAGES, \App\Support\CacheGroups::LOCATIONS]);
 
         return response()->json([
             'success' => true,

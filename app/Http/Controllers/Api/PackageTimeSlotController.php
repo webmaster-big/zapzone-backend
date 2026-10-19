@@ -279,8 +279,7 @@ class PackageTimeSlotController extends Controller
         ]);
 
         $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
-        $slotLocationId = (int) (Package::query()->whereKey($packageTimeSlot->package_id)->value('location_id')
-            ?? \App\Models\Room::query()->whereKey($packageTimeSlot->room_id)->value('location_id'));
+        $slotLocationId = $this->slotLocationId($packageTimeSlot);
 
         if (! in_array($slotLocationId, $this->staffLocationIds($request), true)) {
             return response()->json([
@@ -408,8 +407,24 @@ class PackageTimeSlotController extends Controller
         ]);
     }
 
-    public function destroy(PackageTimeSlot $packageTimeSlot): JsonResponse
+    private function slotLocationId(PackageTimeSlot $packageTimeSlot): int
     {
+        return (int) (\App\Models\Booking::withTrashed()->whereKey($packageTimeSlot->booking_id)->value('location_id')
+            ?? \App\Models\Room::query()->whereKey($packageTimeSlot->room_id)->value('location_id')
+            ?? Package::query()->whereKey($packageTimeSlot->package_id)->value('location_id'));
+    }
+
+    public function destroy(Request $request, PackageTimeSlot $packageTimeSlot): JsonResponse
+    {
+        $slotLocationId = $this->slotLocationId($packageTimeSlot);
+
+        if (! in_array($slotLocationId, $this->staffLocationIds($request), true)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Forbidden: that time slot belongs to another location',
+            ], 403);
+        }
+
         $timeSlotId = $packageTimeSlot->id;
         $packageId = $packageTimeSlot->package_id;
         $roomId = $packageTimeSlot->room_id;
@@ -422,7 +437,7 @@ class PackageTimeSlotController extends Controller
             category: 'delete',
             description: "Package time slot was deleted",
             userId: auth()->id(),
-            locationId: null,
+            locationId: $slotLocationId ?: null,
             entityType: 'package_time_slot',
             entityId: $timeSlotId,
             metadata: [

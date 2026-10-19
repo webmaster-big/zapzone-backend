@@ -446,6 +446,114 @@ class BackendOnlyPackageTest extends TestCase
         $this->assertSame($before, DB::table('bookings')->count());
     }
 
+    public function test_nobody_can_book_a_deleted_package_and_staff_are_told_why(): void
+    {
+        $this->online->delete();
+        $before = DB::table('bookings')->count();
+
+        foreach (['attendant' => '12:00', 'location_manager' => '14:00', 'company_admin' => '16:00'] as $role => $time) {
+            $this->as($this->tokenFor($this->staff($role, $this->brighton)))
+                ->postJson('/api/bookings', $this->bookingPayload($this->online, $time))
+                ->assertStatus(422)
+                ->assertJsonPath('code', OnlineBookingGate::REMOVED_PACKAGE_CODE)
+                ->assertJsonPath('message', 'This package was deleted, so it can no longer be booked. Nothing new was booked or charged. Please choose another package.');
+        }
+
+        $this->assertRefusedAsRemoved($this->as(null)->postJson('/api/bookings', $this->bookingPayload($this->online)));
+        $this->assertSame($before, DB::table('bookings')->count());
+    }
+
+    public function test_a_staff_card_attempt_on_a_since_deleted_package_is_released_with_who_and_why(): void
+    {
+        $this->travelTo(now()->setTime(12, 0));
+        $staff = $this->staff('location_manager', $this->brighton);
+        $token = $this->tokenFor($staff);
+        $payload = $this->bookingPayload($this->online, '13:00') + ['checkout_key' => 'desk-deleted-key', 'payment_method' => 'authorize.net'];
+
+        $attemptId = $this->as($token)->postJson('/api/bookings', $payload)->assertSuccessful()->json('data.id');
+        $reference = Booking::findOrFail($attemptId)->reference_number;
+        $this->online->delete();
+        $this->travel(3)->minutes();
+
+        $this->as($token)->postJson('/api/bookings', $payload)
+            ->assertStatus(422)
+            ->assertJsonPath('code', OnlineBookingGate::REMOVED_PACKAGE_CODE)
+            ->assertJsonPath('previous_attempt', true);
+
+        $released = DB::table('activity_logs')->where('action', 'Booking Force Deleted (Abandoned Checkout)')->where('entity_id', $attemptId)->first();
+        $this->assertNull(Booking::withTrashed()->find($attemptId));
+        $this->assertSame("Unpaid checkout attempt {$reference} was released because its package was deleted", $released->description);
+        $this->assertSame($staff->id, (int) $released->user_id);
+    }
+
+    public function test_a_booking_on_a_switched_off_package_can_still_be_edited(): void
+    {
+        $glow = $this->makePackage($this->waterford, 'Waterford Glow', true);
+        $this->as(null)->postJson('/api/bookings', $this->bookingPayload($glow, '11:00'))->assertSuccessful();
+        $booking = Booking::where('package_id', $glow->id)->firstOrFail();
+        $retired = $this->makePackage($this->waterford, 'Waterford Retired', true);
+        $glow->update(['is_active' => false]);
+        $retired->update(['is_active' => false]);
+        $token = $this->tokenFor($this->staff('location_manager'));
+
+        $this->as($token)
+            ->putJson("/api/bookings/{$booking->id}", [
+                'package_id' => $glow->id,
+                'notes' => 'Bring the banner',
+                'change_reason' => 'Guest called ahead',
+            ])
+            ->assertOk();
+        $this->assertSame('Bring the banner', $booking->fresh()->notes);
+
+        $this->as($token)
+            ->putJson("/api/bookings/{$booking->id}", [
+                'package_id' => $retired->id,
+                'change_reason' => 'Guest asked for the retired party',
+            ])
+            ->assertStatus(422)
+            ->assertJsonPath('errors.package_id.0', 'The selected package is currently not available for booking.');
+        $this->assertSame($glow->id, (int) $booking->fresh()->package_id);
+    }
+
+    public function test_a_booking_whose_own_package_was_deleted_can_still_be_saved(): void
+    {
+        $farewell = $this->makePackage($this->waterford, 'Waterford Farewell', true);
+        $this->as(null)->postJson('/api/bookings', $this->bookingPayload($farewell, '11:00'))->assertSuccessful();
+        $booking = Booking::where('package_id', $farewell->id)->firstOrFail();
+        $farewell->delete();
+
+        $this->as($this->tokenFor($this->staff('location_manager')))
+            ->putJson("/api/bookings/{$booking->id}", [
+                'package_id' => $farewell->id,
+                'notes' => 'Last party on the old package',
+                'change_reason' => 'Guest called ahead',
+            ])
+            ->assertOk();
+
+        $this->assertSame('Last party on the old package', $booking->fresh()->notes);
+        $this->assertSame($farewell->id, (int) $booking->fresh()->package_id);
+    }
+
+    public function test_a_booking_cannot_be_moved_onto_a_deleted_package(): void
+    {
+        $glow = $this->makePackage($this->waterford, 'Waterford Glow', true);
+        $this->as(null)->postJson('/api/bookings', $this->bookingPayload($glow, '11:00'))->assertSuccessful();
+        $booking = Booking::where('package_id', $glow->id)->firstOrFail();
+
+        $gone = $this->makePackage($this->waterford, 'Waterford Gone', true);
+        $gone->delete();
+
+        $this->as($this->tokenFor($this->staff('location_manager')))
+            ->putJson("/api/bookings/{$booking->id}", [
+                'package_id' => $gone->id,
+                'change_reason' => 'Guest asked for the old party',
+            ])
+            ->assertStatus(422)
+            ->assertJsonPath('code', OnlineBookingGate::REMOVED_PACKAGE_CODE);
+
+        $this->assertSame($glow->id, (int) $booking->fresh()->package_id);
+    }
+
     public function test_the_package_form_rejects_a_blank_setting_instead_of_crashing(): void
     {
         $token = $this->tokenFor($this->staff('location_manager'));

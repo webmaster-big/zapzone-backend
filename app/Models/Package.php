@@ -15,6 +15,24 @@ class Package extends Model
 {
     use HasFactory, SoftDeletes;
 
+    public static function storedInvitationPath(mixed $path): ?string
+    {
+        if (!is_string($path)
+            || !str_starts_with($path, 'invitations/')
+            || str_contains($path, '..')
+            || str_contains($path, "\0")
+            || str_contains($path, '\\')) {
+            return null;
+        }
+
+        $root = realpath(storage_path('app/public/invitations'));
+        $absolute = realpath(storage_path('app/public/' . $path));
+
+        return $root !== false && $absolute !== false && str_starts_with($absolute, $root . DIRECTORY_SEPARATOR) && is_file($absolute)
+            ? $absolute
+            : null;
+    }
+
     protected $fillable = [
         'location_id',
         'name',

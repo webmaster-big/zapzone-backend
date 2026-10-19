@@ -53,17 +53,25 @@ class OnlineBookingGate
         return $locationId !== null ? (int) $locationId : null;
     }
 
-    public static function packageRefusal(mixed $packageId = null, bool $previousAttempt = false): JsonResponse
+    public static function packageRemoved(mixed $packageId): bool
     {
         $id = (int) $packageId;
-        $removed = $id > 0 && !Package::whereKey($id)->exists();
+
+        return $id > 0 && !Package::whereKey($id)->exists();
+    }
+
+    public static function packageRefusal(mixed $packageId = null, bool $previousAttempt = false, bool $staff = false): JsonResponse
+    {
+        $removed = self::packageRemoved($packageId);
 
         return response()->json([
             'success' => false,
             'code' => $removed ? self::REMOVED_PACKAGE_CODE : self::PACKAGE_CODE,
-            'message' => $removed
-                ? 'This package is no longer available. Please choose another package.'
-                : 'This package is not available for online booking. Please call the venue to book it.',
+            'message' => match (true) {
+                $removed && $staff => 'This package was deleted, so it can no longer be booked. Nothing new was booked or charged. Please choose another package.',
+                $removed => 'This package is no longer available. Please choose another package.',
+                default => 'This package is not available for online booking. Please call the venue to book it.',
+            },
         ] + ($previousAttempt ? ['previous_attempt' => true] : []), 422);
     }
 

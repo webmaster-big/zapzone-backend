@@ -8,7 +8,6 @@ use App\Models\Contact;
 use App\Mail\PartyInvitation;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
-use Illuminate\Support\Facades\Storage;
 
 class InvitationService
 {
@@ -361,28 +360,13 @@ HTML;
                     'data' => $data,
                 ];
             }
-            elseif (str_starts_with($invitationFile, 'http://') || str_starts_with($invitationFile, 'https://')) {
-                $fileContent = file_get_contents($invitationFile);
-                if ($fileContent !== false) {
-                    $extension = pathinfo(parse_url($invitationFile, PHP_URL_PATH), PATHINFO_EXTENSION) ?: 'pdf';
-                    $mimeType = $this->extensionToMime($extension);
-
-                    $attachments[] = [
-                        'mime_type' => $mimeType,
-                        'filename' => 'party-invitation.' . $extension,
-                        'data' => base64_encode($fileContent),
-                    ];
-                }
-            }
-            elseif (Storage::exists($invitationFile)) {
-                $fileContent = Storage::get($invitationFile);
-                $extension = pathinfo($invitationFile, PATHINFO_EXTENSION) ?: 'pdf';
-                $mimeType = Storage::mimeType($invitationFile) ?: $this->extensionToMime($extension);
+            elseif ($storagePath = \App\Models\Package::storedInvitationPath($invitationFile)) {
+                $extension = pathinfo($storagePath, PATHINFO_EXTENSION) ?: 'pdf';
 
                 $attachments[] = [
-                    'mime_type' => $mimeType,
+                    'mime_type' => mime_content_type($storagePath) ?: $this->extensionToMime($extension),
                     'filename' => 'party-invitation.' . $extension,
-                    'data' => base64_encode($fileContent),
+                    'data' => base64_encode(file_get_contents($storagePath)),
                 ];
             }
         } catch (\Exception $e) {

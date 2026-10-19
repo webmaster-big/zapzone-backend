@@ -896,6 +896,8 @@ class AttractionController extends Controller
                 ->update(['display_order' => $item['display_order']]);
         }
 
+        \App\Support\CacheGroups::flush([\App\Support\CacheGroups::ATTRACTIONS]);
+
         return response()->json([
             'success' => true,
             'message' => 'Attractions reordered successfully',

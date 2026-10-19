@@ -527,6 +527,8 @@ class SpecialPricingController extends Controller
 
         $count = SpecialPricing::whereIn('id', $validated['ids'])->delete();
 
+        \App\Support\CacheGroups::flush([\App\Support\CacheGroups::PACKAGES, \App\Support\CacheGroups::ATTRACTIONS, \App\Support\CacheGroups::EVENTS, \App\Support\CacheGroups::DASHBOARDS]);
+
         $currentUser = $request->user();
         ActivityLog::log(
             action: 'Special Pricings Bulk Deleted',

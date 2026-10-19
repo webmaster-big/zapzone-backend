@@ -89,7 +89,7 @@ class PackageAvailabilitySchedule extends Model
                 }
                 $currentDay = strtolower($dateObj->format('l'));
                 foreach ($this->day_configuration as $day) {
-                    if (strtolower($day) === $currentDay) {
+                    if (is_string($day) && strtolower($day) === $currentDay) {
                         return true;
                     }
                 }
@@ -100,7 +100,7 @@ class PackageAvailabilitySchedule extends Model
                     return false;
                 }
                 foreach ($this->day_configuration as $config) {
-                    if ($this->matchesMonthlyConfiguration($dateObj, $config)) {
+                    if (is_string($config) && $this->matchesMonthlyConfiguration($dateObj, $config)) {
                         return true;
                     }
                 }
@@ -118,6 +118,10 @@ class PackageAvailabilitySchedule extends Model
         }
 
         $parts = explode('-', strtolower($config));
+
+        if (count($parts) < 2) {
+            return false;
+        }
 
         [$occurrence, $dayName] = $parts;
 

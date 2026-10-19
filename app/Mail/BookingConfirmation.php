@@ -69,18 +69,10 @@ class BookingConfirmation extends Mailable
                         ['mime' => $mimeType]
                     );
                 }
-            } elseif (str_starts_with($invitationFile, 'http://') || str_starts_with($invitationFile, 'https://')) {
-                $this->attach($invitationFile, [
-                    'as' => 'invitation.pdf',
-                    'mime' => 'application/pdf'
+            } elseif ($storagePath = \App\Models\Package::storedInvitationPath($invitationFile)) {
+                $this->attach($storagePath, [
+                    'as' => 'invitation.' . pathinfo($storagePath, PATHINFO_EXTENSION),
                 ]);
-            } else {
-                $storagePath = storage_path('app/public/' . $invitationFile);
-                if (file_exists($storagePath)) {
-                    $this->attach($storagePath, [
-                        'as' => 'invitation.' . pathinfo($storagePath, PATHINFO_EXTENSION),
-                    ]);
-                }
             }
         }
 
