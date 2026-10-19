@@ -43,7 +43,7 @@ class GiftCardIssued extends Mailable
       <div style="font-size:34px;font-weight:bold;margin-top:6px;">\${$value}</div>
     </div>
     <div style="padding:24px;">
-      <p style="margin:0 0 16px;font-size:15px;line-height:1.6;">Here is your gift card. Show this code at the counter or enter it at checkout.</p>
+      <p style="margin:0 0 16px;font-size:15px;line-height:1.6;">Here is your gift card. Show this code at the counter to redeem it.</p>
       <div style="border:2px dashed #1e3a8a;border-radius:10px;padding:16px;text-align:center;margin-bottom:16px;">
         <div style="font-size:12px;color:#6b7280;text-transform:uppercase;letter-spacing:1px;">Gift card code</div>
         <div style="font-size:24px;font-weight:bold;letter-spacing:2px;margin-top:6px;">{$card->code}</div>
