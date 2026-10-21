@@ -22,6 +22,7 @@ class RegistrationEvent extends Model
 
     protected $fillable = [
         'location_id',
+        'event_id',
         'name',
         'event_date',
         'description',
@@ -80,6 +81,11 @@ class RegistrationEvent extends Model
     public function location(): BelongsTo
     {
         return $this->belongsTo(Location::class);
+    }
+
+    public function event(): BelongsTo
+    {
+        return $this->belongsTo(Event::class);
     }
 
     public function previousEdition(): BelongsTo

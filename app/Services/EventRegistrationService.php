@@ -475,7 +475,7 @@ class EventRegistrationService
                 ->all();
         }
 
-        return $rows->map(function ($row) use ($entries, $otherEvents, $earlierAnyName) {
+        return $rows->map(function ($row) use ($entries, $otherEvents, $earlierAnyName, $hiddenOnly) {
             $contactId = (int) $row->registration_contact_id;
             $list = collect($entries->get($contactId, []))->values();
             $latest = $list->last();
@@ -496,7 +496,7 @@ class EventRegistrationService
             return [
                 'contact_id' => $contactId,
                 'entry_count' => (int) $row->entry_count,
-                'is_duplicate' => (int) $row->entry_count > 1,
+                'is_duplicate' => !$hiddenOnly && (int) $row->entry_count > 1,
                 'first_registered_at' => $presented->isEmpty() ? null : $presented->first()['registered_at'],
                 'last_registered_at' => $presented->isEmpty() ? null : $presented->last()['registered_at'],
                 'email' => $latest?->email,

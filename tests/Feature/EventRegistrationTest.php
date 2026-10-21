@@ -75,6 +75,7 @@ class EventRegistrationTest extends TestCase
                     'name' => 'Halloween Bash 2026',
                     'description' => "Costumes welcome.\nAges 5+.",
                     'event_date' => '2026-10-31',
+                    'starts_on' => null,
                     'status' => 'open',
                     'location_name' => 'Brighton | Zap Zone',
                     'location_logo_path' => null,
@@ -204,8 +205,12 @@ class EventRegistrationTest extends TestCase
             ->assertUnprocessable()->assertJsonValidationErrors(['submission_key']);
         $this->postJson($url, ['name' => "Jane\u{202E}eoD", 'email' => 'jane@example.com', 'phone' => '7345550142', 'submission_key' => $this->nextSubmissionKey()])
             ->assertCreated();
+        $this->postJson($url, ['name' => "Ann \u{200B} Smith\t\u{2060}Jr", 'email' => 'ann@example.com', 'phone' => '7345550143', 'submission_key' => $this->nextSubmissionKey()])
+            ->assertCreated();
+        $this->postJson($url, ['name' => "Bo\u{FEFF}b\u{3000}Ray\u{0085}s", 'email' => 'bob@example.com', 'phone' => '7345550144', 'submission_key' => $this->nextSubmissionKey()])
+            ->assertCreated();
 
-        $this->assertSame('JaneeoD', RegistrationEntry::sole()->name);
+        $this->assertSame(['JaneeoD', 'Ann Smith Jr', 'Bob Rays'], RegistrationEntry::orderBy('id')->pluck('name')->all());
     }
 
     public function test_closed_and_past_forms_refuse_new_registrations(): void
@@ -488,6 +493,14 @@ class EventRegistrationTest extends TestCase
             ->assertJsonCount(1, 'data.groups')
             ->assertJsonPath('data.groups.0.entries.0.id', $janeEntry->id)
             ->assertJsonPath('data.groups.0.entries.0.returning', false);
+
+        $secondJane = RegistrationEntry::where('registration_event_id', $form->id)->where('name', 'Jane Doe')->whereKeyNot($janeEntry->id)->sole();
+        $this->postJson("/api/registration-events/{$form->id}/entries/{$secondJane->id}/hide")->assertOk();
+        $this->getJson("/api/registration-events/{$form->id}/registrations?filter=hidden")
+            ->assertJsonCount(1, 'data.groups')
+            ->assertJsonPath('data.groups.0.entry_count', 2)
+            ->assertJsonPath('data.groups.0.is_duplicate', false);
+        $this->postJson("/api/registration-events/{$form->id}/entries/{$secondJane->id}/restore")->assertOk();
         $this->assertNotNull($this->getJson("/api/registration-events/{$form->id}/registrations?filter=hidden")->json('data.groups.0.entries.0.hidden_at'));
         $this->assertSame($this->manager->id, $janeEntry->fresh()->hidden_by);
 
@@ -849,6 +862,42 @@ class EventRegistrationTest extends TestCase
             $this->assertStringNotContainsString('Jane', $line);
             $this->assertStringNotContainsString('jane.secret', $line);
             $this->assertStringNotContainsString('5550142', $line);
+        }
+    }
+
+    public function test_a_staff_database_failure_answers_cleanly_without_logging_the_query(): void
+    {
+        $form = $this->makeForm($this->brighton, 'Halloween Bash', '2026-10-31');
+        $this->signUp($form, 'Jane Secret', 'jane.secret@example.com', '7345550142')->assertCreated();
+        $entry = RegistrationEntry::sole();
+        $logged = [];
+        Event::listen(MessageLogged::class, function (MessageLogged $message) use (&$logged) {
+            $logged[] = $message->message . ' ' . json_encode($message->context);
+        });
+
+        RegistrationEntry::saving(function () {
+            throw new QueryException('mysql', 'update registration_entries set hidden_by = ? where name = ?', [1, 'Jane Secret'], new \PDOException('lock wait timeout'));
+        });
+        RegistrationEvent::deleting(function () {
+            throw new QueryException('mysql', 'update registration_events set deleted_at = ? where name = ?', ['now', 'Jane Secret'], new \PDOException('lock wait timeout'));
+        });
+
+        $this->actAs($this->manager);
+        $this->postJson("/api/registration-events/{$form->id}/entries/{$entry->id}/hide")
+            ->assertStatus(500)
+            ->assertJsonPath('success', false)
+            ->assertJsonPath('message', 'Something went wrong. Please try again.');
+        $this->deleteJson("/api/registration-events/{$form->id}")
+            ->assertStatus(500)
+            ->assertJsonPath('success', false)
+            ->assertJsonPath('message', 'Something went wrong. Please try again.');
+
+        $this->assertNull($entry->fresh()->hidden_at);
+        $this->assertNull($form->fresh()->deleted_at);
+        $this->assertCount(2, array_filter($logged, fn (string $line) => str_starts_with($line, 'Registration forms request failed')));
+        foreach ($logged as $line) {
+            $this->assertStringNotContainsString('Jane', $line);
+            $this->assertStringNotContainsString(' set ', $line);
         }
     }
 

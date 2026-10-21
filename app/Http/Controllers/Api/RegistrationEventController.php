@@ -5,18 +5,22 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Models\ActivityLog;
+use App\Models\Event;
 use App\Models\Location;
 use App\Models\RegistrationContact;
 use App\Models\RegistrationEntry;
 use App\Models\RegistrationEvent;
 use App\Models\User;
 use App\Services\EventRegistrationService;
+use App\Support\DataUriImage;
 use App\Support\RegistrationHeaderImage;
+use App\Support\SchemaSupport;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 
@@ -46,7 +50,7 @@ class RegistrationEventController extends Controller
         }
 
         $events = RegistrationEvent::query()
-            ->with(['location', 'previousEdition'])
+            ->with(['location', 'previousEdition', 'event'])
             ->where('company_id', $user->company_id)
             ->whereIn('location_id', $locationIds)
             ->orderByDesc('event_date')
@@ -78,67 +82,208 @@ class RegistrationEventController extends Controller
             return $data;
         }
 
-        $locationId = (int) $data['location_id'];
-        if (!Location::query()->where('company_id', $user->company_id)->whereKey($locationId)->exists()) {
-            return $this->fieldError('location_id', 'Choose a location for this form.');
+        $locationField = isset($data['location_ids']) ? 'location_ids' : 'location_id';
+        $locationIds = isset($data['location_ids'])
+            ? array_values(array_unique(array_map('intval', $data['location_ids'])))
+            : [(int) $data['location_id']];
+
+        $known = Location::query()->where('company_id', $user->company_id)->whereKey($locationIds)->count();
+        if ($known !== count($locationIds)) {
+            return $this->fieldError($locationField, 'Choose a location for this form.');
         }
 
-        if ($denied = $this->denyStaffElsewhere($locationId, 'location')) {
-            return $denied;
+        foreach ($locationIds as $locationId) {
+            if ($denied = $this->denyStaffElsewhere($locationId, 'location')) {
+                return $denied;
+            }
         }
 
         $previousId = isset($data['previous_edition_id']) ? (int) $data['previous_edition_id'] : null;
-        if ($problem = $this->editionProblem(null, (int) $user->company_id, $locationId, $data['event_date'], $previousId, true)) {
+        if ($previousId !== null && count($locationIds) > 1) {
+            return $this->fieldError('previous_edition_id', "Link last year's edition one location at a time: create these forms first, then edit each one.");
+        }
+
+        $staffLocations = $this->staffLocationIds($request);
+
+        $sourceEvent = null;
+        if (isset($data['event_id'])) {
+            $sourceEvent = Event::query()
+                ->whereKey((int) $data['event_id'])
+                ->whereIn('location_id', $staffLocations)
+                ->whereHas('location', fn ($query) => $query->where('company_id', $user->company_id))
+                ->first();
+
+            if ($sourceEvent === null) {
+                return $this->fieldError('event_id', 'Choose an event from your locations.');
+            }
+        }
+
+        $links = $this->eventLinks($data['event_links'] ?? [], $locationIds);
+        if ($links instanceof JsonResponse) {
+            return $links;
+        }
+
+        if ($sourceEvent !== null && in_array((int) $sourceEvent->location_id, $locationIds, true) && !isset($links[(int) $sourceEvent->location_id])) {
+            $links[(int) $sourceEvent->location_id] = $sourceEvent;
+        }
+
+        $dates = [];
+        foreach ($locationIds as $locationId) {
+            $linked = $links[$locationId] ?? null;
+            $dates[$locationId] = $linked !== null && (int) $linked->id !== (int) $sourceEvent?->id
+                ? ($this->lastDayOf($linked) ?? $data['event_date'])
+                : $data['event_date'];
+        }
+
+        if ($problem = $this->editionProblem(null, (int) $user->company_id, $locationIds[0], $dates[$locationIds[0]], $previousId, true)) {
             return $problem;
         }
 
-        $image = null;
+        $ownedImage = null;
+        $copyFrom = null;
         if (($data['header_image'] ?? null) instanceof UploadedFile) {
-            $image = RegistrationHeaderImage::process($data['header_image']);
-            if ($image === null) {
+            $ownedImage = RegistrationHeaderImage::process($data['header_image']);
+            if ($ownedImage === null) {
                 return $this->fieldError('header_image', self::IMAGE_PROBLEM);
             }
-            $image['path'] = RegistrationHeaderImage::store($image['binary']);
+            $ownedImage['path'] = RegistrationHeaderImage::store($ownedImage['binary']);
+        } elseif (!empty($data['copy_header_image_from'])) {
+            $copyFrom = (int) $data['copy_header_image_from'];
+        } elseif (!empty($data['use_event_image']) && $sourceEvent !== null) {
+            $ownedImage = RegistrationHeaderImage::fromStoredImage($sourceEvent->image);
+            if ($ownedImage !== null) {
+                $ownedImage['path'] = RegistrationHeaderImage::store($ownedImage['binary']);
+            }
         }
 
-        $event = new RegistrationEvent([
-            'location_id' => $locationId,
-            'name' => $data['name'],
-            'event_date' => $data['event_date'],
-            'description' => $data['description'] ?? null,
-            'confirmation_message' => $data['confirmation_message'] ?? null,
-            'previous_edition_id' => $previousId,
-            'is_open' => array_key_exists('is_open', $data) ? (bool) $data['is_open'] : true,
-            'header_image_path' => $image['path'] ?? null,
-            'header_image_width' => $image['width'] ?? null,
-            'header_image_height' => $image['height'] ?? null,
-        ]);
-        $event->company_id = $user->company_id;
-        $event->created_by = $user->id;
-
         try {
-            $event->save();
+            $created = DB::transaction(function () use ($data, $locationIds, $links, $dates, $previousId, $ownedImage, $copyFrom, $staffLocations, $user) {
+                $header = $ownedImage;
+                if ($header === null && $copyFrom !== null) {
+                    $source = RegistrationEvent::query()
+                        ->where('company_id', $user->company_id)
+                        ->whereIn('location_id', $staffLocations)
+                        ->whereKey($copyFrom)
+                        ->sharedLock()
+                        ->first();
+
+                    if ($source !== null && $source->header_image_path !== null) {
+                        $header = [
+                            'path' => $source->header_image_path,
+                            'width' => $source->header_image_width,
+                            'height' => $source->header_image_height,
+                        ];
+                    }
+                }
+
+                $events = [];
+                foreach ($locationIds as $locationId) {
+                    $event = new RegistrationEvent([
+                        'location_id' => $locationId,
+                        'event_id' => isset($links[$locationId]) ? (int) $links[$locationId]->id : null,
+                        'name' => $data['name'],
+                        'event_date' => $dates[$locationId],
+                        'description' => $data['description'] ?? null,
+                        'confirmation_message' => $data['confirmation_message'] ?? null,
+                        'previous_edition_id' => $previousId,
+                        'is_open' => array_key_exists('is_open', $data) ? (bool) $data['is_open'] : true,
+                        'header_image_path' => $header['path'] ?? null,
+                        'header_image_width' => $header['width'] ?? null,
+                        'header_image_height' => $header['height'] ?? null,
+                    ]);
+                    $event->company_id = $user->company_id;
+                    $event->created_by = $user->id;
+                    $event->save();
+                    $events[] = $event;
+                }
+
+                return $events;
+            });
+        } catch (QueryException $e) {
+            RegistrationHeaderImage::delete($ownedImage['path'] ?? null);
+
+            return $this->queryFailed($request, null, $e);
         } catch (\Throwable $e) {
-            RegistrationHeaderImage::delete($image['path'] ?? null);
+            RegistrationHeaderImage::delete($ownedImage['path'] ?? null);
 
             throw $e;
         }
 
-        ActivityLog::log(
-            'registration_event_created',
-            'event_registration',
-            sprintf('Created the registration form "%s"', $event->name),
-            $user->id,
-            (int) $event->location_id,
-            'registration_event',
-            (int) $event->id,
-            ['resource_name' => $event->name, 'event_date' => $event->event_date->toDateString()]
-        );
+        foreach ($created as $event) {
+            ActivityLog::log(
+                'registration_event_created',
+                'event_registration',
+                sprintf('Created the registration form "%s"', $event->name),
+                $user->id,
+                (int) $event->location_id,
+                'registration_event',
+                (int) $event->id,
+                ['resource_name' => $event->name, 'event_date' => $event->event_date->toDateString(), 'event_id' => $event->event_id]
+            );
+        }
+
+        $fresh = collect($created)->map(fn (RegistrationEvent $event) => $event->fresh(['location', 'previousEdition', 'event']));
 
         return $this->noStore(response()->json([
             'success' => true,
-            'data' => $this->detail($event->fresh(['location', 'previousEdition'])),
+            'data' => $this->detail($fresh->first()),
+            'created' => $fresh->map(fn (RegistrationEvent $event) => $this->summary($event, [], collect()))->values()->all(),
         ], 201));
+    }
+
+    public function eventOptions(Request $request): JsonResponse
+    {
+        if (!RegistrationEvent::isAvailable()) {
+            return $this->unavailable();
+        }
+
+        $user = $this->staffUser($request);
+
+        $only = filter_var($request->query('id'), FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+
+        $events = Event::query()
+            ->with('location')
+            ->whereIn('location_id', $this->staffLocationIds($request))
+            ->whereHas('location', fn ($query) => $query->where('company_id', $user->company_id))
+            ->when($only !== false, fn ($query) => $query->whereKey($only))
+            ->orderByDesc('start_date')
+            ->orderBy('name')
+            ->limit(500)
+            ->get();
+
+        $forms = SchemaSupport::hasColumn('registration_events', 'event_id')
+            ? RegistrationEvent::query()
+                ->where('company_id', $user->company_id)
+                ->whereIn('event_id', $events->pluck('id')->all())
+                ->orderBy('id')
+                ->get(['id', 'event_id', 'location_id'])
+                ->groupBy(fn (RegistrationEvent $form) => (int) $form->event_id)
+            : collect();
+
+        return $this->noStore(response()->json([
+            'success' => true,
+            'data' => [
+                'events' => $events->map(fn (Event $event) => [
+                    'id' => (int) $event->id,
+                    'name' => $event->name,
+                    'location_id' => (int) $event->location_id,
+                    'location_name' => $event->location?->name,
+                    'description' => $event->description,
+                    'image' => is_string($event->image) && !DataUriImage::isDataUri($event->image) ? $event->image : null,
+                    'has_image' => is_string($event->image) && trim($event->image) !== '',
+                    'date_type' => $event->date_type,
+                    'start_date' => $event->start_date?->toDateString(),
+                    'end_date' => $event->end_date?->toDateString(),
+                    'is_active' => (bool) $event->is_active,
+                    'registration_form_ids' => $forms->get((int) $event->id, collect())
+                        ->filter(fn (RegistrationEvent $form) => (int) $form->location_id === (int) $event->location_id)
+                        ->pluck('id')
+                        ->map(fn ($id) => (int) $id)
+                        ->values()
+                        ->all(),
+                ])->values()->all(),
+            ],
+        ]));
     }
 
     public function show(Request $request, int $registrationEvent): JsonResponse
@@ -205,6 +350,12 @@ class RegistrationEventController extends Controller
             return $problem;
         }
 
+        $linkSent = array_key_exists('event_id', $data);
+        $linkedId = $linkSent && $data['event_id'] !== null ? (int) $data['event_id'] : null;
+        if ($linkedId !== null && !Event::query()->whereKey($linkedId)->where('location_id', $locationId)->exists()) {
+            return $this->fieldError('event_id', 'Choose an event at this location.');
+        }
+
         $image = null;
         if (($data['header_image'] ?? null) instanceof UploadedFile) {
             $image = RegistrationHeaderImage::process($data['header_image']);
@@ -227,6 +378,12 @@ class RegistrationEventController extends Controller
             $attributes['is_open'] = (bool) $data['is_open'];
         }
 
+        if ($linkSent) {
+            $attributes['event_id'] = $linkedId;
+        } elseif ($locationId !== (int) $event->location_id && $event->event_id !== null) {
+            $attributes['event_id'] = null;
+        }
+
         if ($image !== null) {
             $attributes['header_image_path'] = $image['path'];
             $attributes['header_image_width'] = $image['width'];
@@ -242,6 +399,10 @@ class RegistrationEventController extends Controller
 
         try {
             $event->save();
+        } catch (QueryException $e) {
+            RegistrationHeaderImage::delete($image['path'] ?? null);
+
+            return $this->queryFailed($request, $event, $e);
         } catch (\Throwable $e) {
             RegistrationHeaderImage::delete($image['path'] ?? null);
 
@@ -267,7 +428,7 @@ class RegistrationEventController extends Controller
 
         return $this->noStore(response()->json([
             'success' => true,
-            'data' => $this->detail($event->fresh(['location', 'previousEdition'])),
+            'data' => $this->detail($event->fresh(['location', 'previousEdition', 'event'])),
         ]));
     }
 
@@ -295,7 +456,11 @@ class RegistrationEventController extends Controller
             ], 422);
         }
 
-        $event->delete();
+        try {
+            $event->delete();
+        } catch (QueryException $e) {
+            return $this->queryFailed($request, $event, $e);
+        }
 
         ActivityLog::log(
             'registration_event_deleted',
@@ -468,27 +633,33 @@ class RegistrationEventController extends Controller
             ], 404);
         }
 
-        if ($hide !== ($entry->hidden_at !== null)) {
-            $entry->forceFill([
-                'hidden_at' => $hide ? now() : null,
-                'hidden_by' => $hide ? $user->id : null,
-            ])->save();
+        try {
+            if ($hide !== ($entry->hidden_at !== null)) {
+                $entry->forceFill([
+                    'hidden_at' => $hide ? now() : null,
+                    'hidden_by' => $hide ? $user->id : null,
+                ])->save();
 
-            ActivityLog::log(
-                $hide ? 'registration_entry_hidden' : 'registration_entry_restored',
-                'event_registration',
-                sprintf('%s registration #%d on "%s"', $hide ? 'Hid' : 'Restored', $entry->id, $event->name),
-                $user->id,
-                (int) $event->location_id,
-                'registration_entry',
-                (int) $entry->id,
-                ['resource_name' => $event->name, 'registration_event_id' => (int) $event->id]
-            );
+                ActivityLog::log(
+                    $hide ? 'registration_entry_hidden' : 'registration_entry_restored',
+                    'event_registration',
+                    sprintf('%s registration #%d on "%s"', $hide ? 'Hid' : 'Restored', $entry->id, $event->name),
+                    $user->id,
+                    (int) $event->location_id,
+                    'registration_entry',
+                    (int) $entry->id,
+                    ['resource_name' => $event->name, 'registration_event_id' => (int) $event->id]
+                );
+            }
+
+            $counts = $this->registrations->counts($event);
+        } catch (QueryException $e) {
+            return $this->queryFailed($request, $event, $e);
         }
 
         return $this->noStore(response()->json([
             'success' => true,
-            'data' => ['counts' => $this->registrations->counts($event)],
+            'data' => ['counts' => $counts],
         ]));
     }
 
@@ -508,7 +679,7 @@ class RegistrationEventController extends Controller
         $user = $this->staffUser($request);
 
         $event = RegistrationEvent::query()
-            ->with(['location', 'previousEdition'])
+            ->with(['location', 'previousEdition', 'event'])
             ->where('company_id', $user->company_id)
             ->whereKey($id)
             ->first();
@@ -538,13 +709,18 @@ class RegistrationEventController extends Controller
             }
         }
 
-        foreach (['location_id', 'previous_edition_id', 'is_open', 'remove_header_image'] as $field) {
+        foreach (['location_id', 'previous_edition_id', 'is_open', 'remove_header_image', 'event_id', 'use_event_image', 'copy_header_image_from', 'event_links'] as $field) {
             if ($request->has($field)) {
                 $input[$field] = $request->input($field);
             }
         }
 
-        foreach (['description', 'confirmation_message', 'previous_edition_id'] as $field) {
+        if ($creating && $request->has('location_ids')) {
+            $input['location_ids'] = $request->input('location_ids');
+            unset($input['location_id']);
+        }
+
+        foreach (['description', 'confirmation_message', 'previous_edition_id', 'event_id', 'copy_header_image_from'] as $field) {
             if (array_key_exists($field, $input) && $input[$field] === '') {
                 $input[$field] = null;
             }
@@ -561,7 +737,14 @@ class RegistrationEventController extends Controller
 
         $validator = Validator::make($input, [
             'name' => [$present, 'required', 'string', 'max:120', 'regex:/^[^\r\n]+$/'],
-            'location_id' => [$present, 'required', 'integer'],
+            'location_id' => $creating ? ['required_without:location_ids', 'integer'] : ['sometimes', 'required', 'integer'],
+            'location_ids' => ['sometimes', 'array', 'min:1', 'max:50'],
+            'location_ids.*' => ['integer', 'distinct'],
+            'event_id' => ['nullable', 'integer'],
+            'event_links' => ['sometimes', 'array', 'max:50'],
+            'event_links.*' => ['nullable', 'integer', 'min:1'],
+            'use_event_image' => ['sometimes', 'boolean'],
+            'copy_header_image_from' => ['nullable', 'integer'],
             'event_date' => [$present, 'required', 'date_format:Y-m-d'],
             'description' => ['nullable', 'string', 'max:2000'],
             'confirmation_message' => ['nullable', 'string', 'max:500'],
@@ -574,7 +757,18 @@ class RegistrationEventController extends Controller
             'name.max' => 'Please keep the name under 120 characters.',
             'name.regex' => 'Please keep the name on one line.',
             'location_id.required' => 'Choose a location for this form.',
+            'location_id.required_without' => 'Choose a location for this form.',
             'location_id.integer' => 'Choose a location for this form.',
+            'location_ids.array' => 'Choose at least one location.',
+            'location_ids.min' => 'Choose at least one location.',
+            'location_ids.max' => 'Choose up to 50 locations at a time.',
+            'location_ids.*.integer' => 'Choose a location from the list.',
+            'location_ids.*.distinct' => 'Each location can only be chosen once.',
+            'event_id.integer' => 'Choose an event from the list.',
+            'event_links.array' => 'Choose an event at each location.',
+            'event_links.max' => 'Choose an event at each location.',
+            'event_links.*.integer' => 'Choose an event at each location.',
+            'event_links.*.min' => 'Choose an event at each location.',
             'event_date.required' => 'Choose the event date.',
             'event_date.date_format' => 'Choose the event date.',
             'description.max' => 'Please keep the description under 2,000 characters.',
@@ -631,6 +825,45 @@ class RegistrationEventController extends Controller
         return null;
     }
 
+    private function eventLinks(mixed $raw, array $locationIds): array|JsonResponse
+    {
+        if (!is_array($raw)) {
+            return [];
+        }
+
+        $wanted = [];
+        foreach ($raw as $locationId => $eventId) {
+            if ($eventId === null || $eventId === '') {
+                continue;
+            }
+            if (!in_array((int) $locationId, $locationIds, true)) {
+                return $this->fieldError('event_links', 'Link events only to the locations you picked.');
+            }
+            $wanted[(int) $locationId] = (int) $eventId;
+        }
+
+        if ($wanted === []) {
+            return [];
+        }
+
+        $events = Event::query()->whereKey(array_values($wanted))->get()->keyBy(fn (Event $event) => (int) $event->id);
+        $links = [];
+        foreach ($wanted as $locationId => $eventId) {
+            $linked = $events->get($eventId);
+            if ($linked === null || (int) $linked->location_id !== $locationId) {
+                return $this->fieldError('event_links', 'Choose an event at each location.');
+            }
+            $links[$locationId] = $linked;
+        }
+
+        return $links;
+    }
+
+    private function lastDayOf(Event $event): ?string
+    {
+        return ($event->end_date ?? $event->start_date)?->toDateString();
+    }
+
     private function locationLocked(RegistrationEvent $event): bool
     {
         return RegistrationEntry::query()->where('registration_event_id', $event->id)->exists()
@@ -672,6 +905,12 @@ class RegistrationEventController extends Controller
             'header_image_height' => $event->header_image_height,
             'location_id' => (int) $event->location_id,
             'location_name' => $event->location?->name,
+            'event' => $event->event === null || (int) $event->event->location_id !== (int) $event->location_id ? null : [
+                'id' => (int) $event->event->id,
+                'name' => $event->event->name,
+                'start_date' => $event->event->start_date?->toDateString(),
+                'end_date' => $event->event->end_date?->toDateString(),
+            ],
             'previous_edition' => $previous === null ? null : [
                 'id' => (int) $previous->id,
                 'name' => $previous->name,
@@ -713,10 +952,10 @@ class RegistrationEventController extends Controller
         }
     }
 
-    private function queryFailed(Request $request, RegistrationEvent $event, QueryException $e): JsonResponse
+    private function queryFailed(Request $request, ?RegistrationEvent $event, QueryException $e): JsonResponse
     {
         Log::error('Registration forms request failed', [
-            'registration_event_id' => $event->id,
+            'registration_event_id' => $event?->id,
             'sqlstate' => $e->errorInfo[0] ?? null,
             'driver_code' => $e->errorInfo[1] ?? null,
             'request_id' => $request->attributes->get('request_id'),

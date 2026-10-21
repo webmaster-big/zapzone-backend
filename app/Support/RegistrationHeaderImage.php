@@ -19,14 +19,50 @@ final class RegistrationHeaderImage
 
     public static function process(UploadedFile $file): ?array
     {
+        $binary = $file->get();
+
+        return is_string($binary) ? self::processBinary($binary) : null;
+    }
+
+    public static function fromStoredImage(?string $image): ?array
+    {
+        if (!is_string($image) || trim($image) === '') {
+            return null;
+        }
+
+        if (DataUriImage::isDataUri($image)) {
+            if (preg_match('/^data:image\/(png|jpe?g|webp);base64,/i', $image) !== 1) {
+                return null;
+            }
+            $binary = base64_decode(substr($image, strpos($image, ',') + 1), true);
+
+            return is_string($binary) ? self::processBinary($binary) : null;
+        }
+
+        $path = ltrim($image, '/');
+        if (str_contains($path, '..') || preg_match('#^[a-z][a-z0-9+.-]*://#i', $path) === 1) {
+            return null;
+        }
+
+        $disk = Storage::disk('public');
+        if (!$disk->exists($path)) {
+            return null;
+        }
+
+        $binary = $disk->get($path);
+
+        return is_string($binary) ? self::processBinary($binary) : null;
+    }
+
+    public static function processBinary(string $binary): ?array
+    {
         foreach (['imagecreatefromstring', 'imagecreatetruecolor', 'imagecopyresampled', 'imagejpeg', 'getimagesizefromstring'] as $function) {
             if (!function_exists($function)) {
                 return null;
             }
         }
 
-        $binary = $file->get();
-        if (!is_string($binary) || $binary === '') {
+        if ($binary === '') {
             return null;
         }
 

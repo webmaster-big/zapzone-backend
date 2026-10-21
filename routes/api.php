@@ -850,6 +850,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::prefix('registration-events')->middleware('staff:company_admin|admin|location_manager')->group(function () {
         Route::get('/', [\App\Http\Controllers\Api\RegistrationEventController::class, 'index']);
+        Route::get('/event-options', [\App\Http\Controllers\Api\RegistrationEventController::class, 'eventOptions']);
         Route::post('/', [\App\Http\Controllers\Api\RegistrationEventController::class, 'store'])->middleware(\Illuminate\Http\Middleware\ValidatePostSize::class);
         Route::get('/{registrationEvent}', [\App\Http\Controllers\Api\RegistrationEventController::class, 'show'])->whereNumber('registrationEvent');
         Route::post('/{registrationEvent}', [\App\Http\Controllers\Api\RegistrationEventController::class, 'update'])->whereNumber('registrationEvent')->middleware(\Illuminate\Http\Middleware\ValidatePostSize::class);

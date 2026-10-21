@@ -8,6 +8,7 @@ use App\Models\RegistrationEntry;
 use App\Models\RegistrationEvent;
 use App\Models\WaiverProfile;
 use App\Services\EventRegistrationService;
+use App\Support\SchemaSupport;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -113,7 +114,7 @@ class RegistrationFormController extends Controller
         }
 
         return RegistrationEvent::query()
-            ->with('location')
+            ->with(SchemaSupport::hasColumn('registration_events', 'event_id') ? ['location', 'event'] : ['location'])
             ->where('public_code', strtolower($code))
             ->first();
     }
@@ -127,6 +128,7 @@ class RegistrationFormController extends Controller
             'name' => $event->name,
             'description' => $event->description,
             'event_date' => $event->event_date->toDateString(),
+            'starts_on' => $this->startsOn($event),
             'status' => $status,
             'location_name' => $event->location?->name,
             'location_logo_path' => $event->location?->logo_path,
@@ -136,6 +138,23 @@ class RegistrationFormController extends Controller
             'confirmation_message' => $event->confirmation_message,
             'next_edition' => $status === RegistrationEvent::STATUS_OPEN ? null : $this->nextEditionLink($event),
         ];
+    }
+
+    private function startsOn(RegistrationEvent $event): ?string
+    {
+        if (!SchemaSupport::hasColumn('registration_events', 'event_id') || $event->event_id === null) {
+            return null;
+        }
+
+        $linked = $event->event;
+        if ($linked === null || (int) $linked->location_id !== (int) $event->location_id || $linked->start_date === null || $linked->end_date === null) {
+            return null;
+        }
+
+        $start = $linked->start_date->toDateString();
+        $date = $event->event_date->toDateString();
+
+        return $start < $date && $date <= $linked->end_date->toDateString() ? $start : null;
     }
 
     private function nextEditionLink(RegistrationEvent $event): ?array
@@ -159,8 +178,8 @@ class RegistrationFormController extends Controller
 
         if (is_string($name)) {
             $name = mb_check_encoding($name, 'UTF-8') ? $name : '';
-            $name = (string) preg_replace('/\s+/u', ' ', $name);
-            $name = trim((string) preg_replace('/[\p{Cc}\p{Cf}]+/u', '', $name));
+            $name = (string) preg_replace('/(?:(?![\t\n\x0B\f\r])[\p{Cc}\p{Cf}])+/u', '', $name);
+            $name = trim((string) preg_replace('/[\t\n\x0B\f\r\p{Z}]+/u', ' ', $name));
         }
 
         if (is_string($email)) {
