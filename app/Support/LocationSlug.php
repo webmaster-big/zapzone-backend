@@ -37,6 +37,7 @@ class LocationSlug
         'photos',
         'purchase',
         'register',
+        'registration-events',
         'rsvp',
         'settings',
         'special-pricings',

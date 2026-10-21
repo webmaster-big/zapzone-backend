@@ -105,6 +105,37 @@ class AppServiceProvider extends ServiceProvider
         $this->registerGiftCardRateLimiter();
         $this->registerCustomFieldRateLimiter();
         $this->registerStaffPinRateLimiters();
+        $this->registerEventRegistrationRateLimiters();
+    }
+
+    private function registerEventRegistrationRateLimiters(): void
+    {
+        $code = fn (Request $request): string => strtolower((string) $request->route('code'));
+
+        $network = function (Request $request): string {
+            $ip = (string) $request->ip();
+
+            if (str_starts_with(strtolower($ip), '::ffff:') && filter_var(substr($ip, 7), FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+                return substr($ip, 7);
+            }
+
+            if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
+                return $ip;
+            }
+
+            $packed = inet_pton($ip);
+
+            return $packed === false ? $ip : bin2hex(substr($packed, 0, 8));
+        };
+
+        RateLimiter::for('registration-form-view', fn (Request $request) => Limit::perMinute(240)
+            ->by('regform:view:' . $code($request) . ':' . $network($request)));
+
+        RateLimiter::for('registration-form-submit', fn (Request $request) => [
+            Limit::perMinute(120)->by('regform:submit:' . $code($request) . ':' . $network($request)),
+            Limit::perHour(1000)->by('regform:new:' . $network($request))
+                ->after(fn ($response) => $response->getStatusCode() === 201),
+        ]);
     }
 
     /**

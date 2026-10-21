@@ -212,6 +212,9 @@ Route::post('checkout-concerns/abandoned', [CheckoutConcernController::class, 'a
 Route::get('rsvp/{token}', [RsvpController::class, 'show']); // include
 Route::post('rsvp/{token}', [RsvpController::class, 'store']); // include
 
+Route::get('registration-forms/{code}', [\App\Http\Controllers\Api\RegistrationFormController::class, 'show'])->where('code', '[A-Za-z0-9-]{8,40}')->middleware('throttle:registration-form-view');
+Route::post('registration-forms/{code}', [\App\Http\Controllers\Api\RegistrationFormController::class, 'store'])->where('code', '[A-Za-z0-9-]{8,40}')->middleware('throttle:registration-form-submit');
+
 Route::get('events/grouped-by-name', [EventController::class, 'eventsGroupedByName']); // include
 Route::get('events', [EventController::class, 'index']);
 Route::get('events/{event}', [EventController::class, 'show']); // include
@@ -843,6 +846,19 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('waiver-templates/{templateId}/ad-settings',    [WaiverAdController::class, 'updateSettings'])->whereNumber('templateId');
         Route::post('waiver-ads/{waiverAd}',                         [WaiverAdController::class, 'update'])->whereNumber('waiverAd');
         Route::delete('waiver-ads/{waiverAd}',                       [WaiverAdController::class, 'destroy'])->whereNumber('waiverAd');
+    });
+
+    Route::prefix('registration-events')->middleware('staff:company_admin|admin|location_manager')->group(function () {
+        Route::get('/', [\App\Http\Controllers\Api\RegistrationEventController::class, 'index']);
+        Route::post('/', [\App\Http\Controllers\Api\RegistrationEventController::class, 'store'])->middleware(\Illuminate\Http\Middleware\ValidatePostSize::class);
+        Route::get('/{registrationEvent}', [\App\Http\Controllers\Api\RegistrationEventController::class, 'show'])->whereNumber('registrationEvent');
+        Route::post('/{registrationEvent}', [\App\Http\Controllers\Api\RegistrationEventController::class, 'update'])->whereNumber('registrationEvent')->middleware(\Illuminate\Http\Middleware\ValidatePostSize::class);
+        Route::delete('/{registrationEvent}', [\App\Http\Controllers\Api\RegistrationEventController::class, 'destroy'])->whereNumber('registrationEvent');
+        Route::get('/{registrationEvent}/registrations', [\App\Http\Controllers\Api\RegistrationEventController::class, 'registrations'])->whereNumber('registrationEvent');
+        Route::get('/{registrationEvent}/registrations/export', [\App\Http\Controllers\Api\RegistrationEventController::class, 'export'])->whereNumber('registrationEvent');
+        Route::get('/{registrationEvent}/contacts/{registrationContact}/history', [\App\Http\Controllers\Api\RegistrationEventController::class, 'contactHistory'])->whereNumber(['registrationEvent', 'registrationContact']);
+        Route::post('/{registrationEvent}/entries/{registrationEntry}/hide', [\App\Http\Controllers\Api\RegistrationEventController::class, 'hideEntry'])->whereNumber(['registrationEvent', 'registrationEntry']);
+        Route::post('/{registrationEvent}/entries/{registrationEntry}/restore', [\App\Http\Controllers\Api\RegistrationEventController::class, 'restoreEntry'])->whereNumber(['registrationEvent', 'registrationEntry']);
     });
 
     Route::middleware('staff:company_admin|admin|location_manager')->group(function () {
