@@ -260,7 +260,7 @@ class EventRegistrationEventLinkTest extends TestCase
     {
         $brightonEvent = $this->makeTicketedEvent($this->brighton, 'Halloween Bash', '2026-10-31');
         $farmingtonEvent = $this->makeTicketedEvent($this->farmington, 'Halloween Bash', '2026-10-31');
-        $form = $this->makeForm($this->brighton, 'Halloween Bash 2026', '2026-10-31');
+        $form = $this->makeForm($this->brighton, 'Halloween Bash 2026', '2026-10-31', grouped: false);
 
         $this->actAs($this->admin);
         $this->post("/api/registration-events/{$form->id}", ['event_id' => $farmingtonEvent->id])

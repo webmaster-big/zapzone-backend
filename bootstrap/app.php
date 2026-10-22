@@ -54,6 +54,8 @@ return Application::configure(basePath: dirname(__DIR__))
         $schedule->command('orders:expire-stale')->dailyAt('04:45')->withoutOverlapping(30);
 
         $schedule->command('visits:send-follow-ups')->everyFifteenMinutes()->withoutOverlapping(10);
+
+        $schedule->command('registration-events:group-orphans')->everyFiveMinutes()->withoutOverlapping(10);
     })
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->use([

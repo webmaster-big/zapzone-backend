@@ -6,6 +6,7 @@ use App\Models\EmailNotification;
 use App\Models\RegistrationContact;
 use App\Models\RegistrationEntry;
 use App\Models\RegistrationEvent;
+use App\Support\SchemaSupport;
 use Carbon\Carbon;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Database\QueryException;
@@ -123,6 +124,72 @@ class EventRegistrationService
                 'unique_registrations' => (int) $row->unique_registrations,
             ]])
             ->all();
+    }
+
+    public function scopeCounts(array $formIds, bool $withRegisteredBefore = true): array
+    {
+        if ($formIds === []) {
+            return ['total_entries' => 0, 'unique_registrations' => 0, 'registered_before' => 0];
+        }
+
+        [$retSql, $retBindings] = $withRegisteredBefore ? $this->registeredBeforeSql('e') : ['0 = 1', []];
+
+        $row = DB::table('registration_entries as e')
+            ->whereIn('e.registration_event_id', $formIds)
+            ->whereNull('e.hidden_at')
+            ->selectRaw('COUNT(*) AS total_entries')
+            ->selectRaw('COUNT(DISTINCT e.registration_contact_id) AS unique_registrations')
+            ->selectRaw("COUNT(DISTINCT CASE WHEN {$retSql} THEN e.registration_contact_id END) AS registered_before", $retBindings)
+            ->first();
+
+        return [
+            'total_entries' => (int) ($row->total_entries ?? 0),
+            'unique_registrations' => (int) ($row->unique_registrations ?? 0),
+            'registered_before' => (int) ($row->registered_before ?? 0),
+        ];
+    }
+
+    public function countsByGroup(array $formIds): array
+    {
+        if ($formIds === []) {
+            return [];
+        }
+
+        return DB::table('registration_entries as e')
+            ->join('registration_events as f', 'f.id', '=', 'e.registration_event_id')
+            ->whereIn('e.registration_event_id', $formIds)
+            ->whereNull('e.hidden_at')
+            ->groupBy('f.group_id')
+            ->selectRaw('f.group_id, COUNT(*) AS total_entries, COUNT(DISTINCT e.registration_contact_id) AS unique_registrations')
+            ->get()
+            ->mapWithKeys(fn ($row) => [(int) $row->group_id => [
+                'total_entries' => (int) $row->total_entries,
+                'unique_registrations' => (int) $row->unique_registrations,
+            ]])
+            ->all();
+    }
+
+    public function exportForms(Collection $forms): array
+    {
+        $rows = [];
+        $total = 0;
+        $capped = false;
+
+        foreach ($forms as $form) {
+            $export = $this->export($form);
+            $total += $export['total'];
+            $capped = $capped || $export['capped'];
+
+            foreach ($export['rows'] as $row) {
+                if (count($rows) >= self::EXPORT_LIMIT) {
+                    $capped = true;
+                    break;
+                }
+                $rows[] = ['location_id' => (int) $form->location_id, 'location_name' => $form->location?->name] + $row;
+            }
+        }
+
+        return ['rows' => $rows, 'total' => $total, 'capped' => $capped];
     }
 
     public function groups(RegistrationEvent $event, ?string $search, string $filter, int $page, int $perPage): array
@@ -353,7 +420,8 @@ class EventRegistrationService
             . " AND o.registration_event_id <> {$alias}.registration_event_id"
             . " AND o.hidden_at IS NULL"
             . " AND o.id < {$alias}.id"
-            . " AND ox.event_date < DATE({$alias}.created_at))",
+            . " AND ox.event_date < DATE({$alias}.created_at)"
+            . $this->otherEventSql($alias) . ')',
             [],
         ];
     }
@@ -367,9 +435,19 @@ class EventRegistrationService
             . " AND o.registration_event_id <> {$alias}.registration_event_id"
             . " AND o.hidden_at IS NULL"
             . " AND o.id < {$alias}.id"
-            . " AND ox.event_date < DATE({$alias}.created_at))",
+            . " AND ox.event_date < DATE({$alias}.created_at)"
+            . $this->otherEventSql($alias) . ')',
             [],
         ];
+    }
+
+    private function otherEventSql(string $alias): string
+    {
+        if (!SchemaSupport::hasColumn('registration_events', 'group_id')) {
+            return '';
+        }
+
+        return " AND NOT EXISTS (SELECT 1 FROM registration_events cur WHERE cur.id = {$alias}.registration_event_id AND cur.group_id = ox.group_id)";
     }
 
     private function previousEditionSql(string $alias, int $previousId): array

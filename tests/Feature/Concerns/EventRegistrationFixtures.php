@@ -6,6 +6,7 @@ use App\Models\Company;
 use App\Models\Customer;
 use App\Models\Location;
 use App\Models\RegistrationEvent;
+use App\Models\RegistrationEventGroup;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Hash;
@@ -67,7 +68,7 @@ trait EventRegistrationFixtures
         ]);
     }
 
-    protected function makeForm(Location $location, string $name, string $date, array $attributes = []): RegistrationEvent
+    protected function makeForm(Location $location, string $name, string $date, array $attributes = [], bool $grouped = true): RegistrationEvent
     {
         $event = new RegistrationEvent(array_merge([
             'location_id' => $location->id,
@@ -76,6 +77,22 @@ trait EventRegistrationFixtures
             'is_open' => true,
         ], $attributes));
         $event->company_id = $location->company_id;
+
+        if ($grouped && RegistrationEventGroup::isAvailable()) {
+            $group = new RegistrationEventGroup([
+                'name' => $event->name,
+                'event_date' => $event->event_date,
+                'description' => $event->description,
+                'confirmation_message' => $event->confirmation_message,
+                'header_image_path' => $event->header_image_path,
+                'header_image_width' => $event->header_image_width,
+                'header_image_height' => $event->header_image_height,
+            ]);
+            $group->company_id = $location->company_id;
+            $group->save();
+            $event->group_id = $group->id;
+        }
+
         $event->save();
 
         return $event->fresh();

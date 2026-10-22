@@ -88,6 +88,11 @@ class RegistrationEvent extends Model
         return $this->belongsTo(Event::class);
     }
 
+    public function group(): BelongsTo
+    {
+        return $this->belongsTo(RegistrationEventGroup::class, 'group_id');
+    }
+
     public function previousEdition(): BelongsTo
     {
         return $this->belongsTo(self::class, 'previous_edition_id');

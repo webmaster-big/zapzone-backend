@@ -419,6 +419,23 @@ class EventRegistrationTest extends TestCase
             ->assertJsonPath('data.groups.0.entries.0.registered_previous_edition', true);
     }
 
+    public function test_forms_outside_any_event_still_count_as_registered_before(): void
+    {
+        $this->at('2025-10-20 18:00:00');
+        $last = $this->makeForm($this->brighton, 'Halloween Bash 2025', '2025-10-31', [], grouped: false);
+        $this->signUp($last, 'Jane Doe', 'jane@example.com', '7345550142')->assertCreated();
+
+        $this->at('2026-10-15 18:00:00');
+        $form = $this->makeForm($this->brighton, 'Halloween Bash 2026', '2026-10-31', [], grouped: false);
+        $this->signUp($form, 'Jane Doe', 'jane@example.com', '7345550142')->assertCreated();
+
+        $this->actAs($this->admin);
+        $this->getJson("/api/registration-events/{$form->id}/registrations")
+            ->assertOk()
+            ->assertJsonPath('data.counts.returning_contacts', 1)
+            ->assertJsonPath('data.groups.0.returning', true);
+    }
+
     public function test_signing_up_for_two_upcoming_events_in_one_sitting_is_not_registered_before(): void
     {
         $halloween = $this->makeForm($this->brighton, 'Halloween Bash', '2026-10-31');
@@ -568,7 +585,7 @@ class EventRegistrationTest extends TestCase
         $this->at('2025-10-10 12:00:00');
         $last = $this->makeForm($this->brighton, 'Halloween Bash 2025', '2025-10-31');
         $this->at('2026-10-15 18:00:00');
-        $form = $this->makeForm($this->brighton, 'Halloween Bash 2026', '2026-10-31', ['previous_edition_id' => $last->id]);
+        $form = $this->makeForm($this->brighton, 'Halloween Bash 2026', '2026-10-31', ['previous_edition_id' => $last->id], grouped: false);
 
         $this->actAs($this->admin);
         $this->post("/api/registration-events/{$form->id}", ['location_id' => $this->farmington->id])
@@ -598,7 +615,7 @@ class EventRegistrationTest extends TestCase
 
     public function test_the_location_is_locked_once_people_have_registered(): void
     {
-        $form = $this->makeForm($this->brighton, 'Halloween Bash', '2026-10-31');
+        $form = $this->makeForm($this->brighton, 'Halloween Bash', '2026-10-31', grouped: false);
         $this->signUp($form, 'Jane Doe', 'jane@example.com', '7345550142')->assertCreated();
 
         $this->actAs($this->admin);
@@ -810,7 +827,7 @@ class EventRegistrationTest extends TestCase
     {
         Storage::disk('public')->put('registration-events/shared.jpg', 'jpeg');
         $one = $this->makeForm($this->brighton, 'One', '2026-10-31', ['header_image_path' => 'registration-events/shared.jpg']);
-        $this->makeForm($this->brighton, 'Two', '2026-11-30', ['header_image_path' => 'registration-events/shared.jpg']);
+        $this->makeForm($this->brighton, 'Two', '2026-11-30', ['header_image_path' => 'registration-events/shared.jpg'], grouped: false);
 
         $this->actAs($this->admin);
         $this->post("/api/registration-events/{$one->id}", ['remove_header_image' => '1'])->assertOk();

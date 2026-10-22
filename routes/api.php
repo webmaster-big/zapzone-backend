@@ -862,6 +862,15 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/{registrationEvent}/entries/{registrationEntry}/restore', [\App\Http\Controllers\Api\RegistrationEventController::class, 'restoreEntry'])->whereNumber(['registrationEvent', 'registrationEntry']);
     });
 
+    Route::prefix('registration-event-groups')->middleware('staff:company_admin|admin|location_manager')->group(function () {
+        Route::get('/', [\App\Http\Controllers\Api\RegistrationEventGroupController::class, 'index']);
+        Route::post('/', [\App\Http\Controllers\Api\RegistrationEventGroupController::class, 'store'])->middleware(\Illuminate\Http\Middleware\ValidatePostSize::class);
+        Route::get('/{registrationEventGroup}', [\App\Http\Controllers\Api\RegistrationEventGroupController::class, 'show'])->whereNumber('registrationEventGroup');
+        Route::post('/{registrationEventGroup}', [\App\Http\Controllers\Api\RegistrationEventGroupController::class, 'update'])->whereNumber('registrationEventGroup')->middleware(\Illuminate\Http\Middleware\ValidatePostSize::class);
+        Route::delete('/{registrationEventGroup}', [\App\Http\Controllers\Api\RegistrationEventGroupController::class, 'destroy'])->whereNumber('registrationEventGroup');
+        Route::get('/{registrationEventGroup}/export', [\App\Http\Controllers\Api\RegistrationEventGroupController::class, 'export'])->whereNumber('registrationEventGroup');
+    });
+
     Route::middleware('staff:company_admin|admin|location_manager')->group(function () {
         Route::get('waiver-profiles',                                  [WaiverProfileController::class, 'index']);
         Route::get('waiver-profiles/{waiverProfile}',                  [WaiverProfileController::class, 'show'])->whereNumber('waiverProfile');
