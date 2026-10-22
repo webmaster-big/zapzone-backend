@@ -7,6 +7,7 @@ use App\Http\Traits\ManagesRegistrationForms;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Models\ActivityLog;
 use App\Models\Location;
+use App\Models\PhotoOverlay;
 use App\Models\RegistrationEntry;
 use App\Models\RegistrationEvent;
 use App\Models\RegistrationEventGroup;
@@ -592,6 +593,7 @@ class RegistrationEventGroupController extends Controller
         $perForm = $this->registrations->listCounts($formIds);
         $nextEditions = $this->nextEditionsFor($formIds);
         $counts = $this->registrations->scopeCounts($formIds);
+        $frames = $this->photoFramesFor($forms);
         $visibleLocations = $this->staffLocationIds($request);
         $next = RegistrationEventGroup::query()
             ->where('previous_group_id', $group->id)
@@ -627,7 +629,10 @@ class RegistrationEventGroupController extends Controller
                 'event_date' => $next->event_date->toDateString(),
             ],
             'counts' => $counts + ['location_forms' => $forms->count()],
-            'forms' => $forms->map(fn (RegistrationEvent $form) => $this->summary($form, $perForm, $nextEditions))->values()->all(),
+            'forms' => $forms->map(fn (RegistrationEvent $form) => array_merge(
+                $this->summary($form, $perForm, $nextEditions),
+                isset($frames[(int) $form->id]) ? ['photo_frames' => $frames[(int) $form->id]] : []
+            ))->values()->all(),
             'merge_candidates' => $canManage ? $this->mergeCandidates($request, $group) : [],
             'created_at' => $group->created_at?->toIso8601String(),
             'updated_at' => $group->updated_at?->toIso8601String(),
@@ -1001,19 +1006,41 @@ class RegistrationEventGroupController extends Controller
             ->selectRaw('registration_event_id, COUNT(*) AS total')
             ->pluck('total', 'registration_event_id');
 
-        $withEntries = $removeForms->filter(fn (RegistrationEvent $form) => (int) ($entryCounts[$form->id] ?? 0) > 0);
-        if ($withEntries->isEmpty()) {
+        $framed = PhotoOverlay::supportsEvents()
+            ? PhotoOverlay::query()
+                ->whereIn('registration_event_id', $removeForms->pluck('id')->all())
+                ->pluck('registration_event_id')
+                ->map(fn ($id) => (int) $id)
+                ->unique()
+                ->all()
+            : [];
+
+        $needsConfirmation = $removeForms->filter(fn (RegistrationEvent $form) => (int) ($entryCounts[$form->id] ?? 0) > 0
+            || in_array((int) $form->id, $framed, true));
+        if ($needsConfirmation->isEmpty()) {
             return null;
         }
 
-        $names = $withEntries
-            ->map(fn (RegistrationEvent $form) => sprintf('%s (%d registration%s)', $form->location?->name ?? 'A location', (int) $entryCounts[$form->id], (int) $entryCounts[$form->id] === 1 ? '' : 's'))
+        $names = $needsConfirmation
+            ->map(function (RegistrationEvent $form) use ($entryCounts, $framed) {
+                $count = (int) ($entryCounts[$form->id] ?? 0);
+                $details = array_values(array_filter([
+                    $count > 0 ? sprintf('%d registration%s', $count, $count === 1 ? '' : 's') : null,
+                    in_array((int) $form->id, $framed, true) ? 'a photo frame' : null,
+                ]));
+
+                return sprintf('%s (%s)', $form->location?->name ?? 'A location', implode(', ', $details));
+            })
             ->join(', ');
+
+        $frameNote = $needsConfirmation->contains(fn (RegistrationEvent $form) => in_array((int) $form->id, $framed, true))
+            ? ' Their photo frames stop being used.'
+            : '';
 
         return response()->json([
             'success' => false,
             'code' => 'REMOVAL_NEEDS_CONFIRMATION',
-            'message' => "Removing these locations deletes their forms, QR codes and registration lists: {$names}.",
+            'message' => "Removing these locations deletes their forms, QR codes and registration lists: {$names}.{$frameNote}",
         ], 409);
     }
 

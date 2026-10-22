@@ -224,6 +224,12 @@ class AppServiceProvider extends ServiceProvider
         // Staff testing a channel. Each real send costs money, so keep the pace sensible.
         RateLimiter::for('photo-test-message', fn (Request $request) => Limit::perMinute(6)
             ->by('photo:test:' . ($this->photoRequestUserId($request) ?? $request->ip())));
+
+        RateLimiter::for('photo-people-search', fn (Request $request) => Limit::perMinute(60)
+            ->by('photo:search:' . ($this->photoRequestUserId($request) ?? $request->ip())));
+
+        RateLimiter::for('photo-send', fn (Request $request) => Limit::perMinute(20)
+            ->by('photo:send:' . ($this->photoRequestUserId($request) ?? $request->ip())));
     }
 
     private function registerGiftCardRateLimiter(): void

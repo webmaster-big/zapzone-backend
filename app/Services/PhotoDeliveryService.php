@@ -9,6 +9,8 @@ use App\Models\Notification;
 use App\Models\PhotoDelivery;
 use App\Models\PhotoMessageTemplate;
 use App\Models\PhotoSession;
+use App\Models\RegistrationEntry;
+use App\Models\RegistrationEvent;
 use App\Models\SmsSenderVerification;
 use App\Models\User;
 use App\Models\Waiver;
@@ -106,7 +108,7 @@ class PhotoDeliveryService
     protected function emailFallbackNote(): string
     {
         return $this->emailAvailable()
-            ? 'Guests with an email address on their waiver also get the email. For a guest with only a phone number, show the direct staff QR code instead.'
+            ? 'Guests with an email address on their waiver or event registration also get the email. For a guest with only a phone number, show the direct staff QR code instead.'
             : 'Email is not switched on either, so show the guest the direct staff QR code instead.';
     }
 
@@ -921,11 +923,7 @@ class PhotoDeliveryService
             'location_phone' => (string) ($location->phone ?? ''),
         ];
 
-        if ($kind === PhotoMessageTemplate::KIND_ESCAPE_ROOM) {
-            $bodyVariables = array_map(fn ($value) => e((string) $value), $variables);
-        } else {
-            $bodyVariables = $variables;
-        }
+        $bodyVariables = array_map(fn ($value) => e((string) $value), $variables);
 
         try {
             if ($channel === PhotoDelivery::CHANNEL_EMAIL) {
@@ -991,14 +989,14 @@ class PhotoDeliveryService
     /**
      * Channels present on the waiver record, regardless of what this site can send.
      */
-    public function contactChannelsOnRecord(Waiver $waiver): array
+    public function contactChannelsOnRecord(Waiver|RegistrationEntry $record): array
     {
         $channels = [];
 
-        if ($this->validEmail($waiver->adult_email)) {
+        if ($this->validEmail($this->recordEmail($record))) {
             $channels[] = PhotoDelivery::CHANNEL_EMAIL;
         }
-        if ($this->validPhone($waiver->adult_phone)) {
+        if ($this->validPhone($this->recordPhone($record))) {
             $channels[] = PhotoDelivery::CHANNEL_SMS;
         }
 
@@ -1009,43 +1007,63 @@ class PhotoDeliveryService
      * Channels that can actually carry a photo link right now: present on the
      * waiver AND supported by this site's configuration.
      */
-    public function contactableChannels(Waiver $waiver): array
+    public function contactableChannels(Waiver|RegistrationEntry $record, bool $allowText = true): array
     {
         return array_values(array_filter(
-            $this->contactChannelsOnRecord($waiver),
-            fn ($channel) => $channel === PhotoDelivery::CHANNEL_EMAIL ? $this->emailAvailable() : $this->smsAvailable()
+            $this->contactChannelsOnRecord($record),
+            fn ($channel) => $channel === PhotoDelivery::CHANNEL_EMAIL
+                ? $this->emailAvailable()
+                : $allowText && $this->smsAvailable()
         ));
     }
 
-    public function unavailableReason(Waiver $waiver): ?string
+    public function unavailableReason(Waiver|RegistrationEntry $record, bool $allowText = true): ?string
     {
-        $onRecord = $this->contactChannelsOnRecord($waiver);
+        $onRecord = $this->contactChannelsOnRecord($record);
 
-        if ($this->contactableChannels($waiver) !== []) {
+        if ($this->contactableChannels($record, $allowText) !== []) {
             return null;
         }
+
+        $noun = $record instanceof RegistrationEntry ? 'registration' : 'waiver';
+        $textWithheld = $record instanceof RegistrationEntry && !$allowText && $this->smsAvailable();
 
         if ($onRecord === []) {
             // Something may well be written in these fields; say so rather than claim the
             // waiver is blank, because staff can then go and correct what is there.
-            $hasSomething = trim((string) $waiver->adult_email) !== '' || trim((string) $waiver->adult_phone) !== '';
+            $hasSomething = trim((string) $this->recordEmail($record)) !== '' || trim((string) $this->recordPhone($record)) !== '';
 
             return $hasSomething
-                ? 'This waiver has no email address or mobile number that can be used. Please check the contact details on the record.'
-                : 'This waiver has no email address or mobile number.';
+                ? "This {$noun} has no email address or mobile number that can be used. Please check the contact details on the record."
+                : "This {$noun} has no email address or mobile number.";
         }
         if ($onRecord === [PhotoDelivery::CHANNEL_SMS]) {
-            return 'This waiver only has a mobile number, and text messaging is not switched on yet.';
+            return $textWithheld
+                ? 'This registration only has a mobile number. Event registrations are only texted when the guest asked for a text.'
+                : "This {$noun} only has a mobile number, and text messaging is not switched on yet.";
         }
         if ($onRecord === [PhotoDelivery::CHANNEL_EMAIL]) {
-            return 'This waiver only has an email address, and email is not switched on yet.';
+            return "This {$noun} only has an email address, and email is not switched on yet.";
         }
 
-        return 'Neither email nor text messaging is switched on yet, so nothing can be sent.';
+        return $textWithheld
+            ? 'Email is not switched on yet, and event registrations are only texted when the guest asked for a text.'
+            : 'Neither email nor text messaging is switched on yet, so nothing can be sent.';
     }
 
     public function queueWaiverDeliveries(PhotoSession $session, Collection $waivers, string $schedule, ?int $userId = null): array
     {
+        return $this->queueDeliveries($session, $waivers, collect(), $schedule, $userId);
+    }
+
+    public function queueDeliveries(
+        PhotoSession $session,
+        Collection $waivers,
+        Collection $entries,
+        string $schedule,
+        ?int $userId = null,
+        bool $textRegistrants = false
+    ): array {
         $session->loadMissing('location');
         $location = $session->location;
 
@@ -1057,55 +1075,69 @@ class PhotoDeliveryService
             ? OperatingDay::nextNineAm($location)
             : null;
 
+        $linksEntries = PhotoSession::supportsRegistrations();
         $seen = [];
         $created = [];
         $rows = [];
         $skippedWaiverIds = [];
+        $skippedEntryIds = [];
 
-        foreach ($waivers as $waiver) {
-            $channels = $this->contactableChannels($waiver);
-            $recipientName = trim(($waiver->adult_first_name ?? '') . ' ' . ($waiver->adult_last_name ?? ''));
+        $recipients = $waivers->toBase()
+            ->map(fn (Waiver $waiver) => ['record' => $waiver, 'allow_text' => true])
+            ->concat($entries->toBase()->map(fn (RegistrationEntry $entry) => ['record' => $entry, 'allow_text' => $textRegistrants]));
+
+        foreach ($recipients as ['record' => $record, 'allow_text' => $allowText]) {
+            $isEntry = $record instanceof RegistrationEntry;
+            $channels = $this->contactableChannels($record, $allowText);
+            $recipientName = $this->recordName($record);
+            $link = $isEntry
+                ? array_merge(['waiver_id' => null], $linksEntries ? ['registration_entry_id' => $record->id] : [])
+                : ['waiver_id' => $record->id];
 
             // A channel present on the waiver that this site cannot send is recorded so the
             // delivery log explains the gap, rather than silently dropping the contact.
-            foreach (array_diff($this->contactChannelsOnRecord($waiver), $channels) as $unsupported) {
-                $rows[] = PhotoDelivery::create([
+            foreach (array_diff($this->contactChannelsOnRecord($record), $channels) as $unsupported) {
+                $rows[] = PhotoDelivery::create(array_merge($link, [
                     'photo_session_id' => $session->id,
                     'company_id' => $session->company_id,
                     'location_id' => $session->location_id,
-                    'waiver_id' => $waiver->id,
                     'kind' => $kind,
                     'channel' => $unsupported,
                     'destination' => $unsupported === PhotoDelivery::CHANNEL_EMAIL
-                        ? strtolower(trim((string) $waiver->adult_email))
-                        : $this->normalizePhone($waiver->adult_phone),
+                        ? strtolower(trim((string) $this->recordEmail($record)))
+                        : $this->normalizePhone($this->recordPhone($record)),
                     'recipient_name' => $recipientName,
                     'status' => PhotoDelivery::STATUS_SKIPPED,
                     'error' => $unsupported === PhotoDelivery::CHANNEL_SMS
-                        ? 'Text messaging is not switched on yet.'
+                        ? ($isEntry && !$allowText && $this->smsAvailable()
+                            ? 'Not texted: event registrations get email unless staff confirm the guest asked for a text.'
+                            : 'Text messaging is not switched on yet.')
                         : 'Email is not switched on yet.',
                     'created_by' => $userId,
-                ]);
+                ]));
             }
 
             if ($channels === []) {
-                $skippedWaiverIds[] = $waiver->id;
+                if ($isEntry) {
+                    $skippedEntryIds[] = $record->id;
+                } else {
+                    $skippedWaiverIds[] = $record->id;
+                }
                 continue;
             }
 
             foreach ($channels as $channel) {
                 $destination = $channel === PhotoDelivery::CHANNEL_EMAIL
-                    ? strtolower(trim((string) $waiver->adult_email))
-                    : $this->normalizePhone($waiver->adult_phone);
+                    ? strtolower(trim((string) $this->recordEmail($record)))
+                    : $this->normalizePhone($this->recordPhone($record));
 
                 $key = $channel . '|' . $destination;
                 $primary = $seen[$key] ?? null;
 
-                $delivery = PhotoDelivery::create([
+                $delivery = PhotoDelivery::create(array_merge($link, [
                     'photo_session_id' => $session->id,
                     'company_id' => $session->company_id,
                     'location_id' => $session->location_id,
-                    'waiver_id' => $waiver->id,
                     'duplicate_of_id' => $primary?->id,
                     'kind' => $kind,
                     'channel' => $channel,
@@ -1116,7 +1148,7 @@ class PhotoDeliveryService
                         : ($kind === PhotoDelivery::KIND_NEXT_DAY ? PhotoDelivery::STATUS_SCHEDULED : PhotoDelivery::STATUS_QUEUED),
                     'scheduled_for' => $primary ? null : $scheduledFor,
                     'created_by' => $userId,
-                ]);
+                ]));
                 $rows[] = $delivery;
 
                 if (!$primary) {
@@ -1148,8 +1180,26 @@ class PhotoDeliveryService
         return [
             'created' => count($created),
             'skipped_waiver_ids' => $skippedWaiverIds,
+            'skipped_registration_entry_ids' => $skippedEntryIds,
             'deliveries' => PhotoDelivery::whereIn('id', collect($rows)->pluck('id'))->orderBy('id')->get(),
         ];
+    }
+
+    protected function recordEmail(Waiver|RegistrationEntry $record): ?string
+    {
+        return $record instanceof RegistrationEntry ? $record->email : $record->adult_email;
+    }
+
+    protected function recordPhone(Waiver|RegistrationEntry $record): ?string
+    {
+        return $record instanceof RegistrationEntry ? $record->phone : $record->adult_phone;
+    }
+
+    protected function recordName(Waiver|RegistrationEntry $record): string
+    {
+        return $record instanceof RegistrationEntry
+            ? trim((string) $record->name)
+            : trim(($record->adult_first_name ?? '') . ' ' . ($record->adult_last_name ?? ''));
     }
 
     public function createEscapeRoomDeliveries(PhotoSession $session, Collection $waivers, ?int $userId = null): array
@@ -1320,6 +1370,15 @@ class PhotoDeliveryService
             return false;
         }
 
+        if ($this->registrationWithdrawn($delivery)) {
+            $delivery->update([
+                'status' => PhotoDelivery::STATUS_CANCELED,
+                'error' => 'This registration was hidden or removed before the photo was sent.',
+            ]);
+
+            return false;
+        }
+
         $isEscapeRoom = $delivery->kind === PhotoDelivery::KIND_ESCAPE_ROOM;
         $emailLog = null;
 
@@ -1351,7 +1410,7 @@ class PhotoDeliveryService
                 $this->sendEmail(
                     $delivery->destination,
                     $template->render('email_subject', $variables),
-                    $this->wrapHtml($template->render('email_body', $variables)),
+                    $this->wrapHtml($template->render('email_body', array_map(fn ($value) => e((string) $value), $variables))),
                     $variables['business_name']
                 );
             } else {
@@ -1556,7 +1615,7 @@ class PhotoDeliveryService
         $location = $session->location;
         $tz = OperatingDay::timezoneFor($location);
         $name = $delivery?->recipient_name ?: $session->kiosk_contact_name;
-        $firstName = trim(explode(' ', trim((string) $name))[0] ?? '');
+        $firstName = $delivery?->registration_entry_id ? '' : trim(explode(' ', trim((string) $name))[0] ?? '');
 
         return [
             'first_name' => $firstName !== '' ? $firstName : 'there',
@@ -1695,6 +1754,19 @@ class PhotoDeliveryService
 </body>
 </html>
 HTML;
+    }
+
+    protected function registrationWithdrawn(PhotoDelivery $delivery): bool
+    {
+        if (!$delivery->registration_entry_id || !PhotoSession::supportsRegistrations()) {
+            return false;
+        }
+
+        $entry = RegistrationEntry::query()->find($delivery->registration_entry_id);
+
+        return $entry === null
+            || $entry->hidden_at !== null
+            || !RegistrationEvent::query()->whereKey($entry->registration_event_id)->exists();
     }
 
     public function validEmail(?string $value): bool

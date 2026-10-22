@@ -142,19 +142,7 @@ class RegistrationFormController extends Controller
 
     private function startsOn(RegistrationEvent $event): ?string
     {
-        if (!SchemaSupport::hasColumn('registration_events', 'event_id') || $event->event_id === null) {
-            return null;
-        }
-
-        $linked = $event->event;
-        if ($linked === null || (int) $linked->location_id !== (int) $event->location_id || $linked->start_date === null || $linked->end_date === null) {
-            return null;
-        }
-
-        $start = $linked->start_date->toDateString();
-        $date = $event->event_date->toDateString();
-
-        return $start < $date && $date <= $linked->end_date->toDateString() ? $start : null;
+        return $event->startsOn();
     }
 
     private function nextEditionLink(RegistrationEvent $event): ?array

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Http\Traits\PresentsPhotos;
+use App\Http\Traits\ResolvesPhotoRecipients;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Models\ActivityLog;
 use App\Models\Location;
@@ -11,10 +12,12 @@ use App\Models\LocationPhotoSetting;
 use App\Models\Photo;
 use App\Models\PhotoDelivery;
 use App\Models\PhotoSession;
+use App\Models\RegistrationEntry;
 use App\Models\SlideshowQueue;
 use App\Models\Waiver;
 use App\Services\PhotoDeliveryService;
 use App\Services\PhotoProcessingService;
+use App\Services\PhotoRegistrantFinder;
 use App\Support\OperatingDay;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -22,11 +25,12 @@ use Illuminate\Validation\Rule;
 
 class PhotoSessionController extends Controller
 {
-    use ScopesByAuthUser, PresentsPhotos;
+    use ScopesByAuthUser, PresentsPhotos, ResolvesPhotoRecipients;
 
     public function __construct(
         protected PhotoProcessingService $processor,
-        protected PhotoDeliveryService $deliveries
+        protected PhotoDeliveryService $deliveries,
+        protected PhotoRegistrantFinder $registrants
     ) {
     }
 
@@ -295,9 +299,61 @@ class PhotoSessionController extends Controller
             return $denied;
         }
 
-        $term = trim($validated['q']);
-        $digits = (string) preg_replace('/[^0-9]/', '', $term);
         $locationId = $request->filled('location_id') ? $request->integer('location_id') : null;
+
+        return response()->json([
+            'success' => true,
+            'data' => $this->waiverMatches($request, trim($validated['q']), $locationId)
+                ->map(fn (Waiver $waiver) => $this->presentWaiverMatch($waiver))
+                ->values(),
+        ]);
+    }
+
+    public function peopleSearch(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'q' => ['required', 'string', 'min:2', 'max:120'],
+            'photo_session_id' => ['required', 'integer'],
+        ]);
+
+        $photoSession = PhotoSession::with('location')->find($validated['photo_session_id']);
+
+        if (!$photoSession) {
+            return response()->json([
+                'success' => false,
+                'message' => 'That photo session could not be found.',
+            ], 404);
+        }
+
+        if (!$this->authorizeRecordScope($photoSession)) {
+            return $this->forbidden();
+        }
+
+        $term = trim($validated['q']);
+        $day = $this->registrants->referenceDay($photoSession);
+
+        $registrations = $this->registrants->available($photoSession)
+            ? $this->registrants->search($photoSession, $term, $this->staffLocationIds($request))
+                ->map(fn (RegistrationEntry $entry) => $this->presentRegistrationMatch($entry, $day, $photoSession->location))
+                ->values()
+            : collect();
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'reference_day' => $day,
+                'waivers' => $this->waiverMatches($request, $term, (int) $photoSession->location_id)
+                    ->map(fn (Waiver $waiver) => $this->presentWaiverMatch($waiver, true))
+                    ->values(),
+                'registrations' => $registrations,
+            ],
+        ])->header('Cache-Control', 'no-store');
+    }
+
+    protected function waiverMatches(Request $request, string $term, ?int $locationId)
+    {
+        $digits = (string) preg_replace('/[^0-9]/', '', $term);
+        $like = '%' . addcslashes($term, '\\%_') . '%';
 
         // Phone numbers are stored however they were typed — "(734) 555-0142", "734-555-0142",
         // "+1 734 555 0142". Comparing digits against the raw column never matches, so strip the
@@ -307,18 +363,18 @@ class PhotoSessionController extends Controller
         $query = Waiver::query()
             ->with('location')
             ->where('status', Waiver::STATUS_COMPLETED)
-            ->where(function ($q) use ($term, $digits, $phoneDigits) {
-                $q->where('adult_first_name', 'like', "%{$term}%")
-                    ->orWhere('adult_last_name', 'like', "%{$term}%")
-                    ->orWhere('adult_email', 'like', "%{$term}%")
+            ->where(function ($q) use ($like, $digits, $phoneDigits) {
+                $q->where('adult_first_name', 'like', $like)
+                    ->orWhere('adult_last_name', 'like', $like)
+                    ->orWhere('adult_email', 'like', $like)
                     ->orWhereRaw(
                         "CONCAT(COALESCE(adult_first_name, ''), ' ', COALESCE(adult_last_name, '')) LIKE ?",
-                        ["%{$term}%"]
+                        [$like]
                     )
                     // "Okonkwo Alex" should find "Alex Okonkwo" too.
                     ->orWhereRaw(
                         "CONCAT(COALESCE(adult_last_name, ''), ' ', COALESCE(adult_first_name, '')) LIKE ?",
-                        ["%{$term}%"]
+                        [$like]
                     );
 
                 if (strlen($digits) >= 4) {
@@ -336,31 +392,56 @@ class PhotoSessionController extends Controller
             $query->orderByRaw('CASE WHEN location_id = ? THEN 0 ELSE 1 END', [$locationId]);
         }
 
-        $waivers = $query->orderByDesc('submitted_at')->limit(25)->get();
+        return $query->orderByDesc('submitted_at')->limit(25)->get();
+    }
 
-        return response()->json([
-            'success' => true,
-            'data' => $waivers->map(function (Waiver $waiver) {
-                $onRecord = $this->deliveries->contactChannelsOnRecord($waiver);
-                $deliverable = $this->deliveries->contactableChannels($waiver);
+    protected function presentWaiverMatch(Waiver $waiver, bool $withKind = false): array
+    {
+        $onRecord = $this->deliveries->contactChannelsOnRecord($waiver);
+        $deliverable = $this->deliveries->contactableChannels($waiver);
 
-                return [
-                    'id' => $waiver->id,
-                    'name' => trim(($waiver->adult_first_name ?? '') . ' ' . ($waiver->adult_last_name ?? '')),
-                    'email_masked' => $this->maskEmail($waiver->adult_email),
-                    'phone_masked' => $this->maskPhone($waiver->adult_phone),
-                    'has_email' => in_array(PhotoDelivery::CHANNEL_EMAIL, $onRecord, true),
-                    'has_phone' => in_array(PhotoDelivery::CHANNEL_SMS, $onRecord, true),
-                    'contactable' => $deliverable !== [],
-                    'unavailable_reason' => $this->deliveries->unavailableReason($waiver),
-                    'photo_video_consent' => $waiver->photo_video_consent,
-                    'status' => $waiver->status,
-                    'location_name' => $waiver->location?->name,
-                    'signed_on' => $waiver->submitted_at?->toDateString(),
-                    'visit_date' => $waiver->selected_date?->toDateString(),
-                ];
-            })->values(),
+        return array_merge($withKind ? ['kind' => 'waiver'] : [], [
+            'id' => $waiver->id,
+            'name' => trim(($waiver->adult_first_name ?? '') . ' ' . ($waiver->adult_last_name ?? '')),
+            'email_masked' => $this->maskEmail($waiver->adult_email),
+            'phone_masked' => $this->maskPhone($waiver->adult_phone),
+            'has_email' => in_array(PhotoDelivery::CHANNEL_EMAIL, $onRecord, true),
+            'has_phone' => in_array(PhotoDelivery::CHANNEL_SMS, $onRecord, true),
+            'contactable' => $deliverable !== [],
+            'unavailable_reason' => $this->deliveries->unavailableReason($waiver),
+            'photo_video_consent' => $waiver->photo_video_consent,
+            'status' => $waiver->status,
+            'location_name' => $waiver->location?->name,
+            'signed_on' => $waiver->submitted_at?->toDateString(),
+            'visit_date' => $waiver->selected_date?->toDateString(),
         ]);
+    }
+
+    protected function presentRegistrationMatch(RegistrationEntry $entry, string $day, ?Location $location): array
+    {
+        $onRecord = $this->deliveries->contactChannelsOnRecord($entry);
+        $deliverable = $this->deliveries->contactableChannels($entry);
+        $form = $entry->event;
+
+        return [
+            'kind' => 'registration',
+            'id' => (int) $entry->id,
+            'name' => $entry->name,
+            'email_masked' => $this->maskEmail($entry->email),
+            'phone_masked' => $this->maskPhone($entry->phone),
+            'has_email' => in_array(PhotoDelivery::CHANNEL_EMAIL, $onRecord, true),
+            'has_phone' => in_array(PhotoDelivery::CHANNEL_SMS, $onRecord, true),
+            'can_email' => in_array(PhotoDelivery::CHANNEL_EMAIL, $deliverable, true),
+            'can_text' => in_array(PhotoDelivery::CHANNEL_SMS, $deliverable, true),
+            'contactable' => $deliverable !== [],
+            'unavailable_reason' => $this->deliveries->unavailableReason($entry),
+            'photo_video_consent' => null,
+            'event_name' => $form?->name,
+            'first_day' => $form?->firstDay(),
+            'event_date' => $form?->event_date?->toDateString(),
+            'covers_photo_day' => $form !== null && $form->coversDay($day),
+            'registered_on' => $entry->created_at?->copy()->setTimezone(OperatingDay::timezoneFor($location))->toDateString(),
+        ];
     }
 
     public function deliver(Request $request, PhotoSession $photoSession): JsonResponse
@@ -372,8 +453,7 @@ class PhotoSessionController extends Controller
         $validated = $request->validate([
             'method' => ['required', Rule::in([PhotoSession::DELIVERY_WAIVER_MESSAGE, PhotoSession::DELIVERY_STAFF_QR])],
             'schedule' => ['nullable', Rule::in([PhotoSession::SCHEDULE_IMMEDIATE, PhotoSession::SCHEDULE_NEXT_DAY])],
-            'waiver_ids' => ['nullable', 'array'],
-            'waiver_ids.*' => ['integer', 'exists:waivers,id'],
+            ...$this->recipientRules(),
             'slideshow_opt_in' => ['nullable', 'boolean'],
         ]);
 
@@ -401,6 +481,16 @@ class PhotoSessionController extends Controller
                 'success' => false,
                 'message' => 'A delivery method has already been chosen for this session.',
             ], 422);
+        }
+
+        $recipients = null;
+
+        if ($validated['method'] === PhotoSession::DELIVERY_WAIVER_MESSAGE) {
+            $recipients = $this->resolveRecipients($request, $photoSession, $validated, true);
+
+            if ($recipients instanceof JsonResponse) {
+                return $recipients;
+            }
         }
 
         $photoSession->startQrWindow();
@@ -433,59 +523,35 @@ class PhotoSessionController extends Controller
             ]);
         }
 
-        $waiverIds = array_values(array_unique($validated['waiver_ids'] ?? []));
-
-        if ($waiverIds === []) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Select at least one waiver, or use the direct staff QR code instead.',
-            ], 422);
-        }
-
-        $waiverQuery = Waiver::whereIn('id', $waiverIds)->where('status', Waiver::STATUS_COMPLETED);
-        $this->applyAuthScope($waiverQuery, $request);
-        $waivers = $waiverQuery->get();
-
-        if ($waivers->count() !== count($waiverIds)) {
-            return response()->json([
-                'success' => false,
-                'message' => 'One or more of the selected waivers is no longer available. Please search again.',
-            ], 422);
-        }
-
-        $contactable = $waivers->filter(fn ($w) => $this->deliveries->contactableChannels($w) !== []);
-
-        if ($contactable->isEmpty()) {
-            $reason = $waivers->map(fn ($w) => $this->deliveries->unavailableReason($w))->filter()->first();
-
-            return response()->json([
-                'success' => false,
-                'message' => ($reason ?? 'None of the selected waivers can be contacted.')
-                    . ' Use the direct staff QR code instead.',
-            ], 422);
-        }
+        [$waivers, $entries, $textRegistrants] = $recipients;
 
         $photoSession->status = PhotoSession::STATUS_READY;
         $photoSession->save();
 
         $photoSession->waivers()->syncWithoutDetaching($waivers->pluck('id')->all());
 
+        if ($entries->isNotEmpty()) {
+            $photoSession->registrations()->syncWithoutDetaching($entries->pluck('id')->all());
+        }
+
         $schedule = $validated['schedule'] ?? PhotoSession::SCHEDULE_IMMEDIATE;
-        $result = $this->deliveries->queueWaiverDeliveries(
+        $result = $this->deliveries->queueDeliveries(
             $photoSession,
             $waivers,
+            $entries,
             $schedule,
-            $this->resolveAuthUser($request)?->id
+            $this->resolveAuthUser($request)?->id,
+            $textRegistrants
         );
 
         ActivityLog::log(
             'photo_waiver_delivery',
             'photos',
             sprintf(
-                '%s photo session #%d to %d waiver record(s)',
+                '%s photo session #%d to %s',
                 $schedule === PhotoSession::SCHEDULE_NEXT_DAY ? 'Scheduled' : 'Sent',
                 $photoSession->id,
-                $waivers->count()
+                $this->recipientSummary($waivers, $entries)
             ),
             $this->resolveAuthUser($request)?->id,
             $photoSession->location_id,
@@ -493,9 +559,12 @@ class PhotoSessionController extends Controller
             $photoSession->id,
             [
                 'waiver_ids' => $waivers->pluck('id')->all(),
+                'registration_entry_ids' => $entries->pluck('id')->all(),
+                'text_registrants' => $textRegistrants,
                 'schedule' => $schedule,
                 'deliveries_created' => $result['created'],
                 'skipped_waiver_ids' => $result['skipped_waiver_ids'],
+                'skipped_registration_entry_ids' => $result['skipped_registration_entry_ids'],
             ]
         );
 

@@ -60,6 +60,7 @@ class PhotoDelivery extends Model
         'company_id',
         'location_id',
         'waiver_id',
+        'registration_entry_id',
         'duplicate_of_id',
         'kind',
         'channel',
@@ -107,6 +108,11 @@ class PhotoDelivery extends Model
     public function waiver(): BelongsTo
     {
         return $this->belongsTo(Waiver::class);
+    }
+
+    public function registrationEntry(): BelongsTo
+    {
+        return $this->belongsTo(RegistrationEntry::class);
     }
 
     public function location(): BelongsTo

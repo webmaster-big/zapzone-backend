@@ -27,6 +27,7 @@ class PhotoOverlay extends Model
         'priority',
         'created_by',
         'package_id',
+        'registration_event_id',
     ];
 
     protected $attributes = [
@@ -56,14 +57,77 @@ class PhotoOverlay extends Model
         return $this->belongsTo(Package::class)->withTrashed();
     }
 
+    public function registrationEvent(): BelongsTo
+    {
+        return $this->belongsTo(RegistrationEvent::class)->withTrashed();
+    }
+
     public static function supportsRooms(): bool
     {
         return \App\Support\SchemaSupport::hasColumn('photo_overlays', 'package_id');
     }
 
+    public static function supportsEvents(): bool
+    {
+        return RegistrationEvent::isAvailable()
+            && \App\Support\SchemaSupport::hasColumn('photo_overlays', 'registration_event_id');
+    }
+
     public function roomId(): ?int
     {
         return self::supportsRooms() && $this->package_id ? (int) $this->package_id : null;
+    }
+
+    public function eventFormId(): ?int
+    {
+        return self::supportsEvents() && $this->registration_event_id ? (int) $this->registration_event_id : null;
+    }
+
+    public function eventFormRemoved(): bool
+    {
+        if ($this->eventFormId() === null) {
+            return false;
+        }
+
+        $form = $this->registrationEvent;
+
+        return $form === null || $form->trashed() || (int) $form->location_id !== (int) $this->location_id;
+    }
+
+    public function eventWindow(): ?array
+    {
+        if ($this->eventFormId() === null || $this->eventFormRemoved()) {
+            return null;
+        }
+
+        return $this->registrationEvent->photoWindow($this->location);
+    }
+
+    public function effectiveWindow(): ?array
+    {
+        $ownStart = $this->starts_at;
+        $ownEnd = $this->ends_at?->copy()->addSecond();
+
+        if ($this->eventFormId() === null) {
+            return [$ownStart, $ownEnd];
+        }
+
+        $event = $this->eventWindow();
+
+        if ($event === null) {
+            return null;
+        }
+
+        [$eventStart, $eventEnd] = $event;
+        $start = $ownStart && $ownStart->greaterThan($eventStart) ? $ownStart : $eventStart;
+        $end = $ownEnd && $ownEnd->lessThan($eventEnd) ? $ownEnd : $eventEnd;
+
+        return $start->lessThan($end) ? [$start, $end] : null;
+    }
+
+    public function neverRuns(): bool
+    {
+        return $this->eventFormId() !== null && !$this->eventFormRemoved() && $this->effectiveWindow() === null;
     }
 
     public function isActiveAt(?\Illuminate\Support\Carbon $at = null): bool
@@ -73,6 +137,12 @@ class PhotoOverlay extends Model
         }
 
         $at = $at ?: now();
+
+        if ($this->eventFormId() !== null) {
+            $window = $this->effectiveWindow();
+
+            return $window !== null && $at->greaterThanOrEqualTo($window[0]) && $at->lessThan($window[1]);
+        }
 
         if ($this->starts_at && $this->starts_at->greaterThan($at)) {
             return false;
@@ -91,6 +161,16 @@ class PhotoOverlay extends Model
         }
 
         $at = $at ?: now();
+
+        if ($this->eventFormId() !== null) {
+            $window = $this->effectiveWindow();
+
+            if ($window === null || $at->greaterThanOrEqualTo($window[1])) {
+                return self::STATUS_EXPIRED;
+            }
+
+            return $at->lessThan($window[0]) ? self::STATUS_SCHEDULED : self::STATUS_ACTIVE;
+        }
 
         if ($this->starts_at && $this->starts_at->greaterThan($at)) {
             return self::STATUS_SCHEDULED;
@@ -115,6 +195,7 @@ class PhotoOverlay extends Model
 
         return $query->where('location_id', $locationId)
             ->when(self::supportsRooms(), fn ($q) => $q->whereNull('package_id'))
+            ->when(self::supportsEvents(), fn ($q) => $q->whereNull('registration_event_id'))
             ->where('is_enabled', true)
             ->where(fn ($q) => $q->whereNull('starts_at')->orWhere('starts_at', '<=', $at))
             ->where(fn ($q) => $q->whereNull('ends_at')->orWhere('ends_at', '>=', $at))
@@ -133,6 +214,26 @@ class PhotoOverlay extends Model
 
         return $query->where('location_id', $locationId)
             ->where('package_id', $packageId)
+            ->when(self::supportsEvents(), fn ($q) => $q->whereNull('registration_event_id'))
+            ->where('is_enabled', true)
+            ->where(fn ($q) => $q->whereNull('starts_at')->orWhere('starts_at', '<=', $at))
+            ->where(fn ($q) => $q->whereNull('ends_at')->orWhere('ends_at', '>=', $at))
+            ->orderByDesc('priority')
+            ->orderByDesc('starts_at')
+            ->orderByDesc('id');
+    }
+
+    public function scopeEventCandidatesAt($query, int $locationId, ?\Illuminate\Support\Carbon $at = null)
+    {
+        $at = $at ?: now();
+
+        if (!self::supportsEvents()) {
+            return $query->whereRaw('1 = 0');
+        }
+
+        return $query->where('location_id', $locationId)
+            ->whereNotNull('registration_event_id')
+            ->when(self::supportsRooms(), fn ($q) => $q->whereNull('package_id'))
             ->where('is_enabled', true)
             ->where(fn ($q) => $q->whereNull('starts_at')->orWhere('starts_at', '<=', $at))
             ->where(fn ($q) => $q->whereNull('ends_at')->orWhere('ends_at', '>=', $at))

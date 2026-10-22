@@ -317,7 +317,7 @@ class RegistrationEventController extends Controller
         $locationId = array_key_exists('location_id', $data) ? (int) $data['location_id'] : (int) $event->location_id;
         if ($locationId !== (int) $event->location_id) {
             if ($this->locationLocked($event)) {
-                return $this->fieldError('location_id', "The location can't be changed once people have registered or another form links to this one.");
+                return $this->fieldError('location_id', "The location can't be changed once people have registered, another form links to this one, or a photo frame uses it.");
             }
 
             if (!Location::query()->where('company_id', $user->company_id)->whereKey($locationId)->exists()) {

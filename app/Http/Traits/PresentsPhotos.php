@@ -61,6 +61,8 @@ trait PresentsPhotos
             'id' => $delivery->id,
             'photo_session_id' => $delivery->photo_session_id,
             'waiver_id' => $delivery->waiver_id,
+            'registration_entry_id' => $delivery->registration_entry_id !== null ? (int) $delivery->registration_entry_id : null,
+            'recipient_source' => $delivery->registration_entry_id !== null ? 'registration' : ($delivery->waiver_id !== null ? 'waiver' : null),
             'kind' => $delivery->kind,
             'channel' => $delivery->channel,
             'destination_masked' => $delivery->maskedDestination(),
@@ -101,7 +103,10 @@ trait PresentsPhotos
 
     protected function presentSession(PhotoSession $session, bool $includeContact = false): array
     {
-        $session->loadMissing('location', 'photos.overlay', 'deliveries', 'waivers', 'creator');
+        $session->loadMissing(array_merge(
+            ['location', 'photos.overlay', 'deliveries', 'waivers', 'creator'],
+            PhotoSession::supportsRegistrations() ? ['registrations.event:id,name'] : []
+        ));
         $tz = OperatingDay::timezoneFor($session->location);
 
         $payload = [
@@ -131,6 +136,13 @@ trait PresentsPhotos
                 'id' => $waiver->id,
                 'name' => trim(($waiver->adult_first_name ?? '') . ' ' . ($waiver->adult_last_name ?? '')),
             ])->values(),
+            'registrations' => PhotoSession::supportsRegistrations()
+                ? $session->registrations->map(fn ($entry) => [
+                    'id' => (int) $entry->id,
+                    'name' => $entry->name,
+                    'event_name' => $entry->event?->name,
+                ])->values()
+                : [],
             'captured_at' => $session->captured_at?->toIso8601String(),
             'capture_date' => $session->capture_date?->toDateString(),
             'operating_day' => $session->operating_day?->toDateString(),

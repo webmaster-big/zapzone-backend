@@ -622,7 +622,7 @@ class EventRegistrationTest extends TestCase
         $this->getJson("/api/registration-events/{$form->id}")->assertJsonPath('data.location_locked', true);
         $this->post("/api/registration-events/{$form->id}", ['location_id' => $this->farmington->id])
             ->assertUnprocessable()
-            ->assertJsonPath('errors.location_id.0', "The location can't be changed once people have registered or another form links to this one.");
+            ->assertJsonPath('errors.location_id.0', "The location can't be changed once people have registered, another form links to this one, or a photo frame uses it.");
         $this->assertSame($this->brighton->id, $form->fresh()->location_id);
     }
 

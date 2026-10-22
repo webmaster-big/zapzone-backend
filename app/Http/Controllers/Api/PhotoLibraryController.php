@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Http\Traits\PresentsPhotos;
+use App\Http\Traits\ResolvesPhotoRecipients;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Models\ActivityLog;
 use App\Models\Photo;
@@ -11,6 +12,7 @@ use App\Models\PhotoSession;
 use App\Models\Waiver;
 use App\Services\PhotoDeliveryService;
 use App\Services\PhotoProcessingService;
+use App\Services\PhotoRegistrantFinder;
 use App\Support\OperatingDay;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -20,9 +22,12 @@ use Symfony\Component\HttpFoundation\Response as SymfonyResponse;
 
 class PhotoLibraryController extends Controller
 {
-    use ScopesByAuthUser, PresentsPhotos;
+    use ScopesByAuthUser, PresentsPhotos, ResolvesPhotoRecipients;
 
-    public function __construct(protected PhotoDeliveryService $deliveries)
+    public function __construct(
+        protected PhotoDeliveryService $deliveries,
+        protected PhotoRegistrantFinder $registrants
+    )
     {
     }
 
@@ -293,8 +298,7 @@ class PhotoLibraryController extends Controller
         }
 
         $validated = $request->validate([
-            'waiver_ids' => ['required', 'array', 'min:1'],
-            'waiver_ids.*' => ['integer', 'exists:waivers,id'],
+            ...$this->recipientRules(),
             'schedule' => ['nullable', Rule::in([PhotoSession::SCHEDULE_IMMEDIATE, PhotoSession::SCHEDULE_NEXT_DAY])],
         ]);
 
@@ -315,39 +319,43 @@ class PhotoLibraryController extends Controller
             ], 422);
         }
 
-        $waiverQuery = Waiver::whereIn('id', $validated['waiver_ids'])->where('status', Waiver::STATUS_COMPLETED);
-        $this->applyAuthScope($waiverQuery, $request);
-        $waivers = $waiverQuery->get();
+        $recipients = $this->resolveRecipients($request, $session, $validated, false);
 
-        $contactable = $waivers->filter(fn ($w) => $this->deliveries->contactableChannels($w) !== []);
-
-        if ($contactable->isEmpty()) {
-            $reason = $waivers->map(fn ($w) => $this->deliveries->unavailableReason($w))->filter()->first();
-
-            return response()->json([
-                'success' => false,
-                'message' => $reason ?? 'None of the selected waivers can be contacted.',
-            ], 422);
+        if ($recipients instanceof JsonResponse) {
+            return $recipients;
         }
+
+        [$waivers, $entries, $textRegistrants] = $recipients;
 
         $session->waivers()->syncWithoutDetaching($waivers->pluck('id')->all());
 
-        $result = $this->deliveries->queueWaiverDeliveries(
+        if ($entries->isNotEmpty()) {
+            $session->registrations()->syncWithoutDetaching($entries->pluck('id')->all());
+        }
+
+        $result = $this->deliveries->queueDeliveries(
             $session,
             $waivers,
+            $entries,
             $validated['schedule'] ?? PhotoSession::SCHEDULE_IMMEDIATE,
-            $this->resolveAuthUser($request)?->id
+            $this->resolveAuthUser($request)?->id,
+            $textRegistrants
         );
 
         ActivityLog::log(
             'photo_backend_send',
             'photos',
-            sprintf('Sent photo session #%d from the daily library to %d waiver record(s)', $session->id, $waivers->count()),
+            sprintf('Sent photo session #%d from the daily library to %s', $session->id, $this->recipientSummary($waivers, $entries)),
             $this->resolveAuthUser($request)?->id,
             $session->location_id,
             'photo_session',
             $session->id,
-            ['waiver_ids' => $waivers->pluck('id')->all(), 'deliveries_created' => $result['created']]
+            [
+                'waiver_ids' => $waivers->pluck('id')->all(),
+                'registration_entry_ids' => $entries->pluck('id')->all(),
+                'text_registrants' => $textRegistrants,
+                'deliveries_created' => $result['created'],
+            ]
         );
 
         $outcome = $this->deliveries->summarizeOutcome($result['deliveries'], $session->company_id);

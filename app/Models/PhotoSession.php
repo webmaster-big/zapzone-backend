@@ -141,6 +141,18 @@ class PhotoSession extends Model
         return $this->belongsToMany(Waiver::class, 'photo_session_waivers')->withTimestamps();
     }
 
+    public function registrations(): BelongsToMany
+    {
+        return $this->belongsToMany(RegistrationEntry::class, 'photo_session_registrations')->withTimestamps();
+    }
+
+    public static function supportsRegistrations(): bool
+    {
+        return RegistrationEvent::isAvailable()
+            && \App\Support\SchemaSupport::hasTable('photo_session_registrations')
+            && \App\Support\SchemaSupport::hasColumn('photo_deliveries', 'registration_entry_id');
+    }
+
     public function escapeRoomSession(): \Illuminate\Database\Eloquent\Relations\HasOne
     {
         return $this->hasOne(EscapeRoomSession::class);

@@ -142,6 +142,8 @@ class PhotoProcessingService
             if ($roomOverlay) {
                 return $roomOverlay;
             }
+        } elseif ($eventOverlay = $this->eventOverlay($location, $at)) {
+            return $eventOverlay;
         }
 
         $candidates = PhotoOverlay::candidatesFor($location->id, $at)->get();
@@ -156,44 +158,106 @@ class PhotoProcessingService
         return $candidates->first();
     }
 
+    protected function eventOverlay(Location $location, Carbon $at): ?PhotoOverlay
+    {
+        if (!PhotoOverlay::supportsEvents()) {
+            return null;
+        }
+
+        try {
+            $active = PhotoOverlay::eventCandidatesAt($location->id, $at)
+                ->with('registrationEvent.event')
+                ->get()
+                ->each(fn (PhotoOverlay $overlay) => $overlay->setRelation('location', $location))
+                ->filter(fn (PhotoOverlay $overlay) => $overlay->isActiveAt($at))
+                ->values();
+        } catch (\Throwable $e) {
+            Log::warning('Event photo frames could not be checked, so the everyday frame was used.', [
+                'location_id' => $location->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+
+        if ($active->count() > 1) {
+            Log::warning('Several event photo frames are active; highest priority wins.', [
+                'location_id' => $location->id,
+                'overlay_ids' => $active->pluck('id')->all(),
+            ]);
+        }
+
+        return $active->first();
+    }
+
     public function overlayConflicts(int $locationId): array
     {
-        $overlays = PhotoOverlay::where('location_id', $locationId)
+        $location = Location::find($locationId);
+        $now = now();
+
+        $live = PhotoOverlay::where('location_id', $locationId)
             ->where('is_enabled', true)
-            ->orderBy('starts_at')
-            ->get();
+            ->when(PhotoOverlay::supportsEvents(), fn ($query) => $query->with('registrationEvent.event'))
+            ->orderByDesc('priority')
+            ->orderByRaw('starts_at IS NULL')
+            ->orderByDesc('starts_at')
+            ->orderByDesc('id')
+            ->get()
+            ->map(function (PhotoOverlay $overlay) use ($location, $now) {
+                if ($location) {
+                    $overlay->setRelation('location', $location);
+                }
+
+                $window = $overlay->effectiveWindow();
+
+                if ($window === null || ($window[1] !== null && $window[1]->lessThanOrEqualTo($now))) {
+                    return null;
+                }
+
+                return ['overlay' => $overlay, 'window' => $window, 'scope' => $this->conflictScope($overlay)];
+            })
+            ->filter()
+            ->values();
 
         $conflicts = [];
 
-        foreach ($overlays as $i => $a) {
-            foreach ($overlays->slice($i + 1) as $b) {
-                if ($a->roomId() !== $b->roomId()) {
+        foreach ($live as $i => $a) {
+            foreach ($live->slice($i + 1) as $b) {
+                if ($a['scope'] !== $b['scope'] || !$this->windowsOverlap($a['window'], $b['window'])) {
                     continue;
                 }
 
-                if ($this->windowsOverlap($a, $b)) {
-                    $conflicts[] = [
-                        'overlay_id' => $a->id,
-                        'overlay_name' => $a->name,
-                        'conflicts_with_id' => $b->id,
-                        'conflicts_with_name' => $b->name,
-                        'winner_id' => $a->priority >= $b->priority ? $a->id : $b->id,
-                    ];
-                }
+                $conflicts[] = [
+                    'overlay_id' => $a['overlay']->id,
+                    'overlay_name' => $a['overlay']->name,
+                    'conflicts_with_id' => $b['overlay']->id,
+                    'conflicts_with_name' => $b['overlay']->name,
+                    'winner_id' => $a['overlay']->id,
+                    'winner_name' => $a['overlay']->name,
+                ];
             }
         }
 
         return $conflicts;
     }
 
-    protected function windowsOverlap(PhotoOverlay $a, PhotoOverlay $b): bool
+    protected function conflictScope(PhotoOverlay $overlay): string
     {
-        $aStart = $a->starts_at?->timestamp ?? PHP_INT_MIN;
-        $aEnd = $a->ends_at?->timestamp ?? PHP_INT_MAX;
-        $bStart = $b->starts_at?->timestamp ?? PHP_INT_MIN;
-        $bEnd = $b->ends_at?->timestamp ?? PHP_INT_MAX;
+        if ($overlay->roomId() !== null) {
+            return 'room:' . $overlay->roomId();
+        }
 
-        return $aStart <= $bEnd && $bStart <= $aEnd;
+        return $overlay->eventFormId() !== null ? 'event' : 'general';
+    }
+
+    protected function windowsOverlap(array $a, array $b): bool
+    {
+        $aStart = $a[0]?->getTimestamp() ?? PHP_INT_MIN;
+        $aEnd = $a[1]?->getTimestamp() ?? PHP_INT_MAX;
+        $bStart = $b[0]?->getTimestamp() ?? PHP_INT_MIN;
+        $bEnd = $b[1]?->getTimestamp() ?? PHP_INT_MAX;
+
+        return $aStart < $bEnd && $bStart < $aEnd;
     }
 
     protected function render(

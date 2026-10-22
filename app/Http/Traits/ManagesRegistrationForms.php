@@ -5,6 +5,7 @@ namespace App\Http\Traits;
 use App\Models\ActivityLog;
 use App\Models\Event;
 use App\Models\Location;
+use App\Models\PhotoOverlay;
 use App\Models\RegistrationEntry;
 use App\Models\RegistrationEvent;
 use App\Models\RegistrationEventGroup;
@@ -247,7 +248,37 @@ trait ManagesRegistrationForms
     protected function locationLocked(RegistrationEvent $event): bool
     {
         return RegistrationEntry::query()->where('registration_event_id', $event->id)->exists()
-            || RegistrationEvent::query()->where('previous_edition_id', $event->id)->exists();
+            || RegistrationEvent::query()->where('previous_edition_id', $event->id)->exists()
+            || (PhotoOverlay::supportsEvents() && PhotoOverlay::query()->where('registration_event_id', $event->id)->exists());
+    }
+
+    protected function photoFramesFor(Collection $forms): array
+    {
+        if ($forms->isEmpty() || !PhotoOverlay::supportsEvents()) {
+            return [];
+        }
+
+        $frames = PhotoOverlay::query()
+            ->with(['location', 'registrationEvent.event'])
+            ->whereIn('registration_event_id', $forms->map(fn (RegistrationEvent $form) => (int) $form->id)->all())
+            ->orderByDesc('priority')
+            ->orderByDesc('id')
+            ->get()
+            ->groupBy('registration_event_id');
+
+        return $forms->mapWithKeys(fn (RegistrationEvent $form) => [
+            (int) $form->id => [
+                'first_day' => $form->firstDay(),
+                'event_date' => $form->event_date->toDateString(),
+                'frames' => ($frames->get($form->id) ?? collect())->map(fn (PhotoOverlay $frame) => [
+                    'id' => (int) $frame->id,
+                    'name' => $frame->name,
+                    'status' => $frame->status(),
+                    'is_enabled' => (bool) $frame->is_enabled,
+                    'never_runs' => $frame->neverRuns(),
+                ])->values()->all(),
+            ],
+        ])->all();
     }
 
     protected function nextEditionsFor(array $eventIds): Collection
@@ -322,10 +353,12 @@ trait ManagesRegistrationForms
             $this->nextEditionsFor([(int) $event->id])
         );
 
+        $frames = $this->photoFramesFor(collect([$event]));
+
         return array_merge($summary, [
             'counts' => $counts,
             'location_locked' => $this->locationLocked($event),
-        ]);
+        ], isset($frames[(int) $event->id]) ? ['photo_frames' => $frames[(int) $event->id]] : []);
     }
 
     protected function deleteImageIfUnused(string $path): void

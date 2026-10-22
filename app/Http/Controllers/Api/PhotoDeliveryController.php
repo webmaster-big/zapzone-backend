@@ -108,7 +108,7 @@ class PhotoDeliveryController extends Controller
         if ($photoDelivery->isDuplicate()) {
             return response()->json([
                 'success' => false,
-                'message' => 'This row records a waiver link whose destination was already sent to. Retry the original instead.',
+                'message' => 'This row records a link whose destination was already sent to. Retry the original instead.',
             ], 422);
         }
         if (!$photoDelivery->canRetry()) {

@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 
 class RegistrationEvent extends Model
@@ -125,5 +126,48 @@ class RegistrationEvent extends Model
         }
 
         return $this->is_open ? self::STATUS_OPEN : self::STATUS_CLOSED;
+    }
+
+    public function startsOn(): ?string
+    {
+        if (!SchemaSupport::hasColumn('registration_events', 'event_id') || $this->event_id === null) {
+            return null;
+        }
+
+        $linked = $this->event;
+        if ($linked === null || (int) $linked->location_id !== (int) $this->location_id || $linked->start_date === null || $linked->end_date === null) {
+            return null;
+        }
+
+        $start = $linked->start_date->toDateString();
+        $date = $this->event_date->toDateString();
+
+        return $start < $date && $date <= $linked->end_date->toDateString() ? $start : null;
+    }
+
+    public function firstDay(): string
+    {
+        return $this->startsOn() ?? $this->event_date->toDateString();
+    }
+
+    public function coversDay(string $day): bool
+    {
+        return $this->firstDay() <= $day && $day <= $this->event_date->toDateString();
+    }
+
+    public function dayCount(): int
+    {
+        return (int) Carbon::parse($this->firstDay())->diffInDays(Carbon::parse($this->event_date->toDateString()), true) + 1;
+    }
+
+    public function photoWindow(?Location $location = null): array
+    {
+        $location ??= $this->location;
+
+        $start = Carbon::parse($this->firstDay(), OperatingDay::timezoneFor($location))
+            ->setTime(OperatingDay::CUTOFF_HOUR, 0)
+            ->setTimezone(config('app.timezone'));
+
+        return [$start, OperatingDay::cutoffAfter($location, $this->event_date->toDateString())];
     }
 }

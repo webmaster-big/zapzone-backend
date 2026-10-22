@@ -1684,6 +1684,7 @@ class VisitFollowUpService
                 ->whereNull('waivers.booking_id')
                 ->orWhere('waivers.booking_id', '!=', $bookingId)))
             ->when(EscapeRoomSession::isAvailable(), fn ($query) => $query->whereDoesntHave('escapeRoomSession'))
+            ->when(PhotoSession::supportsRegistrations(), fn ($query) => $query->whereDoesntHave('registrations'))
             ->orderByDesc('id')
             ->first();
 

@@ -901,13 +901,14 @@ Route::middleware('auth:sanctum')->group(function () {
         // Staff capture and delivery
         Route::get('photo-sessions/context',        [PhotoSessionController::class, 'context']);
         Route::get('photo-sessions/waiver-search',  [PhotoSessionController::class, 'waiverSearch']);
+        Route::get('photo-sessions/people-search',  [PhotoSessionController::class, 'peopleSearch'])->middleware('throttle:photo-people-search');
         Route::get('photo-sessions',                [PhotoSessionController::class, 'index']);
         Route::post('photo-sessions',               [PhotoSessionController::class, 'store']);
         Route::get('photo-sessions/{photoSession}', [PhotoSessionController::class, 'show'])->whereNumber('photoSession');
         Route::post('photo-sessions/{photoSession}/photos',          [PhotoSessionController::class, 'addPhoto'])->whereNumber('photoSession');
         Route::post('photo-sessions/{photoSession}/photos/reorder',  [PhotoSessionController::class, 'reorderPhotos'])->whereNumber('photoSession');
         Route::delete('photo-sessions/{photoSession}/photos/{photo}', [PhotoSessionController::class, 'destroyPhoto'])->whereNumber(['photoSession', 'photo']);
-        Route::post('photo-sessions/{photoSession}/deliver',         [PhotoSessionController::class, 'deliver'])->whereNumber('photoSession');
+        Route::post('photo-sessions/{photoSession}/deliver',         [PhotoSessionController::class, 'deliver'])->whereNumber('photoSession')->middleware('throttle:photo-send');
         Route::delete('photo-sessions/{photoSession}',               [PhotoSessionController::class, 'destroy'])->whereNumber('photoSession');
 
         // Daily photo library
@@ -915,7 +916,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('photo-library/download',                [PhotoLibraryController::class, 'downloadMany']);
         Route::get('photo-library/{photo}',                  [PhotoLibraryController::class, 'show'])->whereNumber('photo');
         Route::get('photo-library/{photo}/download',         [PhotoLibraryController::class, 'download'])->whereNumber('photo');
-        Route::post('photo-library/{photo}/send',            [PhotoLibraryController::class, 'send'])->whereNumber('photo');
+        Route::post('photo-library/{photo}/send',            [PhotoLibraryController::class, 'send'])->whereNumber('photo')->middleware('throttle:photo-send');
         // Deleting is irreversible, so it stays with managers and admins.
         Route::post('photo-library/delete',                  [PhotoLibraryController::class, 'destroyMany'])->middleware('photo.staff:company_admin|admin|location_manager');
         Route::delete('photo-library/{photo}',               [PhotoLibraryController::class, 'destroy'])->whereNumber('photo')->middleware('photo.staff:company_admin|admin|location_manager');
@@ -933,6 +934,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
         // Overlays
         Route::get('photo-overlays',                   [PhotoOverlayController::class, 'index'])->middleware('photo.staff:company_admin|admin|location_manager');
+        Route::get('photo-overlays/event-days',        [PhotoOverlayController::class, 'eventDays'])->middleware(['photo.staff:company_admin|admin|location_manager', 'staff:company_admin|admin|location_manager']);
         Route::post('photo-overlays',                  [PhotoOverlayController::class, 'store'])->middleware('photo.staff:company_admin|admin|location_manager');
         Route::post('photo-overlays/{photoOverlay}',   [PhotoOverlayController::class, 'update'])->whereNumber('photoOverlay')->middleware('photo.staff:company_admin|admin|location_manager');
         Route::delete('photo-overlays/{photoOverlay}', [PhotoOverlayController::class, 'destroy'])->whereNumber('photoOverlay')->middleware('photo.staff:company_admin|admin|location_manager');

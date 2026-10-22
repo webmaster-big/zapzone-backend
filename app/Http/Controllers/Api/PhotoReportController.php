@@ -441,7 +441,10 @@ class PhotoReportController extends Controller
         $this->applyAuthScope($query, $request);
         $this->scopeLocation($query, $request);
 
-        $overlays = $query->get();
+        $overlays = $query
+            ->with(array_merge(['location'], PhotoOverlay::supportsEvents() ? ['registrationEvent.event'] : []))
+            ->get();
+        $statuses = $overlays->map(fn (PhotoOverlay $overlay) => $overlay->status());
         $conflicts = [];
 
         foreach ($overlays->pluck('location_id')->unique() as $locationId) {
@@ -457,9 +460,9 @@ class PhotoReportController extends Controller
         return [
             'overlays_total' => $overlays->count(),
             'enabled' => $overlays->where('is_enabled', true)->count(),
-            'scheduled' => $overlays->filter(fn ($o) => $o->status() === PhotoOverlay::STATUS_SCHEDULED)->count(),
-            'expired' => $overlays->filter(fn ($o) => $o->status() === PhotoOverlay::STATUS_EXPIRED)->count(),
-            'active' => $overlays->filter(fn ($o) => $o->status() === PhotoOverlay::STATUS_ACTIVE)->count(),
+            'scheduled' => $statuses->filter(fn ($status) => $status === PhotoOverlay::STATUS_SCHEDULED)->count(),
+            'expired' => $statuses->filter(fn ($status) => $status === PhotoOverlay::STATUS_EXPIRED)->count(),
+            'active' => $statuses->filter(fn ($status) => $status === PhotoOverlay::STATUS_ACTIVE)->count(),
             'conflicts' => $conflicts,
             'photos_with_overlay' => (clone $photoQuery)->whereNotNull('photo_overlay_id')->count(),
             'photos_date_only' => (clone $photoQuery)->whereNull('photo_overlay_id')->count(),
