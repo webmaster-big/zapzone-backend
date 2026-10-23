@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\ActivityLog;
 use App\Models\Location;
 use App\Models\LocationPhotoSetting;
+use App\Models\MessageLink;
 use App\Models\Notification;
 use App\Models\PhotoDelivery;
 use App\Models\PhotoMessageTemplate;
@@ -921,9 +922,12 @@ class PhotoDeliveryService
             'escape_result' => 'Your group escaped in 47:12!',
             'photos_line' => 'Your group photos are attached (real emails include them). You can also view and download them here:',
             'location_phone' => (string) ($location->phone ?? ''),
-        ];
+            'event_name' => 'Trunk or Treat',
+            'event_date' => now($tz)->format('M j, Y'),
+        ] + $this->linkVariables($location->company_id, $location);
 
         $bodyVariables = array_map(fn ($value) => e((string) $value), $variables);
+        $bodyVariables['links'] = $this->linksHtml($location->company_id, $location);
 
         try {
             if ($channel === PhotoDelivery::CHANNEL_EMAIL) {
@@ -1404,17 +1408,20 @@ class PhotoDeliveryService
 
                 $emailLog?->markAsSent();
             } elseif ($delivery->channel === PhotoDelivery::CHANNEL_EMAIL) {
-                $template = PhotoMessageTemplate::forCompany($session->company_id, $this->templateKind($delivery->kind));
+                $template = $this->templateFor($session, $delivery);
                 $variables = $this->variables($session, $delivery);
+                $bodyVariables = array_map(fn ($value) => e((string) $value), $variables);
+                $bodyVariables['links'] = $this->linksHtml($session->company_id, $session->location);
 
                 $this->sendEmail(
                     $delivery->destination,
                     $template->render('email_subject', $variables),
-                    $this->wrapHtml($template->render('email_body', array_map(fn ($value) => e((string) $value), $variables))),
-                    $variables['business_name']
+                    $this->wrapHtml($template->render('email_body', $bodyVariables)),
+                    $variables['business_name'],
+                    $template->attach_photos ? $this->photoAttachments($session, $variables['event_name'] ?: 'photo') : []
                 );
             } else {
-                $template = PhotoMessageTemplate::forCompany($session->company_id, $this->templateKind($delivery->kind));
+                $template = $this->templateFor($session, $delivery);
                 $variables = $this->variables($session, $delivery);
 
                 $body = trim($template->render('sms_body', $variables));
@@ -1626,7 +1633,65 @@ class PhotoDeliveryService
             'business_name' => $location?->company?->company_name ?? 'Zap Zone',
             'support_contact' => (string) config('photos.support_contact'),
             'photo_count' => (string) $session->photos()->ready()->count(),
-        ] + $this->escapeRoomVariables($session, $tz);
+        ] + $this->eventVariables($delivery, $tz) + $this->escapeRoomVariables($session, $tz) + $this->linkVariables($session->company_id, $location);
+    }
+
+    protected function eventVariables(?PhotoDelivery $delivery, string $tz): array
+    {
+        $entryId = $delivery?->registration_entry_id;
+        $form = $entryId && PhotoSession::supportsRegistrations()
+            ? RegistrationEntry::query()->with('event.location')->find($entryId)?->event
+            : null;
+
+        if ($form === null) {
+            return ['event_name' => '', 'event_date' => ''];
+        }
+
+        return [
+            'event_name' => (string) $form->name,
+            'event_date' => $form->firstDay() === $form->event_date->toDateString()
+                ? $form->event_date->format('M j, Y')
+                : \Illuminate\Support\Carbon::parse($form->firstDay())->format('M j') . ' – ' . $form->event_date->format('M j, Y'),
+            'location_phone' => (string) ($form->location?->phone ?? ''),
+        ];
+    }
+
+    protected array $resolvedLinks = [];
+
+    protected function resolvedLinks(?int $companyId, ?Location $location): \Illuminate\Support\Collection
+    {
+        $key = ($companyId ?? 0) . ':' . ($location?->id ?? 0);
+
+        return $this->resolvedLinks[$key] ??= MessageLink::resolvedFor($companyId, $location);
+    }
+
+    public function linkVariables(?int $companyId, ?Location $location): array
+    {
+        $links = $this->resolvedLinks($companyId, $location);
+
+        return ['links' => $links->filter(fn (array $link) => $link['url'] !== null)->map(fn (array $link) => $link['label'] . ': ' . $link['url'])->implode("\n")]
+            + $links->mapWithKeys(fn (array $link) => ['link_' . $link['key'] => (string) $link['url']])->all();
+    }
+
+    public function linksHtml(?int $companyId, ?Location $location): string
+    {
+        return $this->resolvedLinks($companyId, $location)
+            ->filter(fn (array $link) => $link['url'] !== null)
+            ->map(fn (array $link) => '<a href="' . e($link['url']) . '">' . e($link['label']) . '</a>')
+            ->implode(' &middot; ');
+    }
+
+    protected function templateFor(PhotoSession $session, PhotoDelivery $delivery): PhotoMessageTemplate
+    {
+        if ($delivery->registration_entry_id && $delivery->kind !== PhotoDelivery::KIND_ESCAPE_ROOM) {
+            $event = PhotoMessageTemplate::forCompany($session->company_id, PhotoMessageTemplate::KIND_EVENT_REGISTRATION);
+
+            if ($event->is_active) {
+                return $event;
+            }
+        }
+
+        return PhotoMessageTemplate::forCompany($session->company_id, $this->templateKind($delivery->kind));
     }
 
     protected function escapeRoomVariables(PhotoSession $session, string $tz): array

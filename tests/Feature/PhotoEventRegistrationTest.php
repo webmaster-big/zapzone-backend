@@ -439,6 +439,167 @@ class PhotoEventRegistrationTest extends TestCase
         }
     }
 
+    public function test_registrants_get_the_event_email_with_this_locations_links_and_the_photo_attached(): void
+    {
+        $instagram = $this->link('Instagram', 'https://instagram.com/zapzone');
+        $this->locationUrl($instagram, $this->brighton, 'https://instagram.com/zapzonebrighton');
+        $this->link('Facebook', 'https://facebook.com/zapzone');
+        $this->link('TikTok', null);
+        $template = \App\Models\PhotoMessageTemplate::forCompany($this->company->id, \App\Models\PhotoMessageTemplate::KIND_EVENT_REGISTRATION);
+        $template->update(['email_body' => $template->email_body . '<p>Insta: {{link_instagram}} TikTok: [{{link_tiktok}}]</p>']);
+
+        $session = $this->staffSession($this->brighton);
+        Storage::disk('photos')->put('x/delivery.jpg', \Illuminate\Http\UploadedFile::fake()->image('p.jpg', 40, 30)->getContent());
+        $sam = RegistrationEntry::where('name', 'Sam Lee')->firstOrFail();
+
+        $this->actAs($this->manager);
+        $this->deliver($session, [], [$sam->id])->assertOk();
+
+        $message = Mail::mailer()->getSymfonyTransport()->messages()->first()->getOriginalMessage();
+        $html = (string) $message->getHtmlBody();
+        $this->assertSame('Your photos from Trunk or Treat 2026 at Brighton | Zap Zone', $message->getSubject());
+        $this->assertStringContainsString('Thanks for joining us for Trunk or Treat 2026', $html);
+        $this->assertStringContainsString('<a href="https://instagram.com/zapzonebrighton">Instagram</a> &middot; <a href="https://facebook.com/zapzone">Facebook</a>', $html);
+        $this->assertStringNotContainsString('TikTok</a>', $html);
+        $this->assertStringContainsString('Insta: https://instagram.com/zapzonebrighton TikTok: []', $html);
+        $this->assertCount(1, $message->getAttachments());
+        $this->assertStringStartsWith('trunk-or-treat-2026-photo-1', $message->getAttachments()[0]->getFilename());
+    }
+
+    public function test_the_event_email_can_be_switched_off_and_waivers_keep_the_usual_email(): void
+    {
+        $waiver = $this->waiver('sam.rivera@example.com', null, 'Sam');
+        $session = $this->staffSession($this->brighton);
+        $sam = RegistrationEntry::where('name', 'Sam Lee')->firstOrFail();
+
+        $this->actAs($this->manager);
+        $this->deliver($session, [$waiver->id], [$sam->id])->assertOk();
+
+        $subjects = Mail::mailer()->getSymfonyTransport()->messages()
+            ->map(fn ($sent) => $sent->getOriginalMessage()->getSubject())->all();
+        $this->assertSame(['Your photos from Brighton | Zap Zone are ready', 'Your photos from Trunk or Treat 2026 at Brighton | Zap Zone'], $subjects);
+
+        \App\Models\PhotoMessageTemplate::forCompany($this->company->id, \App\Models\PhotoMessageTemplate::KIND_EVENT_REGISTRATION)->update(['is_active' => false]);
+        $second = $this->staffSession($this->brighton);
+        $this->actAs($this->manager);
+        $this->deliver($second, [], [$sam->id])->assertOk();
+
+        $this->assertSame('Your photos from Brighton | Zap Zone are ready', Mail::mailer()->getSymfonyTransport()->messages()->last()->getOriginalMessage()->getSubject());
+    }
+
+    public function test_a_registrant_who_asked_for_a_text_gets_the_event_wording(): void
+    {
+        $session = $this->staffSession($this->brighton);
+        $sam = RegistrationEntry::where('name', 'Sam Lee')->firstOrFail();
+
+        $this->actAs($this->manager);
+        $this->deliver($session, [], [$sam->id], ['text_registrants' => true])->assertOk();
+
+        $this->assertStringStartsWith('Your photos from Trunk or Treat 2026 at Brighton | Zap Zone are ready: ', $this->texts->sent[0]['body']);
+    }
+
+    public function test_admins_manage_links_and_managers_set_their_own_locations_address(): void
+    {
+        $this->actAs($this->admin);
+        $created = $this->postJson('/api/photo-message-links', ['label' => 'Google Review', 'default_url' => 'https://g.page/zapzone'])
+            ->assertCreated()
+            ->assertJsonPath('data.key', 'google_review')
+            ->assertJsonPath('data.variable', 'link_google_review')
+            ->json('data');
+
+        $this->actAs($this->admin);
+        $this->postJson('/api/photo-message-links', ['label' => 'Google review'])->assertStatus(422);
+        $this->actAs($this->admin);
+        $this->postJson('/api/photo-message-links', ['label' => 'Bad', 'default_url' => 'javascript:alert(1)'])->assertStatus(422);
+
+        $this->actAs($this->manager);
+        $this->postJson('/api/photo-message-links', ['label' => 'Yelp'])->assertForbidden();
+        $this->actAs($this->manager);
+        $this->putJson("/api/photo-message-links/{$created['id']}", ['label' => 'Renamed'])->assertForbidden();
+
+        $this->actAs($this->manager);
+        $this->putJson("/api/photo-message-links/{$created['id']}/url", ['location_id' => $this->brighton->id, 'url' => 'https://g.page/zapzone-brighton'])
+            ->assertOk()
+            ->assertJsonPath('data.urls.0.url', 'https://g.page/zapzone-brighton');
+        $this->actAs($this->manager);
+        $this->putJson("/api/photo-message-links/{$created['id']}/url", ['location_id' => $this->farmington->id, 'url' => 'https://g.page/x'])->assertForbidden();
+
+        $this->actAs($this->manager);
+        $this->getJson('/api/photo-message-links')
+            ->assertOk()
+            ->assertJsonPath('data.can_manage_links', false)
+            ->assertJsonPath('data.locations', [['id' => $this->brighton->id, 'name' => 'Brighton | Zap Zone']]);
+
+        $this->actAs($this->admin);
+        $this->getJson('/api/photo-templates')->assertOk()->assertJsonPath('data.link_variables.0.variable', 'link_google_review');
+
+        $this->actAs($this->manager);
+        $this->putJson("/api/photo-message-links/{$created['id']}/url", ['location_id' => $this->brighton->id, 'url' => ''])->assertOk()->assertJsonPath('data.urls', []);
+        $this->assertSame('https://g.page/zapzone', \App\Models\MessageLink::findOrFail($created['id'])->urlFor($this->brighton));
+
+        $other = $this->makeStaff($this->makeCompany('Elsewhere'), null, 'stranger', 'company_admin');
+        $this->actAs($other);
+        $this->deleteJson("/api/photo-message-links/{$created['id']}")->assertNotFound();
+
+        $this->actAs($this->admin);
+        $this->deleteJson("/api/photo-message-links/{$created['id']}")->assertOk();
+        $this->assertSame(0, \App\Models\MessageLink::count());
+    }
+
+    public function test_the_event_template_saves_the_attach_option_and_resets_to_its_default(): void
+    {
+        $template = \App\Models\PhotoMessageTemplate::forCompany($this->company->id, \App\Models\PhotoMessageTemplate::KIND_EVENT_REGISTRATION);
+        $this->assertTrue($template->attach_photos);
+
+        $this->actAs($this->manager);
+        $this->putJson("/api/photo-templates/{$template->id}", [
+            'email_subject' => 'Photos from {{event_name}}',
+            'email_body' => '<p>Hello from {{event_name}}</p>',
+            'sms_body' => 'Photos: {{photo_link}}',
+            'attach_photos' => false,
+        ])->assertOk()->assertJsonPath('data.attach_photos', false);
+
+        $this->actAs($this->manager);
+        $this->postJson("/api/photo-templates/{$template->id}/reset")->assertOk()->assertJsonPath('data.attach_photos', true);
+
+        $this->actAs($this->manager);
+        $kinds = $this->getJson('/api/photo-templates')->assertOk()->json('data.kinds');
+        $this->assertContains('registration', $kinds);
+    }
+
+    public function test_a_test_send_of_the_event_email_uses_sample_event_wording(): void
+    {
+        $this->link('Instagram', 'https://instagram.com/zapzone');
+
+        $this->actAs($this->manager);
+        $this->postJson('/api/photo-settings/test-message', [
+            'location_id' => $this->brighton->id,
+            'channel' => 'email',
+            'destination' => 'tester@example.com',
+            'kind' => 'registration',
+        ])->assertOk();
+
+        $message = Mail::mailer()->getSymfonyTransport()->messages()->first()->getOriginalMessage();
+        $this->assertStringContainsString('Trunk or Treat', $message->getSubject());
+        $this->assertStringContainsString('<a href="https://instagram.com/zapzone">Instagram</a>', (string) $message->getHtmlBody());
+    }
+
+    private function link(string $label, ?string $defaultUrl): \App\Models\MessageLink
+    {
+        return \App\Models\MessageLink::create([
+            'company_id' => $this->company->id,
+            'key' => \App\Models\MessageLink::keyFor($label),
+            'label' => $label,
+            'default_url' => $defaultUrl,
+            'sort_order' => \App\Models\MessageLink::count(),
+        ]);
+    }
+
+    private function locationUrl(\App\Models\MessageLink $link, Location $location, string $url): void
+    {
+        \App\Models\MessageLinkUrl::create(['message_link_id' => $link->id, 'location_id' => $location->id, 'url' => $url]);
+    }
+
     private function register(RegistrationEvent $form, string $name, string $email, string $phone): RegistrationEntry
     {
         $this->actAs(null);

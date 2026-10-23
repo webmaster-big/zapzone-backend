@@ -240,6 +240,10 @@ class PhotoSettingController extends Controller
             'data' => [
                 'templates' => $templates,
                 'variables' => PhotoMessageTemplate::VARIABLES,
+                'link_variables' => \App\Models\MessageLink::resolvedFor($authUser?->company_id, null)
+                    ->map(fn (array $link) => ['variable' => 'link_' . $link['key'], 'label' => $link['label']])
+                    ->values()
+                    ->all(),
                 'variables_by_kind' => collect($kinds)
                     ->mapWithKeys(fn (string $kind) => [$kind => PhotoMessageTemplate::variablesFor($kind)])
                     ->all(),
@@ -278,7 +282,12 @@ class PhotoSettingController extends Controller
             'email_body' => ['required', 'string', 'max:20000'],
             'sms_body' => ['required', 'string', 'max:600'],
             'is_active' => ['nullable', 'boolean'],
+            'attach_photos' => ['nullable', 'boolean'],
         ]);
+
+        if (!\App\Support\SchemaSupport::hasColumn('photo_message_templates', 'attach_photos')) {
+            unset($validated['attach_photos']);
+        }
 
         if ($photoMessageTemplate->kind === PhotoMessageTemplate::KIND_ESCAPE_ROOM) {
             return response()->json([
@@ -315,7 +324,7 @@ class PhotoSettingController extends Controller
             ], 403);
         }
 
-        $defaults = PhotoMessageTemplate::defaults()[$photoMessageTemplate->kind] ?? null;
+        $defaults = PhotoMessageTemplate::defaultsFor($photoMessageTemplate->kind);
 
         if (!$defaults) {
             return response()->json(['success' => false, 'message' => 'No default exists for that template.'], 422);

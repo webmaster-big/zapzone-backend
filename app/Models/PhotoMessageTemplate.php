@@ -14,8 +14,9 @@ class PhotoMessageTemplate extends Model
     public const KIND_NEXT_DAY = 'next_day';
     public const KIND_KIOSK = 'kiosk';
     public const KIND_ESCAPE_ROOM = 'escape_room';
+    public const KIND_EVENT_REGISTRATION = 'registration';
 
-    public const KINDS = [self::KIND_IMMEDIATE, self::KIND_NEXT_DAY, self::KIND_KIOSK, self::KIND_ESCAPE_ROOM];
+    public const KINDS = [self::KIND_IMMEDIATE, self::KIND_NEXT_DAY, self::KIND_KIOSK, self::KIND_ESCAPE_ROOM, self::KIND_EVENT_REGISTRATION];
 
     public const VARIABLES = [
         'first_name',
@@ -26,6 +27,13 @@ class PhotoMessageTemplate extends Model
         'business_name',
         'support_contact',
         'photo_count',
+        'links',
+    ];
+
+    public const EVENT_VARIABLES = [
+        'event_name',
+        'event_date',
+        'location_phone',
     ];
 
     public const ESCAPE_ROOM_VARIABLES = [
@@ -45,6 +53,7 @@ class PhotoMessageTemplate extends Model
         'email_body',
         'sms_body',
         'is_active',
+        'attach_photos',
     ];
 
     protected $attributes = [
@@ -53,6 +62,7 @@ class PhotoMessageTemplate extends Model
 
     protected $casts = [
         'is_active' => 'boolean',
+        'attach_photos' => 'boolean',
     ];
 
     public static function defaults(): array
@@ -78,14 +88,33 @@ class PhotoMessageTemplate extends Model
                 'email_body' => "<p>Hi {{first_name}},</p>\n<p>Thanks for playing {{room_name}} at {{location_name}} on {{session_date}} at {{session_time}}.</p>\n<p><strong>{{escape_result}}</strong></p>\n<p>{{photos_line}}</p>\n<p><a href=\"{{photo_link}}\">View and download your photos</a></p>\n<p>This link works until {{expires_on}}.</p>\n<p>{{location_name}}<br>{{location_phone}}</p>",
                 'sms_body' => "Your {{room_name}} group photo from {{location_name}} is ready: {{photo_link}}",
             ],
+            self::KIND_EVENT_REGISTRATION => [
+                'email_subject' => 'Your photos from {{event_name}} at {{location_name}}',
+                'email_body' => "<p>Hi {{first_name}},</p>\n<p>Thanks for joining us for {{event_name}} at {{location_name}}. Your photos are ready to view and download.</p>\n<p><a href=\"{{photo_link}}\">View your photos</a></p>\n<p>This link works until {{expires_on}}.</p>\n<p>{{links}}</p>\n<p>{{business_name}}<br>{{location_phone}}</p>",
+                'sms_body' => "Your photos from {{event_name}} at {{location_name}} are ready: {{photo_link}} (available until {{expires_on}})",
+                'attach_photos' => true,
+            ],
         ];
+    }
+
+    public static function defaultsFor(string $kind): ?array
+    {
+        $defaults = self::defaults()[$kind] ?? null;
+
+        if ($defaults !== null && !\App\Support\SchemaSupport::hasColumn('photo_message_templates', 'attach_photos')) {
+            unset($defaults['attach_photos']);
+        }
+
+        return $defaults;
     }
 
     public static function variablesFor(string $kind): array
     {
-        return $kind === self::KIND_ESCAPE_ROOM
-            ? array_merge(self::VARIABLES, self::ESCAPE_ROOM_VARIABLES)
-            : self::VARIABLES;
+        return match ($kind) {
+            self::KIND_ESCAPE_ROOM => array_merge(self::VARIABLES, self::ESCAPE_ROOM_VARIABLES),
+            self::KIND_EVENT_REGISTRATION => array_merge(self::VARIABLES, self::EVENT_VARIABLES),
+            default => self::VARIABLES,
+        };
     }
 
     public static function forCompany(?int $companyId, string $kind): self
@@ -96,7 +125,7 @@ class PhotoMessageTemplate extends Model
             return $template;
         }
 
-        $defaults = self::defaults()[$kind] ?? self::defaults()[self::KIND_IMMEDIATE];
+        $defaults = self::defaultsFor($kind) ?? self::defaultsFor(self::KIND_IMMEDIATE);
 
         try {
             return self::create(array_merge($defaults, [
