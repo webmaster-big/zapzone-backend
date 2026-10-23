@@ -15,6 +15,7 @@ use App\Models\Payment;
 use App\Models\TicketOrder;
 use App\Models\User;
 use App\Models\Waiver;
+use App\Support\TemplatePlaceholders;
 use Database\Seeders\DefaultEmailNotificationSeeder;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
@@ -357,7 +358,7 @@ class EmailNotificationService
                 $variables = $this->buildVariables($entity, $type, $notification->include_qr_code);
 
                 $subject = $this->replaceVariables($notification->getEffectiveSubject(), $variables);
-                $body = $this->replaceVariables($notification->getEffectiveBody(), $variables);
+                $body = $this->renderBody($notification->getEffectiveBody(), $variables);
 
                 $htmlBody = $this->generateHtmlEmail($body);
 
@@ -399,7 +400,7 @@ class EmailNotificationService
         }
 
         $subject = $this->replaceVariables($notification->getEffectiveSubject(), $variables);
-        $body = $this->replaceVariables($notification->getEffectiveBody(), $variables);
+        $body = $this->renderBody($notification->getEffectiveBody(), $variables);
         $htmlBody = $this->generateHtmlEmail($body);
 
         foreach ($recipients as $recipient) {
@@ -755,6 +756,8 @@ HTML;
     /** Pre-rendered waiver call-to-action block embedded in confirmation emails. */
     protected function waiverSectionHtml(string $link): string
     {
+        $link = e($link);
+
         return <<<HTML
 <div style="margin: 24px 0; padding: 20px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; text-align: center;">
     <p style="margin: 0 0 14px 0; font-size: 14px; color: #1e3a8a; line-height: 1.5;">Save time when you arrive &mdash; please complete your waiver before your visit.</p>
@@ -873,7 +876,7 @@ HTML;
                 $price = $addOn->pivot->price ?? $addOn->price;
                 $subtotal = $qty * $price;
                 $addOnsTotal += $subtotal;
-                $addOnItems[] = "{$addOn->name} x{$qty} - \${$subtotal}";
+                $addOnItems[] = e($addOn->name) . " x{$qty} - \${$subtotal}";
             }
             $addOnsList = implode('<br>', $addOnItems);
         }
@@ -881,7 +884,7 @@ HTML;
         $qrCodeHtml = '';
         if ($includeQrCode && $booking->qr_code_path) {
             $qrCodeUrl = Storage::url($booking->qr_code_path);
-            $qrCodeHtml = "<img src=\"{$qrCodeUrl}\" alt=\"Booking QR Code\" style=\"width: 150px; height: 150px;\" />";
+            $qrCodeHtml = '<img src="' . e($qrCodeUrl) . '" alt="Booking QR Code" style="width: 150px; height: 150px;" />';
         }
 
         $locationAddress = $location
@@ -957,7 +960,7 @@ HTML;
         $qrCodeHtml = '';
         if ($includeQrCode && $purchase->qrcode_path) {
             $qrCodeUrl = Storage::url($purchase->qrcode_path);
-            $qrCodeHtml = "<img src=\"{$qrCodeUrl}\" alt=\"Purchase QR Code\" style=\"width: 150px; height: 150px;\" />";
+            $qrCodeHtml = '<img src="' . e($qrCodeUrl) . '" alt="Purchase QR Code" style="width: 150px; height: 150px;" />';
         }
 
         $locationAddress = $location
@@ -1053,18 +1056,16 @@ HTML;
         ]);
     }
 
+    public const HTML_VARIABLES = ['waiver_section', 'qr_code', 'addons_list', 'location_breakdown_rows', 'category_breakdown_rows'];
+
     public function replaceVariables(string $content, array $variables): string
     {
-        foreach ($variables as $key => $value) {
-            $safeValue = $value ?? '';
-            $content = preg_replace_callback(
-                '/\{\{\s*' . preg_quote($key, '/') . '\s*\}\}/',
-                fn() => $safeValue,
-                $content
-            );
-        }
+        return TemplatePlaceholders::fill($content, $variables);
+    }
 
-        return $content;
+    public function renderBody(string $content, array $variables): string
+    {
+        return TemplatePlaceholders::fill($content, $variables, true, self::HTML_VARIABLES);
     }
 
     public function generateHtmlEmail(string $body): string
@@ -1202,12 +1203,12 @@ HTML;
 
             if ($defaultNotification && $defaultNotification->is_active) {
                 $subject = $this->replaceVariables($defaultNotification->getEffectiveSubject(), $variables);
-                $body = $this->replaceVariables($defaultNotification->getEffectiveBody(), $variables);
+                $body = $this->renderBody($defaultNotification->getEffectiveBody(), $variables);
 
                 $this->createDefaultLog($defaultNotification, $customerEmail, $booking);
             } else {
                 $subject = "Booking Confirmation - {$variables['booking_reference']}";
-                $body = $this->replaceVariables($this->getDefaultBookingEmailBody(), $variables);
+                $body = $this->renderBody($this->getDefaultBookingEmailBody(), $variables);
             }
 
             $htmlBody = $this->generateHtmlEmail($body);
@@ -1258,12 +1259,12 @@ HTML;
 
             if ($defaultNotification && $defaultNotification->is_active) {
                 $subject = $this->replaceVariables($defaultNotification->getEffectiveSubject(), $variables);
-                $body = $this->replaceVariables($defaultNotification->getEffectiveBody(), $variables);
+                $body = $this->renderBody($defaultNotification->getEffectiveBody(), $variables);
 
                 $this->createDefaultLog($defaultNotification, $customerEmail, $purchase);
             } else {
                 $subject = "Purchase Confirmation - {$variables['attraction_name']}";
-                $body = $this->replaceVariables($this->getDefaultPurchaseEmailBody(), $variables);
+                $body = $this->renderBody($this->getDefaultPurchaseEmailBody(), $variables);
             }
 
             $htmlBody = $this->generateHtmlEmail($body);

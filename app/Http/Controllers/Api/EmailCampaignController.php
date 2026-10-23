@@ -14,6 +14,7 @@ use App\Models\EmailCampaignLog;
 use App\Models\EmailTemplate;
 use App\Models\User;
 use App\Services\GmailApiService;
+use App\Support\TemplatePlaceholders;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Auth;
@@ -420,7 +421,7 @@ class EmailCampaignController extends Controller
             );
 
             $processedSubject = $this->replaceVariables($validated['subject'], $variables);
-            $processedBody = $this->replaceVariables($validated['body'], $variables);
+            $processedBody = $this->replaceVariables($validated['body'], $variables, true);
 
             $htmlBody = $this->generateHtmlEmail($processedBody, $variables);
 
@@ -720,7 +721,7 @@ class EmailCampaignController extends Controller
             $variables = $log->variables_used ?? [];
 
             $processedSubject = $this->replaceVariables($campaign->subject, $variables);
-            $processedBody = $this->replaceVariables($campaign->body, $variables);
+            $processedBody = $this->replaceVariables($campaign->body, $variables, true);
 
             $htmlBody = $this->generateHtmlEmail($processedBody, $variables);
 
@@ -757,17 +758,9 @@ class EmailCampaignController extends Controller
         }
     }
 
-    protected function replaceVariables(string $content, array $variables): string
+    protected function replaceVariables(string $content, array $variables, bool $escape = false): string
     {
-        foreach ($variables as $key => $value) {
-            $content = preg_replace(
-                '/\{\{\s*' . preg_quote($key, '/') . '\s*\}\}/',
-                $value ?? '',
-                $content
-            );
-        }
-
-        return $content;
+        return TemplatePlaceholders::fill($content, $variables, $escape);
     }
 
     protected function generateHtmlEmail(string $body, array $variables): string

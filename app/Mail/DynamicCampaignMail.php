@@ -2,6 +2,7 @@
 
 namespace App\Mail;
 
+use App\Support\TemplatePlaceholders;
 use Illuminate\Bus\Queueable;
 use Illuminate\Mail\Mailable;
 use Illuminate\Mail\Mailables\Content;
@@ -26,7 +27,7 @@ class DynamicCampaignMail extends Mailable
     public function build()
     {
         $processedSubject = $this->replaceVariables($this->emailSubject);
-        $processedBody = $this->replaceVariables($this->emailBody);
+        $processedBody = $this->replaceVariables($this->emailBody, true);
 
         return $this->subject($processedSubject)
             ->view('emails.dynamic-campaign')
@@ -36,17 +37,9 @@ class DynamicCampaignMail extends Mailable
             ]);
     }
 
-    protected function replaceVariables(string $content): string
+    protected function replaceVariables(string $content, bool $escape = false): string
     {
-        foreach ($this->variables as $key => $value) {
-            $content = preg_replace(
-                '/\{\{\s*' . preg_quote($key, '/') . '\s*\}\}/',
-                $value ?? '',
-                $content
-            );
-        }
-
-        return $content;
+        return TemplatePlaceholders::fill($content, $this->variables, $escape);
     }
 
     public function envelope(): Envelope

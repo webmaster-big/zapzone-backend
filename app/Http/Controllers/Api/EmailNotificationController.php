@@ -14,6 +14,7 @@ use App\Models\Promo;
 use App\Models\VisitFollowUp;
 use App\Services\EmailNotificationService;
 use App\Services\VisitFollowUpService;
+use App\Support\TemplatePlaceholders;
 use Database\Seeders\DefaultEmailNotificationSeeder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -763,7 +764,7 @@ class EmailNotificationController extends Controller
                 $variables = $this->buildSampleVariables($emailNotification, $validated);
 
                 $subject = $this->replaceVariables($emailNotification->getEffectiveSubject(), $variables);
-                $body = $this->replaceVariables($emailNotification->getEffectiveBody(), $variables);
+                $body = $this->replaceVariables($emailNotification->getEffectiveBody(), $variables, true);
 
                 $htmlBody = $this->generateHtmlEmail($body);
             }
@@ -926,7 +927,7 @@ class EmailNotificationController extends Controller
                 foreach ($booking->addons as $addon) {
                     $qty = $addon->pivot->quantity ?? 1;
                     $price = $addon->pivot->price ?? $addon->price ?? 0;
-                    $addonParts[] = $addon->name . ' x' . $qty . ' - $' . number_format($price * $qty, 2);
+                    $addonParts[] = e($addon->name) . ' x' . $qty . ' - $' . number_format($price * $qty, 2);
                     $addonsTotal += $price * $qty;
                 }
                 $addonsHtml = implode('<br>', $addonParts);
@@ -1049,7 +1050,7 @@ class EmailNotificationController extends Controller
     protected function generateQrCodeHtml(string $reference): string
     {
         $qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=' . urlencode($reference);
-        return '<img src="' . $qrUrl . '" alt="QR Code" style="width:150px;height:150px;border-radius:8px;">';
+        return '<img src="' . e($qrUrl) . '" alt="QR Code" style="width:150px;height:150px;border-radius:8px;">';
     }
 
     protected function generateSampleQrCodeHtml(): string
@@ -1057,18 +1058,9 @@ class EmailNotificationController extends Controller
         return '<div style="width:150px;height:150px;background:#eee;display:flex;align-items:center;justify-content:center;border-radius:8px;font-size:12px;color:#666;">[QR Code]</div>';
     }
 
-    protected function replaceVariables(string $content, array $variables): string
+    protected function replaceVariables(string $content, array $variables, bool $escape = false): string
     {
-        foreach ($variables as $key => $value) {
-            $safeValue = $value ?? '';
-            $content = preg_replace_callback(
-                '/\{\{\s*' . preg_quote($key, '/') . '\s*\}\}/',
-                fn() => $safeValue,
-                $content
-            );
-        }
-
-        return $content;
+        return TemplatePlaceholders::fill($content, $variables, $escape, EmailNotificationService::HTML_VARIABLES);
     }
 
     protected function generateHtmlEmail(string $body): string
@@ -1223,7 +1215,7 @@ HTML;
         $variables = $this->buildSampleVariables($emailNotification, $request->all());
 
         $processedSubject = $this->replaceVariables($subject, $variables);
-        $processedBody = $this->replaceVariables($body, $variables);
+        $processedBody = $this->replaceVariables($body, $variables, true);
 
         $htmlEmail = $this->generateHtmlEmail($processedBody);
 
