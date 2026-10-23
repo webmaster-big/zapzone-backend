@@ -172,26 +172,19 @@ class GmailApiService
         $scheme = strtolower((string) ($parts['scheme'] ?? ''));
         $host = (string) ($parts['host'] ?? '');
 
-        if (!in_array($scheme, ['http', 'https'], true) || $host === '' || !self::isPublicHost($host)) {
+        if (!in_array($scheme, ['http', 'https'], true) || $host === '') {
             return null;
         }
 
-        $context = stream_context_create([
-            'http' => [
-                'timeout' => 10,
-                'user_agent' => 'Mozilla/5.0',
-                'follow_location' => 0,
-                'max_redirects' => 0,
-            ],
-            'ssl' => [
-                'verify_peer' => false,
-                'verify_peer_name' => false,
-            ],
-        ]);
+        $addresses = self::publicAddresses($host);
 
-        $data = @file_get_contents($imageUrl, false, $context, 0, self::INLINE_IMAGE_MAX_BYTES + 1);
+        if ($addresses === []) {
+            return null;
+        }
 
-        if (!is_string($data) || $data === '' || strlen($data) > self::INLINE_IMAGE_MAX_BYTES) {
+        $data = self::fetchPinned($imageUrl, $addresses[0]);
+
+        if ($data === null) {
             return null;
         }
 
@@ -204,7 +197,67 @@ class GmailApiService
         return ['data' => $data, 'mime_type' => $mime, 'filename' => basename((string) ($parts['path'] ?? '')) ?: 'image.jpg'];
     }
 
+    public static function fetchPinned(string $url, string $address, int $timeout = 10): ?string
+    {
+        if (!function_exists('curl_init')) {
+            return null;
+        }
+
+        $parts = parse_url($url) ?: [];
+        $scheme = strtolower((string) ($parts['scheme'] ?? ''));
+        $host = trim((string) ($parts['host'] ?? ''), '[]');
+        $port = (int) ($parts['port'] ?? ($scheme === 'https' ? 443 : 80));
+
+        if (!in_array($scheme, ['http', 'https'], true) || $host === '') {
+            return null;
+        }
+
+        $data = '';
+        $tooLarge = false;
+
+        $options = [
+            CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_CONNECTTIMEOUT => min(5, $timeout),
+            CURLOPT_TIMEOUT => $timeout,
+            CURLOPT_NOPROXY => '*',
+            CURLOPT_USERAGENT => 'Mozilla/5.0',
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_SSL_VERIFYHOST => 0,
+            CURLOPT_WRITEFUNCTION => function ($handle, string $chunk) use (&$data, &$tooLarge): int {
+                if (strlen($data) + strlen($chunk) > self::INLINE_IMAGE_MAX_BYTES) {
+                    $tooLarge = true;
+
+                    return 0;
+                }
+
+                $data .= $chunk;
+
+                return strlen($chunk);
+            },
+        ];
+
+        if (!filter_var($host, FILTER_VALIDATE_IP)) {
+            $options[CURLOPT_RESOLVE] = [sprintf('%s:%d:%s', $host, $port, str_contains($address, ':') ? '[' . $address . ']' : $address)];
+        }
+
+        $handle = curl_init($url);
+        curl_setopt_array($handle, $options);
+        $completed = curl_exec($handle);
+        $status = (int) curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
+
+        if ($completed === false || $tooLarge || $status < 200 || $status >= 300 || $data === '') {
+            return null;
+        }
+
+        return $data;
+    }
+
     public static function isPublicHost(string $host): bool
+    {
+        return self::publicAddresses($host) !== [];
+    }
+
+    public static function publicAddresses(string $host): array
     {
         $host = trim($host, '[]');
 
@@ -220,23 +273,19 @@ class GmailApiService
             }
         }
 
-        if ($addresses === []) {
-            return false;
-        }
-
         foreach ($addresses as $address) {
             if (!filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
-                return false;
+                return [];
             }
 
             foreach (self::BLOCKED_RANGES as $range) {
                 if (self::inRange($address, $range)) {
-                    return false;
+                    return [];
                 }
             }
         }
 
-        return true;
+        return array_values(array_unique($addresses));
     }
 
     private const BLOCKED_RANGES = [
