@@ -115,6 +115,167 @@ class GmailApiService
         }
     }
 
+    public const INLINE_IMAGE_MAX_BYTES = 5242880;
+
+    public static function inlineImageData(string $imageUrl): ?array
+    {
+        if (str_contains($imageUrl, '/storage/email-images/')) {
+            $local = self::localEmailImage($imageUrl);
+
+            if ($local !== null) {
+                return $local;
+            }
+        }
+
+        return self::remoteImage($imageUrl);
+    }
+
+    public static function localEmailImage(string $imageUrl): ?array
+    {
+        if (!preg_match('#/storage/email-images/([^"\'?\#\s]+)#', $imageUrl, $match)) {
+            return null;
+        }
+
+        $directory = realpath(storage_path('app/public/email-images'));
+        $relative = rawurldecode($match[1]);
+
+        if ($directory === false || str_contains($relative, "\0")) {
+            return null;
+        }
+
+        $path = realpath($directory . DIRECTORY_SEPARATOR . $relative);
+
+        if ($path === false || !is_file($path) || !str_starts_with($path, $directory . DIRECTORY_SEPARATOR)) {
+            return null;
+        }
+
+        if (filesize($path) > self::INLINE_IMAGE_MAX_BYTES) {
+            return null;
+        }
+
+        $mime = (string) (new \finfo(FILEINFO_MIME_TYPE))->file($path);
+
+        if (!str_starts_with($mime, 'image/')) {
+            return null;
+        }
+
+        return ['data' => (string) file_get_contents($path), 'mime_type' => $mime, 'filename' => basename($path)];
+    }
+
+    public static function remoteImage(string $imageUrl): ?array
+    {
+        if (!filter_var($imageUrl, FILTER_VALIDATE_URL)) {
+            return null;
+        }
+
+        $parts = parse_url($imageUrl) ?: [];
+        $scheme = strtolower((string) ($parts['scheme'] ?? ''));
+        $host = (string) ($parts['host'] ?? '');
+
+        if (!in_array($scheme, ['http', 'https'], true) || $host === '' || !self::isPublicHost($host)) {
+            return null;
+        }
+
+        $context = stream_context_create([
+            'http' => [
+                'timeout' => 10,
+                'user_agent' => 'Mozilla/5.0',
+                'follow_location' => 0,
+                'max_redirects' => 0,
+            ],
+            'ssl' => [
+                'verify_peer' => false,
+                'verify_peer_name' => false,
+            ],
+        ]);
+
+        $data = @file_get_contents($imageUrl, false, $context, 0, self::INLINE_IMAGE_MAX_BYTES + 1);
+
+        if (!is_string($data) || $data === '' || strlen($data) > self::INLINE_IMAGE_MAX_BYTES) {
+            return null;
+        }
+
+        $mime = (string) (new \finfo(FILEINFO_MIME_TYPE))->buffer($data);
+
+        if (!str_starts_with($mime, 'image/')) {
+            return null;
+        }
+
+        return ['data' => $data, 'mime_type' => $mime, 'filename' => basename((string) ($parts['path'] ?? '')) ?: 'image.jpg'];
+    }
+
+    public static function isPublicHost(string $host): bool
+    {
+        $host = trim($host, '[]');
+
+        if (filter_var($host, FILTER_VALIDATE_IP)) {
+            $addresses = [$host];
+        } else {
+            $addresses = gethostbynamel($host) ?: [];
+
+            foreach (@dns_get_record($host, DNS_AAAA) ?: [] as $record) {
+                if (!empty($record['ipv6'])) {
+                    $addresses[] = $record['ipv6'];
+                }
+            }
+        }
+
+        if ($addresses === []) {
+            return false;
+        }
+
+        foreach ($addresses as $address) {
+            if (!filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+                return false;
+            }
+
+            foreach (self::BLOCKED_RANGES as $range) {
+                if (self::inRange($address, $range)) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    private const BLOCKED_RANGES = [
+        '100.64.0.0/10',
+        '192.0.0.0/24',
+        '198.18.0.0/15',
+        '224.0.0.0/3',
+        'ff00::/8',
+        '64:ff9b::/96',
+        '64:ff9b:1::/48',
+        '2002::/16',
+    ];
+
+    private static function inRange(string $address, string $range): bool
+    {
+        [$subnet, $bits] = explode('/', $range);
+        $ip = @inet_pton($address);
+        $network = @inet_pton($subnet);
+
+        if ($ip === false || $network === false || strlen($ip) !== strlen($network)) {
+            return false;
+        }
+
+        $bytes = intdiv((int) $bits, 8);
+        $remainder = (int) $bits % 8;
+
+        if (substr($ip, 0, $bytes) !== substr($network, 0, $bytes)) {
+            return false;
+        }
+
+        if ($remainder === 0) {
+            return true;
+        }
+
+        $mask = chr((0xff << (8 - $remainder)) & 0xff);
+
+        return ($ip[$bytes] & $mask) === ($network[$bytes] & $mask);
+    }
+
     private function processInlineImages(string $htmlBody, array &$inlineImages): string
     {
         $pattern = '/<img\s+[^>]*src=["\']([^"\']+)["\'][^>]*>/i';
@@ -129,49 +290,14 @@ class GmailApiService
 
             try {
                 $contentId = 'img_' . uniqid() . '@zapzone';
+                $image = self::inlineImageData($imageUrl);
 
-                $imageData = null;
-                $mimeType = 'image/jpeg';
-                $filename = 'image.jpg';
-
-                if (str_contains($imageUrl, '/storage/email-images/')) {
-                    preg_match('/\/storage\/email-images\/([^"\'?\s]+)/', $imageUrl, $pathMatch);
-                    if (!empty($pathMatch[1])) {
-                        $localPath = storage_path('app/public/email-images/' . $pathMatch[1]);
-                        if (file_exists($localPath)) {
-                            $imageData = file_get_contents($localPath);
-                            $mimeType = mime_content_type($localPath);
-                            $filename = basename($localPath);
-                        }
-                    }
-                }
-
-                if ($imageData === null && filter_var($imageUrl, FILTER_VALIDATE_URL)) {
-                    $context = stream_context_create([
-                        'http' => [
-                            'timeout' => 10,
-                            'user_agent' => 'Mozilla/5.0'
-                        ],
-                        'ssl' => [
-                            'verify_peer' => false,
-                            'verify_peer_name' => false
-                        ]
-                    ]);
-                    $imageData = @file_get_contents($imageUrl, false, $context);
-
-                    if ($imageData !== false) {
-                        $finfo = new \finfo(FILEINFO_MIME_TYPE);
-                        $mimeType = $finfo->buffer($imageData);
-                        $filename = basename(parse_url($imageUrl, PHP_URL_PATH)) ?: 'image.jpg';
-                    }
-                }
-
-                if ($imageData) {
+                if ($image !== null) {
                     $inlineImages[] = [
                         'content_id' => $contentId,
-                        'data' => base64_encode($imageData),
-                        'mime_type' => $mimeType,
-                        'filename' => $filename,
+                        'data' => base64_encode($image['data']),
+                        'mime_type' => $image['mime_type'],
+                        'filename' => $image['filename'],
                     ];
 
                     return str_replace($imageUrl, 'cid:' . $contentId, $fullTag);
