@@ -163,6 +163,6 @@ class PhotoMessageTemplate extends Model
             $content = str_replace('{{ ' . $key . ' }}', (string) ($value ?? ''), $content);
         }
 
-        return $content;
+        return (string) preg_replace('/\{\{\s*link_[a-z0-9_]*\s*\}\}/i', '', $content);
     }
 }

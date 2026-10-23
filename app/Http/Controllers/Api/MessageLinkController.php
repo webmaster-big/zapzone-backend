@@ -59,10 +59,18 @@ class MessageLinkController extends Controller
             return $this->adminsOnly();
         }
 
+        $this->normaliseUrls($request, ['default_url']);
+
         $validated = $request->validate([
             'label' => ['required', 'string', 'max:80'],
             'default_url' => ['nullable', 'string', 'max:500', 'url:http,https'],
+        ], [
+            'default_url.url' => 'Enter a full web address, for example https://instagram.com/zapzone.',
         ]);
+
+        if (!$this->hasDottedHost($validated['default_url'] ?? null)) {
+            return $this->notAnAddress('default_url');
+        }
 
         $user = $this->resolveAuthUser($request);
         $key = MessageLink::keyFor($validated['label']);
@@ -98,10 +106,18 @@ class MessageLinkController extends Controller
             return $denied;
         }
 
+        $this->normaliseUrls($request, ['default_url']);
+
         $validated = $request->validate([
             'label' => ['sometimes', 'required', 'string', 'max:80'],
             'default_url' => ['sometimes', 'nullable', 'string', 'max:500', 'url:http,https'],
+        ], [
+            'default_url.url' => 'Enter a full web address, for example https://instagram.com/zapzone.',
         ]);
+
+        if (!$this->hasDottedHost($validated['default_url'] ?? null)) {
+            return $this->notAnAddress('default_url');
+        }
 
         $changes = [];
         if (array_key_exists('label', $validated)) {
@@ -124,10 +140,18 @@ class MessageLinkController extends Controller
             return $denied;
         }
 
+        $this->normaliseUrls($request, ['url']);
+
         $validated = $request->validate([
             'location_id' => ['required', 'integer'],
             'url' => ['nullable', 'string', 'max:500', 'url:http,https'],
+        ], [
+            'url.url' => 'Enter a full web address, for example https://instagram.com/zapzone.',
         ]);
+
+        if (!$this->hasDottedHost($validated['url'] ?? null)) {
+            return $this->notAnAddress('url');
+        }
 
         $location = $this->scopedLocation($request, $validated['location_id']);
 
@@ -208,6 +232,34 @@ class MessageLinkController extends Controller
         $locationIds = $this->staffLocationIds($request);
 
         return $link->load(['urls' => fn ($query) => $query->whereIn('location_id', $locationIds)]);
+    }
+
+    protected function normaliseUrls(Request $request, array $fields): void
+    {
+        foreach ($fields as $field) {
+            if (!$request->has($field) || !is_string($request->input($field))) {
+                continue;
+            }
+
+            $value = trim($request->input($field));
+            $bare = ltrim($value, '/');
+
+            if (preg_match('#^[^\s/?\#@:]+\.[^\s/?\#@:]+(?:[:/?\#]|$)#', $bare)) {
+                $value = 'https://' . $bare;
+            }
+
+            $request->merge([$field => $value]);
+        }
+    }
+
+    protected function hasDottedHost(?string $url): bool
+    {
+        return $url === null || $url === '' || str_contains((string) parse_url($url, PHP_URL_HOST), '.');
+    }
+
+    protected function notAnAddress(string $field): JsonResponse
+    {
+        return $this->invalid($field, 'Enter a full web address, for example https://instagram.com/zapzone.');
     }
 
     protected function cleanUrl(?string $url): ?string

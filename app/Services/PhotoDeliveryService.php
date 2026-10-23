@@ -26,6 +26,8 @@ class PhotoDeliveryService
 
     public const RECENT_TEXT_DAYS = 14;
 
+    public const LINKS_TEXT_LIMIT = 480;
+
     protected SmsService $sms;
 
     protected bool $lastLookupFailed = false;
@@ -1163,6 +1165,10 @@ class PhotoDeliveryService
         }
 
         if ($kind === PhotoDelivery::KIND_IMMEDIATE) {
+            if (count($created) > 1 && function_exists('set_time_limit')) {
+                @set_time_limit(180);
+            }
+
             foreach ($created as $delivery) {
                 $this->send($delivery);
             }
@@ -1638,8 +1644,8 @@ class PhotoDeliveryService
 
     protected function eventVariables(?PhotoDelivery $delivery, string $tz): array
     {
-        $entryId = $delivery?->registration_entry_id;
-        $form = $entryId && PhotoSession::supportsRegistrations()
+        $entryId = $delivery ? $this->effectiveEntryId($delivery) : null;
+        $form = $entryId !== null
             ? RegistrationEntry::query()->with('event.location')->find($entryId)?->event
             : null;
 
@@ -1647,13 +1653,49 @@ class PhotoDeliveryService
             return ['event_name' => '', 'event_date' => ''];
         }
 
+        $first = \Illuminate\Support\Carbon::parse($form->firstDay());
+        $last = $form->event_date;
+
         return [
             'event_name' => (string) $form->name,
-            'event_date' => $form->firstDay() === $form->event_date->toDateString()
-                ? $form->event_date->format('M j, Y')
-                : \Illuminate\Support\Carbon::parse($form->firstDay())->format('M j') . ' – ' . $form->event_date->format('M j, Y'),
+            'event_date' => match (true) {
+                $first->toDateString() === $last->toDateString() => $last->format('M j, Y'),
+                $first->year === $last->year => $first->format('M j') . ' to ' . $last->format('M j, Y'),
+                default => $first->format('M j, Y') . ' to ' . $last->format('M j, Y'),
+            },
             'location_phone' => (string) ($form->location?->phone ?? ''),
         ];
+    }
+
+    protected function effectiveEntryId(PhotoDelivery $delivery): ?int
+    {
+        if (!PhotoSession::supportsRegistrations()) {
+            return null;
+        }
+
+        if ($delivery->registration_entry_id) {
+            return (int) $delivery->registration_entry_id;
+        }
+
+        if (!$delivery->exists) {
+            return null;
+        }
+
+        $candidates = PhotoDelivery::query()
+            ->where('duplicate_of_id', $delivery->id)
+            ->whereNotNull('registration_entry_id')
+            ->orderBy('id')
+            ->pluck('registration_entry_id');
+
+        foreach ($candidates as $candidate) {
+            $entry = RegistrationEntry::query()->find($candidate);
+
+            if ($entry && $entry->hidden_at === null && RegistrationEvent::query()->whereKey($entry->registration_event_id)->exists()) {
+                return (int) $entry->id;
+            }
+        }
+
+        return null;
     }
 
     protected array $resolvedLinks = [];
@@ -1669,7 +1711,21 @@ class PhotoDeliveryService
     {
         $links = $this->resolvedLinks($companyId, $location);
 
-        return ['links' => $links->filter(fn (array $link) => $link['url'] !== null)->map(fn (array $link) => $link['label'] . ': ' . $link['url'])->implode("\n")]
+        $lines = [];
+        $length = 0;
+
+        foreach ($links->filter(fn (array $link) => $link['url'] !== null) as $link) {
+            $line = $link['label'] . ': ' . $link['url'];
+
+            if ($length + mb_strlen($line) + 1 > self::LINKS_TEXT_LIMIT) {
+                continue;
+            }
+
+            $lines[] = $line;
+            $length += mb_strlen($line) + 1;
+        }
+
+        return ['links' => implode("\n", $lines)]
             + $links->mapWithKeys(fn (array $link) => ['link_' . $link['key'] => (string) $link['url']])->all();
     }
 
@@ -1683,7 +1739,7 @@ class PhotoDeliveryService
 
     protected function templateFor(PhotoSession $session, PhotoDelivery $delivery): PhotoMessageTemplate
     {
-        if ($delivery->registration_entry_id && $delivery->kind !== PhotoDelivery::KIND_ESCAPE_ROOM) {
+        if ($delivery->kind !== PhotoDelivery::KIND_ESCAPE_ROOM && $this->effectiveEntryId($delivery) !== null) {
             $event = PhotoMessageTemplate::forCompany($session->company_id, PhotoMessageTemplate::KIND_EVENT_REGISTRATION);
 
             if ($event->is_active) {
@@ -1721,7 +1777,23 @@ class PhotoDeliveryService
         ];
     }
 
+    protected ?string $attachmentCacheKey = null;
+
+    protected array $attachmentCache = [];
+
     public function photoAttachments(PhotoSession $session, string $roomName): array
+    {
+        $cacheKey = $session->id . '|' . $roomName;
+
+        if ($this->attachmentCacheKey !== $cacheKey) {
+            $this->attachmentCache = $this->readPhotoAttachments($session, $roomName);
+            $this->attachmentCacheKey = $cacheKey;
+        }
+
+        return $this->attachmentCache;
+    }
+
+    protected function readPhotoAttachments(PhotoSession $session, string $roomName): array
     {
         $disk = \Illuminate\Support\Facades\Storage::disk(PhotoProcessingService::DISK);
         $slug = \Illuminate\Support\Str::slug($roomName) ?: 'group';

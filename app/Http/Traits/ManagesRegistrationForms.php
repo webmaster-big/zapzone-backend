@@ -252,6 +252,16 @@ trait ManagesRegistrationForms
             || (PhotoOverlay::supportsEvents() && PhotoOverlay::query()->where('registration_event_id', $event->id)->exists());
     }
 
+    protected function registrationPhotoEmailActive(int $companyId): bool
+    {
+        $template = \App\Models\PhotoMessageTemplate::query()
+            ->where('company_id', $companyId)
+            ->where('kind', \App\Models\PhotoMessageTemplate::KIND_EVENT_REGISTRATION)
+            ->first(['is_active']);
+
+        return $template === null || (bool) $template->is_active;
+    }
+
     protected function photoFramesFor(Collection $forms): array
     {
         if ($forms->isEmpty() || !PhotoOverlay::supportsEvents()) {
@@ -358,7 +368,10 @@ trait ManagesRegistrationForms
         return array_merge($summary, [
             'counts' => $counts,
             'location_locked' => $this->locationLocked($event),
-        ], isset($frames[(int) $event->id]) ? ['photo_frames' => $frames[(int) $event->id]] : []);
+        ], isset($frames[(int) $event->id]) ? [
+            'photo_frames' => $frames[(int) $event->id],
+            'photo_email_active' => $this->registrationPhotoEmailActive((int) $event->company_id),
+        ] : []);
     }
 
     protected function deleteImageIfUnused(string $path): void
