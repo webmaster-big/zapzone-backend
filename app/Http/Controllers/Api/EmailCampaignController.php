@@ -127,10 +127,6 @@ class EmailCampaignController extends Controller
             'location_id' => 'nullable|exists:locations,id',
         ]);
 
-        if (in_array('customers', $validated['recipient_types'], true)) {
-            return $this->customersPaused();
-        }
-
         if ($denied = $this->denyForeignLocations($request, $validated)) {
             return $denied;
         }
@@ -340,10 +336,6 @@ class EmailCampaignController extends Controller
             return $refused;
         }
 
-        if (in_array('customers', (array) $emailCampaign->recipient_types, true)) {
-            return $this->customersPaused();
-        }
-
         $this->recoverStalledSend($emailCampaign);
 
         if ($emailCampaign->status === EmailCampaign::STATUS_SENDING) {
@@ -430,10 +422,6 @@ class EmailCampaignController extends Controller
             'recipient_filters.only_with_photos' => 'nullable|boolean',
             'location_id' => 'nullable|exists:locations,id',
         ]);
-
-        if (in_array('customers', $validated['recipient_types'], true)) {
-            return $this->customersPaused();
-        }
 
         if ($denied = $this->denyForeignLocations($request, $validated)) {
             return $denied;
@@ -737,12 +725,29 @@ class EmailCampaignController extends Controller
 
         $contacts = $contactQuery->get();
 
+        // customers must be able to unsubscribe: nobody who already has is listed, and everyone
+        // else gets the same company-wide opt-out link that event registrants get
+        if (!FollowUpOptOut::isAvailable()) {
+            return [];
+        }
+
+        $optedOut = $this->optedOutEmails((int) $company->id, $contacts->pluck('email')->all());
+        $followUps = app(VisitFollowUpService::class);
+
         foreach ($contacts as $contact) {
+            $email = strtolower(trim((string) $contact->email));
+
+            if (isset($optedOut[$email])) {
+                continue;
+            }
+
             $recipients[] = [
                 'email' => $contact->email,
                 'type' => 'customer',
                 'id' => $contact->id,
-                'variables' => $this->buildVariablesForContact($contact, $company, $location),
+                'variables' => array_merge($this->buildVariablesForContact($contact, $company, $location), [
+                    'opt_out_link' => $followUps->optOutUrl((int) $company->id, $email),
+                ]),
             ];
         }
 
@@ -1149,15 +1154,16 @@ class EmailCampaignController extends Controller
         return null;
     }
 
-    protected function customersPaused(): JsonResponse
+    /** Checked as each customer email goes out, so someone who unsubscribed after the campaign was made is still left out. */
+    protected function customerRefusal(EmailCampaign $campaign, EmailCampaignLog $log): ?string
     {
-        $message = 'Campaigns to customers are paused until campaign emails carry an unsubscribe link. You can still send to staff or a custom list.';
+        if (!FollowUpOptOut::isAvailable()) {
+            return 'Not sent: customer emails need an unsubscribe link, and unsubscribing is not set up on this server.';
+        }
 
-        return response()->json([
-            'success' => false,
-            'message' => $message,
-            'errors' => ['recipient_types' => [$message]],
-        ], 422);
+        return FollowUpOptOut::hasOptedOut((int) $campaign->company_id, $log->recipient_email)
+            ? 'Not sent: this person unsubscribed.'
+            : null;
     }
 
     protected function denyForeignLocations(Request $request, array $validated): ?JsonResponse
@@ -1387,7 +1393,20 @@ class EmailCampaignController extends Controller
             $variables = $this->withEventDefaults($log->variables_used ?? []);
             $body = $campaign->body;
 
-            if ($log->recipient_type === 'event_registrant' && $variables['opt_out_link'] !== '' && !preg_match('/\{\{\s*opt_out_link\s*\}\}/', $body)) {
+            if ($log->recipient_type === 'customer') {
+                $refusal = $this->customerRefusal($campaign, $log);
+
+                if ($refusal !== null) {
+                    $log->markAsFailed($refusal);
+                    $campaign->incrementFailed();
+
+                    return;
+                }
+
+                $variables['opt_out_link'] = app(VisitFollowUpService::class)->optOutUrl((int) $campaign->company_id, FollowUpOptOut::normalize($log->recipient_email));
+            }
+
+            if (in_array($log->recipient_type, ['event_registrant', 'customer'], true) && $variables['opt_out_link'] !== '' && !preg_match('/\{\{\s*opt_out_link\s*\}\}/', $body)) {
                 $body .= self::UNSUBSCRIBE_FOOTER;
             }
 

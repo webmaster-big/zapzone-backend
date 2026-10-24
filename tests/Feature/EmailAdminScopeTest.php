@@ -11,6 +11,7 @@ use App\Models\Customer;
 use App\Models\EmailCampaign;
 use App\Models\EmailNotification;
 use App\Models\EmailTemplate;
+use App\Models\FollowUpOptOut;
 use App\Models\Location;
 use App\Models\User;
 use Database\Seeders\DefaultEmailNotificationSeeder;
@@ -180,36 +181,58 @@ class EmailAdminScopeTest extends TestCase
             ->assertJsonValidationErrors('email_template_id');
     }
 
-    public function test_customer_campaigns_are_paused_with_a_clear_message(): void
+    public function test_customer_campaigns_carry_an_unsubscribe_link_and_skip_people_who_unsubscribed(): void
+    {
+        $this->contact($this->brighton, 'ada@example.com');
+        $this->contact($this->brighton, 'gone@example.com');
+        FollowUpOptOut::create(['company_id' => $this->company->id, 'email' => 'gone@example.com']);
+
+        $this->actingAs($this->admin, 'sanctum')->postJson('/api/email-campaigns/preview-recipients', [
+            'recipient_types' => ['customers'],
+            'location_id' => $this->brighton->id,
+        ])
+            ->assertOk()
+            ->assertJsonPath('data.total_recipients', 1);
+
+        $this->actingAs($this->admin, 'sanctum')->postJson('/api/email-campaigns', [
+            'name' => 'See you tomorrow',
+            'subject' => 'Hi {{ recipient_first_name }}',
+            'body' => '<p>Hello</p>',
+            'recipient_types' => ['customers'],
+            'location_id' => $this->brighton->id,
+            'send_now' => true,
+        ])->assertCreated();
+
+        $messages = Mail::mailer()->getSymfonyTransport()->messages();
+        $this->assertCount(1, $messages);
+        $this->assertSame('ada@example.com', $messages->first()->getOriginalMessage()->getTo()[0]->getAddress());
+
+        $html = (string) $messages->first()->getOriginalMessage()->getHtmlBody();
+        $this->assertStringContainsString('Unsubscribe', $html);
+        $this->assertStringContainsString('/feedback/', $html);
+        $this->assertStringContainsString('unsubscribe=1', $html);
+    }
+
+    public function test_a_customer_who_unsubscribes_after_the_campaign_is_made_is_not_emailed(): void
     {
         $this->contact($this->brighton, 'ada@example.com');
 
-        foreach (['/api/email-campaigns/preview-recipients', '/api/email-campaigns'] as $url) {
-            $this->actingAs($this->admin, 'sanctum')->postJson($url, [
-                'name' => 'Fall news',
-                'subject' => 'Hi {{ recipient_first_name }}',
-                'body' => '<p>Hello</p>',
-                'recipient_types' => ['customers', 'attendants'],
-                'send_now' => true,
-            ])
-                ->assertStatus(422)
-                ->assertJsonPath('message', 'Campaigns to customers are paused until campaign emails carry an unsubscribe link. You can still send to staff or a custom list.');
-        }
-
-        $old = EmailCampaign::create([
-            'company_id' => $this->company->id,
-            'location_id' => $this->brighton->id,
-            'sent_by' => $this->admin->id,
-            'name' => 'Old customer campaign',
+        $this->actingAs($this->admin, 'sanctum')->postJson('/api/email-campaigns', [
+            'name' => 'See you tomorrow',
             'subject' => 'Hi',
             'body' => '<p>Hello</p>',
             'recipient_types' => ['customers'],
-            'status' => EmailCampaign::STATUS_COMPLETED,
-        ]);
-        $this->actingAs($this->admin, 'sanctum')->postJson("/api/email-campaigns/{$old->id}/resend", ['type' => 'all'])->assertStatus(422);
+            'location_id' => $this->brighton->id,
+            'send_now' => false,
+        ])->assertCreated();
+
+        FollowUpOptOut::create(['company_id' => $this->company->id, 'email' => 'ada@example.com']);
+
+        $campaign = EmailCampaign::firstOrFail();
+        $this->actingAs($this->admin, 'sanctum')->postJson("/api/email-campaigns/{$campaign->id}/resend", ['type' => 'all']);
 
         $this->assertCount(0, Mail::mailer()->getSymfonyTransport()->messages());
-        $this->assertSame(1, EmailCampaign::count());
+        $this->assertSame('Not sent: this person unsubscribed.', $campaign->logs()->first()->error_message);
     }
 
     public function test_staff_campaigns_still_send_and_stay_inside_the_company(): void

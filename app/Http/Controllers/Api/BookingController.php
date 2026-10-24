@@ -1984,28 +1984,30 @@ class BookingController extends Controller
             $booking->load(['customer', 'package', 'location.company', 'room', 'creator', 'attractions', 'addOns']);
             $recipientEmail = $booking->customer?->email ?? $booking->guest_email;
 
-            if ($recipientEmail) {
-                try {
-                    $emailService = app(EmailNotificationService::class);
-                    $emailService->triggerBookingNotification($booking, EmailNotification::TRIGGER_BOOKING_CONFIRMED);
-                    $emailSent = true;
-
-                    Log::info('Booking confirmation email sent via EmailNotificationService', [
-                        'booking_id' => $booking->id,
-                        'recipient' => $recipientEmail,
-                    ]);
-                } catch (\Exception $e) {
-                    $emailError = $e->getMessage();
-                    Log::error('Failed to send booking confirmation email', [
-                        'booking_id' => $booking->id,
-                        'error' => $e->getMessage(),
-                    ]);
-                }
-            } else {
-                Log::warning('No recipient email available for booking confirmation', [
+            if (!$recipientEmail) {
+                Log::warning('No customer email for booking confirmation; notifying staff only', [
                     'booking_id' => $booking->id,
                 ]);
                 $emailError = 'No recipient email address available';
+            }
+
+            // Staff are told about every booking, even one without a customer email; the
+            // service leaves the customer out when there is no address to send to.
+            try {
+                $emailService = app(EmailNotificationService::class);
+                $emailService->triggerBookingNotification($booking, EmailNotification::TRIGGER_BOOKING_CONFIRMED);
+                $emailSent = (bool) $recipientEmail;
+
+                Log::info('Booking confirmation email sent via EmailNotificationService', [
+                    'booking_id' => $booking->id,
+                    'recipient' => $recipientEmail,
+                ]);
+            } catch (\Exception $e) {
+                $emailError = $e->getMessage();
+                Log::error('Failed to send booking confirmation email', [
+                    'booking_id' => $booking->id,
+                    'error' => $e->getMessage(),
+                ]);
             }
         } else {
             Log::info('Email sending skipped per user request', [
