@@ -24,6 +24,7 @@ use App\Services\PhotoDeliveryService;
 use App\Services\VisitFollowUpService;
 use App\Support\OperatingDay;
 use App\Services\GmailApiService;
+use App\Support\EmailHtml;
 use App\Support\TemplatePlaceholders;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
@@ -107,7 +108,7 @@ class EmailCampaignController extends Controller
         $validated = $request->validate([
             'name' => 'required|string|max:255',
             'subject' => 'required|string|max:255',
-            'body' => 'required|string',
+            'body' => ['required', 'string', EmailHtml::rule()],
             'email_template_id' => ['nullable', Rule::exists('email_templates', 'id')->where('company_id', Auth::user()?->company_id)],
             'recipient_types' => 'required|array|min:1',
             'recipient_types.*' => [Rule::in(EmailCampaign::RECIPIENT_TYPES)],
@@ -570,7 +571,7 @@ class EmailCampaignController extends Controller
     {
         $validated = $request->validate([
             'subject' => 'required|string|max:255',
-            'body' => 'required|string',
+            'body' => ['required', 'string', EmailHtml::rule()],
             'test_email' => 'required|email',
             'attachments' => 'nullable|array',
             'attachments.*' => 'file|max:10240|mimes:pdf,doc,docx,xls,xlsx,csv,txt,zip,png,jpg,jpeg,gif',

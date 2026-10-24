@@ -14,6 +14,7 @@ use App\Models\Promo;
 use App\Models\VisitFollowUp;
 use App\Services\EmailNotificationService;
 use App\Services\VisitFollowUpService;
+use App\Support\EmailHtml;
 use App\Support\TemplatePlaceholders;
 use Database\Seeders\DefaultEmailNotificationSeeder;
 use Illuminate\Http\JsonResponse;
@@ -138,7 +139,7 @@ class EmailNotificationController extends Controller
             'entity_ids.*' => 'integer',
             'email_template_id' => ['nullable', Rule::exists('email_templates', 'id')->where('company_id', Auth::user()?->company_id)->where(fn ($query) => $query->whereNull('category')->orWhere('category', '!=', \App\Models\EmailTemplate::CATEGORY_EVENT_PHOTOS))],
             'subject' => 'required_without:email_template_id|nullable|string|max:255',
-            'body' => 'required_without:email_template_id|nullable|string',
+            'body' => ['required_without:email_template_id', 'nullable', 'string', EmailHtml::rule()],
             'recipient_types' => 'required|array|min:1',
             'recipient_types.*' => [Rule::in($allRecipientTypes)],
             'custom_emails' => 'nullable|array',
@@ -325,7 +326,7 @@ class EmailNotificationController extends Controller
             'entity_ids.*' => 'integer',
             'email_template_id' => ['nullable', Rule::exists('email_templates', 'id')->where('company_id', Auth::user()?->company_id)->where(fn ($query) => $query->whereNull('category')->orWhere('category', '!=', \App\Models\EmailTemplate::CATEGORY_EVENT_PHOTOS))],
             'subject' => 'nullable|string|max:255',
-            'body' => 'nullable|string',
+            'body' => ['nullable', 'string', EmailHtml::rule()],
             'recipient_types' => 'sometimes|required|array|min:1',
             'recipient_types.*' => [Rule::in($allRecipientTypes)],
             'custom_emails' => 'nullable|array',

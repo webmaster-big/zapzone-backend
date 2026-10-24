@@ -10,6 +10,7 @@ use App\Models\Location;
 use App\Models\MessageLink;
 use App\Services\PhotoDeliveryService;
 use App\Support\EmailTemplateAccess;
+use App\Support\EmailHtml;
 use App\Support\TemplatePlaceholders;
 use Closure;
 use Illuminate\Contracts\Cache\LockTimeoutException;
@@ -88,7 +89,7 @@ class EmailTemplateController extends Controller
         $validated = $request->validate([
             'name' => 'required|string|max:255',
             'subject' => 'required|string|max:255',
-            'body' => 'required|string',
+            'body' => ['required', 'string', EmailHtml::rule()],
             'status' => ['sometimes', Rule::in(['draft', 'active', 'archived'])],
             'category' => 'nullable|string|max:100',
             'location_id' => 'nullable|integer',
@@ -187,7 +188,7 @@ class EmailTemplateController extends Controller
         $validated = $request->validate([
             'name' => 'sometimes|string|max:255',
             'subject' => 'sometimes|string|max:255',
-            'body' => 'sometimes|string',
+            'body' => ['sometimes', 'string', EmailHtml::rule()],
             'status' => ['sometimes', Rule::in(['draft', 'active', 'archived'])],
             'category' => 'nullable|string|max:100',
             'location_id' => 'nullable|integer',
