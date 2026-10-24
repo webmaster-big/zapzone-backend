@@ -111,6 +111,18 @@ class NotificationEmailEscapingTest extends TestCase
             'phone' => '2485550100',
             'password' => Hash::make('password'),
         ]);
+        Booking::create([
+            'reference_number' => 'PREVIEW1',
+            'booking_date' => '2026-11-05',
+            'booking_time' => '14:00',
+            'duration' => 60,
+            'duration_unit' => 'minutes',
+            'location_id' => $this->location->id,
+            'customer_id' => $customer->id,
+            'participants' => 4,
+            'total_amount' => 120,
+            'status' => 'confirmed',
+        ]);
         $notification = EmailNotification::where('company_id', $this->company->id)->firstOrFail();
 
         $response = $this->actingAs($this->admin, 'sanctum')->postJson("/api/email-notifications/{$notification->id}/preview", [
@@ -165,6 +177,29 @@ class NotificationEmailEscapingTest extends TestCase
         $this->assertStringContainsString('&lt;b&gt;Cake&lt;/b&gt; x2', $variables['addons_list']);
         $this->assertStringContainsString('src="/storage/qrcodes/a&quot;b.png"', $variables['qr_code']);
         $this->assertSame('<i>Jo</i>', $variables['customer_name']);
+    }
+
+    public function test_campaign_emails_sent_without_gmail_fill_in_values_as_text(): void
+    {
+        $mail = new \App\Mail\DynamicCampaignMail(
+            'Hi {{ recipient_first_name }} from {{ company_name }}',
+            '<p>Hello {{ recipient_first_name }}</p><p>{{ company_name }}</p><p>{{ recipient_last_name }}</p>',
+            [
+                'recipient_first_name' => '<b>Sam</b>',
+                'recipient_last_name' => '{{ company_email }}',
+                'company_name' => "Tom & Jerry's Fun",
+                'company_email' => 'owner@zapzone.test',
+            ]
+        );
+
+        $html = $mail->render();
+
+        $this->assertStringContainsString('<p>Hello &lt;b&gt;Sam&lt;/b&gt;</p>', $html);
+        $this->assertStringContainsString('<p>Tom &amp; Jerry&#039;s Fun</p>', $html);
+        $this->assertStringContainsString('<p>{{ company_email }}</p>', $html);
+        $this->assertStringNotContainsString('owner@zapzone.test', $html);
+        $this->assertStringNotContainsString('{{ recipient_first_name }}', $html);
+        $mail->assertHasSubject("Hi <b>Sam</b> from Tom & Jerry's Fun");
     }
 
     private function signKioskWaiver(string $first, string $last, string $email)

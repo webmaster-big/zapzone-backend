@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Traits\ScopesByAuthUser;
 use App\Support\DateRange;
 use App\Mail\DynamicCampaignMail;
 use App\Models\AttractionPurchase;
@@ -25,6 +26,8 @@ use Illuminate\Validation\Rule;
 
 class EmailCampaignController extends Controller
 {
+    use ScopesByAuthUser;
+
     public function index(Request $request): JsonResponse
     {
         $user = Auth::user();
@@ -89,7 +92,7 @@ class EmailCampaignController extends Controller
             'name' => 'required|string|max:255',
             'subject' => 'required|string|max:255',
             'body' => 'required|string',
-            'email_template_id' => 'nullable|exists:email_templates,id',
+            'email_template_id' => ['nullable', Rule::exists('email_templates', 'id')->where('company_id', Auth::user()?->company_id)],
             'recipient_types' => 'required|array|min:1',
             'recipient_types.*' => [Rule::in(['customers', 'attendants', 'company_admin', 'location_managers', 'custom'])],
             'custom_emails' => 'nullable|array',
@@ -103,6 +106,14 @@ class EmailCampaignController extends Controller
             'send_now' => 'boolean',
             'location_id' => 'nullable|exists:locations,id',
         ]);
+
+        if (in_array('customers', $validated['recipient_types'], true)) {
+            return $this->customersPaused();
+        }
+
+        if ($denied = $this->denyForeignLocations($request, $validated)) {
+            return $denied;
+        }
 
         $attachments = [];
         if ($request->hasFile('attachments')) {
@@ -124,7 +135,7 @@ class EmailCampaignController extends Controller
 
             $campaign = EmailCampaign::create([
                 'company_id' => $user->company_id,
-                'location_id' => $validated['location_id'] ?? $user->location_id,
+                'location_id' => $this->campaignLocationId($user, $validated),
                 'email_template_id' => $validated['email_template_id'] ?? null,
                 'sent_by' => $user->id,
                 'name' => $validated['name'],
@@ -191,6 +202,10 @@ class EmailCampaignController extends Controller
             ], 404);
         }
 
+        if ($denied = $this->denyForeignRecord($emailCampaign, 'campaign')) {
+            return $denied;
+        }
+
         $emailCampaign->load(['company', 'location', 'template', 'sender', 'logs']);
 
         $stats = [
@@ -220,6 +235,14 @@ class EmailCampaignController extends Controller
             ], 404);
         }
 
+        if ($denied = $this->denyForeignRecord($emailCampaign, 'campaign')) {
+            return $denied;
+        }
+
+        if ($refused = $this->companyWideCampaignRefusal($emailCampaign, $user)) {
+            return $refused;
+        }
+
         if (!in_array($emailCampaign->status, [EmailCampaign::STATUS_PENDING, EmailCampaign::STATUS_SENDING])) {
             return response()->json([
                 'success' => false,
@@ -245,6 +268,18 @@ class EmailCampaignController extends Controller
                 'success' => false,
                 'message' => 'Campaign not found',
             ], 404);
+        }
+
+        if ($denied = $this->denyForeignRecord($emailCampaign, 'campaign')) {
+            return $denied;
+        }
+
+        if ($refused = $this->companyWideCampaignRefusal($emailCampaign, $user)) {
+            return $refused;
+        }
+
+        if (in_array('customers', (array) $emailCampaign->recipient_types, true)) {
+            return $this->customersPaused();
         }
 
         $resendType = $request->input('type', 'failed'); // 'failed' or 'all'
@@ -294,11 +329,19 @@ class EmailCampaignController extends Controller
             'location_id' => 'nullable|exists:locations,id',
         ]);
 
+        if (in_array('customers', $validated['recipient_types'], true)) {
+            return $this->customersPaused();
+        }
+
+        if ($denied = $this->denyForeignLocations($request, $validated)) {
+            return $denied;
+        }
+
         $user = Auth::user();
 
         $tempCampaign = new EmailCampaign([
             'company_id' => $user->company_id,
-            'location_id' => $validated['location_id'] ?? $user->location_id,
+            'location_id' => $this->campaignLocationId($user, $validated),
             'recipient_types' => $validated['recipient_types'],
             'custom_emails' => $validated['custom_emails'] ?? [],
             'recipient_filters' => $validated['recipient_filters'] ?? [],
@@ -336,6 +379,14 @@ class EmailCampaignController extends Controller
             ], 404);
         }
 
+        if ($denied = $this->denyForeignRecord($emailCampaign, 'campaign')) {
+            return $denied;
+        }
+
+        if ($refused = $this->companyWideCampaignRefusal($emailCampaign, $user)) {
+            return $refused;
+        }
+
         $emailCampaign->delete();
 
         return response()->json([
@@ -348,7 +399,16 @@ class EmailCampaignController extends Controller
     {
         $user = Auth::user();
 
-        $query = EmailCampaign::where('company_id', $user->company_id);
+        $scope = function ($query) use ($user, $request) {
+            if (!$this->isCompanyLevel($user)) {
+                $own = $this->staffLocationIds($request);
+                $query->where(fn ($inScope) => $inScope->whereIn('location_id', $own)->orWhereNull('location_id'));
+            }
+
+            return $query;
+        };
+
+        $query = $scope(EmailCampaign::where('company_id', $user->company_id));
 
         if ($request->has('location_id')) {
             $query->where('location_id', $request->location_id);
@@ -360,12 +420,12 @@ class EmailCampaignController extends Controller
         $totalEmailsSent = $query->sum('sent_count');
         $totalEmailsFailed = $query->sum('failed_count');
 
-        $statusBreakdown = EmailCampaign::where('company_id', $user->company_id)
+        $statusBreakdown = $scope(EmailCampaign::where('company_id', $user->company_id))
             ->selectRaw('status, COUNT(*) as count')
             ->groupBy('status')
             ->pluck('count', 'status');
 
-        $recentCampaigns = EmailCampaign::where('company_id', $user->company_id)
+        $recentCampaigns = $scope(EmailCampaign::where('company_id', $user->company_id))
             ->with(['sender'])
             ->orderBy('created_at', 'desc')
             ->limit(5)
@@ -477,7 +537,7 @@ class EmailCampaignController extends Controller
         $recipients = [];
         $filters = $campaign->recipient_filters ?? [];
         $company = $user->company;
-        $location = $campaign->location ?? $user->location;
+        $location = $campaign->location ?? ($this->isCompanyLevel($user) ? null : $user->location);
 
         foreach ($campaign->recipient_types as $type) {
             switch ($type) {
@@ -534,7 +594,7 @@ class EmailCampaignController extends Controller
     {
         $recipients = [];
 
-        $contactQuery = Contact::query();
+        $contactQuery = Contact::byCompany($company->id);
 
         if (!empty($filters['location_id'])) {
             $contactQuery->where('location_id', $filters['location_id']);
@@ -557,14 +617,7 @@ class EmailCampaignController extends Controller
                 'email' => $contact->email,
                 'type' => 'customer',
                 'id' => $contact->id,
-                'variables' => $this->buildVariables(
-                    $contact->name,
-                    $contact->email,
-                    'contact',
-                    $company,
-                    $location,
-                    $contact->phone
-                ),
+                'variables' => $this->buildVariablesForContact($contact, $company, $location),
             ];
         }
 
@@ -652,6 +705,71 @@ class EmailCampaignController extends Controller
                 'customer_last_visit' => $customer->last_visit?->format('F j, Y') ?? 'N/A',
             ]
         );
+    }
+
+    protected function buildVariablesForContact(Contact $contact, $company, $location): array
+    {
+        $fullName = trim(($contact->first_name ?? '') . ' ' . ($contact->last_name ?? ''));
+
+        return array_merge(
+            $this->buildVariables($fullName, $contact->email, 'contact', $company, $location, $contact->phone),
+            [
+                'recipient_first_name' => $contact->first_name ?? '',
+                'recipient_last_name' => $contact->last_name ?? '',
+            ]
+        );
+    }
+
+    protected function isCompanyLevel($user): bool
+    {
+        return $user !== null && in_array(\App\Http\Middleware\EnsureStaff::effectiveRole($user), ['company_admin', 'admin', 'owner'], true);
+    }
+
+    protected function campaignLocationId($user, array $validated): ?int
+    {
+        if (!empty($validated['location_id'])) {
+            return (int) $validated['location_id'];
+        }
+
+        return $this->isCompanyLevel($user) ? null : ($this->staffLocationIds(request())[0] ?? $user->location_id);
+    }
+
+    protected function companyWideCampaignRefusal(EmailCampaign $campaign, $user): ?JsonResponse
+    {
+        if ($campaign->location_id !== null || $this->isCompanyLevel($user)) {
+            return null;
+        }
+
+        return response()->json([
+            'success' => false,
+            'message' => 'This campaign went to every location, so only a company admin can change it.',
+        ], 403);
+    }
+
+    protected function customersPaused(): JsonResponse
+    {
+        $message = 'Campaigns to customers are paused until campaign emails carry an unsubscribe link. You can still send to staff or a custom list.';
+
+        return response()->json([
+            'success' => false,
+            'message' => $message,
+            'errors' => ['recipient_types' => [$message]],
+        ], 422);
+    }
+
+    protected function denyForeignLocations(Request $request, array $validated): ?JsonResponse
+    {
+        foreach ([$validated['location_id'] ?? null, $validated['recipient_filters']['location_id'] ?? null] as $locationId) {
+            if (!empty($locationId)) {
+                $location = $this->scopedLocation($request, $locationId);
+
+                if ($location instanceof JsonResponse) {
+                    return $location;
+                }
+            }
+        }
+
+        return null;
     }
 
     protected function buildVariablesForUser($userRecord, $company, $location): array

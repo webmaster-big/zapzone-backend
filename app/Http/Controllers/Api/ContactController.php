@@ -87,6 +87,10 @@ class ContactController extends Controller
 
     public function store(Request $request): JsonResponse
     {
+        if ($request->filled('company_id') && ($denied = $this->guardCompanyAccess($request, $request->input('company_id')))) {
+            return $denied;
+        }
+
         $validated = $request->validate([
             'company_id' => 'required|exists:companies,id',
             'location_id' => 'nullable|exists:locations,id',
@@ -116,6 +120,10 @@ class ContactController extends Controller
             'status' => 'sometimes|in:active,inactive',
             'sms_consent' => 'sometimes|boolean',
         ]);
+
+        if ($denied = $this->denyForeignPlacement($request, $validated)) {
+            return $denied;
+        }
 
         $validated['created_by'] = auth()->id();
 
@@ -160,6 +168,10 @@ class ContactController extends Controller
 
     public function show(Contact $contact): JsonResponse
     {
+        if ($denied = $this->denyContact($contact)) {
+            return $denied;
+        }
+
         $contact->load(['company', 'location', 'creator']);
 
         return response()->json([
@@ -170,6 +182,10 @@ class ContactController extends Controller
 
     public function update(Request $request, Contact $contact): JsonResponse
     {
+        if ($denied = $this->denyContact($contact)) {
+            return $denied;
+        }
+
         $validated = $request->validate([
             'location_id' => 'nullable|exists:locations,id',
             'email' => [
@@ -198,6 +214,16 @@ class ContactController extends Controller
             'status' => 'sometimes|in:active,inactive',
             'sms_consent' => 'sometimes|boolean',
         ]);
+
+        if (array_key_exists('location_id', $validated)) {
+            $placement = ['company_id' => $contact->company_id, 'location_id' => $validated['location_id']];
+
+            if ($denied = $this->denyForeignPlacement($request, $placement)) {
+                return $denied;
+            }
+
+            $validated['location_id'] = $placement['location_id'];
+        }
 
         $email = array_key_exists('email', $validated) ? $validated['email'] : $contact->email;
         $phone = array_key_exists('phone', $validated) ? $validated['phone'] : $contact->phone;
@@ -245,6 +271,10 @@ class ContactController extends Controller
 
     public function destroy(Contact $contact): JsonResponse
     {
+        if ($denied = $this->denyContact($contact)) {
+            return $denied;
+        }
+
         $email = $contact->email;
         $contactId = $contact->id;
         $locationId = $contact->location_id;
@@ -297,6 +327,10 @@ class ContactController extends Controller
             'source' => 'nullable|string|max:100',
             'skip_duplicates' => 'nullable|boolean',
         ]);
+
+        if ($denied = $this->denyForeignPlacement($request, $validated)) {
+            return $denied;
+        }
 
         $companyId = $validated['company_id'];
         $locationId = $validated['location_id'] ?? null;
@@ -409,7 +443,10 @@ class ContactController extends Controller
             'ids.*' => 'required|integer|exists:contacts,id',
         ]);
 
-        $deletedCount = Contact::whereIn('id', $validated['ids'])->delete();
+        $scoped = Contact::whereIn('id', $validated['ids']);
+        $this->applyAuthScope($scoped, $request);
+        $deletedIds = (clone $scoped)->pluck('id')->all();
+        $deletedCount = $scoped->delete();
 
         $currentUser = auth()->user();
         ActivityLog::log(
@@ -425,7 +462,7 @@ class ContactController extends Controller
                 ],
                 'deleted_at' => now()->toIso8601String(),
                 'deleted_count' => $deletedCount,
-                'contact_ids' => $validated['ids'],
+                'contact_ids' => $deletedIds,
             ]
         );
 
@@ -447,7 +484,17 @@ class ContactController extends Controller
             'location_id' => 'required_if:action,set_location|exists:locations,id',
         ]);
 
-        $contacts = Contact::whereIn('id', $validated['ids'])->get();
+        if (!empty($validated['location_id']) && $validated['action'] === 'set_location') {
+            $location = $this->scopedLocation($request, $validated['location_id']);
+
+            if ($location instanceof JsonResponse) {
+                return $location;
+            }
+        }
+
+        $scoped = Contact::whereIn('id', $validated['ids']);
+        $this->applyAuthScope($scoped, $request);
+        $contacts = $scoped->get();
         $updatedCount = 0;
 
         foreach ($contacts as $contact) {
@@ -491,7 +538,7 @@ class ContactController extends Controller
                 'update_details' => [
                     'action' => $validated['action'],
                     'updated_count' => $updatedCount,
-                    'contact_ids' => $validated['ids'],
+                    'contact_ids' => $contacts->pluck('id')->all(),
                     'tags' => $validated['tags'] ?? null,
                     'status' => $validated['status'] ?? null,
                     'location_id' => $validated['location_id'] ?? null,
@@ -509,6 +556,7 @@ class ContactController extends Controller
     public function getTags(Request $request): JsonResponse
     {
         $query = Contact::query();
+        $this->applyAuthScope($query, $request);
 
         if ($request->has('company_id')) {
             $query->byCompany($request->company_id);
@@ -539,6 +587,7 @@ class ContactController extends Controller
     public function statistics(Request $request): JsonResponse
     {
         $query = Contact::query();
+        $this->applyAuthScope($query, $request);
 
         if ($request->has('company_id')) {
             $query->byCompany($request->company_id);
@@ -609,7 +658,9 @@ class ContactController extends Controller
             'active_only' => 'nullable|boolean',
         ]);
 
-        $query = Contact::byCompany($validated['company_id']);
+        $query = Contact::query();
+        $this->applyAuthScope($query, $request);
+        $query->byCompany($validated['company_id']);
 
         if (!empty($validated['location_id'])) {
             $query->byLocation($validated['location_id']);
@@ -647,8 +698,63 @@ class ContactController extends Controller
         ]);
     }
 
+    protected function isCompanyLevel(?Request $request = null): bool
+    {
+        $user = $this->resolveAuthUser($request);
+
+        return $user !== null && in_array(\App\Http\Middleware\EnsureStaff::effectiveRole($user), ['company_admin', 'admin', 'owner'], true);
+    }
+
+    protected function denyContact(Contact $contact): ?JsonResponse
+    {
+        if ($denied = $this->denyForeignRecord($contact, 'contact')) {
+            return $denied;
+        }
+
+        if ($contact->location_id === null && !$this->isCompanyLevel()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This contact is shared by every location, so only a company admin can open or change it.',
+            ], 403);
+        }
+
+        return null;
+    }
+
+    protected function denyForeignPlacement(Request $request, array &$validated): ?JsonResponse
+    {
+        if ($denied = $this->guardCompanyAccess($request, $validated['company_id'])) {
+            return $denied;
+        }
+
+        if (empty($validated['location_id']) && !$this->isCompanyLevel($request)) {
+            $validated['location_id'] = $this->staffLocationIds($request)[0] ?? null;
+        }
+
+        if (!empty($validated['location_id'])) {
+            $location = $this->scopedLocation($request, $validated['location_id']);
+
+            if ($location instanceof JsonResponse) {
+                return $location;
+            }
+
+            if ((int) $location->company_id !== (int) $validated['company_id']) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'That location belongs to another company.',
+                ], 422);
+            }
+        }
+
+        return null;
+    }
+
     public function addTag(Request $request, Contact $contact): JsonResponse
     {
+        if ($denied = $this->denyContact($contact)) {
+            return $denied;
+        }
+
         $validated = $request->validate([
             'tag' => 'required|string|max:100',
         ]);
@@ -674,6 +780,10 @@ class ContactController extends Controller
 
     public function removeTag(Request $request, Contact $contact): JsonResponse
     {
+        if ($denied = $this->denyContact($contact)) {
+            return $denied;
+        }
+
         $validated = $request->validate([
             'tag' => 'required|string|max:100',
         ]);

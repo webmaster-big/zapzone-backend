@@ -13,9 +13,9 @@ class DynamicCampaignMail extends Mailable
 {
     use Queueable, SerializesModels;
 
-    public string $emailSubject;
-    public string $emailBody;
-    public array $variables;
+    protected string $emailSubject;
+    protected string $emailBody;
+    protected array $variables;
 
     public function __construct(string $subject, string $body, array $variables = [])
     {

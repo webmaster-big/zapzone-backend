@@ -136,7 +136,7 @@ class EmailNotificationController extends Controller
             'entity_type' => ['required', Rule::in($allEntityTypes)],
             'entity_ids' => 'nullable|array',
             'entity_ids.*' => 'integer',
-            'email_template_id' => 'nullable|exists:email_templates,id',
+            'email_template_id' => ['nullable', Rule::exists('email_templates', 'id')->where('company_id', Auth::user()?->company_id)],
             'subject' => 'required_without:email_template_id|nullable|string|max:255',
             'body' => 'required_without:email_template_id|nullable|string',
             'recipient_types' => 'required|array|min:1',
@@ -167,6 +167,10 @@ class EmailNotificationController extends Controller
         }
 
         if ($refused = $this->visitWriteRefusal(null, $user, $validated)) {
+            return $refused;
+        }
+
+        if ($refused = $this->locationWriteRefusal($user, $validated)) {
             return $refused;
         }
 
@@ -240,6 +244,10 @@ class EmailNotificationController extends Controller
             ], 404);
         }
 
+        if ($denied = $this->denyForeignRecord($emailNotification, 'email notification')) {
+            return $denied;
+        }
+
         $emailNotification->load(array_merge(['company', 'location', 'template', 'logs' => function ($query) {
             $query->orderBy('created_at', 'desc')->limit(50);
         }], EmailNotification::supportsPromo() ? ['promo.creator'] : []));
@@ -291,6 +299,18 @@ class EmailNotificationController extends Controller
             ], 404);
         }
 
+        if ($denied = $this->denyForeignRecord($emailNotification, 'email notification')) {
+            return $denied;
+        }
+
+        if ($refused = $this->companyWideWriteRefusal($emailNotification, $user)) {
+            return $refused;
+        }
+
+        if ($refused = $this->salesReportWriteRefusal($emailNotification, $user)) {
+            return $refused;
+        }
+
         $allTriggerTypes = array_keys(EmailNotification::getAllTriggerTypes());
         $allEntityTypes = array_keys(EmailNotification::getEntityTypes());
         $allRecipientTypes = array_keys(EmailNotification::getRecipientTypes());
@@ -303,7 +323,7 @@ class EmailNotificationController extends Controller
             'entity_type' => ['sometimes', 'required', Rule::in($allEntityTypes)],
             'entity_ids' => 'nullable|array',
             'entity_ids.*' => 'integer',
-            'email_template_id' => 'nullable|exists:email_templates,id',
+            'email_template_id' => ['nullable', Rule::exists('email_templates', 'id')->where('company_id', Auth::user()?->company_id)],
             'subject' => 'nullable|string|max:255',
             'body' => 'nullable|string',
             'recipient_types' => 'sometimes|required|array|min:1',
@@ -338,6 +358,10 @@ class EmailNotificationController extends Controller
         }
 
         if ($refused = $this->visitWriteRefusal($emailNotification, $user, $validated)) {
+            return $refused;
+        }
+
+        if (array_key_exists('location_id', $validated) && ($refused = $this->locationWriteRefusal($user, $validated))) {
             return $refused;
         }
 
@@ -392,6 +416,18 @@ class EmailNotificationController extends Controller
             ], 404);
         }
 
+        if ($denied = $this->denyForeignRecord($emailNotification, 'email notification')) {
+            return $denied;
+        }
+
+        if ($refused = $this->companyWideWriteRefusal($emailNotification, $user)) {
+            return $refused;
+        }
+
+        if ($refused = $this->salesReportWriteRefusal($emailNotification, $user)) {
+            return $refused;
+        }
+
         if ($emailNotification->is_default) {
             return response()->json([
                 'success' => false,
@@ -420,6 +456,18 @@ class EmailNotificationController extends Controller
                 'success' => false,
                 'message' => 'Notification not found',
             ], 404);
+        }
+
+        if ($denied = $this->denyForeignRecord($emailNotification, 'email notification')) {
+            return $denied;
+        }
+
+        if ($refused = $this->companyWideWriteRefusal($emailNotification, $user)) {
+            return $refused;
+        }
+
+        if ($refused = $this->salesReportWriteRefusal($emailNotification, $user)) {
+            return $refused;
         }
 
         if ($refused = $this->visitWriteRefusal($emailNotification, $user)) {
@@ -452,6 +500,10 @@ class EmailNotificationController extends Controller
             ], 404);
         }
 
+        if ($denied = $this->denyForeignRecord($emailNotification, 'email notification')) {
+            return $denied;
+        }
+
         if ($emailNotification->is_default && !$emailNotification->isVisitTrigger()) {
             return response()->json([
                 'success' => false,
@@ -470,6 +522,10 @@ class EmailNotificationController extends Controller
             }
 
             $newNotification->location_id = $user->location_id;
+        }
+
+        if (!$this->isCompanyLevel($user)) {
+            $newNotification->location_id = $this->staffLocationIds(request())[0] ?? $user->location_id;
         }
 
         $newNotification->name = $emailNotification->name . ' (Copy)';
@@ -561,34 +617,36 @@ class EmailNotificationController extends Controller
     public function getVariables(Request $request): JsonResponse
     {
         $triggerType = $request->input('trigger_type', 'booking_created');
+        $triggerType = is_string($triggerType) ? $triggerType : 'booking_created';
 
         $variables = EmailNotificationService::getAvailableVariables();
 
-        $category = EmailNotification::getTriggerCategory($triggerType);
+        $category = EmailNotification::getTriggerCategory($triggerType)
+            ?? ($triggerType === EmailNotification::TRIGGER_PURCHASE_RESCHEDULED ? 'purchase' : null);
 
-        $typeMapping = [
-            'booking' => 'booking',
-            'payment' => 'payment',
-            'purchase' => 'purchase',
-            'customer' => 'customer',
-            'gift_card' => 'gift_card',
-            'promo' => 'common',
-            'feedback' => 'common',
-            'special' => 'common',
-            'report' => 'report',
-        ];
+        $type = match ($category) {
+            'visit' => $triggerType === EmailNotification::TRIGGER_VISIT_FOLLOWUP ? 'visit_followup' : 'visit_completed',
+            'booking', 'payment', 'purchase', 'event', 'waiver', 'concern', 'report' => $category,
+            default => null,
+        };
 
-        $type = $typeMapping[$category] ?? 'booking';
+        $common = $variables['common'] ?? [];
 
-        if ($category === 'visit') {
-            $type = $triggerType === EmailNotification::TRIGGER_VISIT_FOLLOWUP ? 'visit_followup' : 'visit_completed';
+        if ($type === 'report') {
+            $common = [
+                'Company' => ['company_name' => $common['Company']['company_name'] ?? 'Company name'],
+                'Date/Time' => [
+                    'current_date' => $common['Date/Time']['current_date'] ?? 'Current date (formatted)',
+                    'current_year' => $common['Date/Time']['current_year'] ?? 'Current year',
+                ],
+            ];
         }
 
         return response()->json([
             'success' => true,
             'data' => [
-                'specific' => $variables[$type] ?? [],
-                'common' => $variables['common'] ?? [],
+                'specific' => $type ? ($variables[$type] ?? []) : [],
+                'common' => $common,
             ],
         ]);
     }
@@ -629,6 +687,10 @@ class EmailNotificationController extends Controller
             ], 404);
         }
 
+        if ($denied = $this->denyForeignRecord($emailNotification, 'email notification')) {
+            return $denied;
+        }
+
         $query = $emailNotification->logs();
 
         if ($request->has('status')) {
@@ -655,6 +717,10 @@ class EmailNotificationController extends Controller
             ], 404);
         }
 
+        if ($denied = $this->denyForeignRecord($emailNotification, 'email notification')) {
+            return $denied;
+        }
+
         $log = $emailNotification->logs()->findOrFail($logId);
 
         if ($log->status !== 'failed') {
@@ -678,6 +744,22 @@ class EmailNotificationController extends Controller
 
             if ($emailNotification->isVisitTrigger()) {
                 return $this->resendVisitLog($emailNotification, $log, $entity, $user);
+            }
+
+            if (!$entity instanceof Booking && !$entity instanceof AttractionPurchase) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This kind of email cannot be resent from here.',
+                ], 422);
+            }
+
+            $entityLocationId = $entity instanceof Booking ? $entity->location_id : $entity->attraction?->location_id;
+
+            if (!in_array((int) $entityLocationId, $this->staffLocationIds($request), true)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'That email was for another location, so it can only be resent from there.',
+                ], 403);
             }
 
             $log->update(['status' => 'pending', 'error_message' => null]);
@@ -736,6 +818,10 @@ class EmailNotificationController extends Controller
             ], 404);
         }
 
+        if ($denied = $this->denyForeignRecord($emailNotification, 'email notification')) {
+            return $denied;
+        }
+
         if ($emailNotification->trigger_type === EmailNotification::TRIGGER_END_OF_DAY_SALES_REPORT
             && !in_array($user->role, ['company_admin', 'owner'], true)) {
             return response()->json([
@@ -746,11 +832,11 @@ class EmailNotificationController extends Controller
 
         $validated = $request->validate([
             'test_email' => 'required|email',
-            'booking_id' => 'nullable|integer|exists:bookings,id',
-            'purchase_id' => 'nullable|integer|exists:attraction_purchases,id',
-            'customer_id' => 'nullable|integer|exists:customers,id',
-            'package_id' => 'nullable|integer|exists:packages,id',
-            'attraction_id' => 'nullable|integer|exists:attractions,id',
+            'booking_id' => 'nullable|integer',
+            'purchase_id' => 'nullable|integer',
+            'customer_id' => 'nullable|integer',
+            'package_id' => 'nullable|integer',
+            'attraction_id' => 'nullable|integer',
             'date' => 'nullable|date',
         ]);
 
@@ -812,69 +898,62 @@ class EmailNotificationController extends Controller
         }
 
         $company = $notification->company;
-        $location = $notification->location ?? $company?->locations()->first();
+        $locationIds = $this->staffLocationIds(request());
+        $ownLocation = !$this->isCompanyLevel(Auth::user()) && $locationIds !== []
+            ? \App\Models\Location::find($locationIds[0])
+            : null;
+        $location = $notification->location ?? $ownLocation ?? $company?->locations()->first();
 
         $common = [
             'company_name' => $company?->company_name ?? 'Sample Company',
             'company_email' => $company?->email ?? 'info@example.com',
             'company_phone' => $company?->phone ?? '(555) 123-4567',
             'company_address' => $company?->address ?? '123 Main St',
-            'location_name' => $location?->name ?? 'Sample Location',
-            'location_address' => $location?->address ?? '456 Business Ave, City, ST 12345',
-            'location_phone' => $location?->phone ?? '(555) 987-6543',
-            'location_email' => $location?->email ?? 'location@example.com',
             'current_date' => now()->format('F j, Y'),
             'current_year' => (string) now()->year,
-        ];
+            'current_time' => now()->format('g:i A'),
+        ] + $this->sampleLocationVariables($location);
 
         $customer = null;
-        if (!empty($params['customer_id'])) {
-            $customer = Customer::find($params['customer_id']);
+        if ($customerId = $this->sampleId($params, 'customer_id')) {
+            $customer = Customer::whereKey($customerId)
+                ->where(fn ($seen) => $seen->whereHas('bookings', fn ($booking) => $booking->whereIn('location_id', $locationIds))
+                    ->orWhereHas('attractionPurchases.attraction', fn ($attraction) => $attraction->whereIn('location_id', $locationIds))
+                    ->orWhereHas('eventPurchases', fn ($purchase) => $purchase->whereIn('location_id', $locationIds)))
+                ->first();
         }
 
         $booking = null;
-        if (!empty($params['booking_id'])) {
-            $booking = Booking::with(['customer', 'package', 'room', 'addons', 'location'])->find($params['booking_id']);
+        if ($bookingId = $this->sampleId($params, 'booking_id')) {
+            $booking = Booking::with(['customer', 'package', 'room', 'addons', 'location'])
+                ->whereIn('location_id', $locationIds)
+                ->find($bookingId);
             if ($booking && !$customer) {
                 $customer = $booking->customer;
             }
-            if ($booking && $booking->location) {
-                $location = $booking->location;
-                $common['location_name'] = $location->name ?? $common['location_name'];
-                $common['location_address'] = $location->address ?? $common['location_address'];
-                $common['location_phone'] = $location->phone ?? $common['location_phone'];
-                $common['location_email'] = $location->email ?? $common['location_email'];
+            if ($booking?->location) {
+                $common = array_merge($common, $this->sampleLocationVariables($booking->location));
             }
         }
 
         $purchase = null;
-        if (!empty($params['purchase_id'])) {
-            $purchase = AttractionPurchase::with(['customer', 'attraction', 'location'])->find($params['purchase_id']);
+        if ($purchaseId = $this->sampleId($params, 'purchase_id')) {
+            $purchase = AttractionPurchase::with(['customer', 'attraction.location'])
+                ->whereHas('attraction', fn ($attraction) => $attraction->whereIn('location_id', $locationIds))
+                ->find($purchaseId);
             if ($purchase && !$customer) {
                 $customer = $purchase->customer;
             }
-            if ($purchase && $purchase->location) {
-                $location = $purchase->location;
-                $common['location_name'] = $location->name ?? $common['location_name'];
-                $common['location_address'] = $location->address ?? $common['location_address'];
-                $common['location_phone'] = $location->phone ?? $common['location_phone'];
-                $common['location_email'] = $location->email ?? $common['location_email'];
+            if ($purchase?->attraction?->location) {
+                $common = array_merge($common, $this->sampleLocationVariables($purchase->attraction->location));
             }
         }
 
-        $package = null;
-        if (!empty($params['package_id'])) {
-            $package = Package::find($params['package_id']);
-        } elseif ($booking) {
-            $package = $booking->package;
-        }
+        $packageId = $this->sampleId($params, 'package_id');
+        $package = $packageId ? Package::whereIn('location_id', $locationIds)->find($packageId) : $booking?->package;
 
-        $attraction = null;
-        if (!empty($params['attraction_id'])) {
-            $attraction = Attraction::find($params['attraction_id']);
-        } elseif ($purchase) {
-            $attraction = $purchase->attraction;
-        }
+        $attractionId = $this->sampleId($params, 'attraction_id');
+        $attraction = $attractionId ? Attraction::whereIn('location_id', $locationIds)->find($attractionId) : $purchase?->attraction;
 
         if ($customer) {
             $common['customer_name'] = trim($customer->first_name . ' ' . $customer->last_name);
@@ -903,18 +982,116 @@ class EmailNotificationController extends Controller
             }
             $reportCompanyName = $company?->company_name ?? config('mail.from.name', 'Zap Zone');
 
-            return array_merge($common, app(\App\Services\AccountingReportService::class)
+            return array_merge(array_intersect_key($common, array_flip(['company_name', 'current_date', 'current_year'])), app(\App\Services\AccountingReportService::class)
                 ->buildDailyReportVariables($reportDate, $reportCompanyName, $notification->company_id));
         }
 
-        $isBookingTrigger = str_starts_with($notification->trigger_type, 'booking_') ||
-                           str_starts_with($notification->trigger_type, 'payment_');
+        $waiverLink = rtrim((string) config('app.frontend_url', config('app.url', '')), '/') . '/waiver/sample';
+        $waiver = [
+            'waiver_link' => $waiverLink,
+            'waiver_section' => app(EmailNotificationService::class)->waiverSectionHtml($waiverLink),
+            'waiver_line' => 'To save time at check-in, please complete your waiver before you arrive: ' . $waiverLink,
+            'escape_room_checkin_link' => '',
+        ];
 
-        if ($isBookingTrigger) {
-            return array_merge($common, $this->buildBookingVariables($booking, $package));
-        } else {
-            return array_merge($common, $this->buildPurchaseVariables($purchase, $attraction));
-        }
+        $category = EmailNotification::getTriggerCategory($notification->trigger_type);
+        $common = match ($category) {
+            'payment' => array_diff_key($common, array_flip(['customer_first_name', 'customer_last_name', 'customer_email', 'customer_phone'])),
+            'concern' => array_diff_key($common, array_flip(['customer_first_name', 'customer_last_name'])),
+            default => $common,
+        };
+
+        return array_merge($common, match ($category) {
+            'booking' => $this->buildBookingVariables($booking, $package) + $waiver,
+            'payment' => $this->samplePaymentVariables(),
+            'event' => $this->sampleEventVariables() + $waiver,
+            'waiver' => $this->sampleWaiverVariables($waiverLink, $common['company_name']),
+            'concern' => $this->sampleConcernVariables($notification),
+            default => $this->buildPurchaseVariables($purchase, $attraction) + $waiver,
+        });
+    }
+
+    protected function sampleId(array $params, string $key): ?int
+    {
+        $value = $params[$key] ?? null;
+
+        return (is_int($value) || (is_string($value) && ctype_digit($value))) && (int) $value > 0 ? (int) $value : null;
+    }
+
+    protected function sampleLocationVariables(?\App\Models\Location $location): array
+    {
+        return [
+            'location_name' => $location?->name ?? 'Sample Location',
+            'location_address' => $location
+                ? trim(implode(', ', array_filter([$location->address, $location->city, $location->state, $location->zip_code])))
+                : '456 Business Ave, City, ST 12345',
+            'location_phone' => $location?->phone ?? '(555) 987-6543',
+            'location_email' => $location?->email ?? 'location@example.com',
+        ];
+    }
+
+    protected function samplePaymentVariables(): array
+    {
+        return [
+            'payment_id' => '1001',
+            'payment_amount' => '$150.00',
+            'payment_method' => 'Card',
+            'payment_status' => 'Completed',
+            'payment_date' => now()->format('F j, Y g:i A'),
+            'payment_transaction_id' => 'TXN-1234567890',
+            'payment_reference' => 'BK-2026-00001',
+            'payable_type' => 'Booking',
+            'payable_id' => '12345',
+        ];
+    }
+
+    protected function sampleEventVariables(): array
+    {
+        return [
+            'event_reference' => 'EVT-2026-00001',
+            'event_name' => 'Trunk or Treat',
+            'event_date' => now()->addDays(7)->format('F j, Y'),
+            'event_time' => '7:00 PM',
+            'event_quantity' => '4',
+            'event_status' => 'Confirmed',
+            'event_total' => '$60.00',
+            'event_amount_paid' => '$60.00',
+            'event_balance' => '$0.00',
+            'event_notes' => '',
+            'event_created_at' => now()->format('F j, Y g:i A'),
+        ];
+    }
+
+    protected function sampleWaiverVariables(string $waiverLink, string $companyName): array
+    {
+        return [
+            'waiver_link' => $waiverLink,
+            'waiver_reference' => 'WV-2026-00001',
+            'waiver_status' => 'Signed',
+            'waiver_date' => now()->addDays(7)->format('F j, Y'),
+            'waiver_title' => 'General Waiver',
+            'activity_name' => 'Laser Tag',
+            'escape_room_name' => '',
+            'escape_room_time' => '',
+            'business_legal_name' => $companyName,
+        ];
+    }
+
+    protected function sampleConcernVariables(EmailNotification $notification): array
+    {
+        return [
+            'concern_kind' => match ($notification->trigger_type) {
+                EmailNotification::TRIGGER_CALL_TO_BOOK_REQUESTED => 'Call to book',
+                EmailNotification::TRIGGER_SCHEDULE_HELP_REQUESTED => 'Schedule help',
+                default => 'Unfinished checkout',
+            },
+            'concern_message' => 'Do you have anything on Saturday afternoon for 12 kids?',
+            'item_name' => 'Ultimate Party Package',
+            'preferred_date' => now()->next('Saturday')->format('l, F j, Y'),
+            'preferred_time' => '2:30 PM',
+            'what_they_wanted' => 'A party for 12 on Saturday afternoon',
+            'step_reached' => 'Pick a time',
+        ];
     }
 
     protected function buildBookingVariables(?Booking $booking, ?Package $package): array
@@ -1142,6 +1319,18 @@ HTML;
             ], 404);
         }
 
+        if ($denied = $this->denyForeignRecord($emailNotification, 'email notification')) {
+            return $denied;
+        }
+
+        if ($refused = $this->companyWideWriteRefusal($emailNotification, $user)) {
+            return $refused;
+        }
+
+        if ($refused = $this->salesReportWriteRefusal($emailNotification, $user)) {
+            return $refused;
+        }
+
         if (!$emailNotification->is_default) {
             return response()->json([
                 'success' => false,
@@ -1179,6 +1368,10 @@ HTML;
                 'success' => false,
                 'message' => 'Notification not found',
             ], 404);
+        }
+
+        if ($denied = $this->denyForeignRecord($emailNotification, 'email notification')) {
+            return $denied;
         }
 
         if ($emailNotification->trigger_type === EmailNotification::TRIGGER_END_OF_DAY_SALES_REPORT
@@ -1353,6 +1546,62 @@ HTML;
             $validated['send_after_hours'] = (int) $hours;
         } else {
             $validated['send_after_hours'] = null;
+        }
+
+        return null;
+    }
+
+    protected function isCompanyLevel($user): bool
+    {
+        return $user !== null && in_array(\App\Http\Middleware\EnsureStaff::effectiveRole($user), ['company_admin', 'admin', 'owner'], true);
+    }
+
+    protected function companyWideWriteRefusal(EmailNotification $notification, $user): ?JsonResponse
+    {
+        if ($notification->location_id !== null || $this->isCompanyLevel($user)) {
+            return null;
+        }
+
+        return response()->json([
+            'success' => false,
+            'message' => $notification->is_default
+                ? 'This email goes to guests of every location, so only a company admin can change it.'
+                : 'This email goes to guests of every location, so only a company admin can change it. Duplicate it to make a version for your location.',
+        ], 403);
+    }
+
+    protected function salesReportWriteRefusal(EmailNotification $notification, $user): ?JsonResponse
+    {
+        if ($notification->trigger_type !== EmailNotification::TRIGGER_END_OF_DAY_SALES_REPORT
+            || in_array(\App\Http\Middleware\EnsureStaff::effectiveRole($user), ['company_admin', 'owner'], true)) {
+            return null;
+        }
+
+        return response()->json([
+            'success' => false,
+            'message' => 'Only the company owner or a company admin can change the end-of-day sales report.',
+        ], 403);
+    }
+
+    protected function locationWriteRefusal($user, array &$validated): ?JsonResponse
+    {
+        if ($this->isCompanyLevel($user)) {
+            return null;
+        }
+
+        $own = $this->staffLocationIds(request());
+
+        if (empty($validated['location_id'])) {
+            $validated['location_id'] = $own[0] ?? $user->location_id;
+
+            return null;
+        }
+
+        if (!in_array((int) $validated['location_id'], $own, true)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'You can only set up emails for your own location.',
+            ], 403);
         }
 
         return null;

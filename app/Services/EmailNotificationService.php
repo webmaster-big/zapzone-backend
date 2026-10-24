@@ -583,7 +583,7 @@ class EmailNotificationService
     {
         $location = $concern->location;
 
-        return array_merge($this->buildCommonVariables(), [
+        return array_merge($this->buildCommonVariables($location, $location?->company), [
             'customer_name' => $concern->name,
             'customer_phone' => $concern->phone,
             'customer_email' => $concern->email ?? '',
@@ -754,7 +754,7 @@ HTML;
     }
 
     /** Pre-rendered waiver call-to-action block embedded in confirmation emails. */
-    protected function waiverSectionHtml(string $link): string
+    public function waiverSectionHtml(string $link): string
     {
         $link = e($link);
 
@@ -947,6 +947,7 @@ HTML;
 
             'current_date' => now()->format('F j, Y'),
             'current_year' => (string) now()->year,
+            'current_time' => now()->format('g:i A'),
         ];
     }
 
@@ -1012,6 +1013,7 @@ HTML;
 
             'current_date' => now()->format('F j, Y'),
             'current_year' => (string) now()->year,
+            'current_time' => now()->format('g:i A'),
         ];
     }
 
@@ -1185,7 +1187,7 @@ HTML;
         }
 
         try {
-            $variables = $this->buildBookingVariables($booking, true);
+            $variables = $this->buildVariables($booking, 'booking', true);
 
             $companyId = $booking->location?->company_id;
             $defaultNotification = null;
@@ -1241,7 +1243,7 @@ HTML;
         }
 
         try {
-            $variables = $this->buildPurchaseVariables($purchase, true);
+            $variables = $this->buildVariables($purchase, 'purchase', true);
 
             $companyId = $purchase->attraction?->location?->company_id;
             $defaultNotification = null;
@@ -1441,6 +1443,12 @@ HTML;
                     'qr_code' => 'QR code image HTML',
                     'qr_code_url' => 'QR code image URL',
                 ],
+                'Waiver' => [
+                    'waiver_section' => 'Box with a Complete Your Waiver button; empty when no waiver applies',
+                    'waiver_link' => 'Link to sign the waiver; empty when no waiver applies',
+                    'waiver_line' => 'One sentence with the waiver link, handy for plain text; empty when no waiver applies',
+                    'escape_room_checkin_link' => 'Escape rooms only: link each player uses to sign and join the game',
+                ],
             ],
             'purchase' => [
                 'Customer' => [
@@ -1473,6 +1481,74 @@ HTML;
                 'QR Code' => [
                     'qr_code' => 'QR code image HTML',
                     'qr_code_url' => 'QR code image URL',
+                ],
+                'Waiver' => [
+                    'waiver_section' => 'Box with a Complete Your Waiver button; empty when no waiver applies',
+                    'waiver_link' => 'Link to sign the waiver; empty when no waiver applies',
+                    'waiver_line' => 'One sentence with the waiver link, handy for plain text; empty when no waiver applies',
+                ],
+            ],
+            'event' => [
+                'Event' => [
+                    'event_name' => 'Event name',
+                    'event_date' => 'Event date, e.g. October 31, 2026',
+                    'event_time' => 'Event start time, e.g. 7:00 PM',
+                    'event_reference' => 'Ticket order reference',
+                    'event_quantity' => 'Number of tickets',
+                    'event_status' => 'Order status, e.g. Confirmed',
+                    'event_total' => 'Order total',
+                    'event_amount_paid' => 'Amount paid',
+                    'event_balance' => 'Remaining balance',
+                    'event_notes' => 'Notes on the order',
+                    'event_created_at' => 'When the order was placed',
+                ],
+                'Customer' => [
+                    'customer_name' => 'Full customer name',
+                    'customer_first_name' => 'Customer first name',
+                    'customer_last_name' => 'Customer last name',
+                    'customer_email' => 'Customer email',
+                    'customer_phone' => 'Customer phone',
+                ],
+                'Waiver' => [
+                    'waiver_section' => 'Box with a Complete Your Waiver button; empty when no waiver applies',
+                    'waiver_link' => 'Link to sign the waiver; empty when no waiver applies',
+                    'waiver_line' => 'One sentence with the waiver link, handy for plain text; empty when no waiver applies',
+                ],
+            ],
+            'waiver' => [
+                'Waiver' => [
+                    'waiver_link' => 'Link to sign or view the waiver',
+                    'waiver_reference' => 'Waiver reference number',
+                    'waiver_status' => 'Waiver status, e.g. Signed',
+                    'waiver_date' => 'Visit date the waiver covers',
+                    'waiver_title' => 'Waiver title',
+                    'activity_name' => 'What it is for: the package, event or escape room',
+                    'escape_room_name' => 'Escape room name (escape-room waivers only)',
+                    'escape_room_time' => 'Escape room game time (escape-room waivers only)',
+                    'business_legal_name' => 'Business name on the waiver',
+                ],
+                'Customer' => [
+                    'customer_name' => 'Full customer name',
+                    'customer_first_name' => 'Customer first name',
+                    'customer_last_name' => 'Customer last name',
+                    'customer_email' => 'Customer email',
+                    'customer_phone' => 'Customer phone',
+                ],
+            ],
+            'concern' => [
+                'Request' => [
+                    'concern_kind' => 'What they asked for: Schedule help, Call to book or Unfinished checkout',
+                    'concern_message' => 'Their message',
+                    'item_name' => 'What they were looking at, e.g. a package name',
+                    'preferred_date' => 'Date they asked for',
+                    'preferred_time' => 'Time they asked for',
+                    'what_they_wanted' => 'Summary of what they wanted',
+                    'step_reached' => 'How far they got in checkout',
+                ],
+                'Customer' => [
+                    'customer_name' => 'Name they gave',
+                    'customer_email' => 'Email they gave',
+                    'customer_phone' => 'Phone they gave',
                 ],
             ],
             'payment' => [
