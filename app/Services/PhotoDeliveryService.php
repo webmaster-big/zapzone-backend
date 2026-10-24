@@ -1908,6 +1908,12 @@ class PhotoDeliveryService
 
                 return;
             } catch (\Throwable $e) {
+                // the log mailer only writes the email to a file; failing here keeps the delivery
+                // retryable instead of marking it sent when nobody received it
+                if (config('mail.default') === 'log') {
+                    throw $e;
+                }
+
                 Log::warning('Gmail API send failed for a photo link; falling back to the mail transport.', [
                     'error' => $e->getMessage(),
                 ]);

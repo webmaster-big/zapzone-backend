@@ -555,9 +555,16 @@ class LocationChangeRequestController extends Controller
         foreach ($users as $user) {
             if (!empty($user->email)) {
                 try {
-                    Mail::raw($message, function ($mail) use ($user, $subject) {
-                        $mail->to($user->email)->subject($subject);
-                    });
+                    $useGmailApi = config('gmail.enabled', false) &&
+                        (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
+
+                    if ($useGmailApi) {
+                        (new \App\Services\GmailApiService())->sendEmail($user->email, $subject, '<p>' . nl2br(e($message)) . '</p>', config('gmail.sender_name', 'Zap Zone'));
+                    } else {
+                        Mail::raw($message, function ($mail) use ($user, $subject) {
+                            $mail->to($user->email)->subject($subject);
+                        });
+                    }
                 } catch (\Throwable $e) {
                     Log::info('Location change email skipped', ['user_id' => $user->id, 'error' => $e->getMessage()]);
                 }

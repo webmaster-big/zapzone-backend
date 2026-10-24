@@ -403,6 +403,11 @@ class MembershipService
                 app(GmailApiService::class)->sendEmail($email, $subject, $html, $fromName, $attachments);
                 Log::info("[{$label}] Sent via Gmail API", ['membership_id' => $membership->id, 'to' => $email]);
             } catch (\Throwable $gmailEx) {
+                // the log mailer only writes the email to a file, so report the failure instead
+                if (config('mail.default') === 'log') {
+                    throw $gmailEx;
+                }
+
                 Log::warning("[{$label}] Gmail failed, falling back to SMTP: " . $gmailEx->getMessage(), [
                     'membership_id' => $membership->id,
                 ]);

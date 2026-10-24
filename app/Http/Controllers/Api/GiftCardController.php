@@ -688,8 +688,20 @@ class GiftCardController extends Controller
         }
 
         try {
-            \Illuminate\Support\Facades\Mail::to($validated['purchaser_email'])
-                ->send(new \App\Mail\GiftCardIssued($card->fresh(), $location));
+            $mailable = new \App\Mail\GiftCardIssued($card->fresh(), $location);
+            $useGmailApi = config('gmail.enabled', false) &&
+                (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
+
+            if ($useGmailApi) {
+                (new \App\Services\GmailApiService())->sendEmail(
+                    $validated['purchaser_email'],
+                    $mailable->envelope()->subject,
+                    $mailable->render(),
+                    config('gmail.sender_name', 'Zap Zone')
+                );
+            } else {
+                \Illuminate\Support\Facades\Mail::to($validated['purchaser_email'])->send($mailable);
+            }
         } catch (\Throwable $e) {
             \Illuminate\Support\Facades\Log::warning('Gift card issued but the email failed', [
                 'gift_card_id' => $card->id,

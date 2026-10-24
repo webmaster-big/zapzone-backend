@@ -571,6 +571,11 @@ class MembershipController extends Controller
                 app(\App\Services\GmailApiService::class)->sendEmail($customer->email, $subject, $html, $fromName);
                 Log::info('[CustomerCredentials] Sent via Gmail API', ['customer_id' => $customer->id]);
             } catch (\Throwable $gmailEx) {
+                // the log mailer only writes the email to a file, so report the failure instead
+                if (config('mail.default') === 'log') {
+                    throw $gmailEx;
+                }
+
                 Log::warning('[CustomerCredentials] Gmail failed, falling back to SMTP: ' . $gmailEx->getMessage(), [
                     'customer_id' => $customer->id,
                 ]);

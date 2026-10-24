@@ -498,6 +498,11 @@ class CheckoutConcernService
 
                 return;
             } catch (\Throwable $e) {
+                // the log mailer only writes the email to a file, so report the failure instead
+                if (config('mail.default') === 'log') {
+                    throw $e;
+                }
+
                 Log::warning('Gmail API send failed for a checkout concern; falling back to the mail transport.', [
                     'error' => $e->getMessage(),
                 ]);
