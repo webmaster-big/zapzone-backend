@@ -10,6 +10,8 @@ class EmailCampaignLog extends Model
 {
     use HasFactory;
 
+    protected $hidden = ['variables_used'];
+
     protected $fillable = [
         'email_campaign_id',
         'recipient_email',

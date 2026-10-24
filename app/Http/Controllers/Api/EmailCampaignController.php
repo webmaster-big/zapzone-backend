@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Middleware\EnsureStaff;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Support\DateRange;
 use App\Mail\DynamicCampaignMail;
@@ -13,7 +14,15 @@ use App\Models\Customer;
 use App\Models\EmailCampaign;
 use App\Models\EmailCampaignLog;
 use App\Models\EmailTemplate;
+use App\Models\FollowUpOptOut;
+use App\Models\PhotoDelivery;
+use App\Models\PhotoSession;
+use App\Models\RegistrationEntry;
+use App\Models\RegistrationEvent;
 use App\Models\User;
+use App\Services\PhotoDeliveryService;
+use App\Services\VisitFollowUpService;
+use App\Support\OperatingDay;
 use App\Services\GmailApiService;
 use App\Support\TemplatePlaceholders;
 use Illuminate\Http\Request;
@@ -34,6 +43,12 @@ class EmailCampaignController extends Controller
 
         $query = EmailCampaign::with(['company', 'location', 'template', 'sender'])
             ->where('company_id', $user->company_id);
+
+        if (EnsureStaff::effectiveRole($user) === 'attendant') {
+            $query->whereJsonDoesntContain('recipient_types', EmailCampaign::RECIPIENT_TYPE_EVENT_REGISTRANTS);
+        } elseif (!$this->isCompanyLevel($user)) {
+            $this->onlyOwnEventCampaigns($query, $request);
+        }
 
         if (in_array($user->role, ['location_manager', 'attendant'], true) && $user->location_id) {
             $query->where(function ($q) use ($user) {
@@ -79,6 +94,7 @@ class EmailCampaignController extends Controller
         }
 
         $campaigns = $query->paginate($request->per_page ?? 15);
+        $campaigns->getCollection()->each(fn (EmailCampaign $campaign) => $this->recoverStalledSend($campaign));
 
         return response()->json([
             'success' => true,
@@ -94,12 +110,15 @@ class EmailCampaignController extends Controller
             'body' => 'required|string',
             'email_template_id' => ['nullable', Rule::exists('email_templates', 'id')->where('company_id', Auth::user()?->company_id)],
             'recipient_types' => 'required|array|min:1',
-            'recipient_types.*' => [Rule::in(['customers', 'attendants', 'company_admin', 'location_managers', 'custom'])],
+            'recipient_types.*' => [Rule::in(EmailCampaign::RECIPIENT_TYPES)],
             'custom_emails' => 'nullable|array',
             'custom_emails.*' => 'email',
             'recipient_filters' => 'nullable|array',
             'recipient_filters.status' => 'nullable|string',
             'recipient_filters.location_id' => 'nullable|exists:locations,id',
+            'recipient_filters.registration_event_ids' => 'nullable|array|max:100',
+            'recipient_filters.registration_event_ids.*' => 'integer|min:1|distinct',
+            'recipient_filters.only_with_photos' => 'nullable|boolean',
             'attachments' => 'nullable|array',
             'attachments.*' => 'file|max:10240|mimes:pdf,doc,docx,xls,xlsx,csv,txt,zip,png,jpg,jpeg,gif',
             'scheduled_at' => 'nullable|date|after:now',
@@ -115,6 +134,27 @@ class EmailCampaignController extends Controller
             return $denied;
         }
 
+        if (($forms = $this->eventFormsFor($request, $validated)) instanceof JsonResponse) {
+            return $forms;
+        }
+
+        $user = Auth::user();
+        $recipients = $this->getRecipients(new EmailCampaign([
+            'company_id' => $user->company_id,
+            'location_id' => $this->campaignLocationId($user, $validated),
+            'recipient_types' => $validated['recipient_types'],
+            'custom_emails' => $validated['custom_emails'] ?? [],
+            'recipient_filters' => $validated['recipient_filters'] ?? [],
+        ]), $user);
+
+        if ($recipients === [] && in_array(EmailCampaign::RECIPIENT_TYPE_EVENT_REGISTRANTS, $validated['recipient_types'], true)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Nobody would get this email. No one from the picked events can get it right now: their photos are not ready, they gave no email address, or they unsubscribed.',
+                'errors' => ['recipient_filters.registration_event_ids' => ['Nobody from the picked events can get this email right now.']],
+            ], 422);
+        }
+
         $attachments = [];
         if ($request->hasFile('attachments')) {
             foreach ($request->file('attachments') as $file) {
@@ -127,8 +167,6 @@ class EmailCampaignController extends Controller
                 ];
             }
         }
-
-        $user = Auth::user();
 
         try {
             DB::beginTransaction();
@@ -149,7 +187,6 @@ class EmailCampaignController extends Controller
                 'status' => EmailCampaign::STATUS_PENDING,
             ]);
 
-            $recipients = $this->getRecipients($campaign, $user);
             $campaign->update(['total_recipients' => count($recipients)]);
 
             foreach ($recipients as $recipient) {
@@ -165,17 +202,28 @@ class EmailCampaignController extends Controller
 
             DB::commit();
 
+            $inBackground = false;
+
             if (($validated['send_now'] ?? true) && empty($validated['scheduled_at'])) {
-                $this->sendCampaign($campaign);
+                if (count($recipients) > self::SEND_IN_REQUEST_LIMIT) {
+                    $inBackground = true;
+                    $campaign->markAsSending();
+                    $this->sendLater($campaign->id);
+                } else {
+                    $this->sendCampaign($campaign);
+                }
             }
 
+            $campaign->refresh();
             $campaign->load(['company', 'location', 'template', 'sender', 'logs']);
 
             return response()->json([
                 'success' => true,
-                'message' => empty($validated['scheduled_at'])
-                    ? 'Email campaign sent successfully'
-                    : 'Email campaign scheduled successfully',
+                'message' => match (true) {
+                    !empty($validated['scheduled_at']) => 'Email campaign scheduled successfully',
+                    $inBackground => 'Sending to ' . count($recipients) . ' people now. Refresh the campaign to see them go out.',
+                    default => 'Email campaign sent successfully',
+                },
                 'data' => $campaign,
             ], 201);
 
@@ -206,6 +254,11 @@ class EmailCampaignController extends Controller
             return $denied;
         }
 
+        if ($denied = $this->denyEventCampaign($emailCampaign, $user)) {
+            return $denied;
+        }
+
+        $this->recoverStalledSend($emailCampaign);
         $emailCampaign->load(['company', 'location', 'template', 'sender', 'logs']);
 
         $stats = [
@@ -236,6 +289,10 @@ class EmailCampaignController extends Controller
         }
 
         if ($denied = $this->denyForeignRecord($emailCampaign, 'campaign')) {
+            return $denied;
+        }
+
+        if ($denied = $this->denyEventCampaign($emailCampaign, $user)) {
             return $denied;
         }
 
@@ -274,6 +331,10 @@ class EmailCampaignController extends Controller
             return $denied;
         }
 
+        if ($denied = $this->denyEventCampaign($emailCampaign, $user)) {
+            return $denied;
+        }
+
         if ($refused = $this->companyWideCampaignRefusal($emailCampaign, $user)) {
             return $refused;
         }
@@ -282,22 +343,59 @@ class EmailCampaignController extends Controller
             return $this->customersPaused();
         }
 
-        $resendType = $request->input('type', 'failed'); // 'failed' or 'all'
+        $this->recoverStalledSend($emailCampaign);
+
+        if ($emailCampaign->status === EmailCampaign::STATUS_SENDING) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This campaign is still sending. Try again once it finishes.',
+            ], 409);
+        }
+
+        $resendType = $request->validate(['type' => ['sometimes', Rule::in(['failed', 'all'])]])['type'] ?? 'failed';
 
         try {
-            if ($resendType === 'failed') {
-                $logs = $emailCampaign->logs()->where('status', 'failed')->get();
-            } else {
-                $logs = $emailCampaign->logs;
+            $ready = ($resendType === 'failed'
+                ? $emailCampaign->logs()->where('status', EmailCampaignLog::STATUS_FAILED)
+                : $emailCampaign->logs())
+                ->orderBy('id')
+                ->pluck('id')
+                ->all();
+
+            if ($ready === []) {
+                return response()->json([
+                    'success' => true,
+                    'message' => 'There was no one left to send it to again.',
+                    'data' => $emailCampaign->fresh(['logs']),
+                ]);
             }
 
-            $emailCampaign->update(['status' => EmailCampaign::STATUS_SENDING]);
+            $claimed = EmailCampaign::query()
+                ->whereKey($emailCampaign->id)
+                ->where('status', '!=', EmailCampaign::STATUS_SENDING)
+                ->update(['status' => EmailCampaign::STATUS_SENDING, 'completed_at' => null, 'error_message' => null, 'updated_at' => now()]);
 
-            foreach ($logs as $log) {
-                $this->sendSingleEmail($emailCampaign, $log);
+            if ($claimed === 0) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This campaign is still sending. Try again once it finishes.',
+                ], 409);
             }
 
-            $emailCampaign->markAsCompleted();
+            EmailCampaignLog::query()->whereIn('id', $ready)->update(['status' => EmailCampaignLog::STATUS_PENDING, 'error_message' => null]);
+            $this->syncCounts($emailCampaign);
+
+            if (count($ready) > self::SEND_IN_REQUEST_LIMIT) {
+                $this->sendLater($emailCampaign->id, $ready);
+
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Sending to ' . count($ready) . ' people now. Refresh the campaign to see them go out.',
+                    'data' => $emailCampaign->fresh(['logs']),
+                ]);
+            }
+
+            $this->sendCampaign($emailCampaign->fresh(), $ready);
 
             return response()->json([
                 'success' => true,
@@ -320,12 +418,15 @@ class EmailCampaignController extends Controller
     {
         $validated = $request->validate([
             'recipient_types' => 'required|array|min:1',
-            'recipient_types.*' => [Rule::in(['customers', 'attendants', 'company_admin', 'location_managers', 'custom'])],
+            'recipient_types.*' => [Rule::in(EmailCampaign::RECIPIENT_TYPES)],
             'custom_emails' => 'nullable|array',
             'custom_emails.*' => 'email',
             'recipient_filters' => 'nullable|array',
             'recipient_filters.status' => 'nullable|string',
             'recipient_filters.location_id' => 'nullable|exists:locations,id',
+            'recipient_filters.registration_event_ids' => 'nullable|array|max:100',
+            'recipient_filters.registration_event_ids.*' => 'integer|min:1|distinct',
+            'recipient_filters.only_with_photos' => 'nullable|boolean',
             'location_id' => 'nullable|exists:locations,id',
         ]);
 
@@ -335,6 +436,10 @@ class EmailCampaignController extends Controller
 
         if ($denied = $this->denyForeignLocations($request, $validated)) {
             return $denied;
+        }
+
+        if (($forms = $this->eventFormsFor($request, $validated)) instanceof JsonResponse) {
+            return $forms;
         }
 
         $user = Auth::user();
@@ -363,7 +468,12 @@ class EmailCampaignController extends Controller
             'data' => [
                 'total_recipients' => count($recipients),
                 'by_type' => $summary,
-                'sample_recipients' => array_slice($recipients, 0, 10), // Show first 10 as sample
+                'with_photos' => count(array_filter($recipients, fn (array $recipient) => $recipient['type'] === 'event_registrant' && ($recipient['variables']['photo_link'] ?? '') !== '')),
+                'sample_recipients' => array_map(fn (array $recipient) => [
+                    'email' => $recipient['email'],
+                    'type' => $recipient['type'],
+                    'name' => $recipient['variables']['recipient_name'] ?? null,
+                ], array_slice($recipients, 0, 10)),
             ],
         ]);
     }
@@ -380,6 +490,10 @@ class EmailCampaignController extends Controller
         }
 
         if ($denied = $this->denyForeignRecord($emailCampaign, 'campaign')) {
+            return $denied;
+        }
+
+        if ($denied = $this->denyEventCampaign($emailCampaign, $user)) {
             return $denied;
         }
 
@@ -403,6 +517,12 @@ class EmailCampaignController extends Controller
             if (!$this->isCompanyLevel($user)) {
                 $own = $this->staffLocationIds($request);
                 $query->where(fn ($inScope) => $inScope->whereIn('location_id', $own)->orWhereNull('location_id'));
+            }
+
+            if (EnsureStaff::effectiveRole($user) === 'attendant') {
+                $query->whereJsonDoesntContain('recipient_types', EmailCampaign::RECIPIENT_TYPE_EVENT_REGISTRANTS);
+            } elseif (!$this->isCompanyLevel($user)) {
+                $this->onlyOwnEventCampaigns($query, $request);
             }
 
             return $query;
@@ -478,10 +598,10 @@ class EmailCampaignController extends Controller
                 'test',
                 $user->company,
                 $user->location
-            );
+            ) + $this->sampleEventValues($user);
 
-            $processedSubject = $this->replaceVariables($validated['subject'], $variables);
-            $processedBody = $this->replaceVariables($validated['body'], $variables, true);
+            $processedSubject = $this->stripPlaceholders($this->replaceVariables($validated['subject'], ['links' => ''] + $variables));
+            $processedBody = $this->stripPlaceholders($this->replaceVariables($validated['body'], $variables, true));
 
             $htmlBody = $this->generateHtmlEmail($processedBody, $variables);
 
@@ -508,9 +628,9 @@ class EmailCampaignController extends Controller
             } else {
                 Mail::to($validated['test_email'])
                     ->send(new DynamicCampaignMail(
-                        $validated['subject'],
-                        $validated['body'],
-                        $variables
+                        $processedSubject,
+                        $processedBody,
+                        []
                     ));
             }
 
@@ -538,6 +658,10 @@ class EmailCampaignController extends Controller
         $filters = $campaign->recipient_filters ?? [];
         $company = $user->company;
         $location = $campaign->location ?? ($this->isCompanyLevel($user) ? null : $user->location);
+
+        if (in_array(EmailCampaign::RECIPIENT_TYPE_EVENT_REGISTRANTS, $campaign->recipient_types, true)) {
+            $recipients = $this->getEventRegistrantRecipients($company, $filters);
+        }
 
         foreach ($campaign->recipient_types as $type) {
             switch ($type) {
@@ -579,15 +703,15 @@ class EmailCampaignController extends Controller
         }
 
         $uniqueRecipients = [];
-        $seenEmails = [];
         foreach ($recipients as $recipient) {
-            if (!in_array($recipient['email'], $seenEmails)) {
-                $seenEmails[] = $recipient['email'];
-                $uniqueRecipients[] = $recipient;
+            $key = strtolower(trim((string) $recipient['email']));
+
+            if (!isset($uniqueRecipients[$key])) {
+                $uniqueRecipients[$key] = $recipient;
             }
         }
 
-        return $uniqueRecipients;
+        return array_values($uniqueRecipients);
     }
 
     protected function getCustomerRecipients($company, $location, array $filters): array
@@ -746,6 +870,284 @@ class EmailCampaignController extends Controller
         ], 403);
     }
 
+    private const SEND_IN_REQUEST_LIMIT = 20;
+
+    private const STALLED_AFTER_MINUTES = 15;
+
+    private const UNSUBSCRIBE_FOOTER = '<p style="margin-top: 24px; font-size: 11px; color: #9ca3af; text-align: center;">Don&#039;t want emails like this? <a href="{{opt_out_link}}" style="color: #6b7280;">Unsubscribe</a>.</p>';
+
+    protected function eventFormsFor(Request $request, array &$validated)
+    {
+        if (!in_array(EmailCampaign::RECIPIENT_TYPE_EVENT_REGISTRANTS, $validated['recipient_types'] ?? [], true)) {
+            unset($validated['recipient_filters']['registration_event_ids'], $validated['recipient_filters']['only_with_photos'], $validated['recipient_filters']['registration_location_ids']);
+
+            return null;
+        }
+
+        $user = Auth::user();
+
+        if (!in_array(EnsureStaff::effectiveRole($user), ['company_admin', 'admin', 'owner', 'location_manager'], true)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only managers and admins can email event registrants.',
+            ], 403);
+        }
+
+        if (!RegistrationEvent::isAvailable()) {
+            return $this->invalidEvents('Event registrations are not set up yet.');
+        }
+
+        if (!empty($validated['scheduled_at'])) {
+            return $this->invalidEvents('Emails to event registrants go out right away, so they cannot be scheduled.');
+        }
+
+        $picked = $validated['recipient_filters']['registration_event_ids'] ?? [];
+        $ids = is_array($picked) ? array_values(array_unique(array_map('intval', $picked))) : [];
+
+        if ($ids === []) {
+            return $this->invalidEvents('Pick at least one event.');
+        }
+
+        $forms = RegistrationEvent::query()->where('company_id', $user->company_id)->whereIn('id', $ids)->get();
+
+        if ($forms->count() !== count($ids)) {
+            return $this->invalidEvents('One of the picked events is no longer available. Refresh the list and pick again.');
+        }
+
+        $own = $this->staffLocationIds($request);
+
+        if ($forms->contains(fn (RegistrationEvent $form) => !in_array((int) $form->location_id, $own, true))) {
+            return response()->json([
+                'success' => false,
+                'message' => 'You can only email people who registered at your own location.',
+            ], 403);
+        }
+
+        $validated['recipient_filters']['registration_event_ids'] = $ids;
+        $validated['recipient_filters']['registration_location_ids'] = $forms->pluck('location_id')->map(fn ($id) => (int) $id)->unique()->sort()->values()->all();
+
+        return $forms;
+    }
+
+    protected function invalidEvents(string $message): JsonResponse
+    {
+        return response()->json([
+            'success' => false,
+            'message' => $message,
+            'errors' => ['recipient_filters.registration_event_ids' => [$message]],
+        ], 422);
+    }
+
+    protected function getEventRegistrantRecipients($company, array $filters, ?string $onlyEmail = null): array
+    {
+        $ids = array_values(array_filter(array_map('intval', (array) ($filters['registration_event_ids'] ?? []))));
+
+        if ($company === null || $ids === [] || !RegistrationEvent::isAvailable()) {
+            return [];
+        }
+
+        $forms = RegistrationEvent::query()
+            ->with(['location.company'])
+            ->where('company_id', $company->id)
+            ->whereIn('id', $ids)
+            ->whereIn('location_id', $this->staffLocationIds(request()))
+            ->get()
+            ->keyBy('id');
+
+        if ($forms->isEmpty()) {
+            return [];
+        }
+
+        $entries = RegistrationEntry::query()
+            ->visible()
+            ->where('company_id', $company->id)
+            ->whereIn('registration_event_id', $forms->keys()->all())
+            ->whereNotNull('email')
+            ->where('email', '!=', '')
+            ->when($onlyEmail !== null, fn ($query) => $query->whereRaw('LOWER(TRIM(email)) = ?', [$onlyEmail]))
+            ->orderByDesc('id')
+            ->get(['id', 'registration_event_id', 'location_id', 'name', 'email', 'phone']);
+
+        $photos = app(PhotoDeliveryService::class);
+        $sessions = $this->registrantPhotoSessions((int) $company->id, $entries->pluck('id')->all(), $forms->pluck('location_id')->unique()->all());
+        $optedOut = $this->optedOutEmails((int) $company->id, $entries->pluck('email')->all());
+        $onlyWithPhotos = filter_var($filters['only_with_photos'] ?? false, FILTER_VALIDATE_BOOLEAN);
+        $recipients = [];
+
+        foreach ($entries->groupBy(fn (RegistrationEntry $entry) => strtolower(trim((string) $entry->email))) as $email => $group) {
+            if (!filter_var($email, FILTER_VALIDATE_EMAIL) || isset($optedOut[$email])) {
+                continue;
+            }
+
+            $best = null;
+            $primary = null;
+
+            foreach ($group as $entry) {
+                foreach ($sessions[$entry->id] ?? [] as $session) {
+                    if ($best === null || $this->sessionStamp($session) > $this->sessionStamp($best)) {
+                        $best = $session;
+                        $primary = $entry;
+                    }
+                }
+            }
+
+            if ($onlyWithPhotos && $best === null) {
+                continue;
+            }
+
+            $primary ??= $group->first();
+
+            $recipients[] = [
+                'email' => $email,
+                'type' => 'event_registrant',
+                'id' => (int) $primary->id,
+                'variables' => $this->registrantVariables($primary, $forms[$primary->registration_event_id], $best, $company, $photos),
+            ];
+        }
+
+        return $recipients;
+    }
+
+    protected function registrantPhotoSessions(int $companyId, array $entryIds, array $locationIds): array
+    {
+        if ($entryIds === [] || !PhotoSession::supportsRegistrations()) {
+            return [];
+        }
+
+        $links = DB::table('photo_session_registrations as link')
+            ->whereIn('link.registration_entry_id', $entryIds)
+            ->whereExists(function ($delivered) {
+                $delivered->selectRaw('1')
+                    ->from('photo_deliveries as delivery')
+                    ->whereColumn('delivery.photo_session_id', 'link.photo_session_id')
+                    ->whereColumn('delivery.registration_entry_id', 'link.registration_entry_id')
+                    ->where('delivery.channel', PhotoDelivery::CHANNEL_EMAIL)
+                    ->where('delivery.status', '!=', PhotoDelivery::STATUS_CANCELED)
+                    ->where(function ($primary) {
+                        $primary->whereNull('delivery.duplicate_of_id')
+                            ->orWhereExists(function ($original) {
+                                $original->selectRaw('1')
+                                    ->from('photo_deliveries as original')
+                                    ->whereColumn('original.id', 'delivery.duplicate_of_id')
+                                    ->where('original.status', '!=', PhotoDelivery::STATUS_CANCELED);
+                            });
+                    });
+            })
+            ->get(['link.photo_session_id', 'link.registration_entry_id']);
+
+        if ($links->isEmpty()) {
+            return [];
+        }
+
+        $sessions = PhotoSession::query()
+            ->live()
+            ->where('company_id', $companyId)
+            ->whereIn('location_id', $locationIds)
+            ->whereKey($links->pluck('photo_session_id')->unique()->all())
+            ->where('access_expires_at', '>', now())
+            ->withCount(['photos as ready_photos_count' => fn ($photos) => $photos->ready()])
+            ->get()
+            ->filter(fn (PhotoSession $session) => $session->ready_photos_count > 0)
+            ->keyBy('id');
+
+        $byEntry = [];
+
+        foreach ($links as $link) {
+            if (isset($sessions[$link->photo_session_id])) {
+                $byEntry[$link->registration_entry_id][] = $sessions[$link->photo_session_id];
+            }
+        }
+
+        return $byEntry;
+    }
+
+    protected function sessionStamp(PhotoSession $session): string
+    {
+        return ($session->captured_at ?: $session->created_at)?->format('YmdHis') . str_pad((string) $session->id, 12, '0', STR_PAD_LEFT);
+    }
+
+    protected function optedOutEmails(int $companyId, array $emails): array
+    {
+        if ($emails === [] || !\App\Models\FollowUpOptOut::isAvailable()) {
+            return [];
+        }
+
+        $keys = array_values(array_unique(array_map(fn ($email) => strtolower(trim((string) $email)), $emails)));
+
+        return \App\Models\FollowUpOptOut::query()
+            ->where('company_id', $companyId)
+            ->whereIn('email', $keys)
+            ->pluck('email')
+            ->mapWithKeys(fn ($email) => [strtolower(trim((string) $email)) => true])
+            ->all();
+    }
+
+    protected function registrantVariables(RegistrationEntry $entry, RegistrationEvent $form, ?PhotoSession $session, $company, PhotoDeliveryService $photos): array
+    {
+        $location = $form->location;
+        $tz = OperatingDay::timezoneFor($location);
+        $links = $photos->linkVariables((int) $company->id, $location);
+        $email = strtolower(trim((string) $entry->email));
+
+        return array_merge(
+            $this->buildVariables(trim((string) $entry->name), strtolower(trim((string) $entry->email)), 'event_registrant', $company, $location, $entry->phone),
+            [
+                'recipient_first_name' => 'there',
+                'recipient_last_name' => '',
+                'first_name' => 'there',
+                'business_name' => (string) ($company->company_name ?? 'Zap Zone'),
+                'support_contact' => (string) config('photos.support_contact'),
+                'photo_link' => $session ? $photos->photoLink($session) : '',
+                'photo_count' => $session ? (string) $session->ready_photos_count : '0',
+                'photo_date' => $session ? ($session->captured_at ?: $session->created_at)->copy()->setTimezone($tz)->format('M j, Y') : '',
+                'expires_on' => $session?->access_expires_at?->copy()->setTimezone($tz)->format('M j, Y') ?? '',
+                'opt_out_link' => FollowUpOptOut::isAvailable() ? app(VisitFollowUpService::class)->optOutUrl((int) $company->id, $email) : '',
+            ],
+            $photos->eventDetails($form),
+            array_diff_key($links, ['links' => true]),
+            ['links' => $photos->linksHtml((int) $company->id, $location)]
+        );
+    }
+
+    protected function registrantStillListed(EmailCampaign $campaign, string $email): bool
+    {
+        $ids = array_map('intval', (array) ($campaign->recipient_filters['registration_event_ids'] ?? []));
+
+        return $ids !== [] && RegistrationEntry::query()
+            ->visible()
+            ->where('company_id', $campaign->company_id)
+            ->whereIn('registration_event_id', RegistrationEvent::query()->whereIn('id', $ids)->pluck('id'))
+            ->whereRaw('LOWER(TRIM(email)) = ?', [strtolower(trim($email))])
+            ->exists();
+    }
+
+    protected function denyEventCampaign(EmailCampaign $campaign, $user): ?JsonResponse
+    {
+        if (!in_array(EmailCampaign::RECIPIENT_TYPE_EVENT_REGISTRANTS, (array) $campaign->recipient_types, true) || $this->isCompanyLevel($user)) {
+            return null;
+        }
+
+        if (EnsureStaff::effectiveRole($user) !== 'location_manager') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only managers and admins can open campaigns sent to event registrants.',
+            ], 403);
+        }
+
+        $ids = array_map('intval', (array) ($campaign->recipient_filters['registration_event_ids'] ?? []));
+        $own = $this->staffLocationIds(request());
+        $locations = RegistrationEvent::withTrashed()->whereIn('id', $ids)->pluck('location_id')->map(fn ($id) => (int) $id)->unique();
+
+        if ($locations->contains(fn (int $id) => !in_array($id, $own, true))) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This campaign went to people who registered at other locations.',
+            ], 403);
+        }
+
+        return null;
+    }
+
     protected function customersPaused(): JsonResponse
     {
         $message = 'Campaigns to customers are paused until campaign emails carry an unsubscribe link. You can still send to staff or a custom list.';
@@ -820,26 +1222,176 @@ class EmailCampaignController extends Controller
         ];
     }
 
-    protected function sendCampaign(EmailCampaign $campaign): void
+    protected function sendCampaign(EmailCampaign $campaign, ?array $onlyLogIds = null): void
     {
-        $campaign->markAsSending();
+        $status = EmailCampaign::query()->whereKey($campaign->id)->value('status');
 
-        $logs = $campaign->logs()->where('status', EmailCampaignLog::STATUS_PENDING)->get();
-
-        foreach ($logs as $log) {
-            $this->sendSingleEmail($campaign, $log);
+        if ($status === EmailCampaign::STATUS_PENDING) {
+            EmailCampaign::query()->whereKey($campaign->id)->where('status', EmailCampaign::STATUS_PENDING)
+                ->update(['status' => EmailCampaign::STATUS_SENDING, 'sent_at' => now(), 'updated_at' => now()]);
+        } elseif ($status !== EmailCampaign::STATUS_SENDING) {
+            return;
         }
 
-        $campaign->markAsCompleted();
+        $logIds = EmailCampaignLog::query()
+            ->where('email_campaign_id', $campaign->id)
+            ->where('status', EmailCampaignLog::STATUS_PENDING)
+            ->when($onlyLogIds !== null, fn ($query) => $query->whereIn('id', $onlyLogIds))
+            ->orderBy('id')
+            ->pluck('id');
+
+        foreach ($logIds as $logId) {
+            if (!$this->stillSending($campaign->id)) {
+                $this->syncCounts($campaign);
+
+                return;
+            }
+
+            $log = EmailCampaignLog::query()->whereKey($logId)->where('status', EmailCampaignLog::STATUS_PENDING)->first();
+
+            if ($log) {
+                $this->sendSingleEmail($campaign, $log);
+            }
+        }
+
+        EmailCampaign::query()->whereKey($campaign->id)->where('status', EmailCampaign::STATUS_SENDING)
+            ->update(['status' => EmailCampaign::STATUS_COMPLETED, 'completed_at' => now()]);
+
+        $this->syncCounts($campaign);
+    }
+
+    protected function stillSending(int $campaignId): bool
+    {
+        if (!EmailCampaign::query()->whereKey($campaignId)->where('status', EmailCampaign::STATUS_SENDING)->exists()) {
+            return false;
+        }
+
+        EmailCampaign::query()->whereKey($campaignId)->update(['updated_at' => now()]);
+
+        return true;
+    }
+
+    protected function sendLater(int $campaignId, ?array $onlyLogIds = null): void
+    {
+        app()->terminating(function () use ($campaignId, $onlyLogIds) {
+            ignore_user_abort(true);
+            @set_time_limit(0);
+            $campaign = EmailCampaign::query()->find($campaignId);
+
+            if (!$campaign) {
+                return;
+            }
+
+            try {
+                $this->sendCampaign($campaign, $onlyLogIds);
+            } catch (\Throwable $e) {
+                Log::error('Email campaign stopped while sending', ['campaign_id' => $campaignId, 'error' => $e->getMessage()]);
+                $this->recoverStalledSend($campaign, true);
+            }
+        });
+    }
+
+    protected function recoverStalledSend(EmailCampaign $campaign, bool $now = false): void
+    {
+        if ($campaign->status !== EmailCampaign::STATUS_SENDING && !$now) {
+            return;
+        }
+
+        $stopped = EmailCampaign::query()
+            ->whereKey($campaign->id)
+            ->where('status', EmailCampaign::STATUS_SENDING)
+            ->when(!$now, fn ($query) => $query->where('updated_at', '<', now()->subMinutes(self::STALLED_AFTER_MINUTES)))
+            ->update([
+                'status' => EmailCampaign::STATUS_FAILED,
+                'completed_at' => now(),
+                'error_message' => 'Sending stopped part-way through. The people it did not reach are listed as failed, so Resend to Failed Recipients sends to them.',
+            ]);
+
+        if ($stopped === 0) {
+            return;
+        }
+
+        EmailCampaignLog::query()
+            ->where('email_campaign_id', $campaign->id)
+            ->where('status', EmailCampaignLog::STATUS_PENDING)
+            ->update(['status' => EmailCampaignLog::STATUS_FAILED, 'error_message' => 'Not sent: sending stopped part-way through.']);
+
+        $this->syncCounts($campaign);
+        $campaign->refresh();
+    }
+
+    protected function syncCounts(EmailCampaign $campaign): void
+    {
+        $counts = EmailCampaignLog::query()
+            ->where('email_campaign_id', $campaign->id)
+            ->selectRaw('status, COUNT(*) as total')
+            ->groupBy('status')
+            ->pluck('total', 'status');
+
+        EmailCampaign::query()->whereKey($campaign->id)->update([
+            'sent_count' => (int) ($counts[EmailCampaignLog::STATUS_SENT] ?? 0) + (int) ($counts[EmailCampaignLog::STATUS_OPENED] ?? 0) + (int) ($counts['clicked'] ?? 0),
+            'failed_count' => (int) ($counts[EmailCampaignLog::STATUS_FAILED] ?? 0),
+        ]);
+    }
+
+    protected function currentRegistrantVariables(EmailCampaign $campaign, EmailCampaignLog $log): array|string
+    {
+        $email = strtolower(trim((string) $log->recipient_email));
+        $current = $this->getEventRegistrantRecipients($campaign->company, (array) ($campaign->recipient_filters ?? []), $email);
+
+        if ($current !== []) {
+            return $current[0]['variables'];
+        }
+
+        if (!$this->registrantStillListed($campaign, $email)) {
+            return 'Not sent: this registration was hidden or removed.';
+        }
+
+        if (FollowUpOptOut::hasOptedOut((int) $campaign->company_id, $email)) {
+            return 'Not sent: this person unsubscribed.';
+        }
+
+        return 'Not sent: their photos are no longer available.';
+    }
+
+    protected function onlyOwnEventCampaigns($query, Request $request): void
+    {
+        $own = $this->staffLocationIds($request)[0] ?? 0;
+
+        $query->where(function ($visible) use ($own) {
+            $visible->whereJsonDoesntContain('recipient_types', EmailCampaign::RECIPIENT_TYPE_EVENT_REGISTRANTS)
+                ->orWhere(function ($ownEvents) use ($own) {
+                    $ownEvents->whereJsonLength('recipient_filters->registration_location_ids', 1)
+                        ->whereJsonContains('recipient_filters->registration_location_ids', $own);
+                });
+        });
     }
 
     protected function sendSingleEmail(EmailCampaign $campaign, EmailCampaignLog $log): void
     {
         try {
-            $variables = $log->variables_used ?? [];
+            if ($log->recipient_type === 'event_registrant') {
+                $current = $this->currentRegistrantVariables($campaign, $log);
 
-            $processedSubject = $this->replaceVariables($campaign->subject, $variables);
-            $processedBody = $this->replaceVariables($campaign->body, $variables, true);
+                if (is_string($current)) {
+                    $log->markAsFailed($current);
+                    $campaign->incrementFailed();
+
+                    return;
+                }
+
+                $log->forceFill(['variables_used' => $current])->save();
+            }
+
+            $variables = $this->withEventDefaults($log->variables_used ?? []);
+            $body = $campaign->body;
+
+            if ($log->recipient_type === 'event_registrant' && $variables['opt_out_link'] !== '' && !preg_match('/\{\{\s*opt_out_link\s*\}\}/', $body)) {
+                $body .= self::UNSUBSCRIBE_FOOTER;
+            }
+
+            $processedSubject = $this->stripPlaceholders($this->replaceVariables($campaign->subject, ['links' => '', 'opt_out_link' => ''] + $variables));
+            $processedBody = $this->stripPlaceholders($this->replaceVariables($body, $variables, true));
 
             $htmlBody = $this->generateHtmlEmail($processedBody, $variables);
 
@@ -860,9 +1412,9 @@ class EmailCampaignController extends Controller
             } else {
                 Mail::to($log->recipient_email)
                     ->send(new DynamicCampaignMail(
-                        $campaign->subject,
-                        $campaign->body,
-                        $variables
+                        $processedSubject,
+                        $processedBody,
+                        []
                     ));
             }
 
@@ -878,7 +1430,49 @@ class EmailCampaignController extends Controller
 
     protected function replaceVariables(string $content, array $variables, bool $escape = false): string
     {
-        return TemplatePlaceholders::fill($content, $variables, $escape);
+        return TemplatePlaceholders::fill($content, $variables, $escape, ['links']);
+    }
+
+    protected function stripPlaceholders(string $content): string
+    {
+        return (string) preg_replace('/\{\{\s*[A-Za-z0-9_]+\s*\}\}/', '', $content);
+    }
+
+    protected function sampleEventValues($user): array
+    {
+        $location = $user->location ?? $user->company?->locations()->first();
+        $photos = app(PhotoDeliveryService::class);
+
+        return [
+            'first_name' => 'there',
+            'business_name' => (string) ($user->company?->company_name ?? 'Zap Zone'),
+            'support_contact' => (string) config('photos.support_contact'),
+            'event_name' => 'Trunk or Treat',
+            'event_date' => now()->addDays(7)->format('M j, Y'),
+            'photo_link' => $photos->photoLinkBase() . '/photos/sample',
+            'photo_count' => '3',
+            'photo_date' => now()->format('M j, Y'),
+            'expires_on' => now()->addDays(30)->format('M j, Y'),
+            'opt_out_link' => '',
+        ] + array_diff_key($photos->linkVariables((int) $user->company_id, $location), ['links' => true])
+            + ['links' => $photos->linksHtml((int) $user->company_id, $location)];
+    }
+
+    protected function withEventDefaults(array $variables): array
+    {
+        return $variables + [
+            'first_name' => $variables['recipient_first_name'] ?? '',
+            'business_name' => $variables['company_name'] ?? '',
+            'support_contact' => (string) config('photos.support_contact'),
+            'event_name' => '',
+            'event_date' => '',
+            'photo_link' => '',
+            'photo_count' => '',
+            'photo_date' => '',
+            'expires_on' => '',
+            'links' => '',
+            'opt_out_link' => '',
+        ];
     }
 
     protected function generateHtmlEmail(string $body, array $variables): string

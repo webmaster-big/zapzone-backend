@@ -156,13 +156,8 @@ class PhotoMessageTemplate extends Model
 
     public function render(string $field, array $variables): string
     {
-        $content = (string) $this->{$field};
+        $content = \App\Support\TemplatePlaceholders::fill((string) $this->{$field}, $variables);
 
-        foreach ($variables as $key => $value) {
-            $content = str_replace('{{' . $key . '}}', (string) ($value ?? ''), $content);
-            $content = str_replace('{{ ' . $key . ' }}', (string) ($value ?? ''), $content);
-        }
-
-        return (string) preg_replace('/\{\{\s*link_[a-z0-9_]*\s*\}\}/i', '', $content);
+        return (string) preg_replace('/\{\{\s*[A-Za-z0-9_]+\s*\}\}/', '', $content);
     }
 }

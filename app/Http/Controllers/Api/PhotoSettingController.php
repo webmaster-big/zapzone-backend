@@ -212,9 +212,10 @@ class PhotoSettingController extends Controller
     public function templates(Request $request): JsonResponse
     {
         $authUser = $this->resolveAuthUser($request);
-        $kinds = array_values(array_diff(PhotoMessageTemplate::KINDS, [PhotoMessageTemplate::KIND_ESCAPE_ROOM]));
+        $movedKinds = [PhotoMessageTemplate::KIND_ESCAPE_ROOM, PhotoMessageTemplate::KIND_EVENT_REGISTRATION];
+        $kinds = array_values(array_diff(PhotoMessageTemplate::KINDS, $movedKinds));
         $templates = PhotoMessageTemplate::allForCompany($authUser?->company_id)
-            ->reject(fn (PhotoMessageTemplate $template) => $template->kind === PhotoMessageTemplate::KIND_ESCAPE_ROOM)
+            ->reject(fn (PhotoMessageTemplate $template) => in_array($template->kind, $movedKinds, true))
             ->values();
         $thanksEmail = $authUser?->company_id
             ? \App\Models\EmailNotification::where('company_id', $authUser->company_id)
@@ -248,6 +249,7 @@ class PhotoSettingController extends Controller
                     ->mapWithKeys(fn (string $kind) => [$kind => PhotoMessageTemplate::variablesFor($kind)])
                     ->all(),
                 'kinds' => $kinds,
+                'event_photo_email' => $this->eventPhotoEmailFor($request, $authUser),
                 'escape_room_email' => $shownEmail ? [
                     'id' => $shownEmail->id,
                     'name' => $shownEmail->name,
@@ -263,6 +265,32 @@ class PhotoSettingController extends Controller
                 ] : null,
             ],
         ]);
+    }
+
+    protected function eventPhotoEmailFor(Request $request, $authUser): ?array
+    {
+        $locationId = $request->integer('location_id');
+
+        if (!$authUser?->company_id || $locationId <= 0 || !in_array($locationId, $this->staffLocationIds($request), true)) {
+            return null;
+        }
+
+        $template = \App\Models\EmailTemplate::eventPhotoFor((int) $authUser->company_id, $locationId);
+
+        if (!$template) {
+            return null;
+        }
+
+        $ids = $template->targetLocationIds();
+
+        return [
+            'id' => (int) $template->id,
+            'name' => $template->name,
+            'all_locations' => $ids === null,
+            'location_names' => $ids === null ? [] : \App\Models\Location::whereIn('id', $ids)->orderBy('name')->pluck('name')->all(),
+            'attach_photos' => (bool) $template->attach_photos,
+            'can_manage' => \App\Support\EmailTemplateAccess::canManage($template, $authUser, $locationId),
+        ];
     }
 
     public function updateTemplate(Request $request, PhotoMessageTemplate $photoMessageTemplate): JsonResponse
@@ -287,6 +315,14 @@ class PhotoSettingController extends Controller
 
         if (!\App\Support\SchemaSupport::hasColumn('photo_message_templates', 'attach_photos')) {
             unset($validated['attach_photos']);
+        }
+
+        if ($photoMessageTemplate->kind === PhotoMessageTemplate::KIND_EVENT_REGISTRATION) {
+            return response()->json([
+                'success' => false,
+                'message' => 'The event photo email is now an Email Template (category Event photos). Edit it under Communication, Email Templates.',
+                'errors' => ['email_body' => ['Edit the Event photos email under Communication, Email Templates instead.']],
+            ], 422);
         }
 
         if ($photoMessageTemplate->kind === PhotoMessageTemplate::KIND_ESCAPE_ROOM) {
@@ -322,6 +358,14 @@ class PhotoSettingController extends Controller
                 'success' => false,
                 'message' => 'You do not have access to that template.',
             ], 403);
+        }
+
+        if ($photoMessageTemplate->kind === PhotoMessageTemplate::KIND_EVENT_REGISTRATION) {
+            return response()->json([
+                'success' => false,
+                'message' => 'The event photo email is now an Email Template (category Event photos). Edit it under Communication, Email Templates.',
+                'errors' => ['email_body' => ['Edit the Event photos email under Communication, Email Templates instead.']],
+            ], 422);
         }
 
         $defaults = PhotoMessageTemplate::defaultsFor($photoMessageTemplate->kind);

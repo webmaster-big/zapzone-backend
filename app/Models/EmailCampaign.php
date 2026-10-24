@@ -49,6 +49,16 @@ class EmailCampaign extends Model
     public const RECIPIENT_TYPE_COMPANY_ADMIN = 'company_admin';
     public const RECIPIENT_TYPE_LOCATION_MANAGERS = 'location_managers';
     public const RECIPIENT_TYPE_CUSTOM = 'custom';
+    public const RECIPIENT_TYPE_EVENT_REGISTRANTS = 'event_registrants';
+
+    public const RECIPIENT_TYPES = [
+        self::RECIPIENT_TYPE_CUSTOMERS,
+        self::RECIPIENT_TYPE_ATTENDANTS,
+        self::RECIPIENT_TYPE_COMPANY_ADMIN,
+        self::RECIPIENT_TYPE_LOCATION_MANAGERS,
+        self::RECIPIENT_TYPE_CUSTOM,
+        self::RECIPIENT_TYPE_EVENT_REGISTRANTS,
+    ];
 
     public const STATUS_PENDING = 'pending';
     public const STATUS_SENDING = 'sending';

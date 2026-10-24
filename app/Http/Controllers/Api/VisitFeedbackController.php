@@ -61,7 +61,7 @@ class VisitFeedbackController extends Controller
 
             return response()->json([
                 'success' => true,
-                'message' => 'You will not get any more review requests or offers from us.',
+                'message' => 'You will not get any more event emails, review requests or offers from us.',
                 'data' => $this->service->optOutPayload($optOut),
             ]);
         }
@@ -76,7 +76,7 @@ class VisitFeedbackController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => 'You will not get any more review requests or offers from us.',
+            'message' => 'You will not get any more event emails, review requests or offers from us.',
             'data' => $this->service->publicPayload($row->fresh()),
         ]);
     }

@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\ActivityLog;
+use App\Models\EmailTemplate;
 use App\Models\Location;
 use App\Models\LocationPhotoSetting;
 use App\Models\MessageLink;
@@ -904,8 +905,22 @@ class PhotoDeliveryService
         }
 
         $location->loadMissing('company');
-        $template = PhotoMessageTemplate::forCompany($location->company_id, $kind);
+        $isEvent = $kind === PhotoMessageTemplate::KIND_EVENT_REGISTRATION;
+        $template = PhotoMessageTemplate::forCompany($location->company_id, $isEvent ? PhotoMessageTemplate::KIND_IMMEDIATE : $kind);
         $tz = OperatingDay::timezoneFor($location);
+
+        if ($isEvent) {
+            $event = $this->eventPhotoTemplate($location->company_id, $location->id);
+
+            if (!$event) {
+                return [
+                    'success' => false,
+                    'message' => "No active Event photos email template covers {$location->name}, so people who registered there get the usual photo email. Create one under Communication, Email Templates.",
+                ];
+            }
+
+            $template = $this->photoTemplateFrom($event, $template);
+        }
 
         $variables = [
             'first_name' => 'there',
@@ -926,7 +941,8 @@ class PhotoDeliveryService
             'location_phone' => (string) ($location->phone ?? ''),
             'event_name' => 'Trunk or Treat',
             'event_date' => now($tz)->format('M j, Y'),
-        ] + $this->linkVariables($location->company_id, $location);
+        ] + $this->linkVariables($location->company_id, $location)
+            + $this->templateNameVariables($location, $channel === PhotoDelivery::CHANNEL_EMAIL ? $destination : '', 'Sample Guest', 'there', true, $tz);
 
         $bodyVariables = array_map(fn ($value) => e((string) $value), $variables);
         $bodyVariables['links'] = $this->linksHtml($location->company_id, $location);
@@ -1629,9 +1645,11 @@ class PhotoDeliveryService
         $tz = OperatingDay::timezoneFor($location);
         $name = $delivery?->recipient_name ?: $session->kiosk_contact_name;
         $firstName = $delivery?->registration_entry_id ? '' : trim(explode(' ', trim((string) $name))[0] ?? '');
+        $greeting = $firstName !== '' ? $firstName : 'there';
+        $email = $delivery && $delivery->channel === PhotoDelivery::CHANNEL_EMAIL ? (string) $delivery->destination : '';
 
         return [
-            'first_name' => $firstName !== '' ? $firstName : 'there',
+            'first_name' => $greeting,
             'location_name' => $location?->name ?? 'Zap Zone',
             'photo_date' => ($session->captured_at ?: $session->created_at)->copy()->setTimezone($tz)->format('M j, Y'),
             'photo_link' => $this->photoLink($session, $delivery),
@@ -1639,7 +1657,8 @@ class PhotoDeliveryService
             'business_name' => $location?->company?->company_name ?? 'Zap Zone',
             'support_contact' => (string) config('photos.support_contact'),
             'photo_count' => (string) $session->photos()->ready()->count(),
-        ] + $this->eventVariables($delivery, $tz) + $this->escapeRoomVariables($session, $tz) + $this->linkVariables($session->company_id, $location);
+        ] + $this->eventVariables($delivery, $tz) + $this->escapeRoomVariables($session, $tz) + $this->linkVariables($session->company_id, $location)
+            + $this->templateNameVariables($location, $email, trim((string) $name), $greeting, (bool) $delivery?->registration_entry_id, $tz);
     }
 
     protected function eventVariables(?PhotoDelivery $delivery, string $tz): array
@@ -1653,6 +1672,11 @@ class PhotoDeliveryService
             return ['event_name' => '', 'event_date' => ''];
         }
 
+        return $this->eventDetails($form);
+    }
+
+    public function eventDetails(RegistrationEvent $form): array
+    {
         $first = \Illuminate\Support\Carbon::parse($form->firstDay());
         $last = $form->event_date;
 
@@ -1739,15 +1763,55 @@ class PhotoDeliveryService
 
     protected function templateFor(PhotoSession $session, PhotoDelivery $delivery): PhotoMessageTemplate
     {
-        if ($delivery->kind !== PhotoDelivery::KIND_ESCAPE_ROOM && $this->effectiveEntryId($delivery) !== null) {
-            $event = PhotoMessageTemplate::forCompany($session->company_id, PhotoMessageTemplate::KIND_EVENT_REGISTRATION);
+        $usual = PhotoMessageTemplate::forCompany($session->company_id, $this->templateKind($delivery->kind));
 
-            if ($event->is_active) {
-                return $event;
-            }
+        if ($delivery->kind === PhotoDelivery::KIND_ESCAPE_ROOM || $this->effectiveEntryId($delivery) === null) {
+            return $usual;
         }
 
-        return PhotoMessageTemplate::forCompany($session->company_id, $this->templateKind($delivery->kind));
+        $event = $this->eventPhotoTemplate($session->company_id, $session->location_id);
+
+        return $event ? $this->photoTemplateFrom($event, $usual) : $usual;
+    }
+
+    public function eventPhotoTemplate(?int $companyId, ?int $locationId): ?EmailTemplate
+    {
+        return EmailTemplate::eventPhotoFor($companyId, $locationId);
+    }
+
+    public function photoTemplateFrom(EmailTemplate $event, PhotoMessageTemplate $usual): PhotoMessageTemplate
+    {
+        return (new PhotoMessageTemplate())->forceFill([
+            'company_id' => $event->company_id,
+            'kind' => PhotoMessageTemplate::KIND_EVENT_REGISTRATION,
+            'email_subject' => $event->subject,
+            'email_body' => $event->body,
+            'sms_body' => trim((string) $event->sms_body) !== '' ? $event->sms_body : $usual->sms_body,
+            'is_active' => true,
+            'attach_photos' => (bool) $event->attach_photos,
+        ]);
+    }
+
+    public function templateNameVariables(?Location $location, string $email, string $name, string $greeting, bool $registrant, string $tz): array
+    {
+        $company = $location?->company;
+
+        return [
+            'recipient_email' => $email,
+            'recipient_name' => $name,
+            'recipient_first_name' => $greeting,
+            'recipient_last_name' => $registrant ? '' : trim(implode(' ', array_slice(explode(' ', trim($name)), 1))),
+            'recipient_phone' => '',
+            'company_name' => (string) ($company?->company_name ?? 'Zap Zone'),
+            'company_email' => (string) ($company?->email ?? ''),
+            'company_phone' => (string) ($company?->phone ?? ''),
+            'company_address' => (string) ($company?->address ?? ''),
+            'location_email' => (string) ($location?->email ?? ''),
+            'location_phone' => (string) ($location?->phone ?? ''),
+            'location_address' => $location ? trim(implode(', ', array_filter([$location->address, $location->city, $location->state, $location->zip_code]))) : '',
+            'current_date' => now($tz)->format('F j, Y'),
+            'current_year' => (string) now($tz)->year,
+        ] + array_fill_keys(array_keys(EmailTemplate::CUSTOMER_VARIABLES + EmailTemplate::USER_VARIABLES), '');
     }
 
     protected function escapeRoomVariables(PhotoSession $session, string $tz): array

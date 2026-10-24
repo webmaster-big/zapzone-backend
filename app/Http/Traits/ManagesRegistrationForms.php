@@ -252,14 +252,25 @@ trait ManagesRegistrationForms
             || (PhotoOverlay::supportsEvents() && PhotoOverlay::query()->where('registration_event_id', $event->id)->exists());
     }
 
-    protected function registrationPhotoEmailActive(int $companyId): bool
+    protected function registrationPhotoEmail(int $companyId, ?int $locationId): ?array
     {
-        $template = \App\Models\PhotoMessageTemplate::query()
-            ->where('company_id', $companyId)
-            ->where('kind', \App\Models\PhotoMessageTemplate::KIND_EVENT_REGISTRATION)
-            ->first(['is_active']);
+        $template = \App\Models\EmailTemplate::eventPhotoFor($companyId, $locationId);
 
-        return $template === null || (bool) $template->is_active;
+        if (!$template) {
+            return null;
+        }
+
+        $user = $this->resolveAuthUser(request());
+
+        $ids = $template->targetLocationIds();
+
+        return [
+            'id' => (int) $template->id,
+            'name' => $template->name,
+            'can_manage' => \App\Support\EmailTemplateAccess::canManage($template, $user, $this->staffLocationIds(request())[0] ?? null),
+            'all_locations' => $ids === null,
+            'location_count' => count($ids ?? []),
+        ];
     }
 
     protected function photoFramesFor(Collection $forms): array
@@ -364,13 +375,17 @@ trait ManagesRegistrationForms
         );
 
         $frames = $this->photoFramesFor(collect([$event]));
+        $photoEmail = isset($frames[(int) $event->id])
+            ? $this->registrationPhotoEmail((int) $event->company_id, $event->location_id ? (int) $event->location_id : null)
+            : null;
 
         return array_merge($summary, [
             'counts' => $counts,
             'location_locked' => $this->locationLocked($event),
         ], isset($frames[(int) $event->id]) ? [
             'photo_frames' => $frames[(int) $event->id],
-            'photo_email_active' => $this->registrationPhotoEmailActive((int) $event->company_id),
+            'photo_email' => $photoEmail,
+            'photo_email_active' => $photoEmail !== null,
         ] : []);
     }
 
