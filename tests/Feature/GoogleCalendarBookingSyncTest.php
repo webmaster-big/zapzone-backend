@@ -51,12 +51,23 @@ class GoogleCalendarBookingSyncTest extends TestCase
             'company_id' => $this->company->id,
             'name' => 'Test Location',
             'address' => '123 Test St',
+            'city' => 'Brighton',
+            'state' => 'MI',
+            'zip_code' => '48116',
+            'phone' => '8105551234',
+            'email' => 'test-location@zapzone.test',
         ]);
 
         $this->package = Package::create([
             'company_id' => $this->company->id,
+            'location_id' => $this->location->id,
             'name' => 'Test Package',
+            'description' => 'Test package',
+            'category' => 'Party',
+            'pricing_type' => 'base',
             'duration' => 120,
+            'duration_unit' => 'minutes',
+            'is_active' => true,
             'price' => 299.99,
             'min_participants' => 10,
             'max_participants' => 30,
@@ -102,7 +113,7 @@ class GoogleCalendarBookingSyncTest extends TestCase
         $booking = $this->createBookingWithCalendarEvent();
 
         $response = $this->actingAs($this->user)
-            ->patchJson("/api/bookings/{$booking->id}/cancel");
+            ->patchJson("/api/bookings/{$booking->id}/cancel", ['change_reason' => 'Guest asked to cancel']);
 
         $response->assertOk();
         $response->assertJsonPath('data.status', 'cancelled');
@@ -119,7 +130,7 @@ class GoogleCalendarBookingSyncTest extends TestCase
         ]);
 
         $response = $this->actingAs($this->user)
-            ->patchJson("/api/bookings/{$booking->id}/cancel");
+            ->patchJson("/api/bookings/{$booking->id}/cancel", ['change_reason' => 'Guest asked to cancel']);
 
         $response->assertOk();
         $this->assertDatabaseHas('bookings', [
@@ -157,7 +168,7 @@ class GoogleCalendarBookingSyncTest extends TestCase
         $booking = $this->createBookingWithCalendarEvent();
 
         $response = $this->actingAs($this->user)
-            ->deleteJson("/api/bookings/{$booking->id}");
+            ->deleteJson("/api/bookings/{$booking->id}", ['change_reason' => 'Duplicate booking']);
 
         $response->assertOk();
         $this->assertSoftDeleted('bookings', ['id' => $booking->id]);
@@ -181,8 +192,8 @@ class GoogleCalendarBookingSyncTest extends TestCase
         $booking = $this->createBookingWithCalendarEvent(['status' => 'cancelled']);
         $booking->delete(); // soft delete first
 
-        $response = $this->actingAs($this->user)
-            ->deleteJson("/api/bookings/{$booking->id}/force");
+        $response = $this->actingAs($this->user, 'sanctum')
+            ->deleteJson("/api/bookings/{$booking->id}/force-delete", ['change_reason' => 'Clearing the trash']);
 
         $response->assertOk();
         $this->assertDatabaseMissing('bookings', ['id' => $booking->id]);
@@ -196,7 +207,7 @@ class GoogleCalendarBookingSyncTest extends TestCase
     {
         $booking = $this->createBookingWithCalendarEvent(['status' => 'pending']);
 
-        $response = $this->deleteJson("/api/bookings/{$booking->id}/force-delete");
+        $response = $this->deleteJson("/api/bookings/{$booking->id}/force-delete", ['checkout_token' => \App\Support\CheckoutToken::for('booking', $booking->id)]);
 
         $response->assertOk();
         $this->assertDatabaseMissing('bookings', ['id' => $booking->id]);
@@ -339,7 +350,7 @@ class GoogleCalendarBookingSyncTest extends TestCase
         $this->assertNull($booking->cancelled_at);
 
         $response = $this->actingAs($this->user)
-            ->patchJson("/api/bookings/{$booking->id}/cancel");
+            ->patchJson("/api/bookings/{$booking->id}/cancel", ['change_reason' => 'Guest asked to cancel']);
 
         $response->assertOk();
         $this->assertNotNull($booking->fresh()->cancelled_at);
