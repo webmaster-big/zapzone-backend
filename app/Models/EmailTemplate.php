@@ -4,6 +4,8 @@ namespace App\Models;
 
 use App\Support\SchemaSupport;
 use App\Traits\HasTargeting;
+use Illuminate\Contracts\Cache\LockTimeoutException;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -189,6 +191,50 @@ class EmailTemplate extends Model
                 })
                 ->when($targeting, fn ($listed) => $listed->orWhereJsonContains('location_ids', $locationId)->orWhereJsonContains('location_ids', (string) $locationId));
         });
+    }
+
+    public static function ensureEventPhotoDefault(?int $companyId): void
+    {
+        if ($companyId === null || !self::supportsTargeting()) {
+            return;
+        }
+
+        $exists = fn () => self::withTrashed()->where('company_id', $companyId)->where('category', self::CATEGORY_EVENT_PHOTOS)->exists();
+
+        if ($exists()) {
+            return;
+        }
+
+        $creator = User::query()->where('company_id', $companyId)->whereIn('role', ['company_admin', 'owner', 'admin'])->orderBy('id')->value('id')
+            ?? User::query()->where('company_id', $companyId)->orderBy('id')->value('id');
+        $defaults = PhotoMessageTemplate::defaultsFor(PhotoMessageTemplate::KIND_EVENT_REGISTRATION);
+
+        if (!$creator || !$defaults) {
+            return;
+        }
+
+        try {
+            Cache::lock('email-templates:event-photos:' . $companyId, 10)->block(3, function () use ($exists, $companyId, $creator, $defaults) {
+                if ($exists()) {
+                    return;
+                }
+
+                (new self())->forceFill([
+                    'company_id' => $companyId,
+                    'location_id' => null,
+                    'location_ids' => null,
+                    'created_by' => $creator,
+                    'name' => 'Event registration photos',
+                    'subject' => $defaults['email_subject'],
+                    'body' => (string) preg_replace('/>[ \t]*\r?\n\s*</', '><', $defaults['email_body']),
+                    'sms_body' => $defaults['sms_body'],
+                    'attach_photos' => true,
+                    'status' => 'active',
+                    'category' => self::CATEGORY_EVENT_PHOTOS,
+                ])->save();
+            });
+        } catch (LockTimeoutException) {
+        }
     }
 
     public static function eventPhotoFor(?int $companyId, ?int $locationId): ?self

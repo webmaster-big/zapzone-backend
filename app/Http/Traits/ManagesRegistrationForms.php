@@ -254,6 +254,7 @@ trait ManagesRegistrationForms
 
     protected function registrationPhotoEmail(int $companyId, ?int $locationId): ?array
     {
+        \App\Models\EmailTemplate::ensureEventPhotoDefault($companyId);
         $template = \App\Models\EmailTemplate::eventPhotoFor($companyId, $locationId);
 
         if (!$template) {

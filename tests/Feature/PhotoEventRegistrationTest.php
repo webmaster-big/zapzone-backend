@@ -946,7 +946,10 @@ class PhotoEventRegistrationTest extends TestCase
             'recipient_filters' => ['registration_event_ids' => [$this->trunk->id]],
             'send_now' => true,
         ])->assertCreated();
-        $this->assertSame('Sending to 22 people now. Refresh the campaign to see them go out.', $response->json('message'));
+        $this->assertSame(\App\Services\EmailCampaignSender::queuedMessage(22), $response->json('message'));
+        $this->assertSame(0, Mail::mailer()->getSymfonyTransport()->messages()->count() - $before);
+
+        $this->artisan('email-campaigns:send')->assertSuccessful();
         $this->assertSame(22, Mail::mailer()->getSymfonyTransport()->messages()->count() - $before);
 
         $campaign = \App\Models\EmailCampaign::findOrFail($response->json('data.id'));
@@ -1010,7 +1013,7 @@ class PhotoEventRegistrationTest extends TestCase
         $sentSoFar = 0;
         \Illuminate\Support\Facades\Event::listen(\Illuminate\Mail\Events\MessageSent::class, function () use (&$sentSoFar) {
             if (++$sentSoFar === 5) {
-                \App\Models\EmailCampaign::query()->latest('id')->firstOrFail()->update(['status' => \App\Models\EmailCampaign::STATUS_CANCELLED]);
+                $this->cancelLatestCampaign();
             }
         });
 
@@ -1023,12 +1026,14 @@ class PhotoEventRegistrationTest extends TestCase
             'recipient_filters' => ['registration_event_ids' => [$this->trunk->id]],
             'send_now' => true,
         ])->assertCreated()->json('data.id');
+        $this->artisan('email-campaigns:send')->assertSuccessful();
+        $this->artisan('email-campaigns:send')->assertSuccessful();
 
         $campaign = \App\Models\EmailCampaign::findOrFail($id);
         $this->assertSame(5, $sentSoFar);
         $this->assertSame(\App\Models\EmailCampaign::STATUS_CANCELLED, $campaign->status);
         $this->assertSame(5, $campaign->sent_count);
-        $this->assertSame(20, $campaign->logs()->where('status', 'pending')->count());
+        $this->assertSame(20, $campaign->logs()->where('status', 'cancelled')->count());
     }
 
     public function test_a_cancel_that_lands_during_the_last_email_is_kept(): void
@@ -1039,7 +1044,7 @@ class PhotoEventRegistrationTest extends TestCase
         $sentSoFar = 0;
         \Illuminate\Support\Facades\Event::listen(\Illuminate\Mail\Events\MessageSent::class, function () use (&$sentSoFar) {
             if (++$sentSoFar === 22) {
-                \App\Models\EmailCampaign::query()->latest('id')->firstOrFail()->update(['status' => \App\Models\EmailCampaign::STATUS_CANCELLED]);
+                $this->cancelLatestCampaign();
             }
         });
 
@@ -1052,6 +1057,7 @@ class PhotoEventRegistrationTest extends TestCase
             'recipient_filters' => ['registration_event_ids' => [$this->trunk->id]],
             'send_now' => true,
         ])->assertCreated()->json('data.id');
+        $this->artisan('email-campaigns:send')->assertSuccessful();
 
         $this->assertSame(22, $sentSoFar);
         $this->assertSame(\App\Models\EmailCampaign::STATUS_CANCELLED, \App\Models\EmailCampaign::findOrFail($id)->status);
@@ -1249,7 +1255,7 @@ class PhotoEventRegistrationTest extends TestCase
         $sentSoFar = 0;
         \Illuminate\Support\Facades\Event::listen(\Illuminate\Mail\Events\MessageSent::class, function () use (&$sentSoFar) {
             if (++$sentSoFar === 5) {
-                \App\Models\EmailCampaign::query()->latest('id')->firstOrFail()->update(['status' => \App\Models\EmailCampaign::STATUS_CANCELLED]);
+                $this->cancelLatestCampaign();
             }
         });
 
@@ -1262,14 +1268,17 @@ class PhotoEventRegistrationTest extends TestCase
             'recipient_filters' => ['registration_event_ids' => [$this->trunk->id]],
             'send_now' => true,
         ])->assertCreated()->json('data.id');
+        $this->artisan('email-campaigns:send')->assertSuccessful();
         $campaign = \App\Models\EmailCampaign::findOrFail($id);
         $campaign->logs()->where('status', 'sent')->orderBy('id')->firstOrFail()->forceFill(['status' => 'failed'])->save();
         $before = $sentSoFar;
 
         $this->actAs($this->admin);
         $this->postJson("/api/email-campaigns/{$id}/resend", ['type' => 'failed'])->assertOk();
+        $this->artisan('email-campaigns:send')->assertSuccessful();
         $this->assertSame(1, $sentSoFar - $before);
-        $this->assertSame(20, $campaign->logs()->where('status', 'pending')->count());
+        $this->assertSame(20, $campaign->logs()->where('status', 'cancelled')->count());
+        $this->assertSame(\App\Models\EmailCampaign::STATUS_COMPLETED, $campaign->fresh()->status);
 
         $this->actAs($this->admin);
         $this->postJson("/api/email-campaigns/{$id}/resend", ['type' => 'everything'])->assertStatus(422);
@@ -1359,6 +1368,342 @@ class PhotoEventRegistrationTest extends TestCase
             'send_now' => true,
         ])->assertStatus(422)->assertJsonPath('message', 'Nobody would get this email. No one from the picked events can get it right now: their photos are not ready, they gave no email address, or they unsubscribed.');
         $this->assertSame(0, \App\Models\EmailCampaign::count());
+    }
+
+    public function test_a_parent_photographed_in_two_sessions_gets_one_email_per_session(): void
+    {
+        $sam = RegistrationEntry::where('name', 'Sam Lee')->firstOrFail();
+        $max = $this->register($this->trunk, 'Max Lee', 'Sam.Lee@example.com', '7345550190');
+        $this->register($this->trunk, 'Riley Nophoto', 'riley.nophoto@example.com', '7345550191');
+        $first = $this->photographed($this->brighton, $sam);
+        $second = $this->photographed($this->brighton, $max);
+        $before = Mail::mailer()->getSymfonyTransport()->messages()->count();
+
+        $preview = $this->registrantPreview([$this->trunk->id], false);
+        $this->assertSame(3, $preview['total_recipients']);
+        $this->assertSame(2, $preview['with_photos']);
+
+        $this->actAs($this->admin);
+        $this->postJson('/api/email-campaigns', [
+            'name' => 'Your photos',
+            'subject' => 'Photos from {{event_name}}',
+            'body' => '<p><a href="{{photo_link}}">your photos</a></p>',
+            'recipient_types' => ['event_registrants', 'custom'],
+            'custom_emails' => ['sam.lee@example.com'],
+            'recipient_filters' => ['registration_event_ids' => [$this->trunk->id]],
+            'send_now' => true,
+        ])->assertCreated();
+
+        $sent = Mail::mailer()->getSymfonyTransport()->messages()->slice($before)->map(fn ($message) => $message->getOriginalMessage());
+        $toSam = $sent->filter(fn ($message) => $message->getTo()[0]->getAddress() === 'sam.lee@example.com')->map(fn ($message) => (string) $message->getHtmlBody())->values();
+        $this->assertCount(2, $toSam);
+        $this->assertCount(1, $toSam->filter(fn ($html) => str_contains($html, '/photos/' . $first->access_token)));
+        $this->assertCount(1, $toSam->filter(fn ($html) => str_contains($html, '/photos/' . $second->access_token)));
+        $this->assertCount(1, $sent->filter(fn ($message) => $message->getTo()[0]->getAddress() === 'riley.nophoto@example.com'));
+        $this->assertCount(3, $sent);
+    }
+
+    public function test_when_someones_photos_vanish_before_sending_they_get_one_email_without_a_link(): void
+    {
+        $sam = RegistrationEntry::where('name', 'Sam Lee')->firstOrFail();
+        $max = $this->register($this->trunk, 'Max Lee', 'sam.lee@example.com', '7345550192');
+        $first = $this->photographed($this->brighton, $sam);
+        $second = $this->photographed($this->brighton, $max);
+
+        $this->actAs($this->admin);
+        $id = $this->postJson('/api/email-campaigns', [
+            'name' => 'Later',
+            'subject' => 'Hello',
+            'body' => '<p>Hello <a href="{{photo_link}}">photos</a></p>',
+            'recipient_types' => ['event_registrants'],
+            'recipient_filters' => ['registration_event_ids' => [$this->trunk->id]],
+            'send_now' => false,
+        ])->assertCreated()->json('data.id');
+        $this->assertSame(2, \App\Models\EmailCampaignLog::where('email_campaign_id', $id)->count());
+        PhotoSession::whereKey([$first->id, $second->id])->update(['access_expires_at' => now()->subDay()]);
+        $before = Mail::mailer()->getSymfonyTransport()->messages()->count();
+
+        $this->actAs($this->admin);
+        $this->postJson("/api/email-campaigns/{$id}/resend", ['type' => 'all'])->assertOk();
+
+        $sent = Mail::mailer()->getSymfonyTransport()->messages()->slice($before);
+        $this->assertCount(1, $sent);
+        $this->assertStringNotContainsString('/photos/', (string) $sent->first()->getOriginalMessage()->getHtmlBody());
+        $this->assertSame(['Not sent: these photos are no longer available.'], \App\Models\EmailCampaignLog::where('email_campaign_id', $id)->where('status', 'failed')->pluck('error_message')->all());
+    }
+
+    public function test_big_campaigns_go_out_from_the_scheduled_job_and_each_email_is_sent_once(): void
+    {
+        foreach (range(1, 24) as $n) {
+            $this->register($this->trunk, "Guest {$n}", "guest{$n}@example.com", '73455506' . str_pad((string) $n, 2, '0', STR_PAD_LEFT));
+        }
+        $before = Mail::mailer()->getSymfonyTransport()->messages()->count();
+
+        $this->actAs($this->admin);
+        $id = $this->postJson('/api/email-campaigns', [
+            'name' => 'Thanks',
+            'subject' => 'Thanks',
+            'body' => '<p>Thanks</p>',
+            'recipient_types' => ['event_registrants'],
+            'recipient_filters' => ['registration_event_ids' => [$this->trunk->id]],
+            'send_now' => true,
+        ])->assertCreated()->assertJsonPath('data.status', 'sending')->json('data.id');
+        $this->assertSame(0, Mail::mailer()->getSymfonyTransport()->messages()->count() - $before);
+
+        $sender = app(\App\Services\EmailCampaignSender::class);
+        $this->assertSame(0, $sender->sendWaiting(microtime(true) - 1));
+        $this->assertSame(0, $sender->sendCampaign(\App\Models\EmailCampaign::findOrFail($id), null, microtime(true) - 1));
+        $this->assertSame(0, Mail::mailer()->getSymfonyTransport()->messages()->count() - $before);
+        $held = \App\Models\EmailCampaignLog::where('email_campaign_id', $id)->orderBy('id')->firstOrFail();
+        $held->forceFill(['status' => 'sending'])->save();
+
+        $this->assertSame(24, $sender->sendWaiting(microtime(true) + 60));
+        $this->assertSame(24, Mail::mailer()->getSymfonyTransport()->messages()->count() - $before);
+        $this->assertSame('sending', \App\Models\EmailCampaign::findOrFail($id)->status);
+        $this->assertSame(0, $sender->sendWaiting(microtime(true) + 60));
+        $this->assertSame('sending', \App\Models\EmailCampaign::findOrFail($id)->status);
+
+        DB::table('email_campaign_logs')->where('id', $held->id)->update(['updated_at' => now()->subMinutes(20)]);
+        $this->assertSame(0, $sender->sendWaiting(microtime(true) + 60));
+        $this->assertSame('completed', \App\Models\EmailCampaign::findOrFail($id)->status);
+        $this->assertSame(1, (int) \App\Models\EmailCampaign::findOrFail($id)->failed_count);
+        $this->assertSame('Not sent: sending stopped part-way through.', $held->fresh()->error_message);
+
+        $this->actAs($this->admin);
+        $this->postJson("/api/email-campaigns/{$id}/resend", ['type' => 'failed'])->assertOk();
+        $this->assertSame(25, Mail::mailer()->getSymfonyTransport()->messages()->count() - $before);
+        $this->assertSame('completed', \App\Models\EmailCampaign::findOrFail($id)->status);
+    }
+
+    public function test_campaigns_waiting_their_turn_stay_queued_and_long_stuck_ones_fail_instead_of_going_out_late(): void
+    {
+        foreach (range(1, 24) as $n) {
+            $this->register($this->trunk, "Guest {$n}", "guest{$n}@example.com", '73455508' . str_pad((string) $n, 2, '0', STR_PAD_LEFT));
+        }
+        $campaign = fn (string $name) => $this->postJson('/api/email-campaigns', [
+            'name' => $name,
+            'subject' => 'Thanks',
+            'body' => '<p>Thanks</p>',
+            'recipient_types' => ['event_registrants'],
+            'recipient_filters' => ['registration_event_ids' => [$this->trunk->id]],
+            'send_now' => true,
+        ])->assertCreated()->json('data.id');
+        $this->actAs($this->admin);
+        $waiting = $campaign('Waiting');
+        $this->actAs($this->admin);
+        $stuck = $campaign('Stuck');
+        DB::table('email_campaigns')->where('id', $waiting)->update(['updated_at' => now()->subMinutes(14)]);
+        DB::table('email_campaigns')->where('id', $stuck)->update(['updated_at' => now()->subMinutes(16)]);
+        $before = Mail::mailer()->getSymfonyTransport()->messages()->count();
+
+        $this->assertSame(0, app(\App\Services\EmailCampaignSender::class)->sendWaiting(microtime(true) - 1));
+        $this->assertSame('failed', \App\Models\EmailCampaign::findOrFail($stuck)->status);
+        $this->assertSame(25, \App\Models\EmailCampaignLog::where('email_campaign_id', $stuck)->where('status', 'failed')->count());
+
+        $this->travel(5)->minutes();
+        $this->actAs($this->admin);
+        $this->getJson("/api/email-campaigns/{$waiting}")->assertOk()->assertJsonPath('data.status', 'sending');
+
+        $this->artisan('email-campaigns:send')->assertSuccessful();
+        $this->assertSame(25, Mail::mailer()->getSymfonyTransport()->messages()->count() - $before);
+        $this->assertSame('completed', \App\Models\EmailCampaign::findOrFail($waiting)->status);
+        $this->assertSame('failed', \App\Models\EmailCampaign::findOrFail($stuck)->status);
+    }
+
+    public function test_a_resend_never_sends_emails_an_older_cancel_left_waiting(): void
+    {
+        foreach (range(1, 6) as $n) {
+            $this->register($this->trunk, "Guest {$n}", "guest{$n}@example.com", '73455509' . str_pad((string) $n, 2, '0', STR_PAD_LEFT));
+        }
+
+        $this->actAs($this->admin);
+        $id = $this->postJson('/api/email-campaigns', [
+            'name' => 'Thanks',
+            'subject' => 'Thanks',
+            'body' => '<p>Thanks</p>',
+            'recipient_types' => ['event_registrants'],
+            'recipient_filters' => ['registration_event_ids' => [$this->trunk->id]],
+            'send_now' => false,
+        ])->assertCreated()->json('data.id');
+        $logs = \App\Models\EmailCampaignLog::where('email_campaign_id', $id)->orderBy('id')->get();
+        $this->assertCount(7, $logs);
+        DB::table('email_campaigns')->where('id', $id)->update(['status' => 'cancelled']);
+        $logs[0]->forceFill(['status' => 'sent'])->save();
+        $logs[1]->forceFill(['status' => 'failed', 'error_message' => 'Gmail said no'])->save();
+        $before = Mail::mailer()->getSymfonyTransport()->messages()->count();
+
+        $this->actAs($this->admin);
+        $this->postJson("/api/email-campaigns/{$id}/resend", ['type' => 'failed'])->assertOk();
+        $this->artisan('email-campaigns:send')->assertSuccessful();
+
+        $sent = Mail::mailer()->getSymfonyTransport()->messages()->slice($before);
+        $this->assertCount(1, $sent);
+        $this->assertSame($logs[1]->recipient_email, $sent->first()->getOriginalMessage()->getTo()[0]->getAddress());
+        $this->assertSame(5, \App\Models\EmailCampaignLog::where('email_campaign_id', $id)->where('status', 'cancelled')->count());
+        $this->assertSame('completed', \App\Models\EmailCampaign::findOrFail($id)->status);
+    }
+
+    public function test_someone_photographed_again_after_their_photos_were_removed_gets_the_new_ones(): void
+    {
+        $sam = RegistrationEntry::where('name', 'Sam Lee')->firstOrFail();
+        $first = $this->photographed($this->brighton, $sam);
+
+        $this->actAs($this->admin);
+        $id = $this->postJson('/api/email-campaigns', [
+            'name' => 'Later',
+            'subject' => 'Hello',
+            'body' => '<p>Hello <a href="{{photo_link}}">photos</a></p>',
+            'recipient_types' => ['event_registrants'],
+            'recipient_filters' => ['registration_event_ids' => [$this->trunk->id]],
+            'send_now' => false,
+        ])->assertCreated()->json('data.id');
+        $this->assertSame(1, \App\Models\EmailCampaignLog::where('email_campaign_id', $id)->count());
+        PhotoSession::whereKey($first->id)->update(['access_expires_at' => now()->subDay()]);
+        $second = $this->photographed($this->brighton, $sam);
+        $before = Mail::mailer()->getSymfonyTransport()->messages()->count();
+
+        $this->actAs($this->admin);
+        $this->postJson("/api/email-campaigns/{$id}/resend", ['type' => 'all'])->assertOk();
+
+        $sent = Mail::mailer()->getSymfonyTransport()->messages()->slice($before);
+        $this->assertCount(1, $sent);
+        $this->assertStringContainsString('/photos/' . $second->access_token, (string) $sent->first()->getOriginalMessage()->getHtmlBody());
+    }
+
+    public function test_when_the_other_photos_vanish_too_the_later_email_still_goes_without_a_link(): void
+    {
+        $sam = RegistrationEntry::where('name', 'Sam Lee')->firstOrFail();
+        $max = $this->register($this->trunk, 'Max Lee', 'sam.lee@example.com', '7345550193');
+        $this->photographed($this->brighton, $sam);
+        $this->photographed($this->brighton, $max);
+
+        $this->actAs($this->admin);
+        $id = $this->postJson('/api/email-campaigns', [
+            'name' => 'Later',
+            'subject' => 'Hello',
+            'body' => '<p>Hello <a href="{{photo_link}}">photos</a></p>',
+            'recipient_types' => ['event_registrants'],
+            'recipient_filters' => ['registration_event_ids' => [$this->trunk->id]],
+            'send_now' => false,
+        ])->assertCreated()->json('data.id');
+        [$lower, $higher] = \App\Models\EmailCampaignLog::where('email_campaign_id', $id)->orderBy('id')->get()->all();
+        $sender = app(\App\Services\EmailCampaignSender::class);
+        $before = Mail::mailer()->getSymfonyTransport()->messages()->count();
+
+        PhotoSession::whereKey($lower->variables_used['photo_session_id'])->update(['access_expires_at' => now()->subDay()]);
+        $this->assertSame(1, $sender->sendCampaign(\App\Models\EmailCampaign::findOrFail($id), [$lower->id]));
+        $this->assertSame('Not sent: these photos are no longer available.', $lower->fresh()->error_message);
+
+        PhotoSession::whereKey($higher->variables_used['photo_session_id'])->update(['access_expires_at' => now()->subDay()]);
+        $this->assertSame(1, $sender->sendCampaign(\App\Models\EmailCampaign::findOrFail($id), [$higher->id]));
+
+        $sent = Mail::mailer()->getSymfonyTransport()->messages()->slice($before);
+        $this->assertCount(1, $sent);
+        $this->assertStringNotContainsString('/photos/', (string) $sent->first()->getOriginalMessage()->getHtmlBody());
+        $this->assertSame('sent', $higher->fresh()->status);
+        $this->assertSame('completed', \App\Models\EmailCampaign::findOrFail($id)->status);
+    }
+
+    public function test_two_emails_to_one_person_going_out_at_once_send_only_one_without_a_link(): void
+    {
+        $sam = RegistrationEntry::where('name', 'Sam Lee')->firstOrFail();
+        $max = $this->register($this->trunk, 'Max Lee', 'sam.lee@example.com', '7345550194');
+        $first = $this->photographed($this->brighton, $sam);
+        $second = $this->photographed($this->brighton, $max);
+
+        $this->actAs($this->admin);
+        $id = $this->postJson('/api/email-campaigns', [
+            'name' => 'Later',
+            'subject' => 'Hello',
+            'body' => '<p>Hello <a href="{{photo_link}}">photos</a></p>',
+            'recipient_types' => ['event_registrants'],
+            'recipient_filters' => ['registration_event_ids' => [$this->trunk->id]],
+            'send_now' => false,
+        ])->assertCreated()->json('data.id');
+        [$lower, $higher] = \App\Models\EmailCampaignLog::where('email_campaign_id', $id)->orderBy('id')->get()->all();
+        PhotoSession::whereKey([$first->id, $second->id])->update(['access_expires_at' => now()->subDay()]);
+        $lower->forceFill(['status' => 'sending'])->save();
+        $before = Mail::mailer()->getSymfonyTransport()->messages()->count();
+
+        app(\App\Services\EmailCampaignSender::class)->sendCampaign(\App\Models\EmailCampaign::findOrFail($id), [$higher->id]);
+
+        $this->assertSame(0, Mail::mailer()->getSymfonyTransport()->messages()->count() - $before);
+        $this->assertSame('Not sent: these photos are no longer available.', $higher->fresh()->error_message);
+    }
+
+    public function test_cancelling_a_waiting_campaign_cancels_its_unsent_emails(): void
+    {
+        foreach (range(1, 24) as $n) {
+            $this->register($this->trunk, "Guest {$n}", "guest{$n}@example.com", '73455507' . str_pad((string) $n, 2, '0', STR_PAD_LEFT));
+        }
+        $before = Mail::mailer()->getSymfonyTransport()->messages()->count();
+
+        $this->actAs($this->admin);
+        $id = $this->postJson('/api/email-campaigns', [
+            'name' => 'Thanks',
+            'subject' => 'Thanks',
+            'body' => '<p>Thanks</p>',
+            'recipient_types' => ['event_registrants'],
+            'recipient_filters' => ['registration_event_ids' => [$this->trunk->id]],
+            'send_now' => true,
+        ])->assertCreated()->json('data.id');
+
+        $this->actAs($this->admin);
+        $this->postJson("/api/email-campaigns/{$id}/cancel")->assertOk();
+        $this->artisan('email-campaigns:send')->assertSuccessful();
+
+        $this->assertSame(0, Mail::mailer()->getSymfonyTransport()->messages()->count() - $before);
+        $this->assertSame(25, \App\Models\EmailCampaignLog::where('email_campaign_id', $id)->where('status', 'cancelled')->count());
+
+        $this->actAs($this->admin);
+        $this->postJson("/api/email-campaigns/{$id}/resend", ['type' => 'failed'])
+            ->assertOk()
+            ->assertJsonPath('message', 'There was no one left to send it to again.');
+    }
+
+    public function test_a_company_without_an_event_photo_email_gets_the_default_the_first_time_it_needs_one(): void
+    {
+        $this->eventTemplate()->forceDelete();
+        $sam = RegistrationEntry::where('name', 'Sam Lee')->firstOrFail();
+        $session = $this->staffSession($this->brighton);
+        $before = Mail::mailer()->getSymfonyTransport()->messages()->count();
+
+        $this->actAs($this->manager);
+        $this->deliver($session, [], [$sam->id])->assertOk();
+
+        $created = \App\Models\EmailTemplate::where('company_id', $this->company->id)->where('category', 'event_photos')->sole();
+        $this->assertSame('active', $created->status);
+        $this->assertNull($created->targetLocationIds());
+        $this->assertSame((int) $this->admin->id, (int) $created->created_by);
+        $mail = Mail::mailer()->getSymfonyTransport()->messages()->slice($before)->first()->getOriginalMessage();
+        $this->assertSame('Your photos from Trunk or Treat 2026 at Brighton | Zap Zone', $mail->getSubject());
+
+        $this->actAs($this->admin);
+        $this->assertSame($created->id, $this->getJson('/api/photo-templates?location_id=' . $this->brighton->id)->assertOk()->json('data.event_photo_email.id'));
+        $this->assertSame(1, \App\Models\EmailTemplate::where('company_id', $this->company->id)->where('category', 'event_photos')->count());
+
+        $this->actAs($this->admin);
+        $this->deleteJson("/api/email-templates/{$created->id}")->assertOk();
+        $this->actAs($this->admin);
+        $this->assertNull($this->getJson('/api/photo-templates?location_id=' . $this->brighton->id)->assertOk()->json('data.event_photo_email'));
+        $this->assertSame(0, \App\Models\EmailTemplate::where('company_id', $this->company->id)->where('category', 'event_photos')->count());
+    }
+
+    private function photographed(Location $location, RegistrationEntry $entry): PhotoSession
+    {
+        $session = $this->staffSession($location);
+        $this->actAs($this->manager);
+        $this->deliver($session, [], [$entry->id])->assertOk();
+        $session->forceFill(['status' => PhotoSession::STATUS_READY, 'access_expires_at' => now()->addDays(20)])->save();
+
+        return $session->fresh();
+    }
+
+    private function cancelLatestCampaign(): void
+    {
+        $campaign = \App\Models\EmailCampaign::query()->latest('id')->firstOrFail();
+        $campaign->update(['status' => \App\Models\EmailCampaign::STATUS_CANCELLED]);
+        app(\App\Services\EmailCampaignSender::class)->cancelPending($campaign);
     }
 
     private function registrantPreview(array $formIds, bool $onlyWithPhotos): array

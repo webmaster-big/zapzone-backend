@@ -33,6 +33,8 @@ class EmailCampaignLog extends Model
     ];
 
     public const STATUS_PENDING = 'pending';
+    public const STATUS_SENDING = 'sending';
+    public const STATUS_CANCELLED = 'cancelled';
     public const STATUS_SENT = 'sent';
     public const STATUS_FAILED = 'failed';
     public const STATUS_BOUNCED = 'bounced';

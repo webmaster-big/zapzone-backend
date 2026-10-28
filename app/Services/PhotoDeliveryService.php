@@ -1776,6 +1776,8 @@ class PhotoDeliveryService
 
     public function eventPhotoTemplate(?int $companyId, ?int $locationId): ?EmailTemplate
     {
+        EmailTemplate::ensureEventPhotoDefault($companyId);
+
         return EmailTemplate::eventPhotoFor($companyId, $locationId);
     }
 

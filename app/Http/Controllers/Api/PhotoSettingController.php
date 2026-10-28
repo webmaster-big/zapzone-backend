@@ -275,6 +275,7 @@ class PhotoSettingController extends Controller
             return null;
         }
 
+        \App\Models\EmailTemplate::ensureEventPhotoDefault((int) $authUser->company_id);
         $template = \App\Models\EmailTemplate::eventPhotoFor((int) $authUser->company_id, $locationId);
 
         if (!$template) {
