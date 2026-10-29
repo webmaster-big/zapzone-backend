@@ -927,6 +927,10 @@ class EmailCampaignController extends Controller
             return $this->invalidEvents('Event registrations are not set up yet.');
         }
 
+        if (!empty($validated['scheduled_at'])) {
+            return $this->invalidEvents('Emails to event registrants go out right away, so they cannot be scheduled.');
+        }
+
         $picked = $validated['recipient_filters']['registration_event_ids'] ?? [];
         $ids = is_array($picked) ? array_values(array_unique(array_map('intval', $picked))) : [];
 

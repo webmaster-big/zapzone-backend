@@ -1633,9 +1633,6 @@ class PhotoEventRegistrationTest extends TestCase
 
     public function test_a_scheduled_campaign_goes_out_when_its_time_comes(): void
     {
-        foreach (range(1, 3) as $n) {
-            $this->register($this->trunk, "Guest {$n}", "guest{$n}@example.com", '73455510' . str_pad((string) $n, 2, '0', STR_PAD_LEFT));
-        }
         $at = now()->addHours(3)->startOfMinute();
 
         $this->actAs($this->admin);
@@ -1643,8 +1640,8 @@ class PhotoEventRegistrationTest extends TestCase
             'name' => 'Tomorrow',
             'subject' => 'See you',
             'body' => '<p>See you</p>',
-            'recipient_types' => ['event_registrants'],
-            'recipient_filters' => ['registration_event_ids' => [$this->trunk->id]],
+            'recipient_types' => ['custom'],
+            'custom_emails' => ['one@example.com', 'two@example.com', 'three@example.com', 'four@example.com'],
             'send_now' => false,
             'scheduled_at' => $at->copy()->utc()->toIso8601ZuluString(),
         ])->assertCreated()->assertJsonPath('data.status', 'pending')->json('data.id');
@@ -1798,6 +1795,21 @@ class PhotoEventRegistrationTest extends TestCase
             'scheduled_at' => now()->addYears(14)->toIso8601ZuluString(),
         ])->assertStatus(422)->assertJsonPath('errors.scheduled_at.0', 'Pick a time within the next year.');
         $this->assertSame(0, \App\Models\EmailCampaign::where('name', 'Someday')->count());
+    }
+
+    public function test_emails_to_event_registrants_cannot_be_scheduled(): void
+    {
+        $this->actAs($this->admin);
+        $this->postJson('/api/email-campaigns', [
+            'name' => 'Later photos',
+            'subject' => 'Photos',
+            'body' => '<p><a href="{{photo_link}}">photos</a></p>',
+            'recipient_types' => ['event_registrants'],
+            'recipient_filters' => ['registration_event_ids' => [$this->trunk->id]],
+            'send_now' => false,
+            'scheduled_at' => now()->addHour()->toIso8601String(),
+        ])->assertStatus(422)->assertJsonPath('message', 'Emails to event registrants go out right away, so they cannot be scheduled.');
+        $this->assertSame(0, \App\Models\EmailCampaign::where('name', 'Later photos')->count());
     }
 
     public function test_a_campaign_cannot_be_scheduled_in_the_past(): void
