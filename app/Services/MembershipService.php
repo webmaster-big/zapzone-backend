@@ -400,7 +400,7 @@ class MembershipService
             // Resolve from the container (not `new`) so it can be mocked in tests —
             // this is what the activation-email regression test asserts against.
             try {
-                app(GmailApiService::class)->sendEmail($email, $subject, $html, $fromName, $attachments);
+                app(GmailApiService::class)->sendTransactional($email, $subject, $html, $fromName, $attachments);
                 Log::info("[{$label}] Sent via Gmail API", ['membership_id' => $membership->id, 'to' => $email]);
             } catch (\Throwable $gmailEx) {
                 // the log mailer only writes the email to a file, so report the failure instead

@@ -258,7 +258,7 @@ class SmsNotificationService
         foreach ($recipients as $recipient) {
             $log = null;
             try {
-                $log = SmsNotificationLog::create([
+                $log = $entity->exists ? SmsNotificationLog::create([
                     'sms_notification_id' => $notification->id,
                     'recipient_phone' => $recipient['phone'],
                     'recipient_type' => $recipient['type'],
@@ -266,10 +266,10 @@ class SmsNotificationService
                     'notifiable_id' => $entity->id,
                     'status' => SmsNotificationLog::STATUS_PENDING,
                     'segments' => $segments,
-                ]);
+                ]) : null;
 
                 $sid = $this->smsService->sendSms($recipient['phone'], $message);
-                $log->markAsSent($sid, $segments);
+                $log?->markAsSent($sid, $segments);
             } catch (\Throwable $e) {
                 if ($log) {
                     $log->markAsFailed($e->getMessage());

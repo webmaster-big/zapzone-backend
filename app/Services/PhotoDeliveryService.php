@@ -52,10 +52,7 @@ class PhotoDeliveryService
 
     public function emailTransport(): string
     {
-        $useGmailApi = config('gmail.enabled', false) &&
-            (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
-
-        return $useGmailApi ? 'gmail_api' : (string) config('mail.default', 'smtp');
+        return GmailApiService::transport();
     }
 
     public function channelDiagnostics(?int $companyId = null, bool $withStats = true): array
@@ -1901,12 +1898,11 @@ class PhotoDeliveryService
 
     protected function sendEmail(string $to, string $subject, string $html, ?string $fromName = null, array $attachments = []): void
     {
-        $useGmailApi = config('gmail.enabled', false) &&
-            (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
+        $useGmailApi = GmailApiService::enabled();
 
         if ($useGmailApi) {
             try {
-                (new GmailApiService())->sendEmail($to, $subject, $html, $fromName ?: 'Zap Zone', $attachments);
+                (new GmailApiService())->sendTransactional($to, $subject, $html, $fromName ?: 'Zap Zone', $attachments);
 
                 return;
             } catch (\Throwable $e) {

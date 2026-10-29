@@ -405,6 +405,120 @@ class VisitFollowUpTest extends TestCase
         $this->assertSame(1, EmailNotificationLog::where('email_notification_id', $this->thanks()->id)->where('status', 'sent')->count());
     }
 
+    public function test_follow_up_emails_go_out_as_bulk_email_and_only_ones_the_opt_out_stops_carry_a_one_click_unsubscribe(): void
+    {
+        config(['app.url' => 'https://api.zapzone.test']);
+        $sent = [];
+        $this->partialMock(\App\Services\EmailNotificationService::class, function ($mock) use (&$sent) {
+            $mock->shouldReceive('sendEmail')->andReturnUsing(function (...$args) use (&$sent) {
+                $sent[] = $args;
+            });
+        });
+
+        $this->completeBooking($this->makeBooking($this->party))->assertOk()
+            ->assertJsonPath('follow_up.thanks.0.status', VisitFollowUp::STATUS_SENT);
+
+        $plain = collect($sent)->first(fn (array $args) => $args[0] === 'jordan@example.test');
+        $this->assertSame('Thanks for playing Birthday Party!', $plain[1]);
+        $this->assertFalse($plain[5]);
+        $this->assertSame([], $plain[6]);
+
+        $this->choosePromo($this->makePromo(['code' => 'THANKS20']))->assertOk();
+        $this->completeBooking($this->makeBooking($this->party, 'offer@example.test'))->assertOk();
+
+        $offer = collect($sent)->first(fn (array $args) => $args[0] === 'offer@example.test');
+        $this->assertStringContainsString('THANKS20', $offer[2]);
+        $this->assertFalse($offer[5]);
+        $this->assertSame('List-Unsubscribe=One-Click', $offer[6]['List-Unsubscribe-Post']);
+        $this->assertMatchesRegularExpression('#^<https://api\.zapzone\.test/api/email-unsubscribe/[^>/]+>$#', $offer[6]['List-Unsubscribe']);
+        preg_match('#/api/email-unsubscribe/([^>]+)>#', $offer[6]['List-Unsubscribe'], $match);
+
+        $this->post('/api/email-unsubscribe/' . $match[1], ['List-Unsubscribe' => 'One-Click'])->assertOk();
+        $this->assertTrue(FollowUpOptOut::hasOptedOut($this->company->id, 'offer@example.test'));
+
+        $this->travelTo(Carbon::parse('2026-10-04 13:45:00', 'America/Detroit'));
+        $this->artisan('visits:send-follow-ups')->assertSuccessful();
+
+        $review = collect($sent)->first(fn (array $args) => $args[0] === 'jordan@example.test' && $args[1] !== 'Thanks for playing Birthday Party!');
+        $this->assertSame('How was Birthday Party, Jordan?', $review[1]);
+        $this->assertFalse($review[5]);
+        $this->assertSame('List-Unsubscribe=One-Click', $review[6]['List-Unsubscribe-Post']);
+        $this->assertNull(collect($sent)->first(fn (array $args) => $args[0] === 'offer@example.test' && str_starts_with($args[1], 'How was')));
+    }
+
+    public function test_a_follow_up_resend_will_not_take_is_held_for_the_next_run_instead_of_failing(): void
+    {
+        $this->completeBooking($this->makeBooking($this->party))->assertOk();
+        $this->completeBooking($this->makeBooking($this->party, 'second@example.test'))->assertOk();
+        $this->travelTo(Carbon::parse('2026-10-04 13:45:00', 'America/Detroit'));
+        $calls = 0;
+        $this->partialMock(\App\Services\EmailNotificationService::class, function ($mock) use (&$calls) {
+            $mock->shouldReceive('sendEmail')->andReturnUsing(function () use (&$calls) {
+                $calls++;
+
+                throw new \App\Services\ResendException('Resend refused the email (HTTP 429, monthly_quota_exceeded): quota used up', 429, 'monthly_quota_exceeded', \App\Services\ResendException::ACCOUNT);
+            });
+        });
+
+        $this->artisan('visits:send-follow-ups')->assertSuccessful();
+
+        $this->assertSame(1, $calls);
+        $this->assertSame([VisitFollowUp::STATUS_SCHEDULED, VisitFollowUp::STATUS_SCHEDULED], $this->reviewRows()->pluck('status')->all());
+        $this->assertSame([0, 0], $this->reviewRows()->pluck('attempts')->all());
+        $this->artisan('visits:send-follow-ups')->assertSuccessful();
+        $this->assertSame(2, $calls);
+        $alerts = \App\Models\Notification::where('title', 'Follow-up emails are waiting')->get();
+        $this->assertCount(1, $alerts);
+        $this->assertStringContainsString('monthly_quota_exceeded', $alerts->first()->message);
+
+        $row = $this->reviewRows()->first();
+        $this->actingAs($this->admin, 'sanctum')->postJson("/api/visit-follow-ups/{$row->id}/send-now")
+            ->assertStatus(422)
+            ->assertJsonPath('message', fn ($message) => str_starts_with($message, 'Not sent yet: Resend refused the email (HTTP 429, monthly_quota_exceeded)'));
+        $this->assertSame(VisitFollowUp::STATUS_SCHEDULED, $row->fresh()->status);
+        $this->assertSame(0, $row->fresh()->attempts);
+    }
+
+    public function test_a_follow_up_held_back_for_more_than_three_days_is_skipped_instead_of_arriving_late(): void
+    {
+        $this->completeBooking($this->makeBooking($this->party))->assertOk();
+        $this->completeBooking($this->makeBooking($this->party, 'second@example.test'))->assertOk();
+        $this->clearEmails();
+        $stale = $this->reviewRows()->first();
+        $stale->forceFill(['due_at' => now()->subDays(VisitFollowUpService::MAX_VISIT_AGE_DAYS + 1)])->save();
+        $this->reviewRows()->last()->forceFill(['due_at' => now()->subDays(VisitFollowUpService::MAX_VISIT_AGE_DAYS - 1)])->save();
+
+        $this->artisan('visits:send-follow-ups')->assertSuccessful();
+
+        $this->assertSame(VisitFollowUp::STATUS_SKIPPED, $stale->fresh()->status);
+        $this->assertSame(VisitFollowUp::REASON_VISIT_DATE, $stale->fresh()->reason);
+        $this->assertStringContainsString('would arrive too late', $stale->fresh()->error);
+        $this->assertSame([], $this->emailsTo('jordan@example.test'));
+        $this->assertCount(1, $this->emailsTo('second@example.test'));
+    }
+
+    public function test_follow_ups_stop_for_the_run_after_ten_refused_the_same_way(): void
+    {
+        foreach (range(1, 12) as $n) {
+            $this->completeBooking($this->makeBooking($this->party, "guest{$n}@example.test", 'checked-in', sprintf('%02d:00', 8 + ($n % 4))))->assertOk();
+        }
+        $this->travelTo(Carbon::parse('2026-10-04 13:45:00', 'America/Detroit'));
+        $calls = 0;
+        $this->partialMock(\App\Services\EmailNotificationService::class, function ($mock) use (&$calls) {
+            $mock->shouldReceive('sendEmail')->andReturnUsing(function () use (&$calls) {
+                $calls++;
+
+                throw new \App\Services\ResendException('Resend refused the email (HTTP 422, invalid_from_address): Invalid `from` field.', 422, 'invalid_from_address', \App\Services\ResendException::RECIPIENT);
+            });
+        });
+
+        $this->artisan('visits:send-follow-ups')->assertSuccessful();
+
+        $this->assertSame(10, $calls);
+        $this->assertSame(10, $this->reviewRows()->where('status', VisitFollowUp::STATUS_FAILED)->count());
+        $this->assertSame(2, $this->reviewRows()->where('status', VisitFollowUp::STATUS_SCHEDULED)->count());
+    }
+
     public function test_the_thanks_email_carries_the_chosen_promo_and_a_new_promo_needs_no_code_change(): void
     {
         $first = $this->makePromo(['code' => 'THANKS20']);
@@ -1206,6 +1320,23 @@ class VisitFollowUpTest extends TestCase
 
         $recent = $this->makeBooking($this->party, 'recent@example.test', 'checked-in', '12:00', '2026-09-30');
         $this->completeBooking($recent)->assertOk()->assertJsonPath('follow_up.thanks.0.status', VisitFollowUp::STATUS_SENT);
+    }
+
+    public function test_send_now_on_a_held_visit_still_schedules_its_review_when_resend_holds_the_thanks(): void
+    {
+        $old = $this->makeBooking($this->party, 'old@example.test', 'checked-in', '12:00', '2026-09-20');
+        $thanksId = $this->completeBooking($old)->assertOk()->json('follow_up.thanks.0.id');
+        $this->app->forgetInstance(VisitFollowUpService::class);
+        $this->partialMock(\App\Services\EmailNotificationService::class, function ($mock) {
+            $mock->shouldReceive('sendEmail')->andThrow(new \App\Services\ResendException('Resend could not be reached: timed out', 0, 'connection_error', \App\Services\ResendException::TRANSIENT));
+        });
+
+        $this->actingAs($this->attendant, 'sanctum')->postJson("/api/visit-follow-ups/{$thanksId}/send-now")
+            ->assertStatus(422)
+            ->assertJsonPath('message', fn ($message) => str_starts_with($message, 'Not sent yet: Resend could not be reached'));
+
+        $this->assertSame(VisitFollowUp::STATUS_SCHEDULED, VisitFollowUp::find($thanksId)->status);
+        $this->assertSame(VisitFollowUp::STATUS_SCHEDULED, VisitFollowUp::where('recipient_email', 'old@example.test')->where('kind', VisitFollowUp::KIND_REVIEW)->value('status'));
     }
 
     public function test_reopening_cancels_a_failed_thanks_and_completing_again_sends_it(): void

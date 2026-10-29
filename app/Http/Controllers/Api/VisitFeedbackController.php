@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\VisitFollowUp;
 use App\Services\VisitFollowUpService;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 
 class VisitFeedbackController extends Controller
@@ -27,6 +28,11 @@ class VisitFeedbackController extends Controller
         }
 
         return response()->json(['success' => true, 'data' => $this->service->publicPayload($row)]);
+    }
+
+    public function unsubscribePage(string $token): RedirectResponse
+    {
+        return redirect()->away(rtrim((string) config('app.frontend_url'), '/') . '/feedback/' . rawurlencode($token) . '?unsubscribe=1');
     }
 
     public function rate(Request $request, string $token): JsonResponse

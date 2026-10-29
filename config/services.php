@@ -20,6 +20,13 @@ return [
 
     'resend' => [
         'key' => env('RESEND_KEY'),
+        'marketing_key' => env('RESEND_MARKETING_KEY'),
+        'enabled' => env('RESEND_ENABLED', false),
+        'from_address' => env('RESEND_FROM_ADDRESS'),
+        'marketing_from_address' => env('RESEND_MARKETING_FROM_ADDRESS'),
+        'bulk_per_second' => env('RESEND_BULK_PER_SECOND', 4),
+        'campaign_per_hour' => env('RESEND_CAMPAIGN_PER_HOUR'),
+        'campaign_per_day' => env('RESEND_CAMPAIGN_PER_DAY'),
     ],
 
     'ses' => [

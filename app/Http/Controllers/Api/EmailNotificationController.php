@@ -856,12 +856,11 @@ class EmailNotificationController extends Controller
                 $htmlBody = $this->generateHtmlEmail($body);
             }
 
-            $useGmailApi = config('gmail.enabled', false) &&
-                (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
+            $useGmailApi = \App\Services\GmailApiService::enabled();
 
             if ($useGmailApi) {
                 $gmailService = new \App\Services\GmailApiService();
-                $gmailService->sendEmail(
+                $gmailService->{in_array($emailNotification->trigger_type, EmailNotificationService::NON_TRANSACTIONAL_TRIGGERS, true) ? 'sendEmail' : 'sendTransactional'}(
                     $validated['test_email'],
                     '[TEST] ' . $subject,
                     $htmlBody,

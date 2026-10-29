@@ -80,14 +80,13 @@ class InvitationService
         $mailable = new PartyInvitation($booking, $invitation, $variables);
         $mailable->build();
 
-        $useGmailApi = config('gmail.enabled', false) &&
-            (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
+        $useGmailApi = GmailApiService::enabled();
 
         if ($useGmailApi) {
             $emailBody = $mailable->render();
             $subject = $mailable->subject;
 
-            $this->gmailService->sendEmail(
+            $this->gmailService->sendTransactional(
                 $invitation->guest_email,
                 $subject,
                 $emailBody,

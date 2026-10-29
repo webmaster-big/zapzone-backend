@@ -141,11 +141,10 @@ class ShareableTokenController extends Controller
                 Log::info('Preparing to send shareable token email', [
                     'email' => $validated['email'],
                     'token_id' => $token->id,
-                    'use_gmail_api' => config('gmail.enabled', false),
+                    'email_transport' => GmailApiService::transport(),
                 ]);
 
-                $useGmailApi = config('gmail.enabled', false) &&
-                              (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
+                $useGmailApi = GmailApiService::enabled();
 
                 if ($useGmailApi) {
                     Log::info('Using Gmail API for shareable token email', [
@@ -156,7 +155,7 @@ class ShareableTokenController extends Controller
                     $mailable = new ShareableTokenMail($token);
                     $emailBody = $mailable->render();
 
-                    $gmailService->sendEmail(
+                    $gmailService->sendTransactional(
                         $validated['email'],
                         'Registration Invitation - Zap Zone',
                         $emailBody,
@@ -181,7 +180,7 @@ class ShareableTokenController extends Controller
                 Log::info('✅ Shareable token email sent successfully', [
                     'email' => $validated['email'],
                     'token_id' => $token->id,
-                    'method' => $useGmailApi ? 'Gmail API' : 'SMTP',
+                    'method' => $useGmailApi ? (\App\Services\ResendService::isConfigured() ? 'Resend' : 'Gmail API') : 'SMTP',
                 ]);
             } catch (\Exception $e) {
                 Log::error('❌ Failed to send shareable token email', [

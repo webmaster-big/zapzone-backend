@@ -132,6 +132,10 @@ class EmailCampaignController extends Controller
             'scheduled_at.before' => 'Pick a time within the next year.',
         ]);
 
+        if ($tooLarge = $this->attachmentsTooLarge($request)) {
+            return $tooLarge;
+        }
+
         if ($denied = $this->denyForeignLocations($request, $validated)) {
             return $denied;
         }
@@ -191,15 +195,19 @@ class EmailCampaignController extends Controller
 
             $campaign->update(['total_recipients' => count($recipients)]);
 
-            foreach ($recipients as $recipient) {
-                EmailCampaignLog::create([
+            foreach (array_chunk($recipients, 500) as $chunk) {
+                $now = now();
+
+                EmailCampaignLog::query()->insert(array_map(fn (array $recipient) => [
                     'email_campaign_id' => $campaign->id,
                     'recipient_email' => $recipient['email'],
                     'recipient_type' => $recipient['type'],
                     'recipient_id' => $recipient['id'] ?? null,
                     'status' => EmailCampaignLog::STATUS_PENDING,
-                    'variables_used' => $recipient['variables'],
-                ]);
+                    'variables_used' => json_encode($recipient['variables']),
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ], $chunk));
             }
 
             DB::commit();
@@ -223,6 +231,8 @@ class EmailCampaignController extends Controller
                 'message' => match (true) {
                     !empty($validated['scheduled_at']) => 'Email campaign scheduled successfully',
                     $inBackground => EmailCampaignSender::queuedMessage(count($recipients)),
+                    $campaign->status === EmailCampaign::STATUS_FAILED => (string) $campaign->error_message,
+                    $campaign->status === EmailCampaign::STATUS_SENDING => EmailCampaignSender::queuedMessage(count($recipients)),
                     default => 'Email campaign sent successfully',
                 },
                 'data' => $campaign,
@@ -381,10 +391,28 @@ class EmailCampaignController extends Controller
                 ]);
             }
 
-            $claimed = EmailCampaign::query()
-                ->whereKey($emailCampaign->id)
-                ->where('status', '!=', EmailCampaign::STATUS_SENDING)
-                ->update(['status' => EmailCampaign::STATUS_SENDING, 'sent_at' => $emailCampaign->sent_at ?? now(), 'completed_at' => null, 'error_message' => null, 'updated_at' => now()]);
+            $claimed = DB::transaction(function () use ($emailCampaign, $resendType) {
+                $claimed = EmailCampaign::query()
+                    ->whereKey($emailCampaign->id)
+                    ->where('status', '!=', EmailCampaign::STATUS_SENDING)
+                    ->update(['status' => EmailCampaign::STATUS_SENDING, 'sent_at' => $emailCampaign->sent_at ?? now(), 'completed_at' => null, 'error_message' => null, 'updated_at' => now()]);
+
+                if ($claimed === 0) {
+                    return 0;
+                }
+
+                $logs = fn () => EmailCampaignLog::query()->where('email_campaign_id', $emailCampaign->id);
+
+                if ($resendType === 'failed') {
+                    $logs()->where('status', EmailCampaignLog::STATUS_PENDING)
+                        ->update(['status' => EmailCampaignLog::STATUS_CANCELLED, 'error_message' => 'Not sent: the campaign was cancelled.']);
+                    $logs()->where('status', EmailCampaignLog::STATUS_FAILED)->update(['status' => EmailCampaignLog::STATUS_PENDING, 'error_message' => null]);
+                } else {
+                    $logs()->update(['status' => EmailCampaignLog::STATUS_PENDING, 'error_message' => null]);
+                }
+
+                return $claimed;
+            });
 
             if ($claimed === 0) {
                 return response()->json([
@@ -393,12 +421,6 @@ class EmailCampaignController extends Controller
                 ], 409);
             }
 
-            EmailCampaignLog::query()
-                ->where('email_campaign_id', $emailCampaign->id)
-                ->where('status', EmailCampaignLog::STATUS_PENDING)
-                ->whereNotIn('id', $ready)
-                ->update(['status' => EmailCampaignLog::STATUS_CANCELLED, 'error_message' => 'Not sent: the campaign was cancelled.']);
-            EmailCampaignLog::query()->whereIn('id', $ready)->update(['status' => EmailCampaignLog::STATUS_PENDING, 'error_message' => null]);
             $this->syncCounts($emailCampaign);
 
             if (count($ready) > self::SEND_IN_REQUEST_LIMIT) {
@@ -410,11 +432,16 @@ class EmailCampaignController extends Controller
             }
 
             $this->sendCampaign($emailCampaign->fresh(), $ready);
+            $after = $emailCampaign->fresh(['logs']);
 
             return response()->json([
                 'success' => true,
-                'message' => 'Emails resent successfully',
-                'data' => $emailCampaign->fresh(['logs']),
+                'message' => match ($after->status) {
+                    EmailCampaign::STATUS_FAILED => (string) $after->error_message,
+                    EmailCampaign::STATUS_SENDING => EmailCampaignSender::queuedMessage(count($ready)),
+                    default => 'Emails resent successfully',
+                },
+                'data' => $after,
             ]);
 
         } catch (\Exception $e) {
@@ -586,6 +613,10 @@ class EmailCampaignController extends Controller
             'attachments.*' => 'file|max:10240|mimes:pdf,doc,docx,xls,xlsx,csv,txt,zip,png,jpg,jpeg,gif',
         ]);
 
+        if ($tooLarge = $this->attachmentsTooLarge($request)) {
+            return $tooLarge;
+        }
+
         $attachments = [];
         if ($request->hasFile('attachments')) {
             foreach ($request->file('attachments') as $file) {
@@ -615,8 +646,7 @@ class EmailCampaignController extends Controller
 
             $htmlBody = $this->sender()->generateHtmlEmail($processedBody, $variables);
 
-            $useGmailApi = config('gmail.enabled', false) &&
-                (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
+            $useGmailApi = GmailApiService::enabled();
 
             if ($useGmailApi) {
                 $emailAttachments = $this->sender()->prepareAttachments($attachments);
@@ -647,7 +677,7 @@ class EmailCampaignController extends Controller
             return response()->json([
                 'success' => true,
                 'message' => 'Test email sent successfully to ' . $validated['test_email'],
-                'method' => $useGmailApi ? 'Gmail API' : 'SMTP',
+                'method' => $useGmailApi ? (\App\Services\ResendService::isConfigured() ? 'Resend' : 'Gmail API') : 'SMTP',
                 'attachments_count' => count($attachments),
             ]);
 
@@ -905,6 +935,23 @@ class EmailCampaignController extends Controller
     }
 
     private const SEND_IN_REQUEST_LIMIT = 20;
+
+    public const MAX_ATTACHMENT_BYTES = 20971520;
+
+    protected function attachmentsTooLarge(Request $request): ?JsonResponse
+    {
+        $total = collect($request->file('attachments', []))->sum(fn ($file) => (int) $file->getSize());
+
+        if ($total <= self::MAX_ATTACHMENT_BYTES) {
+            return null;
+        }
+
+        return response()->json([
+            'success' => false,
+            'message' => 'The attachments add up to more than 20 MB, which is too big to email. Remove some files or share a link instead.',
+            'errors' => ['attachments' => ['The attachments can add up to 20 MB at most.']],
+        ], 422);
+    }
 
     protected function eventFormsFor(Request $request, array &$validated)
     {

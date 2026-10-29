@@ -23,7 +23,17 @@ class EmailCampaignSender
 
     public const SCHEDULE_GRACE_MINUTES = 60;
 
+    public const REFUSAL_STREAK_LIMIT = 20;
+
+    public const OPT_OUT_TYPES = ['customer', 'custom'];
+
+    public const UNSUBSCRIBE_TYPES = ['event_registrant', 'customer', 'custom'];
+
+    public ?ResendException $stoppedBy = null;
+
     private const UNSUBSCRIBE_FOOTER = '<p style="margin-top: 24px; font-size: 11px; color: #9ca3af; text-align: center;">Don&#039;t want emails like this? <a href="{{opt_out_link}}" style="color: #6b7280;">Unsubscribe</a>.</p>';
+
+    private const ADDRESS_FOOTER = '<p style="margin-top: 4px; font-size: 11px; color: #9ca3af; text-align: center;">{{company_name}} &middot; {{%s}}</p>';
 
     public function registrantRecipients($company, array $filters, ?string $onlyEmail = null, ?array $staffLocationIds = null): array
     {
@@ -162,13 +172,15 @@ class EmailCampaignSender
         }
 
         $keys = array_values(array_unique(array_map(fn ($email) => strtolower(trim((string) $email)), $emails)));
+        $optedOut = [];
 
-        return \App\Models\FollowUpOptOut::query()
-            ->where('company_id', $companyId)
-            ->whereIn('email', $keys)
-            ->pluck('email')
-            ->mapWithKeys(fn ($email) => [strtolower(trim((string) $email)) => true])
-            ->all();
+        foreach (array_chunk($keys, 1000) as $chunk) {
+            foreach (\App\Models\FollowUpOptOut::query()->where('company_id', $companyId)->whereIn('email', $chunk)->pluck('email') as $email) {
+                $optedOut[strtolower(trim((string) $email))] = true;
+            }
+        }
+
+        return $optedOut;
     }
 
     protected function registrantVariables(RegistrationEntry $entry, RegistrationEvent $form, ?PhotoSession $session, $company, PhotoDeliveryService $photos): array
@@ -261,6 +273,7 @@ class EmailCampaignSender
     public function sendWaiting(float $deadline): int
     {
         $sent = 0;
+        $this->stoppedBy = null;
 
         EmailCampaign::query()
             ->where(fn ($due) => $due
@@ -291,6 +304,10 @@ class EmailCampaignSender
                 Log::error('Email campaign stopped while sending', ['campaign_id' => $campaignId, 'error' => $e->getMessage()]);
                 $this->recoverStalledSend($campaign, true);
             }
+
+            if ($this->stoppedBy !== null) {
+                break;
+            }
         }
 
         return $sent;
@@ -318,6 +335,9 @@ class EmailCampaignSender
         }
 
         $sent = 0;
+        $this->stoppedBy = null;
+        $streak = 0;
+        $lastRefusal = null;
 
         $logIds = EmailCampaignLog::query()
             ->where('email_campaign_id', $campaign->id)
@@ -339,8 +359,30 @@ class EmailCampaignSender
                 ->update(['status' => EmailCampaignLog::STATUS_SENDING, 'updated_at' => now()]);
 
             if ($claimed === 1 && ($log = EmailCampaignLog::query()->find($logId))) {
-                $this->sendSingleEmail($campaign, $log);
+                try {
+                    $refusal = $this->sendSingleEmail($campaign, $log);
+                } catch (ResendException $e) {
+                    $this->stopForResend($campaign, $e);
+
+                    return $sent;
+                }
+
                 $sent++;
+                $reason = $refusal ? $refusal->status . ' ' . $refusal->getMessage() : null;
+                $streak = $reason !== null ? ($reason === $lastRefusal ? $streak + 1 : 1) : 0;
+                $lastRefusal = $reason;
+
+                if ($streak >= self::REFUSAL_STREAK_LIMIT && !$this->anySent($campaign)) {
+                    $this->stopForResend($campaign, new ResendException(
+                        'The last ' . self::REFUSAL_STREAK_LIMIT . ' emails in a row were refused the same way: ' . $refusal->getMessage(),
+                        $refusal->status,
+                        $refusal->errorName,
+                        ResendException::ACCOUNT,
+                        $refusal
+                    ));
+
+                    return $sent;
+                }
             }
         }
 
@@ -363,6 +405,49 @@ class EmailCampaignSender
         $this->syncCounts($campaign);
 
         return $sent;
+    }
+
+    protected function anySent(EmailCampaign $campaign): bool
+    {
+        return EmailCampaignLog::query()
+            ->where('email_campaign_id', $campaign->id)
+            ->whereIn('status', [EmailCampaignLog::STATUS_SENT, EmailCampaignLog::STATUS_OPENED, EmailCampaignLog::STATUS_CLICKED])
+            ->exists();
+    }
+
+    protected function stopForResend(EmailCampaign $campaign, ResendException $e): void
+    {
+        $this->stoppedBy = $e;
+
+        if ($e->isTransient()) {
+            Log::warning('Email campaign paused: Resend is not taking email right now, so the rest waits for the next run', [
+                'campaign_id' => $campaign->id,
+                'error' => $e->getMessage(),
+            ]);
+            $this->syncCounts($campaign);
+
+            return;
+        }
+
+        Log::error('Email campaign stopped: Resend refused it', ['campaign_id' => $campaign->id, 'error' => $e->getMessage()]);
+
+        $stopped = EmailCampaign::query()
+            ->whereKey($campaign->id)
+            ->where('status', EmailCampaign::STATUS_SENDING)
+            ->update([
+                'status' => EmailCampaign::STATUS_FAILED,
+                'completed_at' => now(),
+                'error_message' => 'Resend refused this campaign, so sending stopped: ' . $e->getMessage() . ' Fix this in Resend, then use Resend to Failed Recipients to send to everyone it did not reach.',
+            ]);
+
+        if ($stopped === 1) {
+            EmailCampaignLog::query()
+                ->where('email_campaign_id', $campaign->id)
+                ->whereIn('status', [EmailCampaignLog::STATUS_PENDING, EmailCampaignLog::STATUS_SENDING])
+                ->update(['status' => EmailCampaignLog::STATUS_FAILED, 'error_message' => 'Not sent: Resend refused the campaign.']);
+        }
+
+        $this->syncCounts($campaign);
     }
 
     protected function stillSending(int $campaignId): bool
@@ -529,7 +614,7 @@ class EmailCampaignSender
             ->exists();
     }
 
-    protected function sendSingleEmail(EmailCampaign $campaign, EmailCampaignLog $log): void
+    protected function sendSingleEmail(EmailCampaign $campaign, EmailCampaignLog $log): ?ResendException
     {
         try {
             if ($log->recipient_type === 'event_registrant') {
@@ -539,7 +624,7 @@ class EmailCampaignSender
                     $log->markAsFailed($current);
                     $campaign->incrementFailed();
 
-                    return;
+                    return null;
                 }
 
                 $log->forceFill(['variables_used' => $current])->save();
@@ -548,21 +633,27 @@ class EmailCampaignSender
             $variables = ['current_date' => now()->format('F j, Y'), 'current_year' => (string) now()->year] + $this->withEventDefaults($log->variables_used ?? []);
             $body = $campaign->body;
 
-            if ($log->recipient_type === 'customer') {
+            if (in_array($log->recipient_type, self::OPT_OUT_TYPES, true)) {
                 $refusal = $this->customerRefusal($campaign, $log);
 
                 if ($refusal !== null) {
                     $log->markAsFailed($refusal);
                     $campaign->incrementFailed();
 
-                    return;
+                    return null;
                 }
 
                 $variables['opt_out_link'] = app(VisitFollowUpService::class)->optOutUrl((int) $campaign->company_id, FollowUpOptOut::normalize($log->recipient_email));
             }
 
-            if (in_array($log->recipient_type, ['event_registrant', 'customer'], true) && $variables['opt_out_link'] !== '' && !preg_match('/\{\{\s*opt_out_link\s*\}\}/', $body)) {
+            if (in_array($log->recipient_type, self::UNSUBSCRIBE_TYPES, true) && $variables['opt_out_link'] !== '' && !preg_match('/\{\{\s*opt_out_link\s*\}\}/', $body)) {
                 $body .= self::UNSUBSCRIBE_FOOTER;
+            }
+
+            $address = trim((string) ($variables['location_address'] ?? '')) !== '' ? 'location_address' : (trim((string) ($variables['company_address'] ?? '')) !== '' ? 'company_address' : null);
+
+            if ($address !== null && in_array($log->recipient_type, self::UNSUBSCRIBE_TYPES, true) && !preg_match('/\{\{\s*(company_address|location_address)\s*\}\}/', $body)) {
+                $body .= sprintf(self::ADDRESS_FOOTER, $address);
             }
 
             $processedSubject = $this->stripPlaceholders($this->replaceVariables($campaign->subject, ['links' => '', 'opt_out_link' => ''] + $variables));
@@ -570,8 +661,18 @@ class EmailCampaignSender
 
             $htmlBody = $this->generateHtmlEmail($processedBody, $variables);
 
-            $useGmailApi = config('gmail.enabled', false) &&
-                (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
+            $headers = [];
+
+            if (in_array($log->recipient_type, self::UNSUBSCRIBE_TYPES, true) && $variables['opt_out_link'] !== '') {
+                $followUps = app(VisitFollowUpService::class);
+                $headers = $followUps->oneClickUnsubscribeHeaders($followUps->optOutToken((int) $campaign->company_id, $log->recipient_email));
+            }
+
+            if (ResendService::isConfigured() && ($limit = ResendService::claimCampaignAllowance()) !== null) {
+                throw new ResendException("Campaign email is held back because {$limit}.", 0, 'warm_up_limit', ResendException::TRANSIENT);
+            }
+
+            $useGmailApi = GmailApiService::enabled();
 
             if ($useGmailApi) {
                 $emailAttachments = $this->prepareAttachments($campaign->attachments ?? []);
@@ -582,7 +683,8 @@ class EmailCampaignSender
                     $processedSubject,
                     $htmlBody,
                     $variables['company_name'] ?? 'Zap Zone',
-                    $emailAttachments
+                    $emailAttachments,
+                    $headers
                 );
             } else {
                 Mail::to($log->recipient_email)
@@ -597,10 +699,27 @@ class EmailCampaignSender
             $campaign->incrementSent();
 
         } catch (\Throwable $e) {
+            if ($e instanceof ResendException && $e->stopsSending()) {
+                $stillSending = EmailCampaign::query()->whereKey($campaign->id)->where('status', EmailCampaign::STATUS_SENDING)->exists();
+
+                EmailCampaignLog::query()
+                    ->whereKey($log->id)
+                    ->where('status', EmailCampaignLog::STATUS_SENDING)
+                    ->update($stillSending
+                        ? ['status' => EmailCampaignLog::STATUS_PENDING, 'updated_at' => now()]
+                        : ['status' => EmailCampaignLog::STATUS_CANCELLED, 'error_message' => 'Not sent: the campaign was cancelled.', 'updated_at' => now()]);
+
+                throw $e;
+            }
+
             Log::error("Failed to send email to {$log->recipient_email}: " . $e->getMessage());
             $log->markAsFailed($e->getMessage());
             $campaign->incrementFailed();
+
+            return $e instanceof ResendException ? $e : null;
         }
+
+        return null;
     }
 
     public function replaceVariables(string $content, array $variables, bool $escape = false): string

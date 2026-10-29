@@ -1487,8 +1487,7 @@ class EventPurchaseController extends Controller
     {
         $purchase->loadMissing(['event.location.company', 'customer', 'addOns']);
 
-        $useGmailApi = config('gmail.enabled', false) &&
-            (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
+        $useGmailApi = GmailApiService::enabled();
 
         $mailable = new EventPurchaseConfirmation($purchase);
         $emailBody = $mailable->render();
@@ -1496,7 +1495,7 @@ class EventPurchaseController extends Controller
 
         if ($useGmailApi) {
             $gmailService = new GmailApiService();
-            $gmailService->sendEmail($recipientEmail, $subject, $emailBody);
+            $gmailService->sendTransactional($recipientEmail, $subject, $emailBody);
         } else {
             Mail::send([], [], function ($message) use ($recipientEmail, $subject, $emailBody) {
                 $message->to($recipientEmail)

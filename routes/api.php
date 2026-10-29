@@ -105,6 +105,8 @@ Route::middleware('throttle:visit-feedback')->group(function () {
     Route::post('visit-feedback/{token}', [\App\Http\Controllers\Api\VisitFeedbackController::class, 'rate']);
     Route::post('visit-feedback/{token}/unsubscribe', [\App\Http\Controllers\Api\VisitFeedbackController::class, 'unsubscribe']);
 });
+Route::post('email-unsubscribe/{token}', [\App\Http\Controllers\Api\VisitFeedbackController::class, 'unsubscribe'])->middleware('throttle:email-unsubscribe');
+Route::get('email-unsubscribe/{token}', [\App\Http\Controllers\Api\VisitFeedbackController::class, 'unsubscribePage'])->middleware('throttle:email-unsubscribe');
 
 // --- Public photo flows (passcode-protected devices and token-addressed customer pages, no auth) ---
 Route::prefix('photos')->group(function () {

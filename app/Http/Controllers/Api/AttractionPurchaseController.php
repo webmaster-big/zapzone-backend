@@ -852,11 +852,10 @@ class AttractionPurchaseController extends Controller
             Log::info('Preparing email for attraction purchase', [
                 'purchase_id' => $attractionPurchase->id,
                 'qr_code_size' => strlen($qrCodeBase64),
-                'use_gmail_api' => config('gmail.enabled', false),
+                'email_transport' => GmailApiService::transport(),
             ]);
 
-            $useGmailApi = config('gmail.enabled', false) &&
-                          (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
+            $useGmailApi = GmailApiService::enabled();
 
             if ($useGmailApi) {
                 Log::info('Using Gmail API for attraction purchase receipt', [
@@ -873,7 +872,7 @@ class AttractionPurchaseController extends Controller
                     'mime_type' => 'image/png'
                 ]];
 
-                $gmailService->sendEmail(
+                $gmailService->sendTransactional(
                     $recipientEmail,
                     'Your Attraction Purchase Receipt - Zap Zone',
                     $emailBody,
@@ -918,7 +917,7 @@ class AttractionPurchaseController extends Controller
             Log::info('✅ Attraction purchase receipt sent successfully', [
                 'email' => $recipientEmail,
                 'purchase_id' => $attractionPurchase->id,
-                'method' => $useGmailApi ? 'Gmail API' : 'SMTP',
+                'method' => $useGmailApi ? (\App\Services\ResendService::isConfigured() ? 'Resend' : 'Gmail API') : 'SMTP',
             ]);
 
         } catch (\Throwable $e) {
@@ -953,7 +952,7 @@ class AttractionPurchaseController extends Controller
             'data' => [
                 'email_sent_to' => $shownEmail,
                 'email_sent' => $emailSent,
-                'method' => $useGmailApi ? 'Gmail API' : 'SMTP',
+                'method' => $useGmailApi ? (\App\Services\ResendService::isConfigured() ? 'Resend' : 'Gmail API') : 'SMTP',
             ],
         ]);
     }

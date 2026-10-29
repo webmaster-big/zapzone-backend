@@ -689,11 +689,10 @@ class GiftCardController extends Controller
 
         try {
             $mailable = new \App\Mail\GiftCardIssued($card->fresh(), $location);
-            $useGmailApi = config('gmail.enabled', false) &&
-                (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
+            $useGmailApi = \App\Services\GmailApiService::enabled();
 
             if ($useGmailApi) {
-                (new \App\Services\GmailApiService())->sendEmail(
+                (new \App\Services\GmailApiService())->sendTransactional(
                     $validated['purchaser_email'],
                     $mailable->envelope()->subject,
                     $mailable->render(),

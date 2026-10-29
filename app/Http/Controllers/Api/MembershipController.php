@@ -568,7 +568,7 @@ class MembershipController extends Controller
             $fromName = config('gmail.sender_name', 'Zap Zone');
 
             try {
-                app(\App\Services\GmailApiService::class)->sendEmail($customer->email, $subject, $html, $fromName);
+                app(\App\Services\GmailApiService::class)->sendTransactional($customer->email, $subject, $html, $fromName);
                 Log::info('[CustomerCredentials] Sent via Gmail API', ['customer_id' => $customer->id]);
             } catch (\Throwable $gmailEx) {
                 // the log mailer only writes the email to a file, so report the failure instead

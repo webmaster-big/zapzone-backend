@@ -93,7 +93,7 @@ class MembershipActivationEmailTest extends TestCase
     public function test_activation_sends_confirmation_email_via_gmail(): void
     {
         $gmail = Mockery::mock(GmailApiService::class);
-        $gmail->shouldReceive('sendEmail')
+        $gmail->shouldReceive('sendTransactional')
             ->once()
             ->withArgs(function ($to, $subject) {
                 return $to === 'pat.member@example.com'
@@ -119,6 +119,7 @@ class MembershipActivationEmailTest extends TestCase
         // simply skipped, but activation must still succeed.
         $gmail = Mockery::mock(GmailApiService::class);
         $gmail->shouldNotReceive('sendEmail');
+        $gmail->shouldNotReceive('sendTransactional');
         $this->app->instance(GmailApiService::class, $gmail);
 
         $membership = $this->makePendingMembership(null);

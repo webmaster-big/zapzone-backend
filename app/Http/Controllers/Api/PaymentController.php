@@ -2766,15 +2766,14 @@ class PaymentController extends Controller
                                     }
 
                                     if ($qrCodeBase64) {
-                                        $useGmailApi = config('gmail.enabled', false) &&
-                                            (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
+                                        $useGmailApi = GmailApiService::enabled();
 
                                         if ($useGmailApi) {
                                             $gmailService = new GmailApiService();
                                             $mailable = new AttractionPurchaseReceipt($purchase, $qrCodeBase64);
                                             $emailBody = $mailable->render();
 
-                                            $gmailService->sendEmail(
+                                            $gmailService->sendTransactional(
                                                 $recipientEmail,
                                                 'Your Attraction Purchase Receipt - Zap Zone',
                                                 $emailBody,

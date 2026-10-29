@@ -189,7 +189,7 @@ class CheckoutConcernService
             'staff_phones' => $phones,
             'sms_configured' => SmsService::isConfigured(),
             'mail_driver' => config('mail.default'),
-            'gmail_api_enabled' => (bool) config('gmail.enabled'),
+            'email_transport' => GmailApiService::transport(),
         ]);
 
         if (empty($emails) && empty($phones)) {
@@ -247,7 +247,7 @@ class CheckoutConcernService
                             'checkout_concern_id' => $concern->id,
                             'recipient' => $email,
                             'subject' => $subject,
-                            'transport' => config('gmail.enabled') ? 'gmail_api' : config('mail.default'),
+                            'transport' => GmailApiService::transport(),
                         ]);
                     } catch (\Throwable $e) {
                         $result['emails_failed'][] = ['to' => $email, 'error' => $e->getMessage()];
@@ -255,7 +255,7 @@ class CheckoutConcernService
                             'checkout_concern_id' => $concern->id,
                             'recipient' => $email,
                             'subject' => $subject,
-                            'transport' => config('gmail.enabled') ? 'gmail_api' : config('mail.default'),
+                            'transport' => GmailApiService::transport(),
                             'error' => $e->getMessage(),
                             'exception' => get_class($e),
                             'trace' => $e->getTraceAsString(),
@@ -489,12 +489,11 @@ class CheckoutConcernService
 
     protected function sendEmail(string $to, string $subject, string $html): void
     {
-        $useGmailApi = config('gmail.enabled', false) &&
-            (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
+        $useGmailApi = GmailApiService::enabled();
 
         if ($useGmailApi) {
             try {
-                (new GmailApiService())->sendEmail($to, $subject, $html, config('gmail.sender_name', 'Zap Zone'));
+                (new GmailApiService())->sendTransactional($to, $subject, $html, config('gmail.sender_name', 'Zap Zone'));
 
                 return;
             } catch (\Throwable $e) {

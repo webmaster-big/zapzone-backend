@@ -55,6 +55,12 @@ class VisitFollowUpService
 
     public const OPT_OUT_PREFIX = 'u.';
 
+    public const REFUSAL_STREAK_LIMIT = 10;
+
+    public ?ResendException $stoppedBy = null;
+
+    protected ?string $lastRefusal = null;
+
     public const REOPENED_REASON = 'The visit was taken out of Completed before this email went out.';
 
     public const TEXT_VARIABLES = [
@@ -890,7 +896,9 @@ class VisitFollowUpService
 
     public function send(VisitFollowUp $row): bool
     {
-        $claimed = $this->claim($row);
+        $this->lastRefusal = null;
+        $fresh = $row->fresh();
+        $claimed = $fresh ? $this->claim($fresh) : null;
 
         if (!$claimed) {
             return false;
@@ -899,11 +907,31 @@ class VisitFollowUpService
         try {
             $outcome = $this->deliver($claimed);
         } catch (\Throwable $e) {
+            if ($e instanceof ResendException && $e->stopsSending()) {
+                VisitFollowUp::whereKey($claimed->id)
+                    ->where('status', VisitFollowUp::STATUS_SENDING)
+                    ->where('attempts', $claimed->attempts)
+                    ->update(['status' => $fresh->status, 'attempts' => $fresh->attempts, 'updated_at' => $fresh->updated_at]);
+                $this->stoppedBy = $e;
+
+                Log::warning('Visit follow-up email held back: Resend is not taking email right now', [
+                    'visit_follow_up_id' => $claimed->id,
+                    'error' => $e->getMessage(),
+                ]);
+
+                if (!$e->isTransient()) {
+                    $this->alertStaffOfHeldEmails($claimed, $e);
+                }
+
+                return false;
+            }
+
             Log::error('Visit follow-up email failed', [
                 'visit_follow_up_id' => $claimed->id,
                 'error' => $e->getMessage(),
             ]);
 
+            $this->lastRefusal = $e instanceof ResendException ? $e->status . ' ' . $e->getMessage() : null;
             $outcome = ['status' => VisitFollowUp::STATUS_FAILED, 'error' => mb_substr($e->getMessage(), 0, 1000), 'reason' => null];
         }
 
@@ -916,11 +944,9 @@ class VisitFollowUpService
         return $claimed->status === VisitFollowUp::STATUS_SENT;
     }
 
-    protected function claim(VisitFollowUp $row): ?VisitFollowUp
+    protected function claim(VisitFollowUp $fresh): ?VisitFollowUp
     {
-        $fresh = $row->fresh();
-
-        if (!$fresh || !in_array($fresh->status, [VisitFollowUp::STATUS_SCHEDULED, VisitFollowUp::STATUS_FAILED], true)) {
+        if (!in_array($fresh->status, [VisitFollowUp::STATUS_SCHEDULED, VisitFollowUp::STATUS_FAILED], true)) {
             return null;
         }
 
@@ -948,6 +974,14 @@ class VisitFollowUpService
 
         if (!$visit->isStillComplete()) {
             return ['status' => VisitFollowUp::STATUS_CANCELED, 'error' => self::REOPENED_REASON, 'reason' => VisitFollowUp::REASON_REOPENED] + $place;
+        }
+
+        if ($row->due_at !== null && $row->due_at->lt(now()->subDays(self::MAX_VISIT_AGE_DAYS))) {
+            return [
+                'status' => VisitFollowUp::STATUS_SKIPPED,
+                'error' => 'Not sent: email could not go out for more than ' . self::MAX_VISIT_AGE_DAYS . ' days after it was due, so it would arrive too late.',
+                'reason' => VisitFollowUp::REASON_VISIT_DATE,
+            ] + $place;
         }
 
         if ($stale = $this->staleRecipient($row, $visit)) {
@@ -989,7 +1023,17 @@ class VisitFollowUpService
         $log = $this->openLog($notification, $row->recipient_email, $visit->subject);
 
         try {
-            $this->emails->sendEmail($row->recipient_email, $built['subject'], $built['html'], ['company_name' => $built['from_name']], $built['attachments']);
+            $this->emails->sendEmail(
+                $row->recipient_email,
+                $built['subject'],
+                $built['html'],
+                ['company_name' => $built['from_name']],
+                $built['attachments'],
+                false,
+                $isReview || $built['promotional']
+                    ? $this->oneClickUnsubscribeHeaders($row->token ?: $this->optOutToken($visit->companyId, $row->recipient_email, (int) $notification->id))
+                    : []
+            );
         } catch (\Throwable $e) {
             $log?->markAsFailed(mb_substr($e->getMessage(), 0, 1000));
 
@@ -1103,6 +1147,9 @@ class VisitFollowUpService
     public function sendDue(int $limit = 200): array
     {
         $counts = ['sent' => 0, 'failed' => 0, 'skipped' => 0, 'released' => 0, 'held' => 0];
+        $this->stoppedBy = null;
+        $streak = 0;
+        $previousRefusal = null;
 
         if (!$this->isAvailable()) {
             return $counts;
@@ -1150,6 +1197,13 @@ class VisitFollowUpService
             }
 
             $this->send($row);
+
+            if ($this->stoppedBy !== null) {
+                break;
+            }
+
+            $streak = $this->lastRefusal !== null ? ($this->lastRefusal === $previousRefusal ? $streak + 1 : 1) : 0;
+            $previousRefusal = $this->lastRefusal;
             $status = $row->fresh()?->status;
 
             if ($status === VisitFollowUp::STATUS_SENT) {
@@ -1158,6 +1212,12 @@ class VisitFollowUpService
                 $counts['failed']++;
             } elseif (in_array($status, [VisitFollowUp::STATUS_SKIPPED, VisitFollowUp::STATUS_CANCELED], true)) {
                 $counts['skipped']++;
+            }
+
+            if ($streak >= self::REFUSAL_STREAK_LIMIT) {
+                Log::error('Visit follow-up emails stopped for this run: Resend refused the last ' . self::REFUSAL_STREAK_LIMIT . ' the same way', ['error' => $previousRefusal]);
+
+                break;
             }
         }
 
@@ -1202,8 +1262,17 @@ class VisitFollowUpService
                 : 'This email is being sent right now.');
         }
 
+        $this->stoppedBy = null;
         $this->send($row);
         $row->refresh();
+
+        if ($this->stoppedBy !== null) {
+            if ($heldForDate && $row->kind === VisitFollowUp::KIND_THANKS) {
+                $this->resumeHeldReview($row, $user);
+            }
+
+            throw new \DomainException('Not sent yet: ' . $this->stoppedBy->getMessage() . ' The email stays scheduled and goes out on its own once Resend takes email again.');
+        }
 
         if ($heldForDate && $row->kind === VisitFollowUp::KIND_THANKS && in_array($row->status, [VisitFollowUp::STATUS_SENT, VisitFollowUp::STATUS_FAILED], true)) {
             $this->resumeHeldReview($row, $user);
@@ -1731,6 +1800,7 @@ class VisitFollowUpService
         return $this->assemble($notification->getEffectiveSubject(), $body, $text, $html, $attachments) + [
             'notification' => $notification,
             'from_name' => $this->fromName($notification, $visit->location),
+            'promotional' => ($html['promo_section'] ?? '') !== '',
         ];
     }
 
@@ -2372,6 +2442,14 @@ HTML;
         }
     }
 
+    public function oneClickUnsubscribeHeaders(string $token): array
+    {
+        return [
+            'List-Unsubscribe' => '<' . rtrim((string) config('app.url'), '/') . '/api/email-unsubscribe/' . rawurlencode($token) . '>',
+            'List-Unsubscribe-Post' => 'List-Unsubscribe=One-Click',
+        ];
+    }
+
     public function optOutUrl(int $companyId, string $email, ?int $notificationId = null): string
     {
         return rtrim((string) config('app.frontend_url'), '/') . '/feedback/' . $this->optOutToken($companyId, $email, $notificationId) . '?unsubscribe=1';
@@ -2519,6 +2597,29 @@ HTML;
             ]);
         } catch (\Throwable $e) {
             Log::warning('Could not record the follow-up failure alert', ['visit_follow_up_id' => $row->id, 'error' => $e->getMessage()]);
+        }
+    }
+
+    protected function alertStaffOfHeldEmails(VisitFollowUp $row, ResendException $e): void
+    {
+        try {
+            if (!Cache::add(sprintf('visit-follow-ups-held:%d:%s', (int) $row->location_id, now()->format('Y-m-d')), true, now()->addDay())) {
+                return;
+            }
+
+            Notification::create([
+                'location_id' => $row->location_id,
+                'type' => 'system',
+                'priority' => 'high',
+                'title' => 'Follow-up emails are waiting',
+                'message' => 'Resend refused to send Thanks for Playing and review request emails: ' . Str::limit($e->getMessage(), 200) . ' They go out on their own once this is fixed. Any that would arrive more than ' . self::MAX_VISIT_AGE_DAYS . ' days late are skipped.',
+                'status' => 'unread',
+                'action_url' => $this->adminPath($row->visit_type, (int) $row->visit_id),
+                'action_text' => 'Open visit',
+                'metadata' => ['visit_follow_up_id' => $row->id],
+            ]);
+        } catch (\Throwable $alert) {
+            Log::warning('Could not record the held follow-up alert', ['visit_follow_up_id' => $row->id, 'error' => $alert->getMessage()]);
         }
     }
 

@@ -194,11 +194,10 @@ class WaiverAdService
 </html>
 HTML;
 
-        $useGmailApi = config('gmail.enabled', false) &&
-            (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
+        $useGmailApi = GmailApiService::enabled();
 
         if ($useGmailApi) {
-            (new GmailApiService())->sendEmail($to, $subject, $htmlBody, $companyName);
+            (new GmailApiService())->sendTransactional($to, $subject, $htmlBody, $companyName);
         } else {
             Mail::html($htmlBody, function ($mail) use ($to, $subject, $companyName) {
                 $mail->to($to)

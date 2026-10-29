@@ -555,11 +555,10 @@ class LocationChangeRequestController extends Controller
         foreach ($users as $user) {
             if (!empty($user->email)) {
                 try {
-                    $useGmailApi = config('gmail.enabled', false) &&
-                        (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
+                    $useGmailApi = \App\Services\GmailApiService::enabled();
 
                     if ($useGmailApi) {
-                        (new \App\Services\GmailApiService())->sendEmail($user->email, $subject, '<p>' . nl2br(e($message)) . '</p>', config('gmail.sender_name', 'Zap Zone'));
+                        (new \App\Services\GmailApiService())->sendTransactional($user->email, $subject, '<p>' . nl2br(e($message)) . '</p>', config('gmail.sender_name', 'Zap Zone'));
                     } else {
                         Mail::raw($message, function ($mail) use ($user, $subject) {
                             $mail->to($user->email)->subject($subject);

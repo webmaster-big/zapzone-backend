@@ -23,6 +23,13 @@ use Illuminate\Support\Facades\Storage;
 
 class EmailNotificationService
 {
+    public const NON_TRANSACTIONAL_TRIGGERS = [
+        EmailNotification::TRIGGER_BOOKING_FOLLOWUP,
+        EmailNotification::TRIGGER_PURCHASE_FOLLOWUP,
+        EmailNotification::TRIGGER_VISIT_COMPLETED,
+        EmailNotification::TRIGGER_VISIT_FOLLOWUP,
+    ];
+
     protected ?GmailApiService $gmailService = null;
 
     public function __construct()
@@ -156,7 +163,8 @@ class EmailNotificationService
                     'Your ZapZone order ' . $order->reference_number,
                     $html,
                     ['company_name' => $order->location?->company?->name ?? 'Zap Zone'],
-                    $attachments
+                    $attachments,
+                    true
                 );
             }
         } catch (\Throwable $e) {
@@ -296,7 +304,7 @@ class EmailNotificationService
             $subject = 'Event Purchase Confirmation - ' . ($purchase->reference_number ?? '');
             $variables = $this->buildEventVariables($purchase);
 
-            $this->sendEmail($customerEmail, $subject, $htmlBody, $variables);
+            $this->sendEmail($customerEmail, $subject, $htmlBody, $variables, [], true);
         } catch (\Exception $e) {
             Log::error('Failed to send default event notification', [
                 'event_purchase_id' => $purchase->id,
@@ -345,15 +353,17 @@ class EmailNotificationService
             : $this->getRecipients($notification, $entity, $type);
 
         foreach ($recipients as $recipient) {
+            $log = null;
+
             try {
-                $log = EmailNotificationLog::create([
+                $log = $entity->exists ? EmailNotificationLog::create([
                     'email_notification_id' => $notification->id,
                     'recipient_email' => $recipient['email'],
                     'recipient_type' => $recipient['type'],
                     'notifiable_type' => get_class($entity),
                     'notifiable_id' => $entity->id,
                     'status' => EmailNotificationLog::STATUS_PENDING,
-                ]);
+                ]) : null;
 
                 $variables = $this->buildVariables($entity, $type, $notification->include_qr_code);
 
@@ -364,9 +374,16 @@ class EmailNotificationService
 
                 $attachments = $this->buildAttachments($entity, $type, $notification->include_qr_code);
 
-                $this->sendEmail($recipient['email'], $subject, $htmlBody, $variables, $attachments);
+                $this->sendEmail(
+                    $recipient['email'],
+                    $subject,
+                    $htmlBody,
+                    $variables,
+                    $attachments,
+                    !in_array($notification->trigger_type, self::NON_TRANSACTIONAL_TRIGGERS, true)
+                );
 
-                $log->markAsSent();
+                $log?->markAsSent();
 
                 Log::info('Email notification sent', [
                     'notification_id' => $notification->id,
@@ -375,9 +392,7 @@ class EmailNotificationService
                 ]);
 
             } catch (\Exception $e) {
-                if (isset($log)) {
-                    $log->markAsFailed($e->getMessage());
-                }
+                $log?->markAsFailed($e->getMessage());
 
                 Log::error('Failed to send email notification', [
                     'notification_id' => $notification->id,
@@ -414,7 +429,7 @@ class EmailNotificationService
             ]);
 
             try {
-                $this->sendEmail($recipient['email'], $subject, $htmlBody, $variables);
+                $this->sendEmail($recipient['email'], $subject, $htmlBody, $variables, [], true);
                 $log->markAsSent();
 
                 Log::info('Daily sales report sent', [
@@ -1086,19 +1101,20 @@ HTML;
 HTML;
     }
 
-    public function sendEmail(string $to, string $subject, string $htmlBody, array $variables, array $attachments = []): void
+    public function sendEmail(string $to, string $subject, string $htmlBody, array $variables, array $attachments = [], bool $transactional = false, array $headers = []): void
     {
-        $useGmailApi = config('gmail.enabled', false) &&
-            (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
+        $useGmailApi = GmailApiService::enabled();
 
         if ($useGmailApi) {
             $this->gmailService ??= new GmailApiService();
-            $this->gmailService->sendEmail(
+            $send = $transactional ? 'sendTransactional' : 'sendEmail';
+            $this->gmailService->{$send}(
                 $to,
                 $subject,
                 $htmlBody,
                 $variables['company_name'] ?? 'Zap Zone',
-                $attachments
+                $attachments,
+                $headers
             );
         } else {
             \Illuminate\Support\Facades\Mail::html($htmlBody, function ($message) use ($to, $subject, $variables, $attachments) {
@@ -1217,7 +1233,7 @@ HTML;
 
             $attachments = $this->buildAttachments($booking, 'booking', true);
 
-            $this->sendEmail($customerEmail, $subject, $htmlBody, $variables, $attachments);
+            $this->sendEmail($customerEmail, $subject, $htmlBody, $variables, $attachments, true);
 
             Log::info('Default booking notification sent', [
                 'booking_id' => $booking->id,
@@ -1273,7 +1289,7 @@ HTML;
 
             $attachments = $this->buildAttachments($purchase, 'purchase', true);
 
-            $this->sendEmail($customerEmail, $subject, $htmlBody, $variables, $attachments);
+            $this->sendEmail($customerEmail, $subject, $htmlBody, $variables, $attachments, true);
 
             Log::info('Default purchase notification sent', [
                 'purchase_id' => $purchase->id,

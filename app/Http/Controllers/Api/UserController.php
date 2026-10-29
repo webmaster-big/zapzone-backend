@@ -1361,12 +1361,11 @@ class UserController extends Controller
     {
         $mailable = new StaffAccountCredentialsMail($user, $plainPassword, $loginUrl, $createdByName);
 
-        $useGmailApi = config('gmail.enabled', false) &&
-            (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
+        $useGmailApi = GmailApiService::enabled();
 
         if ($useGmailApi && class_exists(GmailApiService::class)) {
             $gmail = new GmailApiService();
-            $gmail->sendEmail(
+            $gmail->sendTransactional(
                 $user->email,
                 'Your Zap Zone Staff Account',
                 $mailable->render(),

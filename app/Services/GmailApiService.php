@@ -12,8 +12,32 @@ class GmailApiService
     protected $client;
     protected $service;
 
-    public function __construct()
+    public static function enabled(): bool
     {
+        return ResendService::isConfigured() || self::gmailConfigured();
+    }
+
+    public static function gmailConfigured(): bool
+    {
+        return (bool) config('gmail.enabled', false)
+            && (config('gmail.credentials.client_email') || file_exists(config('gmail.credentials_path', storage_path('app/gmail.json'))));
+    }
+
+    public static function transport(): string
+    {
+        if (ResendService::isConfigured()) {
+            return 'resend';
+        }
+
+        return self::gmailConfigured() ? 'gmail_api' : (string) config('mail.default', 'smtp');
+    }
+
+    protected function gmail()
+    {
+        if ($this->service) {
+            return $this->service;
+        }
+
         $this->client = new Client();
 
         if (config('gmail.credentials.client_email')) {
@@ -56,11 +80,23 @@ class GmailApiService
             $this->client->setSubject(config('gmail.sender_email', 'webmaster@bestingames.com'));
         }
 
-        $this->service = new Gmail($this->client);
+        return $this->service = new Gmail($this->client);
     }
 
     public function sendEmail($to, $subject, $htmlBody, $fromName = null, $attachments = [], $extraHeaders = [], $skipInlineImages = false)
     {
+        return $this->deliver($to, $subject, $htmlBody, $fromName, $attachments, $extraHeaders, $skipInlineImages, false);
+    }
+
+    public function sendTransactional($to, $subject, $htmlBody, $fromName = null, $attachments = [], $extraHeaders = [], $skipInlineImages = false)
+    {
+        return $this->deliver($to, $subject, $htmlBody, $fromName, $attachments, $extraHeaders, $skipInlineImages, true);
+    }
+
+    protected function deliver($to, $subject, $htmlBody, $fromName, $attachments, $extraHeaders, $skipInlineImages, bool $transactional)
+    {
+        $resendFailure = null;
+
         try {
             $fromName = $fromName ?? config('gmail.sender_name', 'Zap Zone');
 
@@ -82,6 +118,59 @@ class GmailApiService
             }
             $attachments = array_values($attachments);
 
+            $viaResend = ResendService::isConfigured();
+
+            if ($viaResend) {
+                $resendId = null;
+
+                try {
+                    $resendId = app(ResendService::class)->send(
+                        $to,
+                        $subject,
+                        $htmlBody,
+                        $this->htmlToPlainText($htmlBody),
+                        (string) $fromName,
+                        $attachments,
+                        $inlineImages,
+                        $extraHeaders,
+                        $transactional,
+                        !$transactional || self::gmailConfigured()
+                    );
+                } catch (\Throwable $e) {
+                    if (!$transactional || !self::gmailConfigured()) {
+                        Log::warning($transactional
+                            ? 'Resend send failed and Gmail is not set up, so the email was not sent'
+                            : 'Resend send failed; bulk email not sent, because only transactional email falls back to Gmail', [
+                                'to' => $to,
+                                'subject' => $subject,
+                                'error' => $e->getMessage(),
+                            ]);
+                        $resendFailure = $e;
+
+                        throw $e;
+                    }
+
+                    Log::error('Resend send failed; sending through Gmail instead', [
+                        'to' => $to,
+                        'subject' => $subject,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+
+                if ($resendId !== null) {
+                    Log::info('Resend email sent', [
+                        'to' => $to,
+                        'subject' => $subject,
+                        'resend_id' => $resendId,
+                        'transactional' => $transactional,
+                        'attachments_count' => count($attachments),
+                        'inline_images_count' => count($inlineImages),
+                    ]);
+
+                    return true;
+                }
+            }
+
             $message = $this->createMessage(
                 config('gmail.sender_email', 'bookings@zap-zone.com'),
                 $to,
@@ -93,7 +182,11 @@ class GmailApiService
                 $extraHeaders
             );
 
-            $result = $this->service->users_messages->send('me', $message);
+            $result = $this->gmail()->users_messages->send('me', $message);
+
+            if ($viaResend) {
+                ResendService::recordOutcome('gmail', $subject);
+            }
 
             Log::info('Gmail API email sent successfully', [
                 'to' => $to,
@@ -105,12 +198,14 @@ class GmailApiService
 
             return true;
         } catch (\Exception $e) {
-            Log::error('Gmail API error: ' . $e->getMessage(), [
-                'to' => $to,
-                'subject' => $subject,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
-            ]);
+            if ($e !== $resendFailure) {
+                Log::error('Gmail API error: ' . $e->getMessage(), [
+                    'to' => $to,
+                    'subject' => $subject,
+                    'error' => $e->getMessage(),
+                    'trace' => $e->getTraceAsString()
+                ]);
+            }
             throw $e;
         }
     }
