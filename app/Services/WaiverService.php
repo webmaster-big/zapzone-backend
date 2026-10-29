@@ -10,6 +10,7 @@ use App\Models\WaiverMinor;
 use App\Models\WaiverSetting;
 use App\Models\WaiverTemplate;
 use App\Models\WaiverTemplateVersion;
+use App\Support\TemplatePlaceholders;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -143,23 +144,16 @@ class WaiverService
      * left untouched so a half-configured template still renders readably.
      * Mirrors EmailNotificationService::replaceVariables().
      */
-    public function render(string $body, array $variables): string
+    public function render(string $body, array $variables, bool $escape = false): string
     {
-        foreach ($variables as $key => $value) {
-            $body = preg_replace_callback(
-                '/\{\{\s*' . preg_quote($key, '/') . '\s*\}\}/',
-                fn () => (string) ($value ?? ''),
-                $body
-            );
-        }
-        return $body;
+        return TemplatePlaceholders::fill($body, $variables, $escape);
     }
 
     /** Render a waiver's frozen version body with its autofill values applied. */
-    public function renderForWaiver(Waiver $waiver): string
+    public function renderForWaiver(Waiver $waiver, bool $escape = false): string
     {
         $body = $waiver->version?->body_text ?? $waiver->template?->body_text ?? '';
-        return $this->render($body, $this->buildContentVariables($waiver));
+        return $this->render($body, $this->buildContentVariables($waiver), $escape);
     }
 
     /**

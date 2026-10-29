@@ -248,7 +248,7 @@ class WaiverController extends Controller
             'success' => true,
             'data' => [
                 'waiver' => $waiver->makeVisible('signature_image'),
-                'rendered_body' => $this->waivers->renderForWaiver($waiver),
+                'rendered_body' => $this->waivers->renderForWaiver($waiver, true),
             ],
         ]);
     }

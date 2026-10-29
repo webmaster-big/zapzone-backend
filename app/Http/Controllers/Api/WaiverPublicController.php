@@ -205,7 +205,7 @@ class WaiverPublicController extends Controller
             $staticVars['activity_name'] = $activity['manual_activity_name'];
         }
 
-        $body = $this->waivers->render($version->body_text, $staticVars);
+        $body = $this->waivers->render($version->body_text, $staticVars, true);
 
         return response()->json([
             'success' => true,
@@ -589,7 +589,7 @@ class WaiverPublicController extends Controller
             'data' => [
                 'kiosk' => true,
                 'template' => $this->templatePayload($template, $version, $staticVars),
-                'body' => $this->waivers->render($version->body_text, $staticVars),
+                'body' => $this->waivers->render($version->body_text, $staticVars, true),
                 'room' => [
                     'id' => $room->id,
                     'name' => $room->name,
@@ -941,7 +941,8 @@ class WaiverPublicController extends Controller
             // legal body with whatever is known so far applied (autofill preview)
             'body' => $this->waivers->render(
                 $version?->body_text ?? $template->body_text ?? '',
-                $variables
+                $variables,
+                true
             ),
             'prefill' => $prefill ? $this->waivers->prefillFor($waiver) : [],
             'selected_date' => $waiver->selected_date,

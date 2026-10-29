@@ -3096,6 +3096,28 @@ class EscapeRoomWorkflowTest extends TestCase
         $this->assertStringContainsString('Activity: Birthday Party', $body);
     }
 
+    public function test_names_guests_type_show_as_plain_text_in_every_waiver_view(): void
+    {
+        $this->general->update(['body_text' => '<p>I, {{full_name}}, agree.</p>', 'assigned_package_ids' => [$this->party->id]]);
+        app(WaiverService::class)->syncVersion($this->general->fresh());
+        $pending = app(WaiverService::class)->ensureForBooking($this->makeBooking($this->party, '15:00'));
+        $name = ['adult_first_name' => '<img src=x onerror=alert(1)><style>body{display:none}</style>', 'adult_last_name' => "O'Brien {{company_email}}"];
+        $expected = "<p>I, &lt;img src=x onerror=alert(1)&gt;&lt;style&gt;body{display:none}&lt;/style&gt; O&#039;Brien {{company_email}}, agree.</p>";
+
+        $pending->forceFill($name)->save();
+        $this->assertSame($expected, $this->getJson("/api/waivers/access/{$pending->access_token}")->assertOk()->json('data.body'));
+
+        $this->signViaLink($pending, $name)->assertOk();
+        $this->assertSame($expected, $this->actingAs($this->admin, 'sanctum')->getJson("/api/waivers/{$pending->id}")->assertOk()->json('data.rendered_body'));
+
+        $signed = $pending->fresh()->load(['template', 'version', 'location', 'minors', 'company', 'auditEvents']);
+        $print = view('waivers.print', ['waiver' => $signed, 'renderedBody' => app(WaiverService::class)->renderForWaiver($signed)])->render();
+        $this->assertStringContainsString('&lt;img src=x onerror=alert(1)&gt;', $print);
+        $this->assertStringContainsString('O&#039;Brien {{company_email}}', $print);
+        $this->assertStringNotContainsString('&amp;#039;', $print);
+        $this->assertStringNotContainsString('<img src=x', $print);
+    }
+
     public function test_another_companys_admin_cannot_see_a_bookings_game(): void
     {
         $booking = $this->makeBooking($this->morgue, '14:00');
