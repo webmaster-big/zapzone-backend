@@ -1631,6 +1631,190 @@ class PhotoEventRegistrationTest extends TestCase
         $this->assertSame('Not sent: these photos are no longer available.', $higher->fresh()->error_message);
     }
 
+    public function test_a_scheduled_campaign_goes_out_when_its_time_comes(): void
+    {
+        foreach (range(1, 3) as $n) {
+            $this->register($this->trunk, "Guest {$n}", "guest{$n}@example.com", '73455510' . str_pad((string) $n, 2, '0', STR_PAD_LEFT));
+        }
+        $at = now()->addHours(3)->startOfMinute();
+
+        $this->actAs($this->admin);
+        $id = $this->postJson('/api/email-campaigns', [
+            'name' => 'Tomorrow',
+            'subject' => 'See you',
+            'body' => '<p>See you</p>',
+            'recipient_types' => ['event_registrants'],
+            'recipient_filters' => ['registration_event_ids' => [$this->trunk->id]],
+            'send_now' => false,
+            'scheduled_at' => $at->copy()->utc()->toIso8601ZuluString(),
+        ])->assertCreated()->assertJsonPath('data.status', 'pending')->json('data.id');
+        $campaign = \App\Models\EmailCampaign::findOrFail($id);
+        $this->assertTrue($campaign->scheduled_at->eq($at));
+        $this->assertSame($at->copy()->timezone('America/Detroit')->format('Y-m-d H:i:s'), $campaign->getRawOriginal('scheduled_at'));
+        $before = Mail::mailer()->getSymfonyTransport()->messages()->count();
+
+        $this->artisan('email-campaigns:send')->assertSuccessful();
+        $this->assertSame(0, Mail::mailer()->getSymfonyTransport()->messages()->count() - $before);
+        $this->assertSame('pending', $campaign->fresh()->status);
+
+        $this->travelTo($at->copy()->addMinutes(59));
+        $this->actAs($this->admin);
+        $this->getJson('/api/email-campaigns')->assertOk();
+        $this->artisan('email-campaigns:send')->assertSuccessful();
+
+        $this->assertSame(4, Mail::mailer()->getSymfonyTransport()->messages()->count() - $before);
+        $this->assertSame('completed', $campaign->fresh()->status);
+        $this->assertNotNull($campaign->fresh()->sent_at);
+    }
+
+    public function test_a_scheduled_campaign_the_sender_missed_fails_instead_of_going_out_late(): void
+    {
+        $at = now()->addHour()->startOfMinute();
+        $schedule = fn (string $name) => $this->postJson('/api/email-campaigns', [
+            'name' => $name,
+            'subject' => 'Hello',
+            'body' => '<p>Hello</p>',
+            'recipient_types' => ['custom'],
+            'custom_emails' => ['one@example.com', 'two@example.com'],
+            'send_now' => false,
+            'scheduled_at' => $at->toIso8601String(),
+        ])->assertCreated()->json('data.id');
+        $this->actAs($this->admin);
+        $viewed = $schedule('Viewed');
+        $this->actAs($this->admin);
+        $unviewed = $schedule('Unviewed');
+        $before = Mail::mailer()->getSymfonyTransport()->messages()->count();
+
+        $this->travelTo($at->copy()->addMinutes(61));
+        $this->actAs($this->admin);
+        $this->getJson("/api/email-campaigns/{$viewed}")->assertOk()
+            ->assertJsonPath('data.status', 'failed')
+            ->assertJsonPath('data.failed_count', 2);
+        $this->assertStringContainsString('Resend to Failed Recipients sends it now.', \App\Models\EmailCampaign::findOrFail($viewed)->error_message);
+        $this->artisan('email-campaigns:send')->assertSuccessful();
+
+        $this->assertSame(0, Mail::mailer()->getSymfonyTransport()->messages()->count() - $before);
+        $this->assertSame('failed', \App\Models\EmailCampaign::findOrFail($unviewed)->status);
+        $this->assertSame(2, \App\Models\EmailCampaignLog::where('email_campaign_id', $unviewed)->where('status', 'failed')->count());
+
+        $this->actAs($this->admin);
+        $this->postJson("/api/email-campaigns/{$viewed}/resend", ['type' => 'failed'])->assertOk();
+        $this->assertSame(2, Mail::mailer()->getSymfonyTransport()->messages()->count() - $before);
+        $this->assertSame('completed', \App\Models\EmailCampaign::findOrFail($viewed)->status);
+        $this->assertNotNull(\App\Models\EmailCampaign::findOrFail($viewed)->sent_at);
+    }
+
+    public function test_a_cancelled_scheduled_campaign_never_goes_out(): void
+    {
+        $at = now()->addHour()->startOfMinute();
+
+        $this->actAs($this->admin);
+        $id = $this->postJson('/api/email-campaigns', [
+            'name' => 'Later',
+            'subject' => 'Hello',
+            'body' => '<p>Hello</p>',
+            'recipient_types' => ['custom'],
+            'custom_emails' => ['one@example.com'],
+            'send_now' => false,
+            'scheduled_at' => $at->toIso8601String(),
+        ])->assertCreated()->json('data.id');
+        $this->actAs($this->admin);
+        $this->postJson("/api/email-campaigns/{$id}/cancel")->assertOk();
+        $before = Mail::mailer()->getSymfonyTransport()->messages()->count();
+
+        $this->travelTo($at->copy()->addMinute());
+        $this->artisan('email-campaigns:send')->assertSuccessful();
+
+        $this->assertSame(0, Mail::mailer()->getSymfonyTransport()->messages()->count() - $before);
+        $this->assertSame('cancelled', \App\Models\EmailCampaign::findOrFail($id)->status);
+        $this->assertSame(1, \App\Models\EmailCampaignLog::where('email_campaign_id', $id)->where('status', 'cancelled')->count());
+    }
+
+    public function test_a_scheduled_campaign_shows_the_date_it_goes_out(): void
+    {
+        $at = now()->addDays(3)->startOfMinute();
+
+        $this->actAs($this->admin);
+        $this->postJson('/api/email-campaigns', [
+            'name' => 'Dated',
+            'subject' => 'News for {{current_date}}',
+            'body' => '<p>Today is {{current_date}}, {{current_year}}.</p>',
+            'recipient_types' => ['custom'],
+            'custom_emails' => ['one@example.com'],
+            'send_now' => false,
+            'scheduled_at' => $at->toIso8601String(),
+        ])->assertCreated();
+        $before = Mail::mailer()->getSymfonyTransport()->messages()->count();
+
+        $this->travelTo($at->copy()->addMinute());
+        $this->artisan('email-campaigns:send')->assertSuccessful();
+
+        $mail = Mail::mailer()->getSymfonyTransport()->messages()->slice($before)->first()->getOriginalMessage();
+        $this->assertSame('News for ' . $at->format('F j, Y'), $mail->getSubject());
+        $this->assertStringContainsString('Today is ' . $at->format('F j, Y') . ', ' . $at->year . '.', (string) $mail->getHtmlBody());
+    }
+
+    public function test_cancelling_a_campaign_that_just_finished_keeps_it_finished(): void
+    {
+        $this->actAs($this->admin);
+        $id = $this->postJson('/api/email-campaigns', [
+            'name' => 'Racing',
+            'subject' => 'Hello',
+            'body' => '<p>Hello</p>',
+            'recipient_types' => ['custom'],
+            'custom_emails' => ['one@example.com'],
+            'send_now' => false,
+            'scheduled_at' => now()->addHour()->toIso8601String(),
+        ])->assertCreated()->json('data.id');
+        $finished = false;
+        \App\Models\EmailCampaign::retrieved(function (\App\Models\EmailCampaign $campaign) use (&$finished) {
+            if (!$finished && request()->is('api/email-campaigns/*/cancel')) {
+                $finished = true;
+                DB::table('email_campaigns')->where('id', $campaign->id)->update(['status' => 'completed', 'sent_count' => 1]);
+                DB::table('email_campaign_logs')->where('email_campaign_id', $campaign->id)->update(['status' => 'sent']);
+            }
+        });
+
+        $this->actAs($this->admin);
+        $this->postJson("/api/email-campaigns/{$id}/cancel")
+            ->assertStatus(409)
+            ->assertJsonPath('message', 'This campaign had already finished, so there was nothing left to cancel.');
+
+        $this->assertTrue($finished);
+        $this->assertSame('completed', \App\Models\EmailCampaign::findOrFail($id)->status);
+        $this->assertSame(1, \App\Models\EmailCampaignLog::where('email_campaign_id', $id)->where('status', 'sent')->count());
+    }
+
+    public function test_a_campaign_cannot_be_scheduled_more_than_a_year_ahead(): void
+    {
+        $this->actAs($this->admin);
+        $this->postJson('/api/email-campaigns', [
+            'name' => 'Someday',
+            'subject' => 'Hello',
+            'body' => '<p>Hello</p>',
+            'recipient_types' => ['custom'],
+            'custom_emails' => ['one@example.com'],
+            'send_now' => false,
+            'scheduled_at' => now()->addYears(14)->toIso8601ZuluString(),
+        ])->assertStatus(422)->assertJsonPath('errors.scheduled_at.0', 'Pick a time within the next year.');
+        $this->assertSame(0, \App\Models\EmailCampaign::where('name', 'Someday')->count());
+    }
+
+    public function test_a_campaign_cannot_be_scheduled_in_the_past(): void
+    {
+        $this->actAs($this->admin);
+        $this->postJson('/api/email-campaigns', [
+            'name' => 'Yesterday',
+            'subject' => 'Hello',
+            'body' => '<p>Hello</p>',
+            'recipient_types' => ['custom'],
+            'custom_emails' => ['one@example.com'],
+            'send_now' => false,
+            'scheduled_at' => now()->subMinute()->toIso8601ZuluString(),
+        ])->assertStatus(422)->assertJsonValidationErrors('scheduled_at');
+        $this->assertSame(0, \App\Models\EmailCampaign::where('name', 'Yesterday')->count());
+    }
+
     public function test_cancelling_a_waiting_campaign_cancels_its_unsent_emails(): void
     {
         foreach (range(1, 24) as $n) {

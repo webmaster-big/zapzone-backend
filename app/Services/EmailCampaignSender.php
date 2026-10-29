@@ -21,6 +21,8 @@ class EmailCampaignSender
 {
     public const STALLED_AFTER_MINUTES = 15;
 
+    public const SCHEDULE_GRACE_MINUTES = 60;
+
     private const UNSUBSCRIBE_FOOTER = '<p style="margin-top: 24px; font-size: 11px; color: #9ca3af; text-align: center;">Don&#039;t want emails like this? <a href="{{opt_out_link}}" style="color: #6b7280;">Unsubscribe</a>.</p>';
 
     public function registrantRecipients($company, array $filters, ?string $onlyEmail = null, ?array $staffLocationIds = null): array
@@ -260,8 +262,16 @@ class EmailCampaignSender
     {
         $sent = 0;
 
-        EmailCampaign::query()->where('status', EmailCampaign::STATUS_SENDING)->get()
+        EmailCampaign::query()
+            ->where(fn ($due) => $due
+                ->where('status', EmailCampaign::STATUS_SENDING)
+                ->orWhere(fn ($scheduled) => $scheduled->where('status', EmailCampaign::STATUS_PENDING)->where('scheduled_at', '<=', now())))
+            ->get()
             ->each(fn (EmailCampaign $campaign) => $this->recoverStalledSend($campaign));
+        EmailCampaign::query()
+            ->where('status', EmailCampaign::STATUS_PENDING)
+            ->where('scheduled_at', '<=', now())
+            ->update(['status' => EmailCampaign::STATUS_SENDING, 'sent_at' => now()]);
         EmailCampaign::query()->where('status', EmailCampaign::STATUS_SENDING)->toBase()->update(['updated_at' => now()]);
 
         foreach (EmailCampaign::query()->where('status', EmailCampaign::STATUS_SENDING)->orderBy('id')->pluck('id') as $campaignId) {
@@ -368,6 +378,12 @@ class EmailCampaignSender
 
     public function recoverStalledSend(EmailCampaign $campaign, bool $now = false): void
     {
+        if ($campaign->status === EmailCampaign::STATUS_PENDING && !$now) {
+            $this->expireMissedSchedule($campaign);
+
+            return;
+        }
+
         if ($campaign->status !== EmailCampaign::STATUS_SENDING && !$now) {
             return;
         }
@@ -390,6 +406,35 @@ class EmailCampaignSender
             ->where('email_campaign_id', $campaign->id)
             ->whereIn('status', [EmailCampaignLog::STATUS_PENDING, EmailCampaignLog::STATUS_SENDING])
             ->update(['status' => EmailCampaignLog::STATUS_FAILED, 'error_message' => 'Not sent: sending stopped part-way through.']);
+
+        $this->syncCounts($campaign);
+        $campaign->refresh();
+    }
+
+    protected function expireMissedSchedule(EmailCampaign $campaign): void
+    {
+        if ($campaign->scheduled_at === null) {
+            return;
+        }
+
+        $missed = EmailCampaign::query()
+            ->whereKey($campaign->id)
+            ->where('status', EmailCampaign::STATUS_PENDING)
+            ->where('scheduled_at', '<', now()->subMinutes(self::SCHEDULE_GRACE_MINUTES))
+            ->update([
+                'status' => EmailCampaign::STATUS_FAILED,
+                'completed_at' => now(),
+                'error_message' => 'This campaign was due ' . $campaign->scheduled_at->copy()->timezone(config('app.timezone'))->format('M j \a\t g:i A') . ', but sending was down then, so nothing went out. Resend to Failed Recipients sends it now.',
+            ]);
+
+        if ($missed === 0) {
+            return;
+        }
+
+        EmailCampaignLog::query()
+            ->where('email_campaign_id', $campaign->id)
+            ->where('status', EmailCampaignLog::STATUS_PENDING)
+            ->update(['status' => EmailCampaignLog::STATUS_FAILED, 'error_message' => 'Not sent: the scheduled time passed while sending was down.']);
 
         $this->syncCounts($campaign);
         $campaign->refresh();
@@ -500,7 +545,7 @@ class EmailCampaignSender
                 $log->forceFill(['variables_used' => $current])->save();
             }
 
-            $variables = $this->withEventDefaults($log->variables_used ?? []);
+            $variables = ['current_date' => now()->format('F j, Y'), 'current_year' => (string) now()->year] + $this->withEventDefaults($log->variables_used ?? []);
             $body = $campaign->body;
 
             if ($log->recipient_type === 'customer') {

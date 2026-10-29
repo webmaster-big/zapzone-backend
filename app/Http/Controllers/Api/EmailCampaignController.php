@@ -29,6 +29,7 @@ use App\Support\EmailHtml;
 use App\Support\TemplatePlaceholders;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -123,9 +124,12 @@ class EmailCampaignController extends Controller
             'recipient_filters.only_with_photos' => 'nullable|boolean',
             'attachments' => 'nullable|array',
             'attachments.*' => 'file|max:10240|mimes:pdf,doc,docx,xls,xlsx,csv,txt,zip,png,jpg,jpeg,gif',
-            'scheduled_at' => 'nullable|date|after:now',
+            'scheduled_at' => 'nullable|date|after:now|before:+1 year',
             'send_now' => 'boolean',
             'location_id' => 'nullable|exists:locations,id',
+        ], [
+            'scheduled_at.after' => 'Pick a time in the future.',
+            'scheduled_at.before' => 'Pick a time within the next year.',
         ]);
 
         if ($denied = $this->denyForeignLocations($request, $validated)) {
@@ -181,7 +185,7 @@ class EmailCampaignController extends Controller
                 'custom_emails' => $validated['custom_emails'] ?? [],
                 'recipient_filters' => $validated['recipient_filters'] ?? [],
                 'attachments' => $attachments,
-                'scheduled_at' => $validated['scheduled_at'] ?? null,
+                'scheduled_at' => !empty($validated['scheduled_at']) ? Carbon::parse($validated['scheduled_at'])->setTimezone(config('app.timezone')) : null,
                 'status' => EmailCampaign::STATUS_PENDING,
             ]);
 
@@ -304,7 +308,20 @@ class EmailCampaignController extends Controller
             ], 400);
         }
 
-        $emailCampaign->update(['status' => EmailCampaign::STATUS_CANCELLED]);
+        $cancelled = EmailCampaign::query()
+            ->whereKey($emailCampaign->id)
+            ->whereIn('status', [EmailCampaign::STATUS_PENDING, EmailCampaign::STATUS_SENDING])
+            ->update(['status' => EmailCampaign::STATUS_CANCELLED]);
+
+        if ($cancelled === 0) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This campaign had already finished, so there was nothing left to cancel.',
+                'data' => $emailCampaign->fresh(),
+            ], 409);
+        }
+
+        $emailCampaign->refresh();
         $this->sender()->cancelPending($emailCampaign);
 
         return response()->json([
@@ -367,7 +384,7 @@ class EmailCampaignController extends Controller
             $claimed = EmailCampaign::query()
                 ->whereKey($emailCampaign->id)
                 ->where('status', '!=', EmailCampaign::STATUS_SENDING)
-                ->update(['status' => EmailCampaign::STATUS_SENDING, 'completed_at' => null, 'error_message' => null, 'updated_at' => now()]);
+                ->update(['status' => EmailCampaign::STATUS_SENDING, 'sent_at' => $emailCampaign->sent_at ?? now(), 'completed_at' => null, 'error_message' => null, 'updated_at' => now()]);
 
             if ($claimed === 0) {
                 return response()->json([
@@ -908,10 +925,6 @@ class EmailCampaignController extends Controller
 
         if (!RegistrationEvent::isAvailable()) {
             return $this->invalidEvents('Event registrations are not set up yet.');
-        }
-
-        if (!empty($validated['scheduled_at'])) {
-            return $this->invalidEvents('Emails to event registrants go out right away, so they cannot be scheduled.');
         }
 
         $picked = $validated['recipient_filters']['registration_event_ids'] ?? [];
