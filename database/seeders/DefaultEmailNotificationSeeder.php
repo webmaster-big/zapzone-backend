@@ -367,8 +367,8 @@ class DefaultEmailNotificationSeeder extends Seeder
             ],
             [
                 'default_key' => EmailNotification::DEFAULT_WAIVER_BULK_CHAPERONE,
-                'name' => 'Bulk Waiver Invite (Chaperone)',
-                'description' => 'Sent to a group organizer/chaperone so they can invite parents/guardians to complete waivers for their group.',
+                'name' => 'Group Waiver Invite (Chaperone)',
+                'description' => 'Sent to the chaperone (group leader) with their link to add the people in their group, send each one a waiver invite and see who has signed.',
                 'trigger_type' => EmailNotification::TRIGGER_WAIVER_BULK_CHAPERONE,
                 'entity_type' => EmailNotification::ENTITY_WAIVER,
                 'entity_ids' => [],
@@ -380,8 +380,8 @@ class DefaultEmailNotificationSeeder extends Seeder
             ],
             [
                 'default_key' => EmailNotification::DEFAULT_WAIVER_PARENT_INVITE,
-                'name' => 'Waiver Invite (Parent/Guardian)',
-                'description' => 'Sent to a parent/guardian by a chaperone to complete a waiver for their minor(s).',
+                'name' => 'Group Waiver Invite (Group Member)',
+                'description' => 'Sent to each person a chaperone adds to a group, so they can sign for themselves and any children in their care.',
                 'trigger_type' => EmailNotification::TRIGGER_WAIVER_PARENT_INVITE,
                 'entity_type' => EmailNotification::ENTITY_WAIVER,
                 'entity_ids' => [],
@@ -559,7 +559,7 @@ HTML;
     </div>
     <div style="background-color: #ffffff; padding: 32px; border: 1px solid #e5e7eb; border-top: none;">
         <p style="margin: 0 0 16px 0; font-size: 14px; line-height: 1.6;">Hi {{customer_name}},</p>
-        <p style="margin: 0 0 24px 0; font-size: 14px; line-height: 1.6;">Your group needs each participant (or a parent/guardian for minors) to complete a waiver before visiting {{location_name}}. Use the link below to add your group's contacts and send them their waiver invites, and to track who has completed theirs.</p>
+        <p style="margin: 0 0 24px 0; font-size: 14px; line-height: 1.6;">Everyone in your group needs a signed waiver before visiting {{location_name}}: each adult signs their own, and a parent or guardian signs for each child. Use the link below to add the people in your group. Each person gets their invite as soon as you add them, and you can see who has signed.</p>
         <div style="text-align: center; margin: 30px 0;">
             <a href="{{waiver_link}}" style="display: inline-block; background-color: #1e40af; color: #ffffff; padding: 12px 28px; text-decoration: none; border-radius: 6px; font-weight: 600;">Manage Group Waivers</a>
         </div>

@@ -373,8 +373,8 @@ class SmsNotification extends Model
             self::DEFAULT_WAIVER_REMINDER_CUSTOMER => 'Waiver Reminder (Customer)',
             self::DEFAULT_WAIVER_SIGNED_CUSTOMER => 'Waiver Signed (Customer)',
             self::DEFAULT_WAIVER_STAFF_SENT_CUSTOMER => 'Waiver Link Sent (Customer)',
-            self::DEFAULT_WAIVER_BULK_CHAPERONE => 'Bulk Waiver Invite (Chaperone)',
-            self::DEFAULT_WAIVER_PARENT_INVITE => 'Waiver Invite (Parent/Guardian)',
+            self::DEFAULT_WAIVER_BULK_CHAPERONE => 'Group Waiver Invite (Chaperone)',
+            self::DEFAULT_WAIVER_PARENT_INVITE => 'Group Waiver Invite (Group Member)',
         ];
     }
 
@@ -411,8 +411,8 @@ class SmsNotification extends Model
                 self::TRIGGER_WAIVER_REMINDER => 'Waiver Reminder (Incomplete)',
                 self::TRIGGER_WAIVER_SIGNED => 'Waiver Signed',
                 self::TRIGGER_WAIVER_STAFF_SENT => 'Waiver Link Sent (Staff)',
-                self::TRIGGER_WAIVER_BULK_CHAPERONE => 'Bulk Waiver Invite (Chaperone)',
-                self::TRIGGER_WAIVER_PARENT_INVITE => 'Waiver Invite (Parent/Guardian)',
+                self::TRIGGER_WAIVER_BULK_CHAPERONE => 'Group Waiver Invite (Chaperone)',
+                self::TRIGGER_WAIVER_PARENT_INVITE => 'Group Waiver Invite (Group Member)',
             ],
             'concern' => [
                 self::TRIGGER_SCHEDULE_HELP_REQUESTED => 'Schedule Help Requested (Staff)',
