@@ -11,9 +11,11 @@ use App\Models\PhotoOverlay;
 use App\Models\RegistrationEvent;
 use App\Models\RegistrationEventGroup;
 use App\Services\PhotoProcessingService;
+use App\Support\FrameImage;
 use App\Support\OperatingDay;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -147,6 +149,7 @@ class PhotoOverlayController extends Controller
             'location_id' => ['required', 'integer', 'exists:locations,id'],
             'name' => ['required', 'string', 'max:120'],
             'image' => ['required', 'file', 'mimes:png,jpg,jpeg,webp', 'max:8192'],
+            'alt_image' => ['nullable', 'file', 'mimes:png,jpg,jpeg,webp', 'max:8192'],
             'starts_at' => ['nullable', 'date'],
             'ends_at' => ['nullable', 'date', 'after:starts_at'],
             'is_enabled' => ['nullable', 'boolean'],
@@ -218,28 +221,34 @@ class PhotoOverlayController extends Controller
             $plan = $this->copyPlan($request, $form, $attributes);
         }
 
+        $altFile = $request->file('alt_image');
+
+        if ($rejected = $this->frameFilesRejected($request->file('image'), $altFile, null, false)) {
+            return $rejected;
+        }
+
         $written = [];
 
         try {
-            $path = $request->file('image')->store('photo-overlays/' . $location->id, 'public');
-            $written[] = $path;
+            $path = $this->storeFrameFile($request->file('image'), (int) $location->id, $written);
+            $altPath = $altFile ? $this->storeFrameFile($altFile, (int) $location->id, $written) : null;
+
             $copyPaths = [];
+            $altCopyPaths = [];
 
             foreach ($plan['copies'] as $sibling) {
-                $copyPath = 'photo-overlays/' . (int) $sibling->location_id . '/' . Str::random(40) . '.' . pathinfo($path, PATHINFO_EXTENSION);
+                $copyPaths[(int) $sibling->id] = $this->copyFrameFile($path, $sibling, $written);
 
-                if (!Storage::disk('public')->copy($path, $copyPath)) {
-                    throw new \RuntimeException('The frame could not be copied to ' . ($sibling->location?->name ?? 'another location') . '.');
+                if ($altPath) {
+                    $altCopyPaths[(int) $sibling->id] = $this->copyFrameFile($altPath, $sibling, $written);
                 }
-
-                $written[] = $copyPath;
-                $copyPaths[(int) $sibling->id] = $copyPath;
             }
 
-            [$overlay, $copies] = DB::transaction(function () use ($attributes, $path, $roomId, $form, $plan, $copyPaths) {
+            [$overlay, $copies] = DB::transaction(function () use ($attributes, $path, $altPath, $roomId, $form, $plan, $copyPaths, $altCopyPaths) {
                 $overlay = PhotoOverlay::create(array_merge(
                     $attributes,
                     ['image_path' => $path],
+                    $altPath ? ['alt_image_path' => $altPath] : [],
                     $roomId ? ['package_id' => $roomId] : [],
                     $form ? ['registration_event_id' => $form->id] : []
                 ));
@@ -249,7 +258,7 @@ class PhotoOverlayController extends Controller
                     'location_id' => $sibling->location_id,
                     'registration_event_id' => $sibling->id,
                     'image_path' => $copyPaths[(int) $sibling->id],
-                ])))->values();
+                ], isset($altCopyPaths[(int) $sibling->id]) ? ['alt_image_path' => $altCopyPaths[(int) $sibling->id]] : [])))->values();
 
                 return [$overlay, $copies];
             });
@@ -306,6 +315,8 @@ class PhotoOverlayController extends Controller
         $validated = $request->validate([
             'name' => ['nullable', 'string', 'max:120'],
             'image' => ['nullable', 'file', 'mimes:png,jpg,jpeg,webp', 'max:8192'],
+            'alt_image' => ['nullable', 'file', 'mimes:png,jpg,jpeg,webp', 'max:8192'],
+            'remove_alt_image' => ['nullable', 'boolean'],
             'starts_at' => ['nullable', 'date'],
             'ends_at' => ['nullable', 'date'],
             'is_enabled' => ['nullable', 'boolean'],
@@ -396,26 +407,42 @@ class PhotoOverlayController extends Controller
             }
         }
 
-        $previousImage = $photoOverlay->image_path;
-        $newImage = null;
+        $mainFile = $request->file('image');
+        $altFile = $request->file('alt_image');
+        $removeAlt = !$altFile && $request->boolean('remove_alt_image');
 
-        if ($request->hasFile('image')) {
-            $newImage = $request->file('image')->store('photo-overlays/' . $photoOverlay->location_id, 'public');
-            $changes['image_path'] = $newImage;
+        if ($rejected = $this->frameFilesRejected($mainFile, $altFile, $photoOverlay, $removeAlt)) {
+            return $rejected;
         }
 
+        $previousImage = $photoOverlay->image_path;
+        $previousAlt = $photoOverlay->alt_image_path;
+        $written = [];
+
         try {
+            if ($mainFile) {
+                $changes['image_path'] = $this->storeFrameFile($mainFile, (int) $photoOverlay->location_id, $written);
+            }
+
+            if ($altFile) {
+                $changes['alt_image_path'] = $this->storeFrameFile($altFile, (int) $photoOverlay->location_id, $written);
+            } elseif ($removeAlt && $previousAlt) {
+                $changes['alt_image_path'] = null;
+            }
+
             $photoOverlay->update($changes);
         } catch (\Throwable $e) {
-            if ($newImage) {
-                Storage::disk('public')->delete($newImage);
+            foreach ($written as $file) {
+                Storage::disk('public')->delete($file);
             }
 
             throw $e;
         }
 
-        if ($newImage && $previousImage && $previousImage !== $newImage && Storage::disk('public')->exists($previousImage)) {
-            Storage::disk('public')->delete($previousImage);
+        foreach ([[$previousImage, 'image_path'], [$previousAlt, 'alt_image_path']] as [$previous, $column]) {
+            if ($previous && array_key_exists($column, $changes) && $previous !== $changes[$column] && Storage::disk('public')->exists($previous)) {
+                Storage::disk('public')->delete($previous);
+            }
         }
 
         $this->flagConflicts($location);
@@ -742,6 +769,8 @@ class PhotoOverlayController extends Controller
             $activeId = $this->processor->resolveOverlay($overlay->location, now(), $overlay->roomId())?->id;
         }
 
+        $versions = $overlay->versions();
+
         return [
             'id' => $overlay->id,
             'location_id' => $overlay->location_id,
@@ -751,6 +780,16 @@ class PhotoOverlayController extends Controller
             'event' => $this->presentEvent($overlay),
             'name' => $overlay->name,
             'image_url' => $overlay->image_path ? Storage::disk('public')->url($overlay->image_path) : null,
+            'alt_image_url' => $overlay->alt_image_path ? Storage::disk('public')->url($overlay->alt_image_path) : null,
+            'versions' => array_map(fn (array $version) => [
+                'slot' => $version['slot'],
+                'url' => Storage::disk('public')->url($version['path']),
+                'width' => $version['width'],
+                'height' => $version['height'],
+                'shape' => $version['shape'],
+            ], $versions),
+            'missing_shape' => $overlay->missingShape($versions),
+            'versions_supported' => PhotoOverlay::supportsVersions(),
             'starts_at' => $overlay->starts_at?->toIso8601String(),
             'ends_at' => $overlay->ends_at?->toIso8601String(),
             'is_enabled' => $overlay->is_enabled,
@@ -762,6 +801,128 @@ class PhotoOverlayController extends Controller
                 : null,
             'created_at' => $overlay->created_at?->toIso8601String(),
         ];
+    }
+
+    protected function frameFilesRejected(?UploadedFile $main, ?UploadedFile $alt, ?PhotoOverlay $existing, bool $removeAlt): ?JsonResponse
+    {
+        if (($alt || $removeAlt) && !PhotoOverlay::supportsVersions()) {
+            return $this->frameRejected('alt_image', 'This server cannot keep a second version of a frame yet. Try again after the next update.');
+        }
+
+        foreach (['image' => $main, 'alt_image' => $alt] as $field => $file) {
+            if ($file && ($problem = $this->frameFileProblem($file))) {
+                return $this->frameRejected($field, $problem);
+            }
+        }
+
+        if (!$main && !$alt) {
+            return null;
+        }
+
+        $mainSize = $main
+            ? FrameImage::size($main->getRealPath() ?: null)
+            : ($existing?->image_path ? FrameImage::size(Storage::disk('public')->path($existing->image_path)) : null);
+        $altSize = $alt
+            ? FrameImage::size($alt->getRealPath() ?: null)
+            : (!$removeAlt && $existing?->alt_image_path ? FrameImage::size(Storage::disk('public')->path($existing->alt_image_path)) : null);
+
+        if (!$mainSize || !$altSize) {
+            return null;
+        }
+
+        $mainShape = FrameImage::shape(...$mainSize);
+        $altShape = FrameImage::shape(...$altSize);
+        $field = $alt ? 'alt_image' : 'image';
+
+        if ($mainShape === $altShape) {
+            return $this->frameRejected(
+                $field,
+                $mainShape === FrameImage::SQUARE
+                    ? 'Both versions of this frame would be square. Give it one wide (landscape) version and one tall (portrait) version.'
+                    : sprintf(
+                        'Both versions of this frame would be %s. Give it one wide (landscape) version and one tall (portrait) version.',
+                        $mainShape
+                    )
+            );
+        }
+
+        if ($mainShape !== FrameImage::PORTRAIT && $altShape !== FrameImage::PORTRAIT) {
+            return $this->frameRejected(
+                $field,
+                'One version of this frame must be tall. Give it one wide (landscape) version and one tall (portrait) version.'
+            );
+        }
+
+        return null;
+    }
+
+    protected function frameFileProblem(UploadedFile $file): ?string
+    {
+        $path = $file->getRealPath() ?: null;
+        $size = FrameImage::size($path);
+
+        if (!$size) {
+            return 'This file is not an image that can be read. Upload a PNG or WebP frame.';
+        }
+
+        if ($size[0] * $size[1] > FrameImage::MAX_FRAME_PIXELS) {
+            return sprintf(
+                'This frame is very large (%d × %d pixels). Save it at about 1920 × 1080 for the landscape version or 1080 × 1920 for the portrait version.',
+                $size[0],
+                $size[1]
+            );
+        }
+
+        if (!FrameImage::hasMemoryFor($size[0] * $size[1])) {
+            return 'The server does not have enough memory to check a frame this large right now. Save it at about 1920 × 1080 for the landscape version or 1080 × 1920 for the portrait version.';
+        }
+
+        $share = FrameImage::seeThroughShare($path);
+
+        if ($share === null) {
+            return 'This image could not be read. Save it again as a PNG or WebP frame.';
+        }
+
+        if ($share < FrameImage::MIN_SEE_THROUGH_SHARE) {
+            return 'This frame has no see-through area, so it would hide the whole photo. Save it as a PNG with a transparent middle.';
+        }
+
+        return null;
+    }
+
+    protected function frameRejected(string $field, string $message): JsonResponse
+    {
+        return response()->json([
+            'success' => false,
+            'message' => $message,
+            'errors' => [$field => [$message]],
+        ], 422);
+    }
+
+    protected function storeFrameFile(UploadedFile $file, int $locationId, array &$written): string
+    {
+        $path = $file->store('photo-overlays/' . $locationId, 'public');
+
+        if (!is_string($path) || $path === '') {
+            throw new \RuntimeException('The frame image could not be saved. Please try again.');
+        }
+
+        $written[] = $path;
+
+        return $path;
+    }
+
+    protected function copyFrameFile(string $path, RegistrationEvent $sibling, array &$written): string
+    {
+        $copyPath = 'photo-overlays/' . (int) $sibling->location_id . '/' . Str::random(40) . '.' . pathinfo($path, PATHINFO_EXTENSION);
+
+        if (!Storage::disk('public')->copy($path, $copyPath)) {
+            throw new \RuntimeException('The frame could not be copied to ' . ($sibling->location?->name ?? 'another location') . '.');
+        }
+
+        $written[] = $copyPath;
+
+        return $copyPath;
     }
 
     protected function forbidden(): JsonResponse

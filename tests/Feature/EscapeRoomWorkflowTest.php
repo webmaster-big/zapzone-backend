@@ -37,11 +37,13 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Storage;
+use Tests\Support\FrameImages;
 use Tests\TestCase;
 
 class EscapeRoomWorkflowTest extends TestCase
 {
     use RefreshDatabase;
+    use FrameImages;
 
     private const TODAY = '2026-10-03';
 
@@ -1502,7 +1504,7 @@ class EscapeRoomWorkflowTest extends TestCase
         $post = fn ($packageId) => $this->actingAs($this->admin, 'sanctum')->post('/api/photo-overlays', [
             'location_id' => $this->location->id,
             'name' => 'Frame',
-            'image' => UploadedFile::fake()->image('frame.png', 300, 200),
+            'image' => $this->frameUpload('frame.png', 300, 200),
             'package_id' => $packageId,
         ], ['Accept' => 'application/json']);
 

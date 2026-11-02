@@ -283,20 +283,32 @@ class PhotoProcessingService
     {
         // Overlays are venue branding, not customer media: they are uploaded to and read
         // from the public disk. Only the photos themselves live on the private disk.
-        $path = Storage::disk(self::OVERLAY_DISK)->path($overlay->image_path);
+        $canvasW = imagesx($canvas);
+        $canvasH = imagesy($canvas);
+        $relative = $overlay->imagePathFor($canvasW, $canvasH);
+        $path = $relative ? Storage::disk(self::OVERLAY_DISK)->path($relative) : null;
 
-        if (!is_file($path)) {
+        if (!$path || !is_file($path)) {
             Log::warning('Overlay image is missing from storage; continuing with the date layer only.', [
                 'overlay_id' => $overlay->id,
-                'path' => $overlay->image_path,
+                'path' => $relative,
             ]);
 
             return;
         }
 
-        $layer = $this->loadImage($path);
-        $canvasW = imagesx($canvas);
-        $canvasH = imagesy($canvas);
+        try {
+            $layer = $this->correctOrientation($this->loadImage($path), $path);
+        } catch (\Throwable $e) {
+            Log::warning('Overlay image could not be read; continuing with the date layer only.', [
+                'overlay_id' => $overlay->id,
+                'path' => $relative,
+                'error' => $e->getMessage(),
+            ]);
+
+            return;
+        }
+
         $layerW = imagesx($layer);
         $layerH = imagesy($layer);
 
@@ -338,9 +350,10 @@ class PhotoProcessingService
         $canvasW = imagesx($canvas);
         $canvasH = imagesy($canvas);
 
-        $fontSize = (int) round($setting->date_font_size * ($canvasW / self::DELIVERY_MAX_EDGE));
+        $scale = max($canvasW, $canvasH) / self::DELIVERY_MAX_EDGE;
+        $fontSize = (int) round($setting->date_font_size * $scale);
         $fontSize = max(14, min(96, $fontSize));
-        $margin = (int) round($setting->date_margin * ($canvasW / self::DELIVERY_MAX_EDGE));
+        $margin = (int) round($setting->date_margin * $scale);
         $margin = max(10, $margin);
 
         $font = $this->resolveFontPath();

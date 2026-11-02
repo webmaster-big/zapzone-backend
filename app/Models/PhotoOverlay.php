@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\FrameImage;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -21,6 +22,7 @@ class PhotoOverlay extends Model
         'location_id',
         'name',
         'image_path',
+        'alt_image_path',
         'starts_at',
         'ends_at',
         'is_enabled',
@@ -60,6 +62,65 @@ class PhotoOverlay extends Model
     public function registrationEvent(): BelongsTo
     {
         return $this->belongsTo(RegistrationEvent::class)->withTrashed();
+    }
+
+    public static function supportsVersions(): bool
+    {
+        return \App\Support\SchemaSupport::hasColumn('photo_overlays', 'alt_image_path');
+    }
+
+    public function versions(): array
+    {
+        $versions = [];
+
+        foreach (['image' => $this->image_path, 'alt_image' => $this->alt_image_path] as $slot => $path) {
+            if (!$path) {
+                continue;
+            }
+
+            $size = FrameImage::size(Storage::disk('public')->path($path));
+
+            $versions[] = [
+                'slot' => $slot,
+                'path' => $path,
+                'width' => $size[0] ?? null,
+                'height' => $size[1] ?? null,
+                'shape' => $size ? FrameImage::shape($size[0], $size[1]) : null,
+            ];
+        }
+
+        return $versions;
+    }
+
+    public function imagePathFor(int $width, int $height): ?string
+    {
+        $readable = array_values(array_filter($this->versions(), fn (array $version) => $version['width'] && $version['height']));
+
+        if ($readable === [] || $width < 1 || $height < 1) {
+            return $this->image_path;
+        }
+
+        $target = log($width / $height);
+        $best = null;
+        $bestGap = INF;
+
+        foreach ($readable as $version) {
+            $gap = abs(log($version['width'] / $version['height']) - $target);
+
+            if ($gap < $bestGap) {
+                $best = $version;
+                $bestGap = $gap;
+            }
+        }
+
+        return $best['path'];
+    }
+
+    public function missingShape(?array $versions = null): ?string
+    {
+        $shapes = array_values(array_filter(array_column($versions ?? $this->versions(), 'shape')));
+
+        return count($shapes) === 1 ? FrameImage::otherShape($shapes[0]) : null;
     }
 
     public static function supportsRooms(): bool
@@ -184,8 +245,10 @@ class PhotoOverlay extends Model
 
     public function deleteMedia(): void
     {
-        if ($this->image_path && Storage::disk('public')->exists($this->image_path)) {
-            Storage::disk('public')->delete($this->image_path);
+        foreach ([$this->image_path, $this->alt_image_path] as $path) {
+            if ($path && Storage::disk('public')->exists($path)) {
+                Storage::disk('public')->delete($path);
+            }
         }
     }
 

@@ -646,7 +646,7 @@ class PhotoSessionController extends Controller
                 ],
                 'operating_day' => OperatingDay::forLocation($location),
                 'local_time' => OperatingDay::localNow($location)->toIso8601String(),
-                'active_overlay' => $overlay ? ['id' => $overlay->id, 'name' => $overlay->name] : null,
+                'active_overlay' => $overlay ? ['id' => $overlay->id, 'name' => $overlay->name, 'missing_shape' => $overlay->missingShape()] : null,
                 'has_overlay' => $overlay !== null,
                 'slideshow_queue_id' => $queue->id,
                 'slideshow_enabled' => $setting->slideshow_enabled,

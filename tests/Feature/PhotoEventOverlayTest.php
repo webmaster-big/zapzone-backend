@@ -18,11 +18,13 @@ use Illuminate\Routing\Middleware\ThrottleRequests;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Storage;
 use Tests\Feature\Concerns\EventRegistrationFixtures;
+use Tests\Support\FrameImages;
 use Tests\TestCase;
 
 class PhotoEventOverlayTest extends TestCase
 {
     use RefreshDatabase;
+    use FrameImages;
     use EventRegistrationFixtures;
 
     private Company $company;
@@ -246,7 +248,7 @@ class PhotoEventOverlayTest extends TestCase
 
         $this->actAs($this->manager);
         $this->post("/api/photo-overlays/{$frame->id}", [
-            'image' => UploadedFile::fake()->image('new.png', 1920, 1080),
+            'image' => $this->frameUpload('new.png', 1920, 1080),
             'package_id' => 4242,
         ])->assertStatus(422);
 
@@ -282,6 +284,30 @@ class PhotoEventOverlayTest extends TestCase
             ->assertCreated()
             ->assertJsonPath('copies.created', [])
             ->assertJsonPath('copies.skipped.0.reason', 'It already has a photo frame.');
+    }
+
+    public function test_a_frame_copied_to_the_event_s_other_locations_takes_its_portrait_version_too(): void
+    {
+        $this->actAs($this->admin);
+        $response = $this->upload($this->brighton, [
+            'registration_event_id' => $this->brightonTrunk->id,
+            'also_other_locations' => '1',
+            'alt_image' => $this->frameUpload('tall.png', 1080, 1920),
+        ])->assertCreated()->assertJsonPath('data.missing_shape', null);
+
+        $brightonFrame = PhotoOverlay::findOrFail($response->json('data.id'));
+        $copy = PhotoOverlay::where('location_id', $this->farmington->id)->firstOrFail();
+
+        $this->assertNotNull($brightonFrame->alt_image_path);
+        $this->assertNotNull($copy->alt_image_path);
+        $this->assertNotSame($brightonFrame->alt_image_path, $copy->alt_image_path);
+        $this->assertStringStartsWith('photo-overlays/' . $this->farmington->id . '/', $copy->alt_image_path);
+        $this->assertSame('portrait', $copy->versions()[1]['shape']);
+
+        $this->actAs($this->admin);
+        $this->delete("/api/photo-overlays/{$brightonFrame->id}")->assertOk();
+        Storage::disk('public')->assertMissing($brightonFrame->alt_image_path);
+        Storage::disk('public')->assertExists($copy->alt_image_path);
     }
 
     public function test_only_company_admins_can_copy_frames_and_a_lone_form_gets_one_frame(): void
@@ -409,7 +435,7 @@ class PhotoEventOverlayTest extends TestCase
         return $this->post('/api/photo-overlays', array_merge([
             'location_id' => $location->id,
             'name' => 'Uploaded frame',
-            'image' => UploadedFile::fake()->image('frame.png', 1920, 1080),
+            'image' => $this->frameUpload('frame.png', 1920, 1080),
         ], $fields));
     }
 
