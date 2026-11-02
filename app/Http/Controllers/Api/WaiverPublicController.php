@@ -19,6 +19,7 @@ class WaiverPublicController extends Controller
 {
     private const ADULT_AGE = 18;
     private const LOOKUP_TOKEN_TTL_MINUTES = 30;
+    private const GROUP_ALREADY_SIGNED = 'A waiver has already been signed with this email or mobile number for this visit.';
 
     public function __construct(private WaiverService $waivers)
     {
@@ -46,7 +47,7 @@ class WaiverPublicController extends Controller
                 'success' => true,
                 'data' => [
                     'status' => 'completed',
-                    'message' => 'Your waiver has already been completed for this booking date.',
+                    'message' => $this->alreadyCompletedMessage($waiver),
                     'submitted_at' => $waiver->submitted_at,
                 ],
             ]);
@@ -92,7 +93,7 @@ class WaiverPublicController extends Controller
         if ($waiver->isCompleted()) {
             return response()->json([
                 'success' => false,
-                'message' => 'Your waiver has already been completed for this booking date.',
+                'message' => $this->alreadyCompletedMessage($waiver),
             ], 409);
         }
 
@@ -114,7 +115,10 @@ class WaiverPublicController extends Controller
             );
             [$allowed, $reason] = $this->waivers->evaluateDuplicateRule($template, $duplicate, $waiver->is_manager_assigned);
             if (!$allowed) {
-                return response()->json(['success' => false, 'message' => $reason], 409);
+                return response()->json([
+                    'success' => false,
+                    'message' => $waiver->source === Waiver::SOURCE_BULK_INVITE ? self::GROUP_ALREADY_SIGNED : $reason,
+                ], 409);
             }
         }
 
@@ -751,7 +755,7 @@ class WaiverPublicController extends Controller
             ->first();
 
         if (!$invite) {
-            return response()->json(['success' => false, 'message' => 'Invite not found.'], 404);
+            return response()->json(['success' => false, 'message' => 'This group invite link is not valid. Please ask the venue for a new one.'], 404);
         }
 
         return response()->json([
@@ -784,9 +788,9 @@ class WaiverPublicController extends Controller
     /** Chaperone adds parent/guardian contacts (manual entry or uploaded list). */
     public function bulkAddRecipients(Request $request, string $manageToken): JsonResponse
     {
-        $invite = WaiverBulkInvite::where('manage_token', $manageToken)->first();
+        $invite = WaiverBulkInvite::with('template')->where('manage_token', $manageToken)->first();
         if (!$invite) {
-            return response()->json(['success' => false, 'message' => 'Invite not found.'], 404);
+            return response()->json(['success' => false, 'message' => 'This group invite link is not valid. Please ask the venue for a new one.'], 404);
         }
 
         $validated = $request->validate([
@@ -801,9 +805,10 @@ class WaiverPublicController extends Controller
         $knownEmails = $existing->pluck('email')->filter()->map(fn ($email) => strtolower(trim($email)))->all();
         $knownPhones = $existing->pluck('phone')->filter()->all();
 
-        $added = 0;
+        $added = [];
         $unreachable = 0;
         $duplicates = 0;
+        $phonesNotSaved = 0;
         foreach ($validated['recipients'] as $row) {
             if (empty($row['email']) && empty($row['phone'])) {
                 continue; // need at least one channel
@@ -831,27 +836,50 @@ class WaiverPublicController extends Controller
                 $knownPhones[] = $phone;
             }
 
-            $invite->recipients()->create([
+            $added[] = $invite->recipients()->create([
                 'name' => $row['name'] ?? null,
                 'email' => $email,
                 'phone' => $phone,
                 'status' => WaiverInviteRecipient::STATUS_NOT_SENT,
             ]);
-            $added++;
+            if (filled($row['phone'] ?? null) && !$phone) {
+                $phonesNotSaved++;
+            }
         }
 
-        $message = "{$added} contact(s) added.";
+        [$sent, $failed] = $this->sendInvites($invite, $added);
+
+        $message = $this->countOf(count($added), 'person', 'people') . ' added.';
+        if ($sent > 0) {
+            $message .= ' ' . $this->countOf($sent, 'invite', 'invites') . ' sent.';
+        }
+        if ($failed > 0) {
+            $message .= ' ' . $this->undeliveredNote($failed);
+        }
+        if ($phonesNotSaved > 0) {
+            $message .= ' ' . ($phonesNotSaved === 1
+                ? '1 mobile number was not saved because invites can only be texted to US and Canadian mobile numbers, so that person gets theirs by email.'
+                : "{$phonesNotSaved} mobile numbers were not saved because invites can only be texted to US and Canadian mobile numbers, so those people get theirs by email.");
+        }
         if ($duplicates > 0) {
             $message .= " {$duplicates} already on your list.";
         }
         if ($unreachable > 0) {
-            $message .= " {$unreachable} skipped — a 10-digit phone number is needed when there is no email address.";
+            $message .= " {$unreachable} skipped: add an email address or a 10-digit US or Canadian mobile number.";
         }
 
         return response()->json([
             'success' => true,
             'message' => $message,
-            'data' => ['added' => $added, 'skipped' => $unreachable, 'duplicates' => $duplicates, 'total' => $invite->recipients()->count()],
+            'data' => [
+                'added' => count($added),
+                'sent' => $sent,
+                'failed' => $failed,
+                'skipped' => $unreachable,
+                'duplicates' => $duplicates,
+                'phones_not_saved' => $phonesNotSaved,
+                'total' => $invite->recipients()->count(),
+            ],
         ]);
     }
 
@@ -860,36 +888,18 @@ class WaiverPublicController extends Controller
     {
         $invite = WaiverBulkInvite::with('template')->where('manage_token', $manageToken)->first();
         if (!$invite) {
-            return response()->json(['success' => false, 'message' => 'Invite not found.'], 404);
+            return response()->json(['success' => false, 'message' => 'This group invite link is not valid. Please ask the venue for a new one.'], 404);
         }
 
         $recipients = $invite->recipients()
             ->whereIn('status', [WaiverInviteRecipient::STATUS_NOT_SENT, WaiverInviteRecipient::STATUS_FAILED])
             ->get();
 
-        $sent = 0;
-        $failed = 0;
-        foreach ($recipients as $recipient) {
-            $recipient->refresh();
-            if ($recipient->status === WaiverInviteRecipient::STATUS_COMPLETE) {
-                continue;
-            }
+        [$sent, $failed] = $this->sendInvites($invite, $recipients);
 
-            $waiver = $this->waivers->createForBulkRecipient($invite, $recipient);
-            if ($waiver->isCompleted()) {
-                continue;
-            }
-
-            if ($this->recordInviteAttempt($recipient, $this->notifyParentInvite($waiver) > 0)) {
-                $sent++;
-            } else {
-                $failed++;
-            }
-        }
-
-        $message = "Invites sent to {$sent} recipient(s).";
+        $message = $this->countOf($sent, 'invite', 'invites') . ' sent.';
         if ($failed > 0) {
-            $message .= " {$failed} could not be delivered. Use Edit next to their name to fix the email or phone.";
+            $message .= ' ' . $this->undeliveredNote($failed);
         }
 
         return response()->json([
@@ -904,45 +914,47 @@ class WaiverPublicController extends Controller
     {
         $invite = WaiverBulkInvite::with('template')->where('manage_token', $manageToken)->first();
         if (!$invite) {
-            return response()->json(['success' => false, 'message' => 'Invite not found.'], 404);
+            return response()->json(['success' => false, 'message' => 'This group invite link is not valid. Please ask the venue for a new one.'], 404);
         }
 
         $recipient = $invite->recipients()->find($recipientId);
         if (!$recipient) {
-            return response()->json(['success' => false, 'message' => 'Recipient not found.'], 404);
+            return response()->json(['success' => false, 'message' => 'This person is not on your list.'], 404);
         }
         if ($recipient->status === WaiverInviteRecipient::STATUS_COMPLETE) {
-            return response()->json(['success' => false, 'message' => 'This recipient already completed their waiver.'], 409);
+            return response()->json(['success' => false, 'message' => 'This person has already signed their waiver.'], 409);
         }
 
         $waiver = $this->waivers->createForBulkRecipient($invite, $recipient);
         if ($waiver->isCompleted()) {
-            return response()->json(['success' => false, 'message' => 'This recipient already completed their waiver.'], 409);
+            return response()->json(['success' => false, 'message' => 'This person has already signed their waiver.'], 409);
         }
 
-        if (!$this->recordInviteAttempt($recipient, $this->notifyParentInvite($waiver) > 0, resend: true)) {
+        $firstSend = $recipient->status === WaiverInviteRecipient::STATUS_NOT_SENT;
+
+        if (!$this->recordInviteAttempt($recipient, $this->notifyParentInvite($waiver) > 0, resend: !$firstSend)) {
             return response()->json([
                 'success' => false,
-                'message' => 'This invite could not be delivered. Use Edit to fix their email or phone.',
+                'message' => 'This invite could not be delivered. Use Edit to fix their email or mobile number.',
             ], 422);
         }
 
-        return response()->json(['success' => true, 'message' => 'Invite resent.']);
+        return response()->json(['success' => true, 'message' => $firstSend ? 'Invite sent.' : 'Invite resent.']);
     }
 
     public function bulkUpdateRecipient(Request $request, string $manageToken, int $recipientId): JsonResponse
     {
         $invite = WaiverBulkInvite::with('template')->where('manage_token', $manageToken)->first();
         if (!$invite) {
-            return response()->json(['success' => false, 'message' => 'Invite not found.'], 404);
+            return response()->json(['success' => false, 'message' => 'This group invite link is not valid. Please ask the venue for a new one.'], 404);
         }
 
         $recipient = $invite->recipients()->find($recipientId);
         if (!$recipient) {
-            return response()->json(['success' => false, 'message' => 'Recipient not found.'], 404);
+            return response()->json(['success' => false, 'message' => 'This person is not on your list.'], 404);
         }
         if ($recipient->status === WaiverInviteRecipient::STATUS_COMPLETE) {
-            return response()->json(['success' => false, 'message' => 'This parent has already signed, so their details can no longer be changed.'], 409);
+            return response()->json(['success' => false, 'message' => 'This person has already signed, so their details can no longer be changed.'], 409);
         }
 
         $validated = $request->validate([
@@ -959,7 +971,7 @@ class WaiverPublicController extends Controller
             return $this->recipientContactRefused('phone', 'Enter a 10-digit US or Canadian mobile number.');
         }
         if (!$email && !$phone) {
-            return $this->recipientContactRefused('email', 'Add an email address or a 10-digit phone number.');
+            return $this->recipientContactRefused('email', 'Add an email address or a 10-digit US or Canadian mobile number.');
         }
 
         $taken = $invite->recipients()
@@ -984,14 +996,14 @@ class WaiverPublicController extends Controller
                 'phone' => $phone,
             ]);
         if ($updated === 0) {
-            return response()->json(['success' => false, 'message' => 'This parent has already signed, so their details can no longer be changed.'], 409);
+            return response()->json(['success' => false, 'message' => 'This person has already signed, so their details can no longer be changed.'], 409);
         }
         $recipient->refresh();
         $this->waivers->syncPendingBulkWaiver($recipient);
 
         $waiver = $this->waivers->createForBulkRecipient($invite, $recipient->fresh());
         if ($waiver->isCompleted()) {
-            return response()->json(['success' => false, 'message' => 'This parent has already signed, so their details can no longer be changed.'], 409);
+            return response()->json(['success' => false, 'message' => 'This person has already signed, so their details can no longer be changed.'], 409);
         }
 
         $delivered = $this->recordInviteAttempt($recipient, $this->notifyParentInvite($waiver) > 0, retried: true);
@@ -1000,9 +1012,35 @@ class WaiverPublicController extends Controller
             'success' => $delivered,
             'message' => $delivered
                 ? 'Saved and sent.'
-                : 'Saved, but the invite still could not be delivered. Check the email or phone again.',
+                : 'Saved, but the invite still could not be delivered. Check the email or mobile number again.',
             'data' => ['status' => $recipient->fresh()->status],
         ]);
+    }
+
+    private function sendInvites(WaiverBulkInvite $invite, iterable $recipients): array
+    {
+        $sent = 0;
+        $failed = 0;
+
+        foreach ($recipients as $recipient) {
+            $recipient->refresh();
+            if ($recipient->status === WaiverInviteRecipient::STATUS_COMPLETE) {
+                continue;
+            }
+
+            $waiver = $this->waivers->createForBulkRecipient($invite, $recipient);
+            if ($waiver->isCompleted()) {
+                continue;
+            }
+
+            if ($this->recordInviteAttempt($recipient, $this->notifyParentInvite($waiver) > 0)) {
+                $sent++;
+            } else {
+                $failed++;
+            }
+        }
+
+        return [$sent, $failed];
     }
 
     private function recordInviteAttempt(WaiverInviteRecipient $recipient, bool $delivered, bool $resend = false, bool $retried = false): bool
@@ -1025,6 +1063,17 @@ class WaiverPublicController extends Controller
         $open->update(['status' => WaiverInviteRecipient::STATUS_FAILED]);
 
         return false;
+    }
+
+    private function countOf(int $count, string $singular, string $plural): string
+    {
+        return $count . ' ' . ($count === 1 ? $singular : $plural);
+    }
+
+    private function undeliveredNote(int $failed): string
+    {
+        return ($failed === 1 ? '1 invite' : "{$failed} invites")
+            . ' could not be delivered. Use Edit next to their name to fix the email or mobile number.';
     }
 
     private function recipientContactRefused(string $field, string $message): JsonResponse
@@ -1134,16 +1183,16 @@ class WaiverPublicController extends Controller
             $data['adult_email'] ?? null,
             $data['adult_phone'] ?? null
         );
-        [$allowed, $reason] = $this->waivers->evaluateDuplicateRule($template, $duplicate, false);
+        [$allowed] = $this->waivers->evaluateDuplicateRule($template, $duplicate, false);
         if (!$allowed) {
-            return response()->json(['success' => false, 'message' => $reason], 409);
+            return response()->json(['success' => false, 'message' => self::GROUP_ALREADY_SIGNED], 409);
         }
 
         $recipient = $this->invitedRecipientFor($invite, $data['adult_email'] ?? null, $data['adult_phone'] ?? null);
         $waiver = $this->waivers->createForBulkRecipient($invite, $recipient);
 
         if ($waiver->isCompleted()) {
-            return response()->json(['success' => false, 'message' => 'A waiver has already been completed for this booking date.'], 409);
+            return response()->json(['success' => false, 'message' => self::GROUP_ALREADY_SIGNED], 409);
         }
 
         if ((int) $waiver->waiver_template_version_id !== (int) $version->id) {
@@ -1185,6 +1234,13 @@ class WaiverPublicController extends Controller
             ->first();
 
         return $invite?->template && !$invite->template->isEscapeRoom() ? $invite : null;
+    }
+
+    private function alreadyCompletedMessage(Waiver $waiver): string
+    {
+        return $waiver->source === Waiver::SOURCE_BULK_INVITE
+            ? 'You have already signed this waiver for this visit.'
+            : 'Your waiver has already been completed for this booking date.';
     }
 
     private function groupLinkUnavailable(): JsonResponse

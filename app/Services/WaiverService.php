@@ -463,7 +463,7 @@ class WaiverService
         $waiver->loadMissing(['customer', 'booking', 'event']);
 
         $customer = $waiver->customer;
-        $booking = $waiver->booking;
+        $booking = $waiver->source === Waiver::SOURCE_BULK_INVITE ? null : $waiver->booking;
 
         return array_filter([
             'adult_first_name' => $waiver->adult_first_name

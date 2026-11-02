@@ -242,7 +242,7 @@ class WaiverBulkInviteController extends Controller
         if ($authUser && in_array($authUser->role, ['company_admin', 'admin', 'location_manager'], true)) {
             return null;
         }
-        return $this->forbidden('Only location managers and admins can send bulk waiver invites.');
+        return $this->forbidden('Only location managers and admins can send group waiver invites.');
     }
 
     private function paginationMeta($paginator): array

@@ -228,10 +228,7 @@ class WaiverGroupInviteTest extends TestCase
         $invite = $this->invite();
         $this->postJson("/api/waivers/bulk/{$invite->manage_token}/recipients", [
             'recipients' => [['name' => 'Jamie P', 'email' => 'Jamie@Example.test']],
-        ])->assertOk();
-        $this->postJson("/api/waivers/bulk/{$invite->manage_token}/send")
-            ->assertOk()
-            ->assertJsonPath('data.sent', 1);
+        ])->assertOk()->assertJsonPath('data.sent', 1);
 
         $pending = Waiver::where('bulk_invite_id', $invite->id)->sole();
 
@@ -273,11 +270,16 @@ class WaiverGroupInviteTest extends TestCase
     public function test_an_invite_that_reaches_no_one_is_marked_failed_not_sent(): void
     {
         $invite = $this->invite();
+        $this->emailsFail();
+
         $this->postJson("/api/waivers/bulk/{$invite->manage_token}/recipients", [
             'recipients' => [['name' => 'Bad Address', 'email' => 'bad@example.test']],
-        ])->assertOk();
-
-        $this->emailsFail();
+        ])->assertOk()
+            ->assertJsonPath('data.added', 1)
+            ->assertJsonPath('data.sent', 0)
+            ->assertJsonPath('data.failed', 1)
+            ->assertJsonPath('message', '1 person added. 1 invite could not be delivered. Use Edit next to their name to fix the email or mobile number.');
+        $this->assertSame(WaiverInviteRecipient::STATUS_FAILED, WaiverInviteRecipient::sole()->status);
 
         $this->postJson("/api/waivers/bulk/{$invite->manage_token}/send")
             ->assertOk()
@@ -328,8 +330,7 @@ class WaiverGroupInviteTest extends TestCase
         $invite = $this->invite();
         $this->postJson("/api/waivers/bulk/{$invite->manage_token}/recipients", [
             'recipients' => [['name' => 'Sam Guardian', 'email' => 'sam@example.test']],
-        ])->assertOk();
-        $this->postJson("/api/waivers/bulk/{$invite->manage_token}/send")->assertJsonPath('data.sent', 1);
+        ])->assertOk()->assertJsonPath('data.sent', 1);
         $recipient = WaiverInviteRecipient::sole();
 
         $this->emailsFail();
@@ -351,11 +352,7 @@ class WaiverGroupInviteTest extends TestCase
         $invite = $this->invite(['chaperone_email' => null, 'chaperone_phone' => '2485550100']);
         $this->postJson("/api/waivers/bulk/{$invite->manage_token}/recipients", [
             'recipients' => [['name' => 'Text Only', 'phone' => '(248) 555-0177']],
-        ])->assertOk();
-
-        $this->postJson("/api/waivers/bulk/{$invite->manage_token}/send")
-            ->assertOk()
-            ->assertJsonPath('data.sent', 1);
+        ])->assertOk()->assertJsonPath('data.sent', 1);
 
         $this->assertSame(WaiverInviteRecipient::STATUS_SENT, WaiverInviteRecipient::sole()->status);
         $this->assertContains('2485550177', $texts->getArrayCopy());
@@ -368,10 +365,7 @@ class WaiverGroupInviteTest extends TestCase
         $invite = $this->invite();
         $this->postJson("/api/waivers/bulk/{$invite->manage_token}/recipients", [
             'recipients' => [['name' => 'Text Only', 'phone' => '(248) 555-0177']],
-        ])->assertOk();
-
-        $this->postJson("/api/waivers/bulk/{$invite->manage_token}/send")
-            ->assertJsonPath('data.failed', 1);
+        ])->assertOk()->assertJsonPath('data.failed', 1);
 
         $this->assertSame(WaiverInviteRecipient::STATUS_FAILED, WaiverInviteRecipient::sole()->status);
     }
@@ -498,10 +492,10 @@ class WaiverGroupInviteTest extends TestCase
         $this->postJson("/api/waivers/group/{$mine->shareable_token}/submit", $this->signature())->assertCreated();
 
         $theirRow = WaiverInviteRecipient::where('waiver_bulk_invite_id', $theirs->id)->sole();
-        $this->assertSame(WaiverInviteRecipient::STATUS_NOT_SENT, $theirRow->status);
-        $this->assertNull($theirRow->waiver_id);
+        $this->assertSame(WaiverInviteRecipient::STATUS_SENT, $theirRow->status);
+        $this->assertFalse(Waiver::findOrFail($theirRow->waiver_id)->isCompleted());
         $this->assertSame(1, WaiverInviteRecipient::where('waiver_bulk_invite_id', $mine->id)->count());
-        $this->assertSame($mine->id, (int) Waiver::sole()->bulk_invite_id);
+        $this->assertSame($mine->id, (int) Waiver::completed()->sole()->bulk_invite_id);
     }
 
     public function test_when_repeat_signatures_are_allowed_each_one_gets_its_own_row(): void
@@ -571,9 +565,7 @@ class WaiverGroupInviteTest extends TestCase
                 ['name' => 'Blocked Parent', 'email' => 'blocked@example.test'],
                 ['name' => 'Open Parent', 'email' => 'open@example.test'],
             ],
-        ])->assertOk();
-
-        $this->postJson("/api/waivers/bulk/{$invite->manage_token}/send")
+        ])->assertOk()
             ->assertJsonPath('data.sent', 1)
             ->assertJsonPath('data.failed', 1);
 
@@ -613,7 +605,6 @@ class WaiverGroupInviteTest extends TestCase
     {
         $invite = $this->invite();
         $this->addParents($invite, [['name' => 'Jamie Parent', 'email' => 'jamie@example.test']]);
-        $this->postJson("/api/waivers/bulk/{$invite->manage_token}/send")->assertJsonPath('data.sent', 1);
         $pending = Waiver::where('bulk_invite_id', $invite->id)->sole();
         $oldVersionId = (int) $pending->waiver_template_version_id;
 
@@ -643,7 +634,9 @@ class WaiverGroupInviteTest extends TestCase
             ['name' => 'First Parent', 'email' => 'first@example.test'],
             ['name' => 'Second Parent', 'email' => 'second@example.test'],
         ]);
+        WaiverInviteRecipient::query()->update(['status' => WaiverInviteRecipient::STATUS_FAILED]);
         $second = WaiverInviteRecipient::where('email', 'second@example.test')->sole();
+        $secondWaiverId = $second->waiver_id;
         $notified = new \ArrayObject();
 
         $this->partialMock(EmailNotificationService::class, function ($mock) use ($second, $notified) {
@@ -659,8 +652,8 @@ class WaiverGroupInviteTest extends TestCase
 
         $this->assertSame(['first@example.test'], $notified->getArrayCopy());
         $this->assertSame(WaiverInviteRecipient::STATUS_COMPLETE, $second->fresh()->status);
-        $this->assertNull($second->fresh()->waiver_id);
-        $this->assertSame(1, Waiver::count());
+        $this->assertSame($secondWaiverId, $second->fresh()->waiver_id);
+        $this->assertSame(2, Waiver::count());
     }
 
     public function test_a_staff_copy_does_not_hide_that_the_parent_was_not_reached(): void
@@ -672,7 +665,6 @@ class WaiverGroupInviteTest extends TestCase
                 'recipient_types' => json_encode([EmailNotification::RECIPIENT_CUSTOMER, EmailNotification::RECIPIENT_CUSTOM]),
                 'custom_emails' => json_encode(['front-desk-copy@example.test']),
             ]);
-        $this->addParents($invite, [['name' => 'Bounce Parent', 'email' => 'bounce@example.test']]);
         $sent = new \ArrayObject();
         $this->partialMock(EmailNotificationService::class, function ($mock) use ($sent) {
             $mock->shouldReceive('sendEmail')->andReturnUsing(function ($to) use ($sent) {
@@ -683,7 +675,9 @@ class WaiverGroupInviteTest extends TestCase
             });
         });
 
-        $this->postJson("/api/waivers/bulk/{$invite->manage_token}/send")->assertJsonPath('data.failed', 1);
+        $this->postJson("/api/waivers/bulk/{$invite->manage_token}/recipients", [
+            'recipients' => [['name' => 'Bounce Parent', 'email' => 'bounce@example.test']],
+        ])->assertOk()->assertJsonPath('data.failed', 1);
 
         $this->assertContains('front-desk-copy@example.test', $sent->getArrayCopy());
         $this->assertSame(WaiverInviteRecipient::STATUS_FAILED, WaiverInviteRecipient::sole()->status);
@@ -693,12 +687,13 @@ class WaiverGroupInviteTest extends TestCase
     {
         $this->textsGoThrough(fn () => 'SM1');
         $invite = $this->invite();
-        $this->addParents($invite, [['name' => 'Both Ways', 'email' => 'both@example.test', 'phone' => '2485550199']]);
         $this->partialMock(EmailNotificationService::class, function ($mock) {
             $mock->shouldReceive('buildVariables')->andThrow(new \TypeError('Unexpected null'));
         });
 
-        $this->postJson("/api/waivers/bulk/{$invite->manage_token}/send")->assertJsonPath('data.sent', 1);
+        $this->postJson("/api/waivers/bulk/{$invite->manage_token}/recipients", [
+            'recipients' => [['name' => 'Both Ways', 'email' => 'both@example.test', 'phone' => '2485550199']],
+        ])->assertOk()->assertJsonPath('data.sent', 1);
 
         $this->assertSame(WaiverInviteRecipient::STATUS_SENT, WaiverInviteRecipient::sole()->status);
     }
@@ -716,12 +711,12 @@ class WaiverGroupInviteTest extends TestCase
         ]))->assertCreated();
 
         $this->assertSame(WaiverInviteRecipient::STATUS_COMPLETE, WaiverInviteRecipient::where('email', 'dad@example.test')->value('status'));
-        $this->assertSame(WaiverInviteRecipient::STATUS_NOT_SENT, WaiverInviteRecipient::where('email', 'mom@example.test')->value('status'));
+        $this->assertSame(WaiverInviteRecipient::STATUS_SENT, WaiverInviteRecipient::where('email', 'mom@example.test')->value('status'));
 
         $this->postJson("/api/waivers/group/{$invite->shareable_token}/submit", $this->signature([
             'adult_first_name' => 'Grandma', 'adult_email' => 'grandma@example.test', 'typed_legal_name' => 'Grandma Parent', 'adult_phone' => '2485550142',
         ]))->assertStatus(409);
-        $this->assertSame(WaiverInviteRecipient::STATUS_NOT_SENT, WaiverInviteRecipient::where('email', 'mom@example.test')->value('status'));
+        $this->assertSame(WaiverInviteRecipient::STATUS_SENT, WaiverInviteRecipient::where('email', 'mom@example.test')->value('status'));
     }
 
     public function test_a_second_submit_while_the_first_is_still_saving_is_turned_away(): void
@@ -754,10 +749,10 @@ class WaiverGroupInviteTest extends TestCase
     public function test_the_chaperone_fixes_a_failed_contact_and_the_invite_goes_out(): void
     {
         $invite = $this->invite();
-        $this->addParents($invite, [['name' => 'Typo Parent', 'email' => 'typo@example.test']]);
         $this->emailsFail();
-        $this->postJson("/api/waivers/bulk/{$invite->manage_token}/send")->assertJsonPath('data.failed', 1);
+        $this->addParents($invite, [['name' => 'Typo Parent', 'email' => 'typo@example.test']]);
         $recipient = WaiverInviteRecipient::sole();
+        $this->assertSame(WaiverInviteRecipient::STATUS_FAILED, $recipient->status);
         $pendingId = Waiver::sole()->id;
 
         $this->app->forgetInstance(EmailNotificationService::class);
@@ -785,8 +780,8 @@ class WaiverGroupInviteTest extends TestCase
     {
         $invite = $this->invite();
         $this->addParents($invite, [['name' => 'Typo Parent', 'email' => 'typo@example.test']]);
-        $this->postJson("/api/waivers/bulk/{$invite->manage_token}/send")->assertJsonPath('data.sent', 1);
         $recipient = WaiverInviteRecipient::sole();
+        $this->assertSame(WaiverInviteRecipient::STATUS_SENT, $recipient->status);
         $this->emailsFail();
 
         $this->patchJson("/api/waivers/bulk/{$invite->manage_token}/recipients/{$recipient->id}", ['email' => 'still-bad@example.test'])
@@ -814,7 +809,7 @@ class WaiverGroupInviteTest extends TestCase
         $this->patchJson("/api/waivers/bulk/{$other->manage_token}/recipients/{$one->id}", ['email' => 'new@example.test'])
             ->assertNotFound();
         $this->assertSame('one@example.test', $one->fresh()->email);
-        $this->assertSame(WaiverInviteRecipient::STATUS_NOT_SENT, $one->fresh()->status);
+        $this->assertSame(WaiverInviteRecipient::STATUS_SENT, $one->fresh()->status);
 
         $this->postJson("/api/waivers/group/{$invite->shareable_token}/submit", $this->signature(['adult_email' => 'one@example.test']))->assertCreated();
         $this->patchJson("/api/waivers/bulk/{$invite->manage_token}/recipients/{$one->id}", ['email' => 'late@example.test'])
@@ -871,9 +866,9 @@ class WaiverGroupInviteTest extends TestCase
                 'recipient_types' => json_encode([SmsNotification::RECIPIENT_CUSTOMER, SmsNotification::RECIPIENT_CUSTOM]),
                 'custom_phones' => json_encode(['2485550999']),
             ]);
-        $this->addParents($invite, [['name' => 'Text Only', 'phone' => '(248) 555-0177']]);
-
-        $this->postJson("/api/waivers/bulk/{$invite->manage_token}/send")->assertJsonPath('data.failed', 1);
+        $this->postJson("/api/waivers/bulk/{$invite->manage_token}/recipients", [
+            'recipients' => [['name' => 'Text Only', 'phone' => '(248) 555-0177']],
+        ])->assertOk()->assertJsonPath('data.failed', 1);
 
         $this->assertSame(WaiverInviteRecipient::STATUS_FAILED, WaiverInviteRecipient::sole()->status);
     }
@@ -881,19 +876,17 @@ class WaiverGroupInviteTest extends TestCase
     public function test_a_parent_who_signs_while_their_own_invite_is_going_out_stays_complete(): void
     {
         $invite = $this->invite();
-        $this->addParents($invite, [['name' => 'Quick Parent', 'email' => 'quick@example.test']]);
-        $recipient = WaiverInviteRecipient::sole();
-        $this->partialMock(EmailNotificationService::class, function ($mock) use ($recipient) {
-            $mock->shouldReceive('triggerWaiverNotification')->andReturnUsing(function () use ($recipient) {
-                WaiverInviteRecipient::whereKey($recipient->id)->update(['status' => WaiverInviteRecipient::STATUS_COMPLETE]);
+        $this->partialMock(EmailNotificationService::class, function ($mock) {
+            $mock->shouldReceive('triggerWaiverNotification')->andReturnUsing(function (Waiver $waiver) {
+                WaiverInviteRecipient::whereKey($waiver->bulk_invite_recipient_id)->update(['status' => WaiverInviteRecipient::STATUS_COMPLETE]);
 
                 return 0;
             });
         });
 
-        $this->postJson("/api/waivers/bulk/{$invite->manage_token}/send");
+        $this->addParents($invite, [['name' => 'Quick Parent', 'email' => 'quick@example.test']]);
 
-        $this->assertSame(WaiverInviteRecipient::STATUS_COMPLETE, $recipient->fresh()->status);
+        $this->assertSame(WaiverInviteRecipient::STATUS_COMPLETE, WaiverInviteRecipient::sole()->status);
     }
 
     public function test_a_relative_sharing_a_phone_with_a_listed_parent_gets_their_own_row(): void
@@ -905,7 +898,7 @@ class WaiverGroupInviteTest extends TestCase
             'adult_first_name' => 'Grandma', 'adult_email' => 'grandma@example.test', 'typed_legal_name' => 'Grandma Parent',
         ]))->assertCreated();
 
-        $this->assertSame(WaiverInviteRecipient::STATUS_NOT_SENT, WaiverInviteRecipient::where('email', 'mom@example.test')->value('status'));
+        $this->assertSame(WaiverInviteRecipient::STATUS_SENT, WaiverInviteRecipient::where('email', 'mom@example.test')->value('status'));
         $this->assertSame(WaiverInviteRecipient::STATUS_COMPLETE, WaiverInviteRecipient::where('email', 'grandma@example.test')->value('status'));
     }
 
@@ -921,5 +914,224 @@ class WaiverGroupInviteTest extends TestCase
         }
         $this->patchJson("/api/waivers/bulk/{$invite->manage_token}/recipients/{$recipient->id}", ['email' => 'fixed@example.test'])->assertStatus(429);
         $this->assertSame('edit-me@example.test', $recipient->fresh()->email);
+    }
+
+    private function partyBooking(string $date): Booking
+    {
+        $package = Package::create([
+            'location_id' => $this->location->id,
+            'name' => 'Field Trip',
+            'description' => 'Test package',
+            'category' => 'Party',
+            'price' => 30,
+            'pricing_type' => 'base',
+            'min_participants' => 1,
+            'max_participants' => 40,
+            'duration' => 60,
+            'duration_unit' => 'minutes',
+            'is_active' => true,
+        ]);
+
+        return Booking::create([
+            'reference_number' => 'GRP' . $package->id,
+            'booking_date' => $date,
+            'booking_time' => '14:00',
+            'duration' => 60,
+            'duration_unit' => 'minutes',
+            'location_id' => $this->location->id,
+            'package_id' => $package->id,
+            'participants' => 25,
+            'total_amount' => 750,
+            'status' => 'confirmed',
+            'guest_name' => 'Coach Taylor',
+            'guest_email' => 'coach@example.test',
+            'guest_phone' => '2485550100',
+        ]);
+    }
+
+    public function test_adding_a_contact_sends_their_invite_right_away_with_the_phone_saved(): void
+    {
+        $invite = $this->invite();
+
+        $response = $this->postJson("/api/waivers/bulk/{$invite->manage_token}/recipients", [
+            'recipients' => [['name' => 'Jamie Parent', 'email' => 'jamie@example.test', 'phone' => '(248) 555-0142']],
+        ])->assertOk()
+            ->assertJsonPath('data.added', 1)
+            ->assertJsonPath('data.sent', 1)
+            ->assertJsonPath('data.failed', 0);
+        $this->assertSame('1 person added. 1 invite sent.', $response->json('message'));
+
+        $recipient = WaiverInviteRecipient::sole();
+        $this->assertSame(WaiverInviteRecipient::STATUS_SENT, $recipient->status);
+        $this->assertSame('2485550142', $recipient->phone);
+        $this->assertNotNull($recipient->last_sent_at);
+        $this->assertSame(0, $recipient->resent_count);
+        $this->assertTrue(\App\Models\EmailNotificationLog::where('recipient_email', 'jamie@example.test')
+            ->where('status', \App\Models\EmailNotificationLog::STATUS_SENT)->exists());
+
+        $waiver = Waiver::findOrFail($recipient->waiver_id);
+        $this->getJson("/api/waivers/access/{$waiver->access_token}")
+            ->assertOk()
+            ->assertJsonPath('data.prefill.adult_phone', '2485550142')
+            ->assertJsonPath('data.prefill.adult_email', 'jamie@example.test')
+            ->assertJsonPath('data.prefill.adult_first_name', 'Jamie');
+
+        $this->postJson("/api/waivers/bulk/{$invite->manage_token}/send")
+            ->assertOk()
+            ->assertJsonPath('data.sent', 0)
+            ->assertJsonPath('data.failed', 0);
+        $this->assertSame(0, $recipient->fresh()->resent_count);
+    }
+
+    public function test_a_phone_that_cannot_be_texted_is_reported_instead_of_silently_dropped(): void
+    {
+        $invite = $this->invite();
+
+        $response = $this->postJson("/api/waivers/bulk/{$invite->manage_token}/recipients", [
+            'recipients' => [
+                ['name' => 'Abroad Parent', 'email' => 'abroad@example.test', 'phone' => '+63 917 123 4567'],
+                ['name' => 'Made Up', 'email' => 'madeup@example.test', 'phone' => '123-456-7890'],
+                ['name' => 'Local Parent', 'email' => 'local@example.test', 'phone' => '248.555.0177'],
+            ],
+        ])->assertOk()
+            ->assertJsonPath('data.added', 3)
+            ->assertJsonPath('data.sent', 3)
+            ->assertJsonPath('data.phones_not_saved', 2);
+        $this->assertSame(
+            '3 people added. 3 invites sent. 2 mobile numbers were not saved because invites can only be texted to US and Canadian mobile numbers, so those people get theirs by email.',
+            $response->json('message')
+        );
+
+        $this->assertNull(WaiverInviteRecipient::where('email', 'abroad@example.test')->value('phone'));
+        $this->assertNull(WaiverInviteRecipient::where('email', 'madeup@example.test')->value('phone'));
+        $this->assertSame('2485550177', WaiverInviteRecipient::where('email', 'local@example.test')->value('phone'));
+    }
+
+    public function test_a_parents_form_never_borrows_the_booking_guests_details(): void
+    {
+        $date = now()->addDays(3)->toDateString();
+        $booking = $this->partyBooking($date);
+        $invite = $this->invite(['booking_id' => $booking->id, 'selected_date' => $date]);
+        $this->addParents($invite, [['name' => 'Pat Parent', 'email' => 'pat@example.test']]);
+
+        $waiver = Waiver::findOrFail(WaiverInviteRecipient::sole()->waiver_id);
+        $this->assertSame($booking->id, (int) $waiver->booking_id);
+
+        $prefill = $this->getJson("/api/waivers/access/{$waiver->access_token}")->assertOk()->json('data.prefill');
+
+        $this->assertSame('pat@example.test', $prefill['adult_email']);
+        $this->assertSame('Pat', $prefill['adult_first_name']);
+        $this->assertArrayNotHasKey('adult_phone', $prefill);
+        $this->assertNotContains('Coach', $prefill);
+        $this->assertNotContains('2485550100', $prefill);
+    }
+
+    public function test_a_booking_waiver_still_prefills_from_the_booking(): void
+    {
+        $date = now()->addDays(3)->toDateString();
+        $booking = $this->partyBooking($date);
+        $waiver = Waiver::create([
+            'company_id' => $this->company->id,
+            'location_id' => $this->location->id,
+            'waiver_template_id' => $this->template->id,
+            'waiver_template_version_id' => app(WaiverService::class)->currentVersion($this->template)->id,
+            'booking_id' => $booking->id,
+            'status' => Waiver::STATUS_PENDING,
+            'selected_date' => $date,
+            'source' => Waiver::SOURCE_CONFIRMATION_EMAIL,
+        ]);
+
+        $this->getJson("/api/waivers/access/{$waiver->access_token}")
+            ->assertOk()
+            ->assertJsonPath('data.prefill.adult_phone', '2485550100')
+            ->assertJsonPath('data.prefill.adult_email', 'coach@example.test');
+    }
+
+    public function test_the_first_send_from_a_row_is_a_send_and_later_ones_are_resends(): void
+    {
+        $invite = $this->invite();
+        $recipient = $invite->recipients()->create([
+            'name' => 'Older Row',
+            'email' => 'older@example.test',
+            'status' => WaiverInviteRecipient::STATUS_NOT_SENT,
+        ]);
+
+        $this->postJson("/api/waivers/bulk/{$invite->manage_token}/recipients/{$recipient->id}/resend")
+            ->assertOk()
+            ->assertJsonPath('message', 'Invite sent.');
+        $this->assertSame(WaiverInviteRecipient::STATUS_SENT, $recipient->fresh()->status);
+        $this->assertSame(0, $recipient->fresh()->resent_count);
+
+        $this->postJson("/api/waivers/bulk/{$invite->manage_token}/recipients/{$recipient->id}/resend")
+            ->assertOk()
+            ->assertJsonPath('message', 'Invite resent.');
+        $this->assertSame(1, $recipient->fresh()->resent_count);
+    }
+
+    public function test_messages_use_the_group_terms_and_count_people_correctly(): void
+    {
+        $invite = $this->invite();
+
+        $this->postJson("/api/waivers/bulk/{$invite->manage_token}/recipients", [
+            'recipients' => [
+                ['name' => 'One Adult', 'email' => 'one@example.test'],
+                ['name' => 'Two Adult', 'email' => 'two@example.test'],
+                ['name' => 'One Adult Again', 'email' => 'ONE@example.test'],
+                ['name' => 'No Contact', 'phone' => '555'],
+            ],
+        ])->assertOk()->assertJsonPath(
+            'message',
+            '2 people added. 2 invites sent. 1 already on your list. 1 skipped: add an email address or a 10-digit US or Canadian mobile number.'
+        );
+
+        WaiverInviteRecipient::query()->update(['status' => WaiverInviteRecipient::STATUS_FAILED]);
+        $this->postJson("/api/waivers/bulk/{$invite->manage_token}/send")->assertJsonPath('message', '2 invites sent.');
+
+        $this->postJson("/api/waivers/bulk/nope/send")
+            ->assertNotFound()
+            ->assertJsonPath('message', 'This group invite link is not valid. Please ask the venue for a new one.');
+        $this->postJson("/api/waivers/bulk/{$invite->manage_token}/recipients/999999/resend")
+            ->assertNotFound()
+            ->assertJsonPath('message', 'This person is not on your list.');
+    }
+
+    public function test_someone_who_already_signed_is_told_so_in_visit_terms(): void
+    {
+        $invite = $this->invite();
+        $id = $this->postJson("/api/waivers/group/{$invite->shareable_token}/submit", $this->signature())->assertCreated()->json('data.id');
+
+        $this->postJson("/api/waivers/group/{$invite->shareable_token}/submit", $this->signature())
+            ->assertStatus(409)
+            ->assertJsonPath('message', 'A waiver has already been signed with this email or mobile number for this visit.');
+
+        $this->getJson('/api/waivers/access/' . Waiver::findOrFail($id)->access_token)
+            ->assertOk()
+            ->assertJsonPath('data.status', 'completed')
+            ->assertJsonPath('data.message', 'You have already signed this waiver for this visit.');
+
+        $recipient = WaiverInviteRecipient::sole();
+        $this->postJson("/api/waivers/bulk/{$invite->manage_token}/recipients/{$recipient->id}/resend")
+            ->assertStatus(409)
+            ->assertJsonPath('message', 'This person has already signed their waiver.');
+    }
+
+    public function test_a_signed_booking_waiver_still_talks_about_the_booking_date(): void
+    {
+        $date = now()->addDays(3)->toDateString();
+        $booking = $this->partyBooking($date);
+        $waiver = Waiver::create([
+            'company_id' => $this->company->id,
+            'location_id' => $this->location->id,
+            'waiver_template_id' => $this->template->id,
+            'waiver_template_version_id' => app(WaiverService::class)->currentVersion($this->template)->id,
+            'booking_id' => $booking->id,
+            'status' => Waiver::STATUS_COMPLETED,
+            'selected_date' => $date,
+            'source' => Waiver::SOURCE_CONFIRMATION_EMAIL,
+        ]);
+
+        $this->getJson("/api/waivers/access/{$waiver->access_token}")
+            ->assertOk()
+            ->assertJsonPath('data.message', 'Your waiver has already been completed for this booking date.');
     }
 }
