@@ -52,6 +52,19 @@ class WaiverBulkInvite extends Model
         });
     }
 
+    public function activeShareableToken(): ?string
+    {
+        if (!$this->allow_shareable_link) {
+            return null;
+        }
+
+        if (!$this->shareable_token) {
+            $this->forceFill(['shareable_token' => self::generateUniqueToken('shareable_token')])->save();
+        }
+
+        return $this->shareable_token;
+    }
+
     public static function generateUniqueToken(string $column): string
     {
         do {

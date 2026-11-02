@@ -97,6 +97,9 @@ Route::get('waivers/bulk/{manageToken}',             [WaiverPublicController::cl
 Route::post('waivers/bulk/{manageToken}/recipients', [WaiverPublicController::class, 'bulkAddRecipients'])->middleware('throttle:30,1,waiver-bulk-recipients');
 Route::post('waivers/bulk/{manageToken}/send',       [WaiverPublicController::class, 'bulkSend'])->middleware('throttle:10,1,waiver-bulk-send');
 Route::post('waivers/bulk/{manageToken}/recipients/{recipientId}/resend', [WaiverPublicController::class, 'bulkResendRecipient'])->middleware('throttle:10,1,waiver-bulk-resend')->whereNumber('recipientId');
+Route::patch('waivers/bulk/{manageToken}/recipients/{recipientId}', [WaiverPublicController::class, 'bulkUpdateRecipient'])->middleware('throttle:10,1,waiver-bulk-edit')->whereNumber('recipientId');
+Route::get('waivers/group/{shareableToken}',         [WaiverPublicController::class, 'groupShow']);
+Route::post('waivers/group/{shareableToken}/submit', [WaiverPublicController::class, 'groupSubmit'])->middleware('throttle:30,1,waiver-group-submit');
 
 Route::post('client-errors', [ClientErrorController::class, 'store'])->middleware('throttle:client-errors');
 

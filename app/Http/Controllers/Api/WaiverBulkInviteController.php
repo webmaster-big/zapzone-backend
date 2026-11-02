@@ -23,6 +23,7 @@ class WaiverBulkInviteController extends Controller
             ->withCount([
                 'recipients',
                 'recipients as complete_count' => fn ($q) => $q->where('status', 'complete'),
+                'recipients as failed_count' => fn ($q) => $q->where('status', 'failed'),
             ]);
         $this->applyAuthScope($query, $request);
 
@@ -156,12 +157,18 @@ class WaiverBulkInviteController extends Controller
             'created_by' => $authUser->id,
         ]);
 
-        $this->notifyChaperone($invite);
+        $notified = $this->notifyChaperone($invite) > 0;
+
+        $message = match (true) {
+            $notified => 'Group invite created and the chaperone was notified.',
+            !$invite->chaperone_email && !$invite->chaperone_phone => 'Group invite created. Copy the chaperone link and send it to them.',
+            default => 'Group invite created, but the email or text to the chaperone did not go out. Copy the chaperone link and send it to them.',
+        };
 
         return response()->json([
             'success' => true,
-            'message' => 'Bulk waiver invite sent to chaperone',
-            'data' => $invite->fresh(),
+            'message' => $message,
+            'data' => $invite->fresh()->setAttribute('chaperone_notified', $notified),
         ], 201);
     }
 
@@ -176,7 +183,14 @@ class WaiverBulkInviteController extends Controller
             return $this->forbidden();
         }
 
-        $this->notifyChaperone($waiverBulkInvite);
+        if ($this->notifyChaperone($waiverBulkInvite) === 0) {
+            return response()->json([
+                'success' => false,
+                'message' => $waiverBulkInvite->chaperone_email || $waiverBulkInvite->chaperone_phone
+                    ? 'The email or text to the chaperone did not go out. Check their email and phone, or copy the chaperone link and send it to them.'
+                    : 'This chaperone has no email or phone. Copy the chaperone link and send it to them.',
+            ], 422);
+        }
 
         return response()->json(['success' => true, 'message' => 'Chaperone invite resent']);
     }
@@ -188,10 +202,10 @@ class WaiverBulkInviteController extends Controller
      * engine by handing it a lightweight pending waiver whose recipient is the chaperone
      * and whose link points at the bulk management page.
      */
-    private function notifyChaperone(WaiverBulkInvite $invite): void
+    private function notifyChaperone(WaiverBulkInvite $invite): int
     {
         if (!$invite->chaperone_email && !$invite->chaperone_phone) {
-            return;
+            return 0;
         }
 
         try {
@@ -211,13 +225,15 @@ class WaiverBulkInviteController extends Controller
             $proxy->setRelation('company', $invite->company);
             $proxy->setRelation('location', $invite->location);
 
-            app(EmailNotificationService::class)
+            return app(EmailNotificationService::class)
                 ->triggerWaiverNotification($proxy, EmailNotification::TRIGGER_WAIVER_BULK_CHAPERONE);
         } catch (\Throwable $e) {
             Log::warning('Failed to notify chaperone for bulk waiver invite', [
                 'bulk_invite_id' => $invite->id,
                 'error' => $e->getMessage(),
             ]);
+
+            return 0;
         }
     }
 

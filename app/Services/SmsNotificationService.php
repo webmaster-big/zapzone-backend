@@ -167,10 +167,10 @@ class SmsNotificationService
         }
     }
 
-    public function triggerWaiverNotification(Waiver $waiver, string $triggerType): void
+    public function triggerWaiverNotification(Waiver $waiver, string $triggerType): int
     {
         if (!$this->enabled()) {
-            return;
+            return 0;
         }
 
         $waiver->loadMissing(['customer', 'location.company', 'company', 'booking', 'event', 'template']);
@@ -178,9 +178,13 @@ class SmsNotificationService
 
         $notifications = SmsNotification::findForWaiver($waiver, $triggerType);
 
+        $sent = 0;
+
         foreach ($notifications as $notification) {
-            $this->send($notification, $waiver, 'waiver');
+            $sent += $this->send($notification, $waiver, 'waiver');
         }
+
+        return $sent;
     }
 
     public function triggerPaymentNotification(Payment $payment, string $triggerType): void
@@ -236,24 +240,25 @@ class SmsNotificationService
         }
     }
 
-    protected function send(SmsNotification $notification, $entity, string $type, ?string $overrideRecipient = null): void
+    protected function send(SmsNotification $notification, $entity, string $type, ?string $overrideRecipient = null): int
     {
         $recipients = $overrideRecipient
             ? [['phone' => $overrideRecipient, 'type' => 'custom']]
             : $this->getRecipients($notification, $entity, $type);
 
         if (empty($recipients)) {
-            return;
+            return 0;
         }
 
         $variables = $this->variableSource->buildVariables($entity, $type, false);
         $message = $this->toPlainText($this->replaceVariables($notification->getEffectiveBody(), $variables));
 
         if ($message === '') {
-            return;
+            return 0;
         }
 
         $segments = SmsNotification::segmentCount($message);
+        $sent = 0;
 
         foreach ($recipients as $recipient) {
             $log = null;
@@ -270,6 +275,10 @@ class SmsNotificationService
 
                 $sid = $this->smsService->sendSms($recipient['phone'], $message);
                 $log?->markAsSent($sid, $segments);
+
+                if ($recipient['type'] === 'customer') {
+                    $sent++;
+                }
             } catch (\Throwable $e) {
                 if ($log) {
                     $log->markAsFailed($e->getMessage());
@@ -281,6 +290,8 @@ class SmsNotificationService
                 ]);
             }
         }
+
+        return $sent;
     }
 
     protected function getRecipients(SmsNotification $notification, $entity, string $type): array

@@ -2065,6 +2065,8 @@ class EscapeRoomWorkflowTest extends TestCase
         $this->partialMock(EmailNotificationService::class, function ($mock) use (&$signedNotices) {
             $mock->shouldReceive('triggerWaiverNotification')->andReturnUsing(function (Waiver $waiver, string $trigger) use (&$signedNotices) {
                 $signedNotices[] = [$waiver->id, $trigger];
+
+                return 1;
             });
         });
 

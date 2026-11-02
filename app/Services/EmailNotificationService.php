@@ -241,8 +241,10 @@ class EmailNotificationService
         }
     }
 
-    public function triggerWaiverNotification(Waiver $waiver, string $triggerType): void
+    public function triggerWaiverNotification(Waiver $waiver, string $triggerType): int
     {
+        $delivered = 0;
+
         try {
             $waiver->load(['customer', 'location.company', 'company', 'booking', 'event', 'template']);
 
@@ -251,17 +253,21 @@ class EmailNotificationService
             $notifications = EmailNotification::findForWaiver($waiver, $triggerType);
 
             foreach ($notifications as $notification) {
-                $this->sendNotification($notification, $waiver, 'waiver');
+                $delivered += $this->sendNotification($notification, $waiver, 'waiver');
             }
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             Log::error('Error processing waiver notification', [
                 'waiver_id' => $waiver->id,
                 'trigger_type' => $triggerType,
                 'error' => $e->getMessage(),
             ]);
         } finally {
-            $this->dispatchSms(fn ($sms) => $sms->triggerWaiverNotification($waiver, $triggerType));
+            $this->dispatchSms(function ($sms) use ($waiver, $triggerType, &$delivered) {
+                $delivered += (int) $sms->triggerWaiverNotification($waiver, $triggerType);
+            });
         }
+
+        return $delivered;
     }
 
     /**
@@ -346,11 +352,13 @@ class EmailNotificationService
         $this->triggerPurchaseNotification($purchase, EmailNotification::TRIGGER_PURCHASE_CREATED);
     }
 
-    protected function sendNotification(EmailNotification $notification, $entity, string $type, ?string $overrideRecipient = null): void
+    protected function sendNotification(EmailNotification $notification, $entity, string $type, ?string $overrideRecipient = null): int
     {
         $recipients = $overrideRecipient
             ? [['email' => $overrideRecipient, 'type' => 'custom']]
             : $this->getRecipients($notification, $entity, $type);
+
+        $sent = 0;
 
         foreach ($recipients as $recipient) {
             $log = null;
@@ -385,6 +393,10 @@ class EmailNotificationService
 
                 $log?->markAsSent();
 
+                if ($recipient['type'] === 'customer') {
+                    $sent++;
+                }
+
                 Log::info('Email notification sent', [
                     'notification_id' => $notification->id,
                     'recipient' => $recipient['email'],
@@ -401,6 +413,8 @@ class EmailNotificationService
                 ]);
             }
         }
+
+        return $sent;
     }
 
     public function sendDailySalesReport(EmailNotification $notification, array $variables): void

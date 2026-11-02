@@ -838,16 +838,16 @@ class WaiverService
      */
     public function createForBulkRecipient(
         \App\Models\WaiverBulkInvite $invite,
-        \App\Models\WaiverInviteRecipient $recipient
+        ?\App\Models\WaiverInviteRecipient $recipient
     ): Waiver {
-        if ($recipient->waiver_id && $recipient->waiver) {
+        if ($recipient?->waiver_id && $recipient->waiver) {
             return $recipient->waiver;
         }
 
         $template = $invite->template;
         $version = $this->currentVersion($template);
 
-        [$first, $last] = $this->splitName($recipient->name);
+        [$first, $last] = $this->splitName($recipient?->name);
 
         $waiver = Waiver::create([
             'company_id' => $invite->company_id,
@@ -857,19 +857,36 @@ class WaiverService
             'booking_id' => $invite->booking_id,
             'event_id' => $invite->event_id,
             'bulk_invite_id' => $invite->id,
-            'bulk_invite_recipient_id' => $recipient->id,
+            'bulk_invite_recipient_id' => $recipient?->id,
             'status' => Waiver::STATUS_PENDING,
             'selected_date' => $invite->selected_date,
             'adult_first_name' => $first,
             'adult_last_name' => $last,
-            'adult_email' => $recipient->email,
-            'adult_phone' => $recipient->phone,
+            'adult_email' => $recipient?->email,
+            'adult_phone' => $recipient?->phone,
             'source' => Waiver::SOURCE_BULK_INVITE,
         ]);
 
-        $recipient->update(['waiver_id' => $waiver->id]);
+        $recipient?->update(['waiver_id' => $waiver->id]);
 
         return $waiver;
+    }
+
+    public function syncPendingBulkWaiver(\App\Models\WaiverInviteRecipient $recipient): void
+    {
+        $waiver = $recipient->waiver;
+        if (!$waiver || $waiver->isCompleted()) {
+            return;
+        }
+
+        [$first, $last] = $this->splitName($recipient->name);
+
+        $waiver->update([
+            'adult_first_name' => $first,
+            'adult_last_name' => $last,
+            'adult_email' => $recipient->email,
+            'adult_phone' => $recipient->phone,
+        ]);
     }
 
     private function splitName(?string $name): array
