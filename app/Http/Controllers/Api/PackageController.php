@@ -89,7 +89,7 @@ class PackageController extends Controller
     public function packagesGroupedByName(Request $request): JsonResponse
     {
         $search = $request->get('search', null);
-        $date = $request->get('date') ? Carbon::parse($request->get('date')) : Carbon::today();
+        $date = $request->get('date') ? Carbon::parse($request->get('date')) : SpecialPricing::businessToday();
 
         $cacheKey = 'packages:grouped:' . md5(($search ?? '') . '|' . $date->toDateString());
 
@@ -130,8 +130,11 @@ class PackageController extends Controller
         $packageImages = Package::whereIn('id', $packages->pluck('id'))
             ->pluck('image', 'id');
 
+        $dealRules = SpecialPricing::dealRules();
+
         foreach ($packages as $package) {
             $packageName = $package->name;
+            $specialDeals = SpecialPricing::dealsFor($dealRules, SpecialPricing::ENTITY_PACKAGE, (int) $package->id, (int) $package->location_id);
 
             $priceBreakdown = SpecialPricing::getFullPriceBreakdown(
                 'package',
@@ -163,6 +166,7 @@ class PackageController extends Controller
                     'availability_schedules' => $package->availabilitySchedules,
                     'display_order' => $package->display_order,
                     'special_pricing' => $priceBreakdown,
+                    'special_deals' => [],
                 ];
             }
 
@@ -197,6 +201,7 @@ class PackageController extends Controller
                 'phone' => $package->location->phone,
                 'availability_schedules' => $package->availabilitySchedules,
                 'special_pricing' => $priceBreakdown,
+                'special_deals' => $specialDeals,
             ];
 
             $groupedPackages[$packageName]['booking_links'][] = [
@@ -206,6 +211,11 @@ class PackageController extends Controller
                 'location_id' => $package->location->id,
             ];
         }
+
+        foreach ($groupedPackages as &$group) {
+            $group['special_deals'] = SpecialPricing::combineDeals($group['locations']);
+        }
+        unset($group);
 
         return array_values($groupedPackages);
     }

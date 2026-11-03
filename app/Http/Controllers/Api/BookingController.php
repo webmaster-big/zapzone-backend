@@ -593,6 +593,9 @@ class BookingController extends Controller
             'applied_discounts.*.original_price' => 'required_with:applied_discounts|numeric|min:0',
             'applied_discounts.*.special_pricing_id' => 'nullable|integer',
             'applied_discounts.*.source' => 'nullable|string',
+            'applied_discounts.*.discount_label' => 'nullable|string|max:50',
+            'applied_discounts.*.unit_discount_amount' => 'nullable|numeric|min:0',
+            'applied_discounts.*.quantity' => 'nullable|integer|min:1',
             'payment_method' => ['nullable', Rule::in(['card', 'in-store', 'paylater', 'authorize.net'])],
             'notes' => 'nullable|string',
             // POST /bookings is public for storefront checkout, so it must not be able to put
@@ -2061,7 +2064,7 @@ class BookingController extends Controller
     {
         $intent = [];
 
-        foreach (['participants', 'package_id', 'booking_date', 'location_id'] as $key) {
+        foreach (['participants', 'package_id', 'booking_date', 'booking_time', 'location_id'] as $key) {
             if (array_key_exists($key, $validated) && $validated[$key] !== null) {
                 $intent[$key] = $validated[$key];
             }
@@ -2097,6 +2100,7 @@ class BookingController extends Controller
             'participants' => 'sometimes|integer|min:1',
             'package_id' => 'sometimes|nullable|exists:packages,id',
             'booking_date' => 'sometimes|date',
+            'booking_time' => ['sometimes', 'nullable', 'regex:/^\d{1,2}:\d{2}(:\d{2})?$/'],
             'location_id' => 'sometimes|exists:locations,id',
             'additional_addons' => 'sometimes|nullable|array',
             'additional_addons.*.addon_id' => 'required_with:additional_addons|integer|exists:add_ons,id',
@@ -2176,6 +2180,13 @@ class BookingController extends Controller
             'applied_discounts.*.discount_type' => ['required_with:applied_discounts', Rule::in(['fixed', 'percentage'])],
             'applied_discounts.*.original_price' => 'required_with:applied_discounts|numeric|min:0',
             'applied_discounts.*.special_pricing_id' => 'nullable|integer',
+            'applied_discounts.*.source' => 'nullable|string|max:50',
+            'applied_discounts.*.promo_id' => 'nullable|integer',
+            'applied_discounts.*.gift_card_id' => 'nullable|integer',
+            'applied_discounts.*.code' => 'nullable|string|max:255',
+            'applied_discounts.*.discount_label' => 'nullable|string|max:50',
+            'applied_discounts.*.unit_discount_amount' => 'nullable|numeric|min:0',
+            'applied_discounts.*.quantity' => 'nullable|integer|min:1',
             'payment_method' => ['sometimes', 'nullable', Rule::in(['card', 'in-store', 'paylater', 'authorize.net'])],
             'payment_status' => ['sometimes', Rule::in(['paid', 'partial', 'pending', 'refunded', 'voided'])],
             'status' => ['sometimes', Rule::in(['pending', 'confirmed', 'checked-in', 'completed', 'cancelled'])],
@@ -2531,8 +2542,11 @@ class BookingController extends Controller
             $pricingTouched = (isset($validated['participants']) && (int) $validated['participants'] !== (int) $booking->participants)
                 || (array_key_exists('package_id', $validated) && (int) $validated['package_id'] !== (int) $booking->package_id)
                 || (isset($validated['booking_date']) && Carbon::parse($validated['booking_date'])->toDateString() !== Carbon::parse($booking->booking_date)->toDateString())
+                || (isset($validated['booking_time']) && \App\Models\SpecialPricing::normalizeTime($validated['booking_time']) !== \App\Models\SpecialPricing::normalizeTime($booking->booking_time))
+                || (isset($validated['location_id']) && (int) $validated['location_id'] !== (int) $booking->location_id)
                 || $addOnLines !== null
                 || $attractionLines !== null;
+            $serverPriced = config('checkout.enforce_server_total_on_update') || ($clientTotal === null && $pricingTouched);
 
             Log::channel(config('checkout.log_channel') ?: config('logging.default'))
                 ->info('checkout.booking_update.reprice', [
@@ -2548,15 +2562,24 @@ class BookingController extends Controller
                     'additive_fees' => $repriced['additive_fees'],
                     'pricing_touched' => $pricingTouched,
                     'pricing_consistent' => $repriced['pricing_consistent'],
-                    'applied' => config('checkout.enforce_server_total_on_update') || ($clientTotal === null && $pricingTouched),
+                    'applied' => $serverPriced,
                 ]);
 
-            if (config('checkout.enforce_server_total_on_update') || ($clientTotal === null && $pricingTouched)) {
+            if ($serverPriced) {
                 $validated['total_amount'] = $repriced['total_amount'];
                 $validated['applied_fees'] = $repriced['applied_fees'];
                 $validated['discount_amount'] = $repriced['discount_amount'];
                 $validated['membership_discount'] = $repriced['membership_discount'];
                 unset($validated['applied_discounts']);
+            }
+
+            if ($repriced['applied_discounts'] !== null
+                && ! array_key_exists('applied_discounts', $validated)
+                && ($serverPriced || ($clientTotal !== null && abs($clientTotal - $repriced['total_amount']) <= 0.01))) {
+                $validated['applied_discounts'] = $repriced['applied_discounts'];
+                if (! array_key_exists('discount_amount', $validated)) {
+                    $validated['discount_amount'] = $repriced['discount_amount'];
+                }
             }
         }
 

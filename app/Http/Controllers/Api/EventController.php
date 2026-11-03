@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Models\Event;
+use App\Models\SpecialPricing;
 use App\Support\DataUriImage;
 use App\Support\LocationSlug;
 use Illuminate\Http\JsonResponse;
@@ -316,7 +317,9 @@ class EventController extends Controller
             });
         }
 
-        $query->orderBy('id')->chunk(100, function ($events) use (&$groupedEvents) {
+        $dealRules = SpecialPricing::dealRules();
+
+        $query->orderBy('id')->chunk(100, function ($events) use (&$groupedEvents, $dealRules) {
             foreach ($events as $event) {
                 $eventName = $event->name;
 
@@ -335,6 +338,7 @@ class EventController extends Controller
                         'max_tickets_per_slot' => $event->max_tickets_per_slot,
                         'price' => $event->price,
                         'features' => $event->features,
+                        'special_deals' => [],
                         'locations' => [],
                         'purchase_links' => [],
                     ];
@@ -368,6 +372,7 @@ class EventController extends Controller
                     'time_start' => $event->time_start,
                     'time_end' => $event->time_end,
                     'add_ons' => $event->addOns,
+                    'special_deals' => SpecialPricing::dealsFor($dealRules, SpecialPricing::ENTITY_EVENT, (int) $event->id, (int) $event->location_id, 3, SpecialPricing::eventWindow($event)),
                 ];
 
                 $groupedEvents[$eventName]['purchase_links'][] = [
@@ -378,6 +383,11 @@ class EventController extends Controller
                 ];
             }
         });
+
+        foreach ($groupedEvents as &$group) {
+            $group['special_deals'] = SpecialPricing::combineDeals($group['locations']);
+        }
+        unset($group);
 
         return array_values($groupedEvents);
     }

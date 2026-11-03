@@ -169,6 +169,9 @@ class EventPurchaseController extends Controller
                 'applied_discounts.*.original_price' => 'required_with:applied_discounts|numeric|min:0',
                 'applied_discounts.*.special_pricing_id' => 'nullable|integer',
                 'applied_discounts.*.source' => 'nullable|string',
+                'applied_discounts.*.discount_label' => 'nullable|string|max:50',
+                'applied_discounts.*.unit_discount_amount' => 'nullable|numeric|min:0',
+                'applied_discounts.*.quantity' => 'nullable|integer|min:1',
                 'promo_id' => 'nullable|exists:promos,id',
                 'gift_card_id' => 'nullable|exists:gift_cards,id',
                 'promo_code' => 'nullable|string',
@@ -393,6 +396,7 @@ class EventPurchaseController extends Controller
             $smsConsent = $validated['sms_consent'] ?? false;
             $customFieldAnswers = $validated['custom_fields'] ?? null;
             unset($validated['add_ons'], $validated['send_email'], $validated['sms_consent'], $validated['custom_fields']);
+            $validated['unit_price'] = round((float) $event->price, 2);
 
             $serverExpectedTotal = $serverExpectedTotal ?? null;
             $purchase = DB::transaction(function () use (&$validated, $discounts, $request, $customFieldAnswers, $rules, $isStaff, $addOnLines, $serverExpectedTotal, $respectDayOffs) {
@@ -788,6 +792,27 @@ class EventPurchaseController extends Controller
         );
     }
 
+    public function specialQuote(Request $request, EventPurchase $eventPurchase): JsonResponse
+    {
+        if ($denied = $this->denyStaffElsewhere($eventPurchase->location_id, 'purchase')) {
+            return $denied;
+        }
+
+        $validated = $request->validate([
+            'quantity' => 'sometimes|integer|min:1',
+            'purchase_date' => 'sometimes|date',
+            'purchase_time' => ['sometimes', 'nullable', 'regex:/^\d{1,2}:\d{2}(:\d{2})?$/'],
+        ]);
+
+        $quote = app(\App\Services\Checkout\PurchaseSpecialRepricer::class)->forEventPurchase($eventPurchase, $validated);
+
+        if (! $quote) {
+            return response()->json(['success' => false, 'message' => 'This purchase has no event date to price.'], 422);
+        }
+
+        return response()->json(['success' => true, 'data' => $quote]);
+    }
+
     public function update(Request $request, EventPurchase $eventPurchase): JsonResponse
     {
         if ($denied = $this->denyForeignRecord($eventPurchase, 'purchase')) {
@@ -815,6 +840,13 @@ class EventPurchaseController extends Controller
                 'applied_discounts.*.discount_type' => ['required_with:applied_discounts', Rule::in(['fixed', 'percentage'])],
                 'applied_discounts.*.original_price' => 'required_with:applied_discounts|numeric|min:0',
                 'applied_discounts.*.special_pricing_id' => 'nullable|integer',
+                'applied_discounts.*.source' => 'nullable|string|max:50',
+                'applied_discounts.*.promo_id' => 'nullable|integer',
+                'applied_discounts.*.gift_card_id' => 'nullable|integer',
+                'applied_discounts.*.code' => 'nullable|string|max:255',
+                'applied_discounts.*.discount_label' => 'nullable|string|max:50',
+                'applied_discounts.*.unit_discount_amount' => 'nullable|numeric|min:0',
+                'applied_discounts.*.quantity' => 'nullable|integer|min:1',
                 'payment_method' => 'nullable|in:card,in-store,paylater,authorize.net',
                 'payment_status' => 'in:paid,partial,pending',
                 'status' => 'in:pending,confirmed,checked-in,completed,cancelled',
@@ -943,6 +975,48 @@ class EventPurchaseController extends Controller
                 'price_at_purchase' => $line['price'] ?? 0,
             ], $addOnLines);
             unset($validated['add_ons']);
+
+            $visitMoved = (isset($validated['purchase_date'])
+                    && \Carbon\Carbon::parse($validated['purchase_date'])->toDateString() !== $eventPurchase->purchase_date?->toDateString())
+                || (isset($validated['purchase_time'])
+                    && \App\Models\SpecialPricing::normalizeTime($validated['purchase_time']) !== \App\Models\SpecialPricing::normalizeTime($eventPurchase->purchase_time));
+
+            if ($visitMoved
+                && $eventPurchase->ticket_order_id === null
+                && ! $request->has('total_amount')
+                && ! $request->has('discount_amount')
+                && ! $request->has('applied_discounts')
+                && ! isset($validated['quantity'])) {
+                $respecial = app(\App\Services\Checkout\PurchaseSpecialRepricer::class)->forEventPurchase($eventPurchase, [
+                    'purchase_date' => $validated['purchase_date'] ?? $eventPurchase->purchase_date?->toDateString(),
+                    'purchase_time' => $validated['purchase_time'] ?? $eventPurchase->purchase_time?->format('H:i'),
+                ]);
+
+                if ($respecial && $respecial['changed']) {
+                    $validated['applied_discounts'] = $respecial['applied_discounts'];
+                    $validated['discount_amount'] = $respecial['discount_amount'];
+                    $validated['total_amount'] = $respecial['total_amount'];
+                }
+            }
+
+            if (in_array($eventPurchase->payment_status, ['refunded', 'voided'], true)
+                && isset($validated['payment_status'])
+                && ! in_array($validated['payment_status'], ['refunded', 'voided'], true)) {
+                unset($validated['payment_status']);
+            }
+
+            $finalTotal = isset($validated['total_amount']) ? (float) $validated['total_amount'] : (float) $eventPurchase->total_amount;
+            $finalPaid = isset($validated['amount_paid']) ? (float) $validated['amount_paid'] : (float) $eventPurchase->amount_paid;
+            $moneyMoved = abs($finalTotal - (float) $eventPurchase->total_amount) > 0.005
+                || abs($finalPaid - (float) $eventPurchase->amount_paid) > 0.005;
+
+            if ($moneyMoved && (! isset($validated['payment_status']) || $validated['payment_status'] === $eventPurchase->payment_status)) {
+                $validated['payment_status'] = app(\App\Services\Checkout\BookingRepricer::class)->derive(
+                    $finalPaid,
+                    $finalTotal,
+                    $eventPurchase->payment_status
+                );
+            }
 
             $originalDate = optional($eventPurchase->purchase_date)->format('Y-m-d');
             $originalTime = $eventPurchase->purchase_time;

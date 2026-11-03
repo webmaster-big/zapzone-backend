@@ -236,6 +236,7 @@ Route::get('day-offs/location/{locationId}', [DayOffController::class, 'getByLoc
 Route::get('special-pricings/for-entity', [SpecialPricingController::class, 'getForEntity']); // include
 Route::post('special-pricings/check-date', [SpecialPricingController::class, 'checkDate']); // include
 Route::get('special-pricings/upcoming-dates', [SpecialPricingController::class, 'getUpcomingDates']); // include
+Route::get('special-pricings/deals', [SpecialPricingController::class, 'deals']); // include
 Route::get('fee-supports/for-entity', [FeeSupportController::class, 'getForEntity']); // include
 
 Route::post('promos/validate-code', [PromoController::class, 'validateByCode'])->middleware('throttle:discount-code-validate'); // include
@@ -458,6 +459,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('attraction-purchases/bulk-restore', [AttractionPurchaseController::class, 'bulkRestore'])->middleware('staff');
     Route::apiResource('attraction-purchases', AttractionPurchaseController::class)->except(['store', 'destroy'])->middleware('staff');
     Route::patch('attraction-purchases/{attractionPurchase}/update-status', [AttractionPurchaseController::class, 'updateStatus'])->middleware('staff');
+    Route::post('attraction-purchases/{attractionPurchase}/special-quote', [AttractionPurchaseController::class, 'specialQuote'])->middleware('staff');
     Route::get('attraction-purchases/customer/{customerId}', [AttractionPurchaseController::class, 'getByCustomer'])->middleware('staff');
     Route::get('attraction-purchases/attraction/{attractionId}', [AttractionPurchaseController::class, 'getByAttraction'])->middleware('staff');
     Route::patch('attraction-purchases/{attractionPurchase}/confirm', [AttractionPurchaseController::class, 'markAsConfirmed'])->middleware('staff');
@@ -756,6 +758,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::apiResource('event-purchases', EventPurchaseController::class)->except(['store', 'update'])->middleware('staff');
     Route::match(['put', 'patch'], 'event-purchases/{eventPurchase}', [EventPurchaseController::class, 'update'])->middleware('staff');
     Route::patch('event-purchases/{eventPurchase}/cancel', [EventPurchaseController::class, 'cancel'])->middleware('staff');
+    Route::post('event-purchases/{eventPurchase}/special-quote', [EventPurchaseController::class, 'specialQuote'])->middleware('staff');
     Route::patch('event-purchases/{eventPurchase}/status', [EventPurchaseController::class, 'updateStatus'])->middleware('staff');
     Route::post('event-purchases/{id}/restore', [EventPurchaseController::class, 'restore'])->middleware('staff');
 

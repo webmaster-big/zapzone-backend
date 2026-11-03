@@ -66,7 +66,7 @@
                                                     <td colspan="2" style="padding-top:4px;font-size:13px;color:#14653f;font-weight:600;">
                                                         ${{ number_format($line['discount_amount'], 2) }} saved on this item
                                                         @if(!empty($line['applied_discounts']))
-                                                            ({{ collect($line['applied_discounts'])->map(fn ($d) => ($d['name'] ?? 'Special pricing') . (isset($d['discount_label']) ? ' ' . $d['discount_label'] : ''))->implode(', ') }})
+                                                            ({{ collect($line['applied_discounts'])->map(fn ($d) => (($d['source'] ?? null) === 'gift_card' || ! empty($d['gift_card_id']) ? 'Gift card' : ($d['name'] ?? $d['discount_name'] ?? 'Special pricing')) . (isset($d['discount_label']) ? ' ' . $d['discount_label'] . (($d['discount_type'] ?? null) === 'fixed' && (int) ($d['quantity'] ?? 1) > 1 ? ' each' : '') : ''))->implode(', ') }})
                                                         @endif
                                                     </td>
                                                 </tr>

@@ -1144,14 +1144,20 @@ HTML;
             </tr>
             <tr>
                 <td style="padding: 12px 16px; border-bottom: 1px solid #e5e7eb; font-size: 14px;">
+                    <strong style="color: #6b7280;">Discount:</strong>
+                    <span style="color: #111827; float: right;">{{purchase_discount}}</span>
+                </td>
+            </tr>
+            <tr>
+                <td style="padding: 12px 16px; border-bottom: 1px solid #e5e7eb; font-size: 14px;">
                     <strong style="color: #6b7280;">Total:</strong>
                     <span style="color: #111827; font-weight: 600; float: right;">{{purchase_total}}</span>
                 </td>
             </tr>
             <tr>
                 <td style="padding: 12px 16px; font-size: 14px;">
-                    <strong style="color: #6b7280;">Date:</strong>
-                    <span style="color: #111827; float: right;">{{purchase_date}}</span>
+                    <strong style="color: #6b7280;">Visit Date:</strong>
+                    <span style="color: #111827; float: right;">{{purchase_visit_date}} {{purchase_visit_time}}</span>
                 </td>
             </tr>
         </table>
@@ -1413,7 +1419,7 @@ HTML;
             [
                 ['Attraction:', '{{attraction_name}}'],
                 ['Quantity:', '{{purchase_quantity}}'],
-                ['Date:', '{{purchase_date}}'],
+                ['Visit Date:', '{{purchase_visit_date}} {{purchase_visit_time}}'],
                 ['Reference:', '{{purchase_reference}}'],
             ],
             'If you have any questions, contact us at {{location_email}} or {{location_phone}}.'
@@ -1430,7 +1436,7 @@ HTML;
             [
                 ['Attraction:', '{{attraction_name}}'],
                 ['Quantity:', '{{purchase_quantity}}'],
-                ['Date:', '{{purchase_date}}'],
+                ['Visit Date:', '{{purchase_visit_date}} {{purchase_visit_time}}'],
                 ['Total:', '{{purchase_total}}'],
                 ['Reference:', '{{purchase_reference}}'],
             ],

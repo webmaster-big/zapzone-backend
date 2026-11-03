@@ -86,7 +86,7 @@ class AttractionController extends Controller
     public function attractionsGroupedByName(Request $request): JsonResponse
     {
         $search = $request->get('search', null);
-        $date = $request->get('date') ? Carbon::parse($request->get('date')) : Carbon::today();
+        $date = $request->get('date') ? Carbon::parse($request->get('date')) : SpecialPricing::businessToday();
 
         $cacheKey = 'attractions:grouped:' . md5(($search ?? '') . '|' . $date->toDateString());
 
@@ -127,9 +127,11 @@ class AttractionController extends Controller
             ->pluck('image', 'id');
 
         $groupedAttractions = [];
+        $dealRules = SpecialPricing::dealRules();
 
         foreach ($attractions as $attraction) {
             $attractionName = $attraction->name;
+            $specialDeals = SpecialPricing::dealsFor($dealRules, SpecialPricing::ENTITY_ATTRACTION, (int) $attraction->id, (int) $attraction->location_id);
 
             $priceBreakdown = SpecialPricing::getFullPriceBreakdown(
                 'attraction',
@@ -157,6 +159,7 @@ class AttractionController extends Controller
                     'availability' => $attraction->availability,
                     'display_order' => $attraction->display_order,
                     'special_pricing' => $priceBreakdown,
+                    'special_deals' => [],
                     'locations' => [],
                     'purchase_links' => [],
                 ];
@@ -191,6 +194,7 @@ class AttractionController extends Controller
                 'phone' => $attraction->location->phone,
                 'availability' => $attraction->availability,
                 'special_pricing' => $priceBreakdown,
+                'special_deals' => $specialDeals,
             ];
 
             $groupedAttractions[$attractionName]['purchase_links'][] = [
@@ -200,6 +204,11 @@ class AttractionController extends Controller
                 'location_id' => $attraction->location->id,
             ];
         }
+
+        foreach ($groupedAttractions as &$group) {
+            $group['special_deals'] = SpecialPricing::combineDeals($group['locations']);
+        }
+        unset($group);
 
         return array_values($groupedAttractions);
     }

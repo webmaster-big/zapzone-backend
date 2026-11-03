@@ -240,7 +240,7 @@
                                         <table width="100%" cellpadding="0" cellspacing="0" border="0">
                                             <tr>
                                                 <td style="font-weight: 500; color: #6b7280; width: 140px;">Price per ticket:</td>
-                                                <td style="color: #111827;">${{ number_format($purchase->attraction->price, 2) }}</td>
+                                                <td style="color: #111827;">${{ number_format((float) ($purchase->unit_price ?? $purchase->attraction->price), 2) }}</td>
                                             </tr>
                                         </table>
                                     </td>

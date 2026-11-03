@@ -137,9 +137,16 @@ class SpecialPricing extends Model
         return $query->where('recurrence_type', self::RECURRENCE_MONTHLY);
     }
 
+    public function scopeNotEnded($query, ?Carbon $date = null)
+    {
+        $date = $date ?? self::businessToday();
+
+        return $query->where(fn ($q) => $q->whereNull('end_date')->orWhere('end_date', '>=', $date->toDateString()));
+    }
+
     public function scopeWithinDateRange($query, ?Carbon $date = null)
     {
-        $date = $date ?? Carbon::today();
+        $date = $date ?? self::businessToday();
 
         return $query->where(function ($q) use ($date) {
             $q->where(function ($q2) use ($date) {
@@ -199,24 +206,223 @@ class SpecialPricing extends Model
             return true;
         }
 
-        $time = $time ?? Carbon::now()->format('H:i:s');
-        $checkTime = Carbon::createFromFormat('H:i:s', $time);
+        $checkTime = self::normalizeTime($time) ?? Carbon::now(config('app.business_timezone', 'America/Detroit'))->format('H:i:s');
+        $startTime = self::normalizeTime($this->time_start);
+        $endTime = self::normalizeTime($this->time_end);
 
-        if ($this->time_start) {
-            $startTime = Carbon::createFromFormat('H:i:s', $this->time_start);
-            if ($checkTime->lt($startTime)) {
-                return false;
-            }
+        if ($startTime && $checkTime < $startTime) {
+            return false;
         }
 
-        if ($this->time_end) {
-            $endTime = Carbon::createFromFormat('H:i:s', $this->time_end);
-            if ($checkTime->gt($endTime)) {
-                return false;
-            }
+        if ($endTime && $checkTime > $endTime) {
+            return false;
         }
 
         return true;
+    }
+
+    public static function businessToday(): Carbon
+    {
+        return Carbon::parse(Carbon::now(config('app.business_timezone', 'America/Detroit'))->toDateString());
+    }
+
+    public static function normalizeTime(mixed $time): ?string
+    {
+        if ($time === null || $time === '') {
+            return null;
+        }
+
+        if ($time instanceof \DateTimeInterface) {
+            return $time->format('H:i:s');
+        }
+
+        if (preg_match('/(\d{1,2}):(\d{2})(?::(\d{2}))?/', (string) $time, $m)) {
+            return sprintf('%02d:%02d:%02d', (int) $m[1], (int) $m[2], (int) ($m[3] ?? 0));
+        }
+
+        return null;
+    }
+
+    public static function isSpecialPricingEntry(mixed $entry): bool
+    {
+        return is_array($entry)
+            && (($entry['source'] ?? null) === 'special_pricing' || ! empty($entry['special_pricing_id']));
+    }
+
+    public static function toAppliedDiscounts(array $breakdown): array
+    {
+        return array_map(fn (array $d) => [
+            'discount_name' => $d['name'],
+            'discount_amount' => (float) $d['discount_amount'],
+            'discount_type' => $d['discount_type'],
+            'original_price' => (float) $breakdown['original_price'],
+            'special_pricing_id' => $d['special_pricing_id'],
+            'source' => 'special_pricing',
+            'discount_label' => $d['discount_label'],
+            'unit_discount_amount' => (float) $d['unit_discount_amount'],
+            'quantity' => (int) $d['quantity'],
+        ], $breakdown['discounts_applied'] ?? []);
+    }
+
+    public function discountLabel(): string
+    {
+        return $this->discount_type === self::DISCOUNT_PERCENTAGE
+            ? rtrim(rtrim(number_format((float) $this->discount_amount, 2, '.', ''), '0'), '.') . '%'
+            : '$' . number_format((float) $this->discount_amount, 2);
+    }
+
+    public function toDeal(array $nextDates): array
+    {
+        return [
+            'special_pricing_id' => $this->id,
+            'name' => $this->name,
+            'description' => $this->description,
+            'discount_type' => $this->discount_type,
+            'discount_amount' => (float) $this->discount_amount,
+            'discount_label' => $this->discountLabel(),
+            'recurrence_type' => $this->recurrence_type,
+            'recurrence_value' => $this->recurrence_value,
+            'recurrence_display' => $this->getRecurrenceDisplay(),
+            'specific_date' => $this->specific_date?->toDateString(),
+            'start_date' => $this->start_date?->toDateString(),
+            'end_date' => $this->end_date?->toDateString(),
+            'time_start' => self::normalizeTime($this->time_start) ? substr(self::normalizeTime($this->time_start), 0, 5) : null,
+            'time_end' => self::normalizeTime($this->time_end) ? substr(self::normalizeTime($this->time_end), 0, 5) : null,
+            'next_dates' => $nextDates,
+        ];
+    }
+
+    public static function dealRules(): \Illuminate\Support\Collection
+    {
+        return static::active()
+            ->notEnded()
+            ->orderBy('priority', 'desc')
+            ->orderBy('created_at', 'desc')
+            ->get();
+    }
+
+    public static function applicableDealRules(\Illuminate\Support\Collection $rules, string $entityType, int $entityId, ?int $locationId): \Illuminate\Support\Collection
+    {
+        return $rules
+            ->filter(fn (self $rule) => ($rule->location_id === null || $locationId === null || (int) $rule->location_id === (int) $locationId)
+                && $rule->appliesToEntity($entityId, $entityType))
+            ->values();
+    }
+
+    public static function dealsFor(\Illuminate\Support\Collection $rules, string $entityType, int $entityId, ?int $locationId, int $dateCount = 3, ?array $window = null): array
+    {
+        $applicable = static::applicableDealRules($rules, $entityType, $entityId, $locationId);
+
+        return $applicable
+            ->map(function (self $rule) use ($applicable, $dateCount, $window) {
+                $dates = $rule->pricedDates($applicable, $dateCount, $window);
+
+                return $dates === [] ? null : $rule->toDeal($dates);
+            })
+            ->filter()
+            ->values()
+            ->all();
+    }
+
+    public static function pricedRulesOn(\Illuminate\Support\Collection $rules, Carbon $date): \Illuminate\Support\Collection
+    {
+        $appliedNonStackable = false;
+
+        return $rules->filter(function (self $rule) use ($date, &$appliedNonStackable) {
+            if (! $rule->isActiveOnDate($date)) {
+                return false;
+            }
+
+            if (! $rule->is_stackable && $appliedNonStackable) {
+                return false;
+            }
+
+            if (! $rule->is_stackable && $rule->time_start === null && $rule->time_end === null) {
+                $appliedNonStackable = true;
+            }
+
+            return true;
+        })->values();
+    }
+
+    public function pricedDates(\Illuminate\Support\Collection $applicable, int $count, ?array $window = null): array
+    {
+        $from = self::businessToday();
+        $to = self::businessToday()->addYear();
+
+        foreach ([$this->start_date, isset($window['from']) ? Carbon::parse($window['from']) : null] as $bound) {
+            if ($bound && $bound->gt($from)) {
+                $from = Carbon::parse($bound->toDateString());
+            }
+        }
+
+        foreach ([$this->end_date, isset($window['to']) ? Carbon::parse($window['to']) : null] as $bound) {
+            if ($bound && $bound->lt($to)) {
+                $to = Carbon::parse($bound->toDateString());
+            }
+        }
+
+        if ($this->recurrence_type === self::RECURRENCE_ONE_TIME) {
+            if (! $this->specific_date) {
+                return [];
+            }
+
+            $specific = Carbon::parse($this->specific_date->toDateString());
+            $from = $specific->gt($from) ? $specific : $from;
+            $to = $specific->lt($to) ? $specific : $to;
+        }
+
+        $dates = [];
+        for ($day = $from->copy(); $day->lte($to) && count($dates) < $count; $day->addDay()) {
+            if ($this->isActiveOnDate($day) && static::pricedRulesOn($applicable, $day)->contains(fn (self $rule) => $rule->is($this))) {
+                $dates[] = $day->toDateString();
+            }
+        }
+
+        return $dates;
+    }
+
+    public static function eventWindow(?Event $event): ?array
+    {
+        if (! $event || ! $event->start_date) {
+            return null;
+        }
+
+        $end = $event->date_type === 'one_time' ? $event->start_date : ($event->end_date ?? $event->start_date);
+
+        return [
+            'from' => $event->start_date->toDateString(),
+            'to' => $end->toDateString(),
+        ];
+    }
+
+    public static function combineDeals(array $locations): array
+    {
+        $combined = [];
+        $locationCount = count(array_unique(array_map(
+            fn (array $location) => $location['location_id'] ?? $location['location_name'] ?? null,
+            $locations
+        )));
+
+        foreach ($locations as $location) {
+            foreach ($location['special_deals'] ?? [] as $deal) {
+                $id = $deal['special_pricing_id'];
+                if (! isset($combined[$id])) {
+                    $combined[$id] = $deal + ['location_names' => []];
+                }
+                if (! empty($location['location_name'])) {
+                    $combined[$id]['location_names'][] = $location['location_name'];
+                }
+            }
+        }
+
+        return array_values(array_map(function (array $deal) use ($locationCount) {
+            $names = array_values(array_unique($deal['location_names']));
+            $deal['location_names'] = $names;
+            $deal['applies_at_every_location'] = count($names) >= $locationCount;
+
+            return $deal;
+        }, $combined));
     }
 
     public function calculateDiscount(float $basePrice): float
@@ -288,14 +494,19 @@ class SpecialPricing extends Model
         int $entityId,
         ?Carbon $date = null,
         ?int $locationId = null,
-        ?string $time = null
+        ?string $time = null,
+        ?Carbon $createdBefore = null
     ) {
-        $date = $date ?? Carbon::today();
+        $date = Carbon::parse(($date ?? self::businessToday())->toDateString());
 
         $query = static::active()
             ->withinDateRange($date)
             ->orderBy('priority', 'desc')
             ->orderBy('created_at', 'desc');
+
+        if ($createdBefore) {
+            $query->where('created_at', '<=', $createdBefore);
+        }
 
         if ($entityType === self::ENTITY_PACKAGE) {
             $query->forPackages();
@@ -332,13 +543,17 @@ class SpecialPricing extends Model
         float $basePrice,
         ?Carbon $date = null,
         ?int $locationId = null,
-        ?string $time = null
+        ?string $time = null,
+        int $quantity = 1,
+        ?Carbon $createdBefore = null
     ): array {
-        $specialPricings = static::getActiveForEntity($entityType, $entityId, $date, $locationId, $time);
+        $quantity = max(1, $quantity);
+        $specialPricings = static::getActiveForEntity($entityType, $entityId, $date, $locationId, $time, $createdBefore);
 
         $currentPrice = $basePrice;
         $appliedDiscounts = [];
-        $totalDiscount = 0;
+        $unitDiscount = 0.0;
+        $totalDiscount = 0.0;
         $appliedNonStackable = false;
 
         foreach ($specialPricings as $pricing) {
@@ -346,23 +561,26 @@ class SpecialPricing extends Model
                 continue;
             }
 
-            $discountAmount = $pricing->calculateDiscount($currentPrice);
+            $unitAmount = $pricing->calculateDiscount($currentPrice);
+            $lineAmount = round($unitAmount * $quantity, 2);
 
             $appliedDiscounts[] = [
                 'special_pricing_id' => $pricing->id,
+                'source' => 'special_pricing',
                 'name' => $pricing->name,
                 'description' => $pricing->description,
-                'discount_label' => $pricing->discount_type === self::DISCOUNT_PERCENTAGE
-                    ? "{$pricing->discount_amount}%"
-                    : '$' . number_format((float) $pricing->discount_amount, 2),
+                'discount_label' => $pricing->discountLabel(),
                 'discount_type' => $pricing->discount_type,
-                'discount_amount' => $discountAmount,
+                'discount_amount' => $lineAmount,
+                'unit_discount_amount' => $unitAmount,
+                'quantity' => $quantity,
                 'is_stackable' => $pricing->is_stackable,
                 'recurrence_display' => $pricing->getRecurrenceDisplay(),
             ];
 
-            $currentPrice -= $discountAmount;
-            $totalDiscount += $discountAmount;
+            $currentPrice -= $unitAmount;
+            $unitDiscount += $unitAmount;
+            $totalDiscount += $lineAmount;
 
             if (!$pricing->is_stackable) {
                 $appliedNonStackable = true;
@@ -374,10 +592,17 @@ class SpecialPricing extends Model
             }
         }
 
+        $originalPrice = round($basePrice * $quantity, 2);
+        $totalDiscount = round($totalDiscount, 2);
+
         return [
-            'original_price' => $basePrice,
-            'discounted_price' => round($currentPrice, 2),
-            'total_discount' => round($totalDiscount, 2),
+            'original_price' => $originalPrice,
+            'discounted_price' => round(max(0, $originalPrice - $totalDiscount), 2),
+            'total_discount' => $totalDiscount,
+            'unit_price' => round($basePrice, 2),
+            'unit_discount' => round($unitDiscount, 2),
+            'unit_discounted_price' => round(max(0, $currentPrice), 2),
+            'quantity' => $quantity,
             'discounts_applied' => $appliedDiscounts,
             'has_special_pricing' => count($appliedDiscounts) > 0,
         ];
@@ -386,17 +611,19 @@ class SpecialPricing extends Model
     public function getUpcomingDates(int $count = 5): array
     {
         $dates = [];
-        $currentDate = Carbon::today();
+        $currentDate = self::businessToday();
 
         if ($this->start_date && $this->start_date->gt($currentDate)) {
             $currentDate = $this->start_date->copy();
         }
 
-        $maxDate = $this->end_date ?? Carbon::today()->addYear();
+        $maxDate = $this->end_date ?? self::businessToday()->addYear();
 
         switch ($this->recurrence_type) {
             case self::RECURRENCE_ONE_TIME:
-                if ($this->specific_date && $this->specific_date->gte(Carbon::today())) {
+                if ($this->specific_date && $this->specific_date->gte(self::businessToday())
+                    && (! $this->start_date || $this->specific_date->gte($this->start_date))
+                    && (! $this->end_date || $this->specific_date->lte($this->end_date))) {
                     $dates[] = $this->specific_date->format('Y-m-d');
                 }
                 break;

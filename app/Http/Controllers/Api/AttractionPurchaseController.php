@@ -290,6 +290,9 @@ class AttractionPurchaseController extends Controller
             'applied_discounts.*.original_price' => 'required_with:applied_discounts|numeric|min:0',
             'applied_discounts.*.special_pricing_id' => 'nullable|integer',
             'applied_discounts.*.source' => 'nullable|string',
+            'applied_discounts.*.discount_label' => 'nullable|string|max:50',
+            'applied_discounts.*.unit_discount_amount' => 'nullable|numeric|min:0',
+            'applied_discounts.*.quantity' => 'nullable|integer|min:1',
             'promo_id' => 'nullable|exists:promos,id',
             'gift_card_id' => 'nullable|exists:gift_cards,id',
             'promo_code' => 'nullable|string',
@@ -498,6 +501,10 @@ class AttractionPurchaseController extends Controller
             if ($rejection) {
                 return response()->json(['success' => false, 'code' => 'PRICE_MISMATCH', 'message' => $rejection], 422);
             }
+        }
+
+        if ($attractionModel) {
+            $validated['unit_price'] = round((float) $attractionModel->price, 2);
         }
 
         try {
@@ -971,6 +978,33 @@ class AttractionPurchaseController extends Controller
         ]);
     }
 
+    public function specialQuote(Request $request, AttractionPurchase $attractionPurchase): JsonResponse
+    {
+        if ($denied = $this->denyStaffElsewhere($this->purchaseLocationId($attractionPurchase), 'purchase')) {
+            return $denied;
+        }
+
+        $validated = $request->validate([
+            'attraction_id' => 'sometimes|integer|exists:attractions,id',
+            'quantity' => 'sometimes|integer|min:1',
+            'scheduled_date' => 'sometimes|nullable|date',
+            'scheduled_time' => ['sometimes', 'nullable', 'regex:/^\d{1,2}:\d{2}(:\d{2})?$/'],
+            'purchase_date' => 'sometimes|date',
+        ]);
+
+        if (! empty($validated['scheduled_date'])) {
+            $validated['scheduled_date'] = Carbon::parse($validated['scheduled_date'])->toDateString();
+        }
+
+        $quote = app(\App\Services\Checkout\PurchaseSpecialRepricer::class)->forAttractionPurchase($attractionPurchase, $validated);
+
+        if (! $quote) {
+            return response()->json(['success' => false, 'message' => 'This purchase has no attraction to price.'], 422);
+        }
+
+        return response()->json(['success' => true, 'data' => $quote]);
+    }
+
     public function update(Request $request, AttractionPurchase $attractionPurchase): JsonResponse
     {
         if ($denied = $this->denyStaffElsewhere($this->purchaseLocationId($attractionPurchase), 'purchase')) {
@@ -997,6 +1031,13 @@ class AttractionPurchaseController extends Controller
             'applied_discounts.*.discount_type' => ['required_with:applied_discounts', Rule::in(['fixed', 'percentage'])],
             'applied_discounts.*.original_price' => 'required_with:applied_discounts|numeric|min:0',
             'applied_discounts.*.special_pricing_id' => 'nullable|integer',
+            'applied_discounts.*.source' => 'nullable|string|max:50',
+            'applied_discounts.*.promo_id' => 'nullable|integer',
+            'applied_discounts.*.gift_card_id' => 'nullable|integer',
+            'applied_discounts.*.code' => 'nullable|string|max:255',
+            'applied_discounts.*.discount_label' => 'nullable|string|max:50',
+            'applied_discounts.*.unit_discount_amount' => 'nullable|numeric|min:0',
+            'applied_discounts.*.quantity' => 'nullable|integer|min:1',
             'payment_method' => ['sometimes', 'nullable', Rule::in(['card', 'in-store', 'paylater', 'authorize.net'])],
             'status' => ['sometimes', Rule::in(AttractionPurchase::STATUSES)],
             'purchase_date' => 'sometimes|date',
@@ -1088,6 +1129,41 @@ class AttractionPurchaseController extends Controller
                     'message' => 'This purchase is line ' . $attractionPurchase->line_position . ' of order ' . $attractionPurchase->ticketOrder?->reference_number . '. Only the visit schedule and notes can change here — manage everything else on the order.',
                 ], 422);
             }
+        }
+
+        $nextScheduledDate = array_key_exists('scheduled_date', $validated)
+            ? ($validated['scheduled_date'] ? Carbon::parse($validated['scheduled_date'])->toDateString() : null)
+            : $attractionPurchase->scheduled_date?->toDateString();
+        $nextPurchaseDate = isset($validated['purchase_date'])
+            ? Carbon::parse($validated['purchase_date'])->toDateString()
+            : $attractionPurchase->purchase_date?->toDateString();
+        $visitMoved = $nextScheduledDate !== $attractionPurchase->scheduled_date?->toDateString()
+            || (array_key_exists('scheduled_time', $validated)
+                && \App\Models\SpecialPricing::normalizeTime($validated['scheduled_time']) !== \App\Models\SpecialPricing::normalizeTime($attractionPurchase->scheduled_time))
+            || (! $nextScheduledDate && $nextPurchaseDate !== $attractionPurchase->purchase_date?->toDateString());
+
+        if ($visitMoved
+            && $attractionPurchase->ticket_order_id === null
+            && ! $request->has('total_amount')
+            && ! $request->has('discount_amount')
+            && ! $request->has('applied_discounts')
+            && ! isset($validated['quantity'])
+            && ! isset($validated['attraction_id'])) {
+            $respecial = app(\App\Services\Checkout\PurchaseSpecialRepricer::class)->forAttractionPurchase($attractionPurchase, [
+                'scheduled_date' => $nextScheduledDate,
+                'scheduled_time' => array_key_exists('scheduled_time', $validated) ? $validated['scheduled_time'] : $attractionPurchase->scheduled_time?->format('H:i'),
+                'purchase_date' => $nextPurchaseDate,
+            ]);
+
+            if ($respecial && $respecial['changed']) {
+                $validated['applied_discounts'] = $respecial['applied_discounts'];
+                $validated['discount_amount'] = $respecial['discount_amount'];
+                $validated['total_amount'] = $respecial['total_amount'];
+            }
+        }
+
+        if (isset($validated['attraction_id']) && (int) $validated['attraction_id'] !== (int) $attractionPurchase->attraction_id) {
+            $validated['unit_price'] = round((float) Attraction::query()->whereKey($validated['attraction_id'])->value('price'), 2);
         }
 
         if ($request->has('total_amount')) {
@@ -1621,9 +1697,14 @@ public function verify(Request $request, int $id): JsonResponse
                 'guest_phone' => $purchase->guest_phone,
                 'quantity' => $purchase->quantity,
                 'total_amount' => $purchase->total_amount,
+                'amount_paid' => $purchase->amount_paid,
+                'discount_amount' => $purchase->discount_amount,
+                'ticket_order_id' => $purchase->ticket_order_id,
                 'payment_method' => $purchase->payment_method,
                 'status' => $purchase->status,
                 'purchase_date' => $purchase->purchase_date,
+                'scheduled_date' => $purchase->scheduled_date,
+                'scheduled_time' => $purchase->scheduled_time?->format('H:i'),
                 'notes' => $purchase->notes,
                 'created_at' => $purchase->created_at,
                 'updated_at' => $purchase->updated_at,

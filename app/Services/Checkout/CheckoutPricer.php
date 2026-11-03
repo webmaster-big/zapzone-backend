@@ -73,9 +73,15 @@ class CheckoutPricer
         }
 
         $locationId = (int) ($v['location_id'] ?? $package->location_id);
+        $snapshot = $v['price_snapshot'] ?? null;
+        $perPerson = ($snapshot['pricing_type'] ?? $package->pricing_type) === 'per_person';
 
-        return $this->assemble('booking', 'package', (int) $package->id, $locationId, $lines,
-            [Carbon::parse($v['booking_date'])->toDateString()], $v, $membership);
+        return $this->assemble('booking', 'package', (int) $package->id, $locationId, $lines, [
+            'unit_price' => (float) ($snapshot['price'] ?? $package->price),
+            'quantity' => $perPerson ? $participants : 1,
+            'date' => Carbon::parse($v['booking_date'])->toDateString(),
+            'time' => $v['booking_time'] ?? null,
+        ], $membership);
     }
 
     public function forAttractionPurchase(array $v, Attraction $attraction, ?Membership $membership): array
@@ -109,13 +115,26 @@ class CheckoutPricer
             ];
         }
 
-        $dates = array_values(array_unique(array_filter([
-            ! empty($v['scheduled_date']) ? Carbon::parse($v['scheduled_date'])->toDateString() : null,
-            ! empty($v['purchase_date']) ? Carbon::parse($v['purchase_date'])->toDateString() : null,
-            Carbon::now(config('app.business_timezone', 'America/Detroit'))->toDateString(),
-        ])));
+        return $this->assemble('attraction_purchase', 'attraction', (int) $attraction->id, (int) $attraction->location_id, $lines,
+            ['unit_price' => $unit, 'quantity' => $qty] + self::attractionVisit($v), $membership);
+    }
 
-        return $this->assemble('attraction_purchase', 'attraction', (int) $attraction->id, (int) $attraction->location_id, $lines, $dates, $v, $membership);
+    public static function attractionVisit(array $v): array
+    {
+        if (! empty($v['scheduled_date'])) {
+            return [
+                'date' => Carbon::parse($v['scheduled_date'])->toDateString(),
+                'time' => $v['scheduled_time'] ?? null,
+            ];
+        }
+
+        $now = Carbon::now(config('app.business_timezone', 'America/Detroit'));
+        $date = ! empty($v['purchase_date']) ? Carbon::parse($v['purchase_date'])->toDateString() : $now->toDateString();
+
+        return [
+            'date' => $date,
+            'time' => $date === $now->toDateString() ? $now->format('H:i:s') : null,
+        ];
     }
 
     public function forEventPurchase(array $v, Event $event, ?Membership $membership): array
@@ -149,31 +168,32 @@ class CheckoutPricer
             ];
         }
 
-        return $this->assemble('event_purchase', 'event', (int) $event->id, (int) $event->location_id, $lines,
-            [Carbon::parse($v['purchase_date'])->toDateString()], $v, $membership);
+        return $this->assemble('event_purchase', 'event', (int) $event->id, (int) $event->location_id, $lines, [
+            'unit_price' => $unit,
+            'quantity' => $qty,
+            'date' => Carbon::parse($v['purchase_date'])->toDateString(),
+            'time' => $v['purchase_time'] ?? null,
+        ], $membership);
     }
 
-    private function assemble(string $purchaseType, string $entityType, int $entityId, int $locationId, array $lines, array $dates, array $v, ?Membership $membership): array
+    private function assemble(string $purchaseType, string $entityType, int $entityId, int $locationId, array $lines, array $visit, ?Membership $membership): array
     {
         $subtotal = round(array_sum(array_column($lines, 'line_total')), 2);
 
         $fees = FeeSupport::getFullPriceBreakdown($entityType, $entityId, $subtotal, $locationId);
         $additiveFees = round(((float) $fees['total']) - $subtotal, 2);
 
-        $claimedBase = (float) collect($v['applied_discounts'] ?? [])
-            ->filter(fn ($d) => ! empty($d['special_pricing_id']))
-            ->max(fn ($d) => (float) ($d['original_price'] ?? 0));
-        $specialBase = $claimedBase > 0 ? min($claimedBase, $subtotal) : $subtotal;
-
-        $special = 0.0;
-        $specialApplied = [];
-        foreach ($dates as $date) {
-            $b = SpecialPricing::getFullPriceBreakdown($entityType, $entityId, $specialBase, Carbon::parse($date), $locationId, null);
-            if ((float) $b['total_discount'] > $special) {
-                $special = round((float) $b['total_discount'], 2);
-                $specialApplied = $b['discounts_applied'];
-            }
-        }
+        $specialBreakdown = SpecialPricing::getFullPriceBreakdown(
+            $entityType,
+            $entityId,
+            (float) $visit['unit_price'],
+            Carbon::parse($visit['date']),
+            $locationId,
+            SpecialPricing::normalizeTime($visit['time'] ?? null),
+            (int) $visit['quantity']
+        );
+        $special = round(min((float) $specialBreakdown['total_discount'], $subtotal), 2);
+        $specialApplied = $specialBreakdown['discounts_applied'];
 
         $membershipDiscount = 0.0;
         $quoteApplied = [];
@@ -199,8 +219,10 @@ class CheckoutPricer
             'subtotal' => $subtotal,
             'additive_fees' => $additiveFees,
             'fees' => $fees['fees'],
-            'special_pricing_base' => $specialBase,
-            'special_pricing_dates' => $dates,
+            'special_pricing_base' => (float) $specialBreakdown['original_price'],
+            'special_pricing_quantity' => (int) $specialBreakdown['quantity'],
+            'special_pricing_dates' => [$visit['date']],
+            'special_pricing_time' => SpecialPricing::normalizeTime($visit['time'] ?? null),
             'special_pricing_discount' => $special,
             'special_pricing_applied' => $specialApplied,
             'membership_id' => $membership?->id,

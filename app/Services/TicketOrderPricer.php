@@ -180,17 +180,19 @@ class TicketOrderPricer
             SpecialPricing::ENTITY_ATTRACTION,
             $attraction->id,
             $unitPrice,
-            null,
-            $locationId
+            $scheduledDate,
+            $locationId,
+            SpecialPricing::normalizeTime($scheduledTime),
+            $quantity
         );
 
-        $unitAfterDiscount = (float) $pricing['discounted_price'];
+        $unitAfterDiscount = (float) $pricing['unit_discounted_price'];
         $baseSubtotal = round($unitPrice * $quantity, 2);
-        $discountTotal = round(((float) $pricing['total_discount']) * $quantity, 2);
+        $discountTotal = round((float) $pricing['total_discount'], 2);
 
         $addOns = $this->priceAddOns($item['add_ons'] ?? []);
 
-        $feeBase = round(($unitAfterDiscount * $quantity) + $addOns['total'], 2);
+        $feeBase = round($baseSubtotal + $addOns['total'], 2);
         $fees = FeeSupport::getFullPriceBreakdown(
             FeeSupport::ENTITY_ATTRACTION,
             $attraction->id,
@@ -213,10 +215,10 @@ class TicketOrderPricer
             'add_ons' => $addOns['lines'],
             'add_ons_total' => $addOns['total'],
             'discount_amount' => $discountTotal,
-            'applied_discounts' => $pricing['discounts_applied'],
+            'applied_discounts' => $this->namedDiscounts($pricing['discounts_applied']),
             'fee_total' => $feeTotal,
             'applied_fees' => $fees['fees'],
-            'total_amount' => round(($unitAfterDiscount * $quantity) + $addOns['total'] + $feeTotal, 2),
+            'total_amount' => round($baseSubtotal - $discountTotal + $addOns['total'] + $feeTotal, 2),
             'scheduled_date' => $scheduledDate?->toDateString(),
             'scheduled_time' => $scheduledTime,
         ];
@@ -275,17 +277,19 @@ class TicketOrderPricer
             SpecialPricing::ENTITY_EVENT,
             $event->id,
             $unitPrice,
-            null,
-            $locationId
+            $scheduledDate,
+            $locationId,
+            SpecialPricing::normalizeTime($requestedTime),
+            $quantity
         );
 
-        $unitAfterDiscount = (float) $pricing['discounted_price'];
+        $unitAfterDiscount = (float) $pricing['unit_discounted_price'];
         $baseSubtotal = round($unitPrice * $quantity, 2);
-        $discountTotal = round(((float) $pricing['total_discount']) * $quantity, 2);
+        $discountTotal = round((float) $pricing['total_discount'], 2);
 
         $addOns = $this->priceAddOns($item['add_ons'] ?? []);
 
-        $feeBase = round(($unitAfterDiscount * $quantity) + $addOns['total'], 2);
+        $feeBase = round($baseSubtotal + $addOns['total'], 2);
         $fees = FeeSupport::getFullPriceBreakdown(
             FeeSupport::ENTITY_EVENT,
             $event->id,
@@ -308,10 +312,10 @@ class TicketOrderPricer
             'add_ons' => $addOns['lines'],
             'add_ons_total' => $addOns['total'],
             'discount_amount' => $discountTotal,
-            'applied_discounts' => $pricing['discounts_applied'],
+            'applied_discounts' => $this->namedDiscounts($pricing['discounts_applied']),
             'fee_total' => $feeTotal,
             'applied_fees' => $fees['fees'],
-            'total_amount' => round(($unitAfterDiscount * $quantity) + $addOns['total'] + $feeTotal, 2),
+            'total_amount' => round($baseSubtotal - $discountTotal + $addOns['total'] + $feeTotal, 2),
             'scheduled_date' => $scheduledDate?->toDateString(),
             'scheduled_time' => $item['scheduled_time'] ?? null,
         ];
@@ -363,6 +367,11 @@ class TicketOrderPricer
         }
 
         return ['lines' => $lines, 'total' => round($total, 2)];
+    }
+
+    private function namedDiscounts(array $discounts): array
+    {
+        return array_map(fn (array $discount) => ['discount_name' => $discount['name'] ?? null] + $discount, $discounts);
     }
 
     private function assertLocation(int $locationId, ?int $expectedLocationId): void

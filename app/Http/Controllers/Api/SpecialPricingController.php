@@ -66,7 +66,7 @@ class SpecialPricingController extends Controller
             }
 
             if ($request->boolean('upcoming_only')) {
-                $query->active()->withinDateRange();
+                $query->active()->notEnded();
             }
 
             if ($request->filled('search')) {
@@ -173,6 +173,11 @@ class SpecialPricingController extends Controller
             ], 422);
         }
 
+        if ($validated['recurrence_type'] === SpecialPricing::RECURRENCE_ONE_TIME) {
+            $validated['start_date'] = null;
+            $validated['end_date'] = null;
+        }
+
         $specialPricing = SpecialPricing::create($validated);
         $specialPricing->load(['company:id,company_name', 'location:id,name']);
         $specialPricing->recurrence_display = $specialPricing->getRecurrenceDisplay();
@@ -251,6 +256,54 @@ class SpecialPricingController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Percentage discount cannot exceed 100%',
+            ], 422);
+        }
+
+        $merged = fn (string $key) => array_key_exists($key, $validated) ? $validated[$key] : $specialPricing->getRawOriginal($key);
+        $recurrenceType = $merged('recurrence_type');
+        $recurrenceValue = $merged('recurrence_value');
+
+        if ($recurrenceType === SpecialPricing::RECURRENCE_WEEKLY && ($recurrenceValue === null || (int) $recurrenceValue < 0 || (int) $recurrenceValue > 6)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'For weekly recurrence, recurrence_value must be 0-6 (Sunday-Saturday)',
+            ], 422);
+        }
+
+        if ($recurrenceType === SpecialPricing::RECURRENCE_MONTHLY && ($recurrenceValue === null || (int) $recurrenceValue < 1 || (int) $recurrenceValue > 31)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'For monthly recurrence, recurrence_value must be 1-31 (day of month)',
+            ], 422);
+        }
+
+        if ($recurrenceType === SpecialPricing::RECURRENCE_ONE_TIME) {
+            if (! $merged('specific_date')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'A one-time special needs its date.',
+                ], 422);
+            }
+
+            $validated['start_date'] = null;
+            $validated['end_date'] = null;
+        }
+
+        $startDate = $merged('start_date');
+        $endDate = $merged('end_date');
+        if ($startDate && $endDate && Carbon::parse($endDate)->lt(Carbon::parse($startDate))) {
+            return response()->json([
+                'success' => false,
+                'message' => 'The last visit date must be on or after the first visit date.',
+            ], 422);
+        }
+
+        $timeStart = SpecialPricing::normalizeTime($merged('time_start'));
+        $timeEnd = SpecialPricing::normalizeTime($merged('time_end'));
+        if ($timeStart && $timeEnd && $timeEnd <= $timeStart) {
+            return response()->json([
+                'success' => false,
+                'message' => 'The visit time "to" must be later than the visit time "from".',
             ], 422);
         }
 
@@ -355,7 +408,7 @@ class SpecialPricingController extends Controller
     {
         $specialPricings = SpecialPricing::byLocation($locationId)
             ->active()
-            ->withinDateRange()
+            ->notEnded()
             ->orderBy('priority', 'desc')
             ->get()
             ->map(function ($item) {
@@ -377,11 +430,12 @@ class SpecialPricingController extends Controller
             'entity_id' => 'required|integer',
             'base_price' => 'required|numeric|min:0',
             'date' => 'nullable|date',
-            'time' => 'nullable|date_format:H:i',
+            'time' => ['nullable', 'regex:/^\d{1,2}:\d{2}(:\d{2})?$/'],
             'location_id' => 'nullable|integer|exists:locations,id',
+            'quantity' => 'nullable|integer|min:1|max:10000',
         ]);
 
-        $date = isset($validated['date']) ? Carbon::parse($validated['date']) : Carbon::today();
+        $date = isset($validated['date']) ? Carbon::parse(Carbon::parse($validated['date'])->toDateString()) : SpecialPricing::businessToday();
         $time = $validated['time'] ?? null;
 
         $breakdown = SpecialPricing::getFullPriceBreakdown(
@@ -389,14 +443,79 @@ class SpecialPricingController extends Controller
             $validated['entity_id'],
             (float) $validated['base_price'],
             $date,
-            $validated['location_id'] ?? null,
-            $time
+            isset($validated['location_id'])
+                ? (int) $validated['location_id']
+                : $this->entityLocationId($validated['entity_type'], (int) $validated['entity_id']),
+            $time,
+            (int) ($validated['quantity'] ?? 1)
         );
 
         return response()->json([
             'success' => true,
             'data' => $breakdown,
         ]);
+    }
+
+    public function deals(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'entity_type' => 'required|in:package,attraction,event',
+            'entity_id' => 'required|integer',
+            'location_id' => 'nullable|integer|exists:locations,id',
+            'days' => 'nullable|integer|min:1|max:366',
+        ]);
+
+        $days = (int) ($validated['days'] ?? 120);
+        $locationId = isset($validated['location_id'])
+            ? (int) $validated['location_id']
+            : $this->entityLocationId($validated['entity_type'], (int) $validated['entity_id']);
+        $start = SpecialPricing::businessToday();
+        $end = $start->copy()->addDays($days);
+        $window = $validated['entity_type'] === SpecialPricing::ENTITY_EVENT
+            ? SpecialPricing::eventWindow(\App\Models\Event::query()->withoutGlobalScopes()->find((int) $validated['entity_id']))
+            : null;
+
+        if ($window) {
+            $start = Carbon::parse($window['from'])->gt($start) ? Carbon::parse($window['from']) : $start;
+            $end = Carbon::parse($window['to'])->lt($end) ? Carbon::parse($window['to']) : $end;
+        }
+
+        $rules = SpecialPricing::dealRules();
+        $deals = SpecialPricing::dealsFor($rules, $validated['entity_type'], (int) $validated['entity_id'], $locationId, 3, $window);
+
+        $dates = [];
+        $applicable = SpecialPricing::applicableDealRules($rules, $validated['entity_type'], (int) $validated['entity_id'], $locationId);
+
+        for ($day = $start->copy(); $day->lte($end); $day->addDay()) {
+            $matches = SpecialPricing::pricedRulesOn($applicable, $day);
+            if ($matches->isNotEmpty()) {
+                $dates[$day->toDateString()] = $matches->map(fn (SpecialPricing $rule) => [
+                    'special_pricing_id' => $rule->id,
+                    'name' => $rule->name,
+                    'discount_label' => $rule->discountLabel(),
+                ])->values()->all();
+            }
+        }
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'deals' => $deals,
+                'dates' => $dates,
+            ],
+        ]);
+    }
+
+    private function entityLocationId(string $entityType, int $entityId): ?int
+    {
+        $model = match ($entityType) {
+            SpecialPricing::ENTITY_PACKAGE => \App\Models\Package::class,
+            SpecialPricing::ENTITY_EVENT => \App\Models\Event::class,
+            default => \App\Models\Attraction::class,
+        };
+        $locationId = $model::query()->withoutGlobalScopes()->whereKey($entityId)->value('location_id');
+
+        return $locationId ? (int) $locationId : null;
     }
 
     public function checkDate(Request $request): JsonResponse
@@ -464,7 +583,7 @@ class SpecialPricingController extends Controller
         $days = (int) ($validated['days'] ?? 30);
         $entityType = $validated['entity_type'] ?? null;
 
-        $query = SpecialPricing::active()->withinDateRange();
+        $query = SpecialPricing::active()->notEnded();
 
         if ($locationId) {
             $query->byLocation($locationId);
@@ -481,8 +600,8 @@ class SpecialPricingController extends Controller
         $specialPricings = $query->get();
 
         $dateMap = [];
-        $startDate = Carbon::today();
-        $endDate = Carbon::today()->addDays($days);
+        $startDate = SpecialPricing::businessToday();
+        $endDate = SpecialPricing::businessToday()->addDays($days);
 
         foreach ($specialPricings as $pricing) {
             $currentDate = $startDate->copy();

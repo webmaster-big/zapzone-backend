@@ -4,6 +4,7 @@ namespace App\Services\Checkout;
 
 use App\Models\Booking;
 use App\Models\Package;
+use App\Models\SpecialPricing;
 use App\Services\MembershipBenefitService;
 use Illuminate\Support\Facades\Log;
 
@@ -35,8 +36,25 @@ class BookingRepricer
         }
 
         $redeemed = $this->redeemedCredit($booking);
-        $proposedNet = $this->netTotal($proposed, $redeemed);
-        $baselineNet = $this->netTotal($baseline, $redeemed);
+        $given = SpecialPricingSwap::specialEntries($booking->applied_discounts);
+        $givenSpecial = SpecialPricingSwap::total($given);
+        $baselineSpecial = (float) $baseline['special_pricing_discount'];
+        $proposedSpecial = (float) $proposed['special_pricing_discount'];
+        $proposedEntries = $this->specialEntriesFor($proposed);
+        $chosen = SpecialPricingSwap::choose(
+            $given,
+            $this->specialEntriesFor($baseline),
+            $proposedEntries,
+            (int) ($baseline['special_pricing_quantity'] ?? 1),
+            (int) ($proposed['special_pricing_quantity'] ?? 1),
+            (int) $proposed['entity_id'] === (int) $baseline['entity_id'],
+            (float) $proposed['special_pricing_base']
+        );
+        $special = $chosen === $proposedEntries ? $proposedSpecial : SpecialPricingSwap::total($chosen);
+        $specialChanged = $chosen !== $given;
+
+        $proposedNet = $this->netTotal($proposed, $redeemed, $proposedSpecial - $special);
+        $baselineNet = $this->netTotal($baseline, $redeemed, $baselineSpecial - $givenSpecial);
 
         $stored = round((float) $booking->total_amount, 2);
         $delta = round($proposedNet - $baselineNet, 2);
@@ -66,7 +84,6 @@ class BookingRepricer
                 ]);
         }
 
-        $special = (float) $proposed['special_pricing_discount'];
         $membershipDiscount = (float) $proposed['membership_discount'];
 
         return [
@@ -75,7 +92,10 @@ class BookingRepricer
             'quoted_fees' => $proposed['fees'],
             'discount_amount' => $consistent
                 ? round($special + $membershipDiscount + $redeemed, 2)
-                : round((float) $booking->discount_amount, 2),
+                : round(max(0, (float) $booking->discount_amount + $special - $givenSpecial), 2),
+            'applied_discounts' => $specialChanged
+                ? array_merge($chosen, SpecialPricingSwap::otherEntries($booking->applied_discounts))
+                : null,
             'membership_discount' => $consistent ? $membershipDiscount : round((float) $booking->membership_discount, 2),
             'subtotal' => (float) $proposed['subtotal'],
             'additive_fees' => (float) $proposed['additive_fees'],
@@ -110,6 +130,7 @@ class BookingRepricer
             'membership_discount' => $priced['membership_discount'],
             'redeemed_credit' => $priced['redeemed_credit'],
             'discount_amount' => $priced['discount_amount'],
+            'applied_discounts' => $priced['applied_discounts'],
             'total_amount' => $total,
             'amount_paid' => $amountPaid,
             'remaining_balance' => round($total - $amountPaid, 2),
@@ -132,9 +153,9 @@ class BookingRepricer
         return $amountPaid > 0 ? 'partial' : 'pending';
     }
 
-    private function netTotal(array $expectation, float $redeemed): float
+    private function netTotal(array $expectation, float $redeemed, float $specialSwap = 0.0): float
     {
-        return round(max(0, (float) $expectation['expected_total'] - $redeemed), 2);
+        return round(max(0, (float) $expectation['expected_total'] + $specialSwap - $redeemed), 2);
     }
 
     private function expectationFor(Booking $booking, array $intent): ?array
@@ -157,6 +178,7 @@ class BookingRepricer
         $v = [
             'participants' => max(1, (int) ($intent['participants'] ?? $booking->participants)),
             'booking_date' => $intent['booking_date'] ?? $this->bookingDate($booking),
+            'booking_time' => SpecialPricing::normalizeTime($intent['booking_time'] ?? $booking->booking_time),
             'applied_discounts' => $booking->applied_discounts ?? [],
             'additional_addons' => $this->carryFrozenPrices(
                 $intent['additional_addons'] ?? $storedAddOns,
@@ -202,6 +224,14 @@ class BookingRepricer
 
             return $row;
         }, $lines);
+    }
+
+    private function specialEntriesFor(array $expectation): array
+    {
+        return SpecialPricing::toAppliedDiscounts([
+            'original_price' => $expectation['special_pricing_base'],
+            'discounts_applied' => $expectation['special_pricing_applied'],
+        ]);
     }
 
     private function redeemedCredit(Booking $booking): float

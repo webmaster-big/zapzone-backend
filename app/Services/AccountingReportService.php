@@ -52,16 +52,25 @@ class AccountingReportService
     {
         $totals = ['special_pricing' => 0.0, 'membership' => 0.0, 'promo' => 0.0, 'gift_card' => 0.0, 'other' => 0.0];
 
+        $paymentStatus = isset($filters['payment_status']) && $filters['payment_status'] !== 'all' ? $filters['payment_status'] : null;
+        $wantedCategories = ! empty($filters['category_filter']) ? VenueCategory::matchValues($filters['category_filter']) : null;
+
         $bookings = DB::table('bookings')
-            ->whereIn('location_id', $locationIds)
-            ->whereNotIn('status', ['cancelled'])
-            ->whereNull('deleted_at')
+            ->join('packages', 'bookings.package_id', '=', 'packages.id')
+            ->whereIn('bookings.location_id', $locationIds)
+            ->whereNotIn('bookings.status', ['cancelled'])
+            ->whereNull('bookings.deleted_at')
             ->when(
                 $viewMode === 'booked_on',
-                fn($q) => $q->where('created_at', '>=', DateRange::startOfDay($startDate->toDateString()))->where('created_at', '<=', DateRange::endOfDay($endDate->toDateString())),
-                fn($q) => $q->whereDate('booking_date', '>=', $startDate->toDateString())->whereDate('booking_date', '<=', $endDate->toDateString())
+                fn($q) => $q->where('bookings.created_at', '>=', DateRange::startOfDay($startDate->toDateString()))->where('bookings.created_at', '<=', DateRange::endOfDay($endDate->toDateString())),
+                fn($q) => $q->whereDate('bookings.booking_date', '>=', $startDate->toDateString())->whereDate('bookings.booking_date', '<=', $endDate->toDateString())
             )
-            ->select('discount_amount', 'applied_discounts')
+            ->when($paymentStatus, fn($q) => $q->where('bookings.payment_status', $paymentStatus))
+            ->when($wantedCategories, fn($q) => $q->whereRaw(
+                "LOWER(COALESCE(NULLIF(packages.display_label, ''), packages.category)) IN (" . implode(',', array_fill(0, count($wantedCategories), '?')) . ')',
+                $wantedCategories
+            ))
+            ->select('bookings.discount_amount', 'bookings.applied_discounts')
             ->get();
         $this->accumulateDiscountSources($bookings, $totals);
 
@@ -75,6 +84,7 @@ class AccountingReportService
                 fn($q) => $q->where('attraction_purchases.created_at', '>=', DateRange::startOfDay($startDate->toDateString()))->where('attraction_purchases.created_at', '<=', DateRange::endOfDay($endDate->toDateString())),
                 fn($q) => $q->whereRaw('DATE(COALESCE(attraction_purchases.scheduled_date, attraction_purchases.purchase_date)) BETWEEN ? AND ?', [$startDate->toDateString(), $endDate->toDateString()])
             )
+            ->when($wantedCategories, fn($q) => $q->whereIn(DB::raw('LOWER(attractions.category)'), $wantedCategories))
             ->select('attraction_purchases.discount_amount', 'attraction_purchases.applied_discounts')
             ->get();
         $this->accumulateDiscountSources($attractionPurchases, $totals);
@@ -88,6 +98,7 @@ class AccountingReportService
                 fn($q) => $q->where('created_at', '>=', DateRange::startOfDay($startDate->toDateString()))->where('created_at', '<=', DateRange::endOfDay($endDate->toDateString())),
                 fn($q) => $q->whereDate('purchase_date', '>=', $startDate->toDateString())->whereDate('purchase_date', '<=', $endDate->toDateString())
             )
+            ->when($paymentStatus, fn($q) => $q->where('payment_status', $paymentStatus))
             ->select('discount_amount', 'applied_discounts')
             ->get();
         $this->accumulateDiscountSources($eventPurchases, $totals);

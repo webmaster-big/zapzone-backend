@@ -1012,9 +1012,12 @@ HTML;
             'purchase_id' => (string) $purchase->id,
             'purchase_reference' => $purchase->reference_number ?? '',
             'purchase_date' => $purchase->purchase_date?->format('F j, Y') ?? '',
+            'purchase_visit_date' => ($purchase->scheduled_date ?? $purchase->purchase_date)?->format('l, F j, Y') ?? '',
+            'purchase_visit_time' => $purchase->scheduled_time?->format('g:i A') ?? '',
+            'purchase_discount' => $this->purchaseDiscountText($purchase),
             'purchase_status' => ucfirst($purchase->status ?? ''),
             'purchase_quantity' => (string) ($purchase->quantity ?? 1),
-            'purchase_unit_price' => '$' . number_format($purchase->unit_price ?? 0, 2),
+            'purchase_unit_price' => '$' . number_format((float) ($purchase->unit_price ?? $attraction?->price ?? 0), 2),
             'purchase_total' => '$' . number_format($purchase->total_amount ?? 0, 2),
             'purchase_amount_paid' => '$' . number_format($purchase->amount_paid ?? 0, 2),
             'purchase_balance' => '$' . number_format(($purchase->total_amount ?? 0) - ($purchase->amount_paid ?? 0), 2),
@@ -1085,6 +1088,25 @@ HTML;
             'payable_type' => class_basename($payment->payable_type ?? ''),
             'payable_id' => (string) ($payment->payable_id ?? ''),
         ]);
+    }
+
+    public function purchaseDiscountText(AttractionPurchase $purchase): string
+    {
+        $amount = round((float) ($purchase->discount_amount ?? 0), 2);
+        if ($amount <= 0) {
+            return 'None';
+        }
+
+        $names = collect((array) ($purchase->applied_discounts ?? []))
+            ->filter(fn ($entry) => is_array($entry))
+            ->map(fn (array $entry) => ($entry['source'] ?? null) === 'gift_card' || ! empty($entry['gift_card_id'])
+                ? 'Gift card'
+                : trim((string) ($entry['discount_name'] ?? $entry['name'] ?? '')))
+            ->filter()
+            ->unique()
+            ->implode(', ');
+
+        return '-$' . number_format($amount, 2) . ($names !== '' ? " ({$names})" : '');
     }
 
     public const HTML_VARIABLES = ['waiver_section', 'qr_code', 'addons_list', 'location_breakdown_rows', 'category_breakdown_rows'];
@@ -1397,8 +1419,9 @@ HTML;
         <p><strong>Attraction:</strong> {{attraction_name}}</p>
         <p><strong>Quantity:</strong> {{purchase_quantity}}</p>
         <p><strong>Unit Price:</strong> {{purchase_unit_price}}</p>
+        <p><strong>Discount:</strong> {{purchase_discount}}</p>
         <p><strong>Total:</strong> {{purchase_total}}</p>
-        <p><strong>Date:</strong> {{purchase_date}}</p>
+        <p><strong>Visit Date:</strong> {{purchase_visit_date}} {{purchase_visit_time}}</p>
     </div>
 
     <div style="background: #f0f8ff; padding: 20px; border-radius: 8px; margin: 20px 0;">
@@ -1492,6 +1515,9 @@ HTML;
                     'purchase_id' => 'Purchase ID',
                     'purchase_reference' => 'Purchase reference number',
                     'purchase_date' => 'Purchase date (formatted)',
+                    'purchase_visit_date' => 'Visit date with its weekday',
+                    'purchase_visit_time' => 'Visit time, if one was booked',
+                    'purchase_discount' => 'Discount amount with the names of the specials or codes used, or None',
                     'purchase_status' => 'Purchase status',
                     'purchase_quantity' => 'Quantity purchased',
                     'purchase_unit_price' => 'Unit price',
