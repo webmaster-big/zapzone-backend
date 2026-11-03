@@ -29,6 +29,8 @@ class PhotoDeliveryService
 
     public const LINKS_TEXT_LIMIT = 480;
 
+    public const ATTACHMENT_BUDGET_BYTES = 15728640;
+
     protected SmsService $sms;
 
     protected bool $lastLookupFailed = false;
@@ -1861,16 +1863,25 @@ class PhotoDeliveryService
         $disk = \Illuminate\Support\Facades\Storage::disk(PhotoProcessingService::DISK);
         $slug = \Illuminate\Support\Str::slug($roomName) ?: 'group';
         $attachments = [];
+        $budget = self::ATTACHMENT_BUDGET_BYTES;
 
         foreach ($session->photos()->ready()->orderBy('position')->get() as $index => $photo) {
-            $path = $photo->pathForVariant('delivery');
+            $sized = collect(['delivery', 'slideshow'])
+                ->map(fn (string $variant) => $photo->pathForVariant($variant))
+                ->filter(fn (?string $path) => $path && $disk->exists($path))
+                ->unique()
+                ->map(fn (string $path) => ['path' => $path, 'bytes' => $disk->size($path)])
+                ->values();
 
-            if (!$path || !$disk->exists($path)) {
+            if ($sized->isEmpty()) {
                 continue;
             }
 
+            $chosen = $sized->first(fn (array $file) => $file['bytes'] <= $budget) ?? $sized->sortBy('bytes')->first();
+            $budget -= $chosen['bytes'];
+
             $attachments[] = [
-                'data' => base64_encode($disk->get($path)),
+                'data' => base64_encode($disk->get($chosen['path'])),
                 'filename' => $slug . '-photo-' . ($index + 1) . '.jpg',
                 'mime_type' => 'image/jpeg',
             ];

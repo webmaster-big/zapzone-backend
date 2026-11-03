@@ -88,11 +88,11 @@ class PhotoOverlayVersionsTest extends TestCase
 
         [$portrait, $landscape] = $session->photos()->orderBy('position')->get()->all();
 
-        $this->assertSame([900, 1600], [$portrait->width, $portrait->height]);
+        $this->assertSame([1080, 1920], [$portrait->width, $portrait->height]);
         $this->assertWholeFrame($portrait->delivery_path, self::ORANGE, 'portrait photo');
         $this->assertWholeFrame($portrait->slideshow_path, self::ORANGE, 'portrait slideshow copy');
 
-        $this->assertSame([1600, 900], [$landscape->width, $landscape->height]);
+        $this->assertSame([1920, 1080], [$landscape->width, $landscape->height]);
         $this->assertWholeFrame($landscape->delivery_path, self::CYAN, 'landscape photo');
     }
 
@@ -114,7 +114,7 @@ class PhotoOverlayVersionsTest extends TestCase
         $photo = $session->photos()->first();
         $this->assertSame(Photo::PROCESSING_READY, $photo->processing_status);
         $this->assertSame($overlayId, $photo->photo_overlay_id);
-        $this->assertSame([900, 1600], [$photo->width, $photo->height]);
+        $this->assertSame([1080, 1920], [$photo->width, $photo->height]);
 
         $this->updateFrame($overlayId, ['alt_image' => $this->edgeFrame('tall.png', 1080, 1920, self::ORANGE)])
             ->assertOk()
@@ -216,7 +216,7 @@ class PhotoOverlayVersionsTest extends TestCase
         $photo = $session->photos()->first();
 
         $this->assertSame(Photo::PROCESSING_READY, $photo->processing_status);
-        $this->assertSame([1600, 900], [$photo->width, $photo->height]);
+        $this->assertSame([1920, 1080], [$photo->width, $photo->height]);
         $this->assertGreaterThan(10, $this->dateTextHeight($photo->delivery_path));
     }
 
@@ -253,7 +253,7 @@ class PhotoOverlayVersionsTest extends TestCase
         $this->uploadFrame(['image' => UploadedFile::fake()->createWithContent('huge.png', $png)])
             ->assertStatus(422)
             ->assertJsonValidationErrors(['image'])
-            ->assertJsonPath('message', 'This frame is very large (6000 × 4500 pixels). Save it at about 1920 × 1080 for the landscape version or 1080 × 1920 for the portrait version.');
+            ->assertJsonPath('message', 'This frame is very large (6000 × 4500 pixels). Save it at about 3840 × 2160 for the landscape version or 2160 × 3840 for the portrait version.');
 
         $this->uploadFrame(['image' => $this->frameUpload('big-but-fine.png', 3840, 2160)])->assertCreated();
         $this->assertSame(1, PhotoOverlay::count());

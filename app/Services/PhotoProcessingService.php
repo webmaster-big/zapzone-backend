@@ -6,6 +6,7 @@ use App\Models\Location;
 use App\Models\LocationPhotoSetting;
 use App\Models\Photo;
 use App\Models\PhotoOverlay;
+use App\Support\FrameImage;
 use App\Support\OperatingDay;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Log;
@@ -23,10 +24,10 @@ class PhotoProcessingService
     /** Venue branding, safe to serve publicly. */
     public const OVERLAY_DISK = 'public';
 
-    public const DELIVERY_MAX_EDGE = 1600;
+    public const DATE_REFERENCE_EDGE = 1600;
     public const SLIDESHOW_MAX_EDGE = 1920;
     public const THUMBNAIL_MAX_EDGE = 420;
-    public const DELIVERY_QUALITY = 88;
+    public const DELIVERY_QUALITY = 92;
     public const SLIDESHOW_QUALITY = 84;
     public const THUMBNAIL_QUALITY = 72;
     public const MAX_SOURCE_PIXELS = 60000000;
@@ -68,7 +69,7 @@ class PhotoProcessingService
             $setting = LocationPhotoSetting::forLocation($location);
             $overlay = $this->resolveOverlay($location, $photo->captured_at ?: now(), $this->roomFor($photo));
 
-            $delivery = $this->render($source, self::DELIVERY_MAX_EDGE, $overlay, $setting, $photo, $location);
+            $delivery = $this->render($source, $this->deliveryEdge($source, $overlay, $photo), $overlay, $setting, $photo, $location);
             $deliveryPath = $this->pathFor($photo, 'delivery', 'jpg');
             $this->writeJpeg($delivery, $deliveryPath, self::DELIVERY_QUALITY);
 
@@ -350,9 +351,8 @@ class PhotoProcessingService
         $canvasW = imagesx($canvas);
         $canvasH = imagesy($canvas);
 
-        $scale = max($canvasW, $canvasH) / self::DELIVERY_MAX_EDGE;
-        $fontSize = (int) round($setting->date_font_size * $scale);
-        $fontSize = max(14, min(96, $fontSize));
+        $scale = max($canvasW, $canvasH) / self::DATE_REFERENCE_EDGE;
+        $fontSize = max(14, (int) round(min(96 * max(1.0, $scale), $setting->date_font_size * $scale)));
         $margin = (int) round($setting->date_margin * $scale);
         $margin = max(10, $margin);
 
@@ -473,6 +473,49 @@ class PhotoProcessingService
         }
 
         return null;
+    }
+
+    protected function deliveryEdge(\GdImage $source, ?PhotoOverlay $overlay, Photo $photo): int
+    {
+        $width = imagesx($source);
+        $height = imagesy($source);
+        $fullEdge = max($width, $height);
+        $layerPixels = $this->overlayPixels($overlay, $width, $height);
+        $edge = $fullEdge;
+
+        while ($edge > self::SLIDESHOW_MAX_EDGE) {
+            $scale = $edge / $fullEdge;
+
+            if ($this->hasMemoryFor(((int) ceil($width * $scale) * (int) ceil($height * $scale)) + $layerPixels)) {
+                break;
+            }
+
+            $edge = max(self::SLIDESHOW_MAX_EDGE, (int) floor($edge * 0.8));
+        }
+
+        if ($edge < $fullEdge) {
+            Log::warning('Photo delivered below its full size because the server is short of memory.', [
+                'photo_id' => $photo->id,
+                'full_edge' => $fullEdge,
+                'delivered_edge' => $edge,
+                'memory_limit' => ini_get('memory_limit'),
+            ]);
+        }
+
+        return $edge;
+    }
+
+    protected function overlayPixels(?PhotoOverlay $overlay, int $width, int $height): int
+    {
+        $relative = $overlay?->imagePathFor($width, $height);
+        $size = $relative ? FrameImage::size(Storage::disk(self::OVERLAY_DISK)->path($relative)) : null;
+
+        return $size ? $size[0] * $size[1] : 0;
+    }
+
+    protected function hasMemoryFor(int $pixels): bool
+    {
+        return FrameImage::hasMemoryFor($pixels);
     }
 
     protected function resize(\GdImage $source, int $maxEdge): \GdImage

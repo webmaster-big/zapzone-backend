@@ -867,14 +867,14 @@ class PhotoOverlayController extends Controller
 
         if ($size[0] * $size[1] > FrameImage::MAX_FRAME_PIXELS) {
             return sprintf(
-                'This frame is very large (%d × %d pixels). Save it at about 1920 × 1080 for the landscape version or 1080 × 1920 for the portrait version.',
+                'This frame is very large (%d × %d pixels). Save it at about 3840 × 2160 for the landscape version or 2160 × 3840 for the portrait version.',
                 $size[0],
                 $size[1]
             );
         }
 
         if (!FrameImage::hasMemoryFor($size[0] * $size[1])) {
-            return 'The server does not have enough memory to check a frame this large right now. Save it at about 1920 × 1080 for the landscape version or 1080 × 1920 for the portrait version.';
+            return 'The server does not have enough memory to check a frame this large right now. Save it at about 3840 × 2160 for the landscape version or 2160 × 3840 for the portrait version.';
         }
 
         $share = FrameImage::seeThroughShare($path);
