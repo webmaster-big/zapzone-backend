@@ -82,14 +82,14 @@ class PhotoOrientationTest extends TestCase
 
         [$landscape, $portrait] = $session->photos()->orderBy('position')->get()->all();
 
-        $this->assertSame([1600, 900], [$landscape->width, $landscape->height]);
-        $this->assertSame([1600, 900], $this->storedSize($landscape->delivery_path));
+        $this->assertSame([1920, 1080], [$landscape->width, $landscape->height]);
+        $this->assertSame([1920, 1080], $this->storedSize($landscape->delivery_path));
         $this->assertSame([1920, 1080], $this->storedSize($landscape->slideshow_path));
         $this->assertSame([420, 236], $this->storedSize($landscape->thumbnail_path));
         $this->assertCorners($landscape->delivery_path);
 
-        $this->assertSame([900, 1600], [$portrait->width, $portrait->height]);
-        $this->assertSame([900, 1600], $this->storedSize($portrait->delivery_path));
+        $this->assertSame([1080, 1920], [$portrait->width, $portrait->height]);
+        $this->assertSame([1080, 1920], $this->storedSize($portrait->delivery_path));
         $this->assertCorners($portrait->delivery_path);
     }
 
@@ -132,7 +132,7 @@ class PhotoOrientationTest extends TestCase
         $photo = $session->photos()->first();
         $this->assertSame(Photo::PROCESSING_READY, $photo->processing_status);
         $this->assertSame($overlay->id, $photo->photo_overlay_id);
-        $this->assertSame([900, 1600], [$photo->width, $photo->height]);
+        $this->assertSame([1080, 1920], [$photo->width, $photo->height]);
     }
 
     public function test_uploaded_photos_are_turned_upright_for_every_camera_orientation_tag(): void
