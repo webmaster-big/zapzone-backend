@@ -81,6 +81,10 @@ class Booking extends Model
         'qr_code_path',
         'customer_id',
         'package_id',
+        'is_custom_package',
+        'custom_package_name',
+        'custom_package_category',
+        'custom_package_terms',
         'location_id',
         'room_id',
         'created_by',
@@ -143,6 +147,8 @@ class Booking extends Model
         'membership_discount' => 'decimal:2',
         'applied_discounts' => 'array',
         'applied_fees' => 'array',
+        'is_custom_package' => 'boolean',
+        'custom_package_terms' => 'array',
         'duration' => 'decimal:2',
         'guest_of_honor_age' => 'integer',
         'reminder_sent' => 'boolean',
@@ -313,6 +319,88 @@ class Booking extends Model
             return $this->customer->phone;
         }
         return $this->guest_phone;
+    }
+
+    public function isCustomPackage(): bool
+    {
+        return (bool) $this->is_custom_package;
+    }
+
+    public function packageLabel(): ?string
+    {
+        if ($this->isCustomPackage()) {
+            return $this->custom_package_name;
+        }
+
+        return $this->package?->name;
+    }
+
+    public function packageCategoryLabel(): ?string
+    {
+        if ($this->isCustomPackage()) {
+            return $this->custom_package_category;
+        }
+
+        return $this->package?->display_label ?: $this->package?->category;
+    }
+
+    public function customGuestRange(): ?array
+    {
+        if (! $this->isCustomPackage()) {
+            return null;
+        }
+
+        $terms = $this->customPackageTermsArray();
+
+        if (! isset($terms['max_guests']) || ! is_numeric($terms['max_guests'])) {
+            return null;
+        }
+
+        return [
+            'min' => max(1, (int) ($terms['min_guests'] ?? 1)),
+            'max' => (int) $terms['max_guests'],
+        ];
+    }
+
+    public function oneTimeAddOns(): array
+    {
+        if (! $this->isCustomPackage()) {
+            return [];
+        }
+
+        $rows = array_filter((array) ($this->customPackageTermsArray()['one_time_add_ons'] ?? []), 'is_array');
+
+        return array_values(array_map(function (array $row) {
+            $quantity = max(0, (int) ($row['quantity'] ?? 0));
+            $unitCents = max(0, (int) round((float) ($row['unit_price'] ?? 0) * 100));
+
+            return [
+                'name' => (string) ($row['name'] ?? ''),
+                'quantity' => $quantity,
+                'unit_price' => round($unitCents / 100, 2),
+                'total' => round($unitCents * $quantity / 100, 2),
+            ];
+        }, $rows));
+    }
+
+    public function customFees(): array
+    {
+        if (! $this->isCustomPackage()) {
+            return [];
+        }
+
+        $fees = array_filter((array) ($this->customPackageTermsArray()['fees'] ?? []), 'is_array');
+
+        return array_values(array_map(fn (array $fee) => [
+            'name' => (string) ($fee['name'] ?? ''),
+            'type' => ($fee['type'] ?? null) === 'percent' ? 'percent' : 'flat',
+            'amount' => round(max(0, (float) ($fee['amount'] ?? 0)), 2),
+        ], $fees));
+    }
+
+    private function customPackageTermsArray(): array
+    {
+        return is_array($this->custom_package_terms) ? $this->custom_package_terms : [];
     }
 
     public function customFieldResponses(): \Illuminate\Database\Eloquent\Relations\MorphMany

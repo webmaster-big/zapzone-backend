@@ -562,7 +562,7 @@
                                     <div class="info-block">
                                         <div class="info-block-title">Package & Room</div>
                                         <div class="info-block-value">
-                                            <strong>{{ $booking->package->name ?? 'N/A' }}</strong><br>
+                                            <strong>{{ $booking->packageLabel() ?? 'N/A' }}</strong><br>
                                             {{ $booking->room->name ?? 'TBD' }}
                                             @if($booking->participants) · {{ $booking->participants }} guests{{ '' }}@endif
                                         </div>
@@ -647,7 +647,7 @@
                     <!-- Party Details -->
                     <div style="background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px; padding: 10px; margin-bottom: 12px;">
                         <div style="font-size: 12pt; font-weight: bold; color: #1e40af; margin-bottom: 5px;">
-                            {{ $booking->package->name ?? 'Package Details' }}
+                            {{ $booking->packageLabel() ?? 'Package Details' }}
                         </div>
                         <div style="font-size: 10pt; color: #333; margin-bottom: 3px;">
                             {{ $booking->booking_date ? $booking->booking_date->format('M d, Y') : 'TBD' }}

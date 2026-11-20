@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Support\VenueCategory;
 
+use App\Models\Booking;
 use App\Models\Location;
 use App\Models\Payment;
 use App\Support\DateRange;
@@ -56,7 +57,8 @@ class AccountingReportService
         $wantedCategories = ! empty($filters['category_filter']) ? VenueCategory::matchValues($filters['category_filter']) : null;
 
         $bookings = DB::table('bookings')
-            ->join('packages', 'bookings.package_id', '=', 'packages.id')
+            ->leftJoin('packages', 'bookings.package_id', '=', 'packages.id')
+            ->where(fn($q) => $q->whereNotNull('packages.id')->orWhere('bookings.is_custom_package', true))
             ->whereIn('bookings.location_id', $locationIds)
             ->whereNotIn('bookings.status', ['cancelled'])
             ->whereNull('bookings.deleted_at')
@@ -67,7 +69,7 @@ class AccountingReportService
             )
             ->when($paymentStatus, fn($q) => $q->where('bookings.payment_status', $paymentStatus))
             ->when($wantedCategories, fn($q) => $q->whereRaw(
-                "LOWER(COALESCE(NULLIF(packages.display_label, ''), packages.category)) IN (" . implode(',', array_fill(0, count($wantedCategories), '?')) . ')',
+                "LOWER(COALESCE(NULLIF(packages.display_label, ''), packages.category, bookings.custom_package_category)) IN (" . implode(',', array_fill(0, count($wantedCategories), '?')) . ')',
                 $wantedCategories
             ))
             ->select('bookings.discount_amount', 'bookings.applied_discounts')
@@ -262,7 +264,8 @@ class AccountingReportService
     private function getPartiesData(array $locationIds, Carbon $startDate, Carbon $endDate, string $viewMode, array $filters = []): array
     {
         $query = DB::table('bookings')
-            ->join('packages', 'bookings.package_id', '=', 'packages.id')
+            ->leftJoin('packages', 'bookings.package_id', '=', 'packages.id')
+            ->where(fn($q) => $q->whereNotNull('packages.id')->orWhere('bookings.is_custom_package', true))
             ->whereIn('bookings.location_id', $locationIds)
             ->whereNotIn('bookings.status', ['cancelled'])
             ->whereNull('bookings.deleted_at');
@@ -282,13 +285,13 @@ class AccountingReportService
         if (!empty($filters['category_filter'])) {
             $wanted = VenueCategory::matchValues($filters['category_filter']);
             $placeholders = implode(',', array_fill(0, count($wanted), '?'));
-            $query->whereRaw("LOWER(COALESCE(NULLIF(packages.display_label, ''), packages.category)) IN ({$placeholders})", $wanted);
+            $query->whereRaw("LOWER(COALESCE(NULLIF(packages.display_label, ''), packages.category, bookings.custom_package_category)) IN ({$placeholders})", $wanted);
         }
 
         $bookings = $query->select(
             'bookings.id',
-            DB::raw("COALESCE(NULLIF(packages.display_label, ''), packages.category) as sub_category"),
-            'packages.name as package_name',
+            DB::raw("COALESCE(NULLIF(packages.display_label, ''), packages.category, bookings.custom_package_category) as sub_category"),
+            DB::raw("COALESCE(packages.name, 'Custom Package') as package_name"),
             'bookings.total_amount',
             'bookings.amount_paid',
             'bookings.discount_amount',
@@ -477,6 +480,46 @@ class AccountingReportService
             $addOnsSummary[$addOn->id]['quantity'] += (int) $addOn->total_quantity;
             $addOnsSummary[$addOn->id]['gross_sales'] += (float) $addOn->total_revenue;
             $addOnsSummary[$addOn->id]['collected'] += (float) $addOn->collected_revenue;
+        }
+
+        $customBookings = Booking::query()
+            ->where('bookings.is_custom_package', true)
+            ->whereIn('bookings.location_id', $locationIds)
+            ->whereNotIn('bookings.status', ['cancelled'])
+            ->when($viewMode === 'booked_on', function ($q) use ($startDate, $endDate) {
+                $q->where('bookings.created_at', '>=', DateRange::startOfDay($startDate->toDateString()))
+                  ->where('bookings.created_at', '<=', DateRange::endOfDay($endDate->toDateString()));
+            }, function ($q) use ($startDate, $endDate) {
+                $q->whereDate('bookings.booking_date', '>=', $startDate->toDateString())
+                  ->whereDate('bookings.booking_date', '<=', $endDate->toDateString());
+            })
+            ->select('bookings.id', 'bookings.is_custom_package', 'bookings.custom_package_terms')
+            ->selectRaw('CASE WHEN bookings.amount_paid >= bookings.total_amount THEN 1 ELSE 0 END as fully_paid')
+            ->get();
+
+        $oneTimeLines = 0;
+        $oneTimeQuantity = 0;
+        $oneTimeGrossCents = 0;
+        $oneTimeCollectedCents = 0;
+        foreach ($customBookings as $customBooking) {
+            foreach ($customBooking->oneTimeAddOns() as $line) {
+                $lineCents = (int) round($line['total'] * 100);
+                $oneTimeLines++;
+                $oneTimeQuantity += $line['quantity'];
+                $oneTimeGrossCents += $lineCents;
+                if ((int) $customBooking->fully_paid === 1) {
+                    $oneTimeCollectedCents += $lineCents;
+                }
+            }
+        }
+
+        if ($oneTimeLines > 0) {
+            $addOnsSummary['one_time_add_ons'] = [
+                'name' => 'One-time add-ons',
+                'quantity' => $oneTimeQuantity,
+                'gross_sales' => $oneTimeGrossCents / 100,
+                'collected' => $oneTimeCollectedCents / 100,
+            ];
         }
 
         $attractionAddOnsQuery = DB::table('attraction_purchase_add_ons')

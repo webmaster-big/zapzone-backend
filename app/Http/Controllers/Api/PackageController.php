@@ -313,13 +313,13 @@ class PackageController extends Controller
         $currentUser = auth()->user();
 
         ActivityLog::log(
-            action: $online ? 'Package Available Online' : 'Package Made Backend Only',
+            action: $online ? 'Package Available Online' : 'Package Hidden From Booking Site',
             category: 'update',
             description: $online
                 ? ($package->is_active
                     ? "Package '{$package->name}' can be seen and booked online again"
                     : "Package '{$package->name}' can be booked online once it is switched on")
-                : "Package '{$package->name}' is backend only: hidden from the booking site and not bookable online",
+                : "Package '{$package->name}' is hidden from the booking site and cannot be booked online",
             userId: auth()->id(),
             locationId: $package->location_id,
             entityType: 'package',
@@ -828,7 +828,7 @@ class PackageController extends Controller
         if (!Package::tracksOnlineAvailability()) {
             return response()->json([
                 'success' => false,
-                'message' => 'Front-End Availability is not switched on for this server yet. Please try again after the next update.',
+                'message' => 'The Online Booking setting is not available on this server yet. Please try again after the next update.',
             ], 503);
         }
 
@@ -843,7 +843,7 @@ class PackageController extends Controller
             'success' => true,
             'message' => $package->available_online
                 ? ($package->is_active ? 'Customers can see and book this package online.' : 'Customers can book this package online once it is switched on.')
-                : 'This package is now backend only. Customers cannot see or book it online.',
+                : 'This package is now hidden from the booking site. Customers cannot see or book it online.',
             'data' => [
                 'package_id' => $package->id,
                 'available_online' => (bool) $package->available_online,
@@ -1008,7 +1008,7 @@ class PackageController extends Controller
 
             try {
                 if (array_key_exists('available_online', $packageData) && !$packageData['available_online'] && !$mayHidePackages) {
-                    throw new \InvalidArgumentException('This package is backend only. Only a location manager or an administrator can import a backend-only package.');
+                    throw new \InvalidArgumentException('This package is hidden from the booking site. Only a location manager or an administrator can import a package that is hidden from the booking site.');
                 }
 
                 $minParticipants = $packageData['min_participants'] ?? null;

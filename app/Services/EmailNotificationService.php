@@ -805,7 +805,7 @@ HTML;
             ? $waiver->adult_full_name
             : ($customer ? trim($customer->first_name . ' ' . $customer->last_name) : 'Guest');
 
-        $activityName = $waiver->event?->name ?? $waiver->booking?->package?->name ?? $waiver->manual_activity_name ?? '';
+        $activityName = $waiver->event?->name ?? $waiver->booking?->packageLabel() ?? $waiver->manual_activity_name ?? '';
         $game = null;
 
         try {
@@ -896,19 +896,22 @@ HTML;
         $room = $booking->room;
         $company = $location?->company;
 
-        $addOnsList = '';
+        $addOnItems = [];
         $addOnsTotal = 0;
         if ($booking->addOns && $booking->addOns->count() > 0) {
-            $addOnItems = [];
             foreach ($booking->addOns as $addOn) {
                 $qty = $addOn->pivot->quantity ?? 1;
-                $price = $addOn->pivot->price ?? $addOn->price;
+                $price = $addOn->pivot->price_at_booking ?? $addOn->price;
                 $subtotal = $qty * $price;
                 $addOnsTotal += $subtotal;
                 $addOnItems[] = e($addOn->name) . " x{$qty} - \${$subtotal}";
             }
-            $addOnsList = implode('<br>', $addOnItems);
         }
+        foreach ($booking->oneTimeAddOns() as $oneTimeAddOn) {
+            $addOnsTotal += $oneTimeAddOn['total'];
+            $addOnItems[] = e($oneTimeAddOn['name']) . " x{$oneTimeAddOn['quantity']} - \${$oneTimeAddOn['total']}";
+        }
+        $addOnsList = implode('<br>', $addOnItems);
 
         $qrCodeHtml = '';
         if ($includeQrCode && $booking->qr_code_path) {
@@ -925,7 +928,7 @@ HTML;
             ])))
             : '';
 
-        return [
+        $variables = [
             'customer_name' => $customer ? trim($customer->first_name . ' ' . $customer->last_name) : ($booking->guest_name ?? 'Guest'),
             'customer_first_name' => $customer?->first_name ?? explode(' ', $booking->guest_name ?? 'Guest')[0],
             'customer_last_name' => $customer?->last_name ?? '',
@@ -978,6 +981,20 @@ HTML;
             'current_year' => (string) now()->year,
             'current_time' => now()->format('g:i A'),
         ];
+
+        if ($booking->isCustomPackage()) {
+            $guestRange = $booking->customGuestRange();
+            $variables = array_merge($variables, [
+                'package_name' => (string) $booking->packageLabel(),
+                'package_description' => (string) $booking->packageCategoryLabel(),
+                'package_duration' => \App\Support\DurationLabel::make($booking->duration, $booking->duration_unit),
+                'package_price' => '$' . number_format((float) $booking->package_price_at_booking, 2) . ($booking->package_pricing_type_at_booking === 'per_person' ? ' per guest' : ''),
+                'package_min_participants' => (string) ($guestRange['min'] ?? 1),
+                'package_max_participants' => (string) ($guestRange['max'] ?? ''),
+            ]);
+        }
+
+        return $variables;
     }
 
     protected function buildPurchaseVariables(AttractionPurchase $purchase, bool $includeQrCode = true): array

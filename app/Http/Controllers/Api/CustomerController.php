@@ -1007,15 +1007,15 @@ class CustomerController extends Controller
             ->when($startDate && $endDate, fn($q) => $q->whereBetween('created_at', [$startDate, $endDate]))
             ->when($startDate && !$endDate, fn($q) => $q->where('created_at', '>=', $startDate))
             ->whereNotNull('guest_email')
-            ->whereNotNull('package_id')
-            ->selectRaw('guest_email, guest_name, package_id, COUNT(*) as bookings')
-            ->groupBy('guest_email', 'guest_name', 'package_id')
+            ->where(fn($q) => $q->whereNotNull('package_id')->orWhere('is_custom_package', true))
+            ->selectRaw('guest_email, guest_name, package_id, is_custom_package, COUNT(*) as bookings')
+            ->groupBy('guest_email', 'guest_name', 'package_id', 'is_custom_package')
             ->orderByDesc('bookings')
             ->limit(5)
             ->get()
             ->map(fn($item) => [
                 'customer' => $item->guest_name,
-                'package' => $item->package->name ?? 'N/A',
+                'package' => $item->is_custom_package ? 'Custom Package' : ($item->package->name ?? 'N/A'),
                 'bookings' => $item->bookings,
             ]);
 
@@ -1365,14 +1365,14 @@ class CustomerController extends Controller
                 ->when($startDate && $endDate, fn($q) => $q->whereBetween('created_at', [$startDate, $endDate]))
                 ->when($startDate && !$endDate, fn($q) => $q->where('created_at', '>=', $startDate))
                 ->whereNotNull('guest_email')
-                ->whereNotNull('package_id')
-                ->selectRaw('package_id, COUNT(*) as booking_count, SUM(amount_paid) as total_revenue')
-                ->groupBy('package_id')
+                ->where(fn($q) => $q->whereNotNull('package_id')->orWhere('is_custom_package', true))
+                ->selectRaw('package_id, is_custom_package, COUNT(*) as booking_count, SUM(amount_paid) as total_revenue')
+                ->groupBy('package_id', 'is_custom_package')
                 ->orderByDesc('booking_count')
                 ->limit(10)
                 ->get()
                 ->map(fn($item) => [
-                    'package' => $item->package->name ?? 'N/A',
+                    'package' => $item->is_custom_package ? 'Custom Package' : ($item->package->name ?? 'N/A'),
                     'bookings' => $item->booking_count,
                     'revenue' => round($item->total_revenue, 2),
                 ])

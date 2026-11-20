@@ -263,14 +263,14 @@ class MetricsController extends Controller
             $pkgRows = (clone $bookingQuery)
                 ->leftJoin('packages', 'bookings.package_id', '=', 'packages.id')
                 ->whereNotIn('bookings.status', ['cancelled'])
-                ->select('packages.name', DB::raw('COUNT(*) as cnt'))
-                ->groupBy('packages.name')
+                ->select('packages.name', 'bookings.is_custom_package', DB::raw('COUNT(*) as cnt'))
+                ->groupBy('packages.name', 'bookings.is_custom_package')
                 ->orderByDesc('cnt')
                 ->get();
             $pkgTotal = $pkgRows->sum('cnt');
             foreach ($pkgRows as $row) {
                 $packageBreakdownData[] = [
-                    'label'      => $row->name ?? 'Other',
+                    'label'      => $row->is_custom_package ? 'Custom Package' : ($row->name ?? 'Other'),
                     'count'      => (int) $row->cnt,
                     'percentage' => $pkgTotal > 0 ? round(($row->cnt / $pkgTotal) * 100) : 0,
                 ];
@@ -303,8 +303,8 @@ class MetricsController extends Controller
             $partRows = (clone $bookingQuery)
                 ->leftJoin('packages', 'bookings.package_id', '=', 'packages.id')
                 ->whereNotIn('bookings.status', ['cancelled'])
-                ->select('packages.name', DB::raw('SUM(bookings.participants) as cnt'))
-                ->groupBy('packages.name')
+                ->select('packages.name', 'bookings.is_custom_package', DB::raw('SUM(bookings.participants) as cnt'))
+                ->groupBy('packages.name', 'bookings.is_custom_package')
                 ->orderByDesc('cnt')
                 ->get();
             $partTotal = $partRows->sum('cnt');
@@ -313,7 +313,7 @@ class MetricsController extends Controller
                     continue;
                 }
                 $participantBreakdownData[] = [
-                    'label'      => $row->name ?? 'Other',
+                    'label'      => $row->is_custom_package ? 'Custom Package' : ($row->name ?? 'Other'),
                     'count'      => (int) $row->cnt,
                     'percentage' => $partTotal > 0 ? round(($row->cnt / $partTotal) * 100) : 0,
                 ];
@@ -849,7 +849,7 @@ class MetricsController extends Controller
                     'customer_email' => $booking->customer
                         ? $booking->customer->email
                         : $booking->guest_email,
-                    'package_name' => $booking->package->name ?? null,
+                    'package_name' => $booking->packageLabel(),
                     'location_name' => $booking->location->name ?? null,
                     'room_name' => $booking->room->name ?? null,
                     'booking_date' => $booking->booking_date,

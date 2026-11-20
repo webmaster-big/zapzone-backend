@@ -32,6 +32,7 @@ use App\Services\MembershipBenefitService;
 use App\Services\Checkout\BookingRepricer;
 use App\Services\Checkout\CheckoutPricer;
 use App\Services\Checkout\CheckoutTotalGuard;
+use App\Services\Checkout\CustomPackagePricer;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
@@ -98,6 +99,7 @@ class BookingController extends Controller
                   ->orWhere('notes', 'like', $like)
                   ->orWhere('transaction_id', 'like', $like)
                   ->orWhere('guest_of_honor_name', 'like', $like)
+                  ->orWhere('custom_package_name', 'like', $like)
                   ->orWhereHas('customer', function ($c) use ($like) {
                       $c->where('first_name', 'like', $like)
                         ->orWhere('last_name', 'like', $like)
@@ -272,6 +274,8 @@ class BookingController extends Controller
         try {
             $query = Booking::select(array_merge([
                     'id', 'reference_number', 'customer_id', 'package_id', 'location_id', 'room_id',
+                    'is_custom_package', 'custom_package_name', 'custom_package_category', 'custom_package_terms',
+                    'package_price_at_booking', 'price_per_additional_at_booking', 'package_pricing_type_at_booking',
                     'created_by', 'guest_name', 'guest_email', 'guest_phone', 'booking_date', 'booking_time',
                     'participants', 'duration', 'duration_unit', 'total_amount', 'amount_paid',
                     'discount_amount', 'applied_fees', 'applied_discounts', 'payment_method', 'payment_status', 'status', 'notes',
@@ -446,6 +450,8 @@ class BookingController extends Controller
     {
         $query = Booking::select([
                 'id', 'reference_number', 'customer_id', 'package_id', 'location_id', 'room_id',
+                'is_custom_package', 'custom_package_name', 'custom_package_category', 'custom_package_terms',
+                'package_price_at_booking', 'price_per_additional_at_booking', 'package_pricing_type_at_booking',
                 'created_by', 'guest_name', 'guest_email', 'guest_phone',
                 'guest_address', 'guest_city', 'guest_state', 'guest_zip', 'guest_country',
                 'booking_date', 'booking_time',
@@ -527,6 +533,31 @@ class BookingController extends Controller
             $data['guest_email'] = null;
         }
         $request->merge($data);
+
+        $customPricer = app(CustomPackagePricer::class);
+        $customRequested = ! in_array($request->input('custom_package'), [null, ''], true);
+
+        if ($customRequested) {
+            if (! \App\Support\StaffActor::current()) {
+                return response()->json([
+                    'success' => false,
+                    'code' => CustomPackagePricer::STAFF_ONLY_CODE,
+                    'message' => CustomPackagePricer::STAFF_ONLY_MESSAGE,
+                ], 422);
+            }
+
+            if (! in_array($request->input('package_id'), [null, ''], true)) {
+                return $this->customPackageRefusal('package_id', CustomPackagePricer::HAS_PACKAGE_MESSAGE);
+            }
+
+            if (! empty($request->input('additional_attractions'))) {
+                return $this->customPackageRefusal('additional_attractions', CustomPackagePricer::ATTRACTIONS_MESSAGE);
+            }
+
+            if ($discountField = $customPricer->firstDiscountField($request->all())) {
+                return $this->customPackageRefusal($discountField, CustomPackagePricer::DISCOUNT_MESSAGE);
+            }
+        }
 
         $staffCreating = app(\App\Services\AddOnRuleService::class)->isStaff($request->user('sanctum'));
 
@@ -626,7 +657,11 @@ class BookingController extends Controller
             'custom_fields.*.value' => 'nullable|boolean',
             'checkout_key' => ['nullable', 'string', 'max:64', 'regex:/^[A-Za-z0-9-]+$/'],
             'book_another' => 'nullable|boolean',
+            'custom_package' => 'nullable|array',
         ]);
+
+        $customPackageInput = $validated['custom_package'] ?? null;
+        unset($validated['custom_package']);
 
         $customFieldAnswers = $validated['custom_fields'] ?? null;
         unset($validated['custom_fields']);
@@ -639,6 +674,46 @@ class BookingController extends Controller
         $isStaff = $rules->isStaff($request->user('sanctum'));
         $addOnLines = $rules->normalize($validated['additional_addons'] ?? [], 'addon_id', 'price_at_booking');
         $attractionLines = $rules->normalize($validated['additional_attractions'] ?? [], 'attraction_id', 'price_at_booking');
+
+        $customTerms = null;
+        if ($customRequested) {
+            $customTerms = $customPricer->normalizeTerms($customPackageInput);
+
+            if ($denied = $this->denyStaffElsewhere((int) $validated['location_id'], 'location')) {
+                $switchTo = $denied->getData(true)['switch_location_id'] ?? null;
+                $switchName = $switchTo ? \App\Models\Location::find($switchTo)?->name : null;
+
+                return response()->json(array_filter([
+                    'success' => false,
+                    'message' => $switchName
+                        ? "To book at {$switchName}, switch to {$switchName} in the sidebar first."
+                        : 'You can only book a custom package at your own location.',
+                    'switch_location_id' => $switchTo,
+                ], fn ($value) => $value !== null), 403);
+            }
+
+            $customAssessment = $customPricer->assess($customTerms, [
+                'location_id' => (int) $validated['location_id'],
+                'room_id' => $validated['room_id'] ?? null,
+                'participants' => (int) $validated['participants'],
+                'add_on_lines' => $addOnLines,
+                'client_total' => $validated['total_amount'],
+                'amount_paid' => $validated['amount_paid'] ?? 0,
+            ]);
+
+            if ($customAssessment['refusal']) {
+                return response()->json($customAssessment['refusal']['body'], $customAssessment['refusal']['status']);
+            }
+
+            $addOnLines = $this->customPricedAddOnLines($customAssessment['lines']);
+            $validated = array_merge($validated, $customPricer->columnsFor($customTerms), [
+                'package_id' => null,
+                'total_amount' => $customAssessment['total_amount'],
+                'applied_fees' => $customAssessment['applied_fees'] ?: null,
+                'discount_amount' => '0.00',
+                'applied_discounts' => null,
+            ]);
+        }
 
         if (! $isStaff && in_array($validated['payment_method'] ?? null, ['in-store', 'card'], true)) {
             Log::warning('A checkout without a staff login asked to be recorded as paid at the venue; saved as pay later instead', [
@@ -667,7 +742,7 @@ class BookingController extends Controller
             }
         }
 
-        if (empty($validated['package_id'])) {
+        if (empty($validated['package_id']) && $customTerms === null) {
             if ((string) config('booking_rules.package_required', 'log') === 'enforce') {
                 return response()->json([
                     'success' => false,
@@ -680,6 +755,13 @@ class BookingController extends Controller
                 'staff' => $isStaff,
                 'guest_email' => $validated['guest_email'] ?? null,
             ]);
+
+            if (! empty($validated['room_id'])) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Choose a package for this booking before giving it a space.',
+                ], 422);
+            }
         }
 
         if (!empty($validated['package_id'])) {
@@ -1234,7 +1316,7 @@ class BookingController extends Controller
 
             if (!empty($validated['room_id'])) {
                 (new PackageTimeSlot([
-                    'package_id' => $validated['package_id'],
+                    'package_id' => $validated['package_id'] ?? null,
                     'booking_id' => $created->id,
                     'room_id' => $validated['room_id'],
                     'customer_id' => $validated['customer_id'] ?? null,
@@ -1346,6 +1428,7 @@ class BookingController extends Controller
 
         if($booking->created_by){
             $booking->load('creator');
+            $customMetadata = $booking->isCustomPackage() ? $customPricer->activityMetadata($booking) : null;
 
         ActivityLog::log(
             action: 'Booking Created',
@@ -1355,7 +1438,7 @@ class BookingController extends Controller
             locationId: $booking->location_id,
             entityType: 'booking',
             entityId: $booking->id,
-            metadata: [
+            metadata: array_merge([
                 'reference_number' => $booking->reference_number,
                 'customer_name' => $customerName,
                 'customer_id' => $booking->customer_id,
@@ -1369,10 +1452,10 @@ class BookingController extends Controller
                     'duration_unit' => $booking->duration_unit,
                     'participants' => $booking->participants,
                 ],
-                'package' => $booking->package ? [
+                'package' => $customMetadata['package'] ?? ($booking->package ? [
                     'id' => $booking->package->id,
                     'name' => $booking->package->name,
-                ] : null,
+                ] : null),
                 'room' => $booking->room ? [
                     'id' => $booking->room->id,
                     'name' => $booking->room->name,
@@ -1391,7 +1474,7 @@ class BookingController extends Controller
                 'status' => $booking->status,
                 'addons_count' => $booking->addOns->count(),
                 'attractions_count' => $booking->attractions->count(),
-            ]
+            ], $customMetadata ? ['custom_package' => $customMetadata['custom_package']] : [])
           );
         }
 
@@ -1531,6 +1614,8 @@ class BookingController extends Controller
     {
         $query = Booking::select([
                 'id', 'reference_number', 'customer_id', 'package_id', 'location_id', 'room_id',
+                'is_custom_package', 'custom_package_name', 'custom_package_category', 'custom_package_terms',
+                'package_price_at_booking', 'price_per_additional_at_booking', 'package_pricing_type_at_booking',
                 'created_by', 'guest_name', 'guest_email', 'guest_phone',
                 'guest_address', 'guest_city', 'guest_state', 'guest_zip', 'guest_country',
                 'booking_date', 'booking_time',
@@ -1646,7 +1731,33 @@ class BookingController extends Controller
             && (int) $earlier->location_id === (int) $validated['location_id']
             && (int) ($earlier->customer_id ?? 0) === (int) ($validated['customer_id'] ?? 0)
             && strcasecmp(trim((string) $earlier->guest_email), trim((string) ($validated['guest_email'] ?? ''))) === 0
-            && strcasecmp(trim((string) $earlier->guest_name), trim((string) ($validated['guest_name'] ?? ''))) === 0;
+            && strcasecmp(trim((string) $earlier->guest_name), trim((string) ($validated['guest_name'] ?? ''))) === 0
+            && $this->sameCustomPackageTerms($earlier, $validated);
+    }
+
+    private function sameCustomPackageTerms(Booking $earlier, array $validated): bool
+    {
+        $pricer = app(CustomPackagePricer::class);
+
+        return $pricer->signature($earlier->only(CustomPackagePricer::SIGNATURE_FIELDS)) === $pricer->signature($validated);
+    }
+
+    private function customPackageRefusal(string $field, string $message): JsonResponse
+    {
+        return response()->json([
+            'success' => false,
+            'message' => $message,
+            'errors' => [$field => [$message]],
+        ], 422);
+    }
+
+    private function customPricedAddOnLines(array $lines): array
+    {
+        return array_map(fn (array $line) => [
+            'id' => $line['id'],
+            'quantity' => $line['quantity'],
+            'price' => CustomPackagePricer::money($line['unit_cents']),
+        ], $lines);
     }
 
     private function releaseAbandonedAttempt(Booking $booking, ?int $staffUserId = null, string $outcome = 'was replaced by a new attempt from the same checkout'): void
@@ -1784,7 +1895,8 @@ class BookingController extends Controller
             && $sameText($earlier->notes, $validated['notes'] ?? null)
             && $sameText($earlier->special_requests, $validated['special_requests'] ?? null)
             && $sameLines($earlier->addOns()->get(), $addOnLines)
-            && $sameLines($earlier->attractions()->get(), $attractionLines);
+            && $sameLines($earlier->attractions()->get(), $attractionLines)
+            && $this->sameCustomPackageTerms($earlier, $validated);
     }
 
     private function paidBookingAtThisTime(array $validated): ?Booking
@@ -2110,6 +2222,10 @@ class BookingController extends Controller
             'additional_attractions.*.quantity' => 'required_with:additional_attractions|integer|min:1',
         ]);
 
+        if ($booking->isCustomPackage()) {
+            return response()->json(['success' => true, 'data' => app(CustomPackagePricer::class)->quote($booking, $validated)]);
+        }
+
         $quote = app(BookingRepricer::class)->quote($booking, $validated);
 
         if (! $quote) {
@@ -2135,6 +2251,17 @@ class BookingController extends Controller
             }
         }
         $request->merge($data);
+
+        $customPricer = app(CustomPackagePricer::class);
+        $customBooking = $booking->isCustomPackage();
+
+        if ($customBooking && ! in_array($request->input('package_id'), [null, ''], true)) {
+            return $this->customPackageRefusal('package_id', CustomPackagePricer::SWITCH_TO_PACKAGE_MESSAGE);
+        }
+
+        if (! $customBooking && ! in_array($request->input('custom_package'), [null, ''], true)) {
+            return $this->customPackageRefusal('custom_package', CustomPackagePricer::NOT_CUSTOM_MESSAGE);
+        }
 
         $validated = $request->validate([
             'customer_id' => 'sometimes|nullable|exists:customers,id',
@@ -2206,7 +2333,11 @@ class BookingController extends Controller
             'additional_addons.*.addon_id' => 'required|exists:add_ons,id',
             'additional_addons.*.quantity' => 'required|integer|min:1',
             'additional_addons.*.price_at_booking' => 'nullable|numeric|min:0',
+            'custom_package' => 'sometimes|nullable|array',
         ]);
+
+        $customPackageInput = $validated['custom_package'] ?? null;
+        unset($validated['custom_package']);
 
         if (array_key_exists('location_id', $validated)
             && (int) $validated['location_id'] !== (int) $booking->location_id) {
@@ -2282,6 +2413,83 @@ class BookingController extends Controller
         $attractionLines = isset($validated['additional_attractions'])
             ? $rules->normalize(is_array($validated['additional_attractions']) ? $validated['additional_attractions'] : [], 'attraction_id', 'price_at_booking')
             : null;
+
+        if ($customBooking) {
+            if ($discountField = $customPricer->firstDiscountField($validated)) {
+                return $this->customPackageRefusal($discountField, CustomPackagePricer::DISCOUNT_MESSAGE);
+            }
+
+            if (! empty($validated['additional_attractions'])) {
+                return $this->customPackageRefusal('additional_attractions', CustomPackagePricer::ATTRACTIONS_MESSAGE);
+            }
+
+            unset($validated['applied_fees'], $validated['applied_discounts'], $validated['discount_amount']);
+
+            $customTermsReplaced = is_array($customPackageInput);
+            $customTerms = $customTermsReplaced
+                ? $customPricer->normalizeTerms($customPackageInput, $booking->custom_package_category)
+                : $customPricer->termsFromBooking($booking);
+            $customPricingInputs = $customTermsReplaced
+                || (isset($validated['participants']) && (int) $validated['participants'] !== (int) $booking->participants)
+                || array_key_exists('additional_addons', $validated);
+            $customPlaceInputs = array_intersect_key($validated, array_flip(['room_id', 'location_id'])) !== [];
+            $customAssessment = null;
+
+            if ($customPricingInputs || $customPlaceInputs) {
+                $customAssessment = $customPricer->assess($customTerms, [
+                    'location_id' => (int) ($validated['location_id'] ?? $booking->location_id),
+                    'room_id' => array_key_exists('room_id', $validated) ? $validated['room_id'] : $booking->room_id,
+                    'participants' => (int) ($validated['participants'] ?? $booking->participants),
+                    'add_on_lines' => $addOnLines,
+                    'stored_lines' => $customPricer->storedLines($booking),
+                    'client_total' => $customPricingInputs ? ($validated['total_amount'] ?? null) : null,
+                    'amount_paid' => $customPricingInputs ? ($validated['amount_paid'] ?? $booking->amount_paid) : null,
+                ]);
+
+                if ($customAssessment['refusal']) {
+                    return response()->json($customAssessment['refusal']['body'], $customAssessment['refusal']['status']);
+                }
+            }
+
+            if ($customPricingInputs && $customAssessment !== null) {
+                if ($addOnLines !== null) {
+                    $addOnLines = $this->customPricedAddOnLines($customAssessment['lines']);
+                }
+
+                $validated['total_amount'] = $customAssessment['total_amount'];
+                $validated['discount_amount'] = '0.00';
+                $validated['applied_discounts'] = null;
+
+                if (($customAssessment['applied_fees'] ?: null) != $booking->applied_fees) {
+                    $validated['applied_fees'] = $customAssessment['applied_fees'] ?: null;
+                }
+            } else {
+                $keptTotal = $customPricer->keepStoredTotal($booking, $validated['total_amount'] ?? null, $validated['amount_paid'] ?? null);
+
+                if ($keptTotal['refusal']) {
+                    return response()->json($keptTotal['refusal']['body'], $keptTotal['refusal']['status']);
+                }
+
+                unset($validated['total_amount']);
+
+                if ($keptTotal['amount_paid'] !== null) {
+                    $validated['amount_paid'] = $keptTotal['amount_paid'];
+                }
+            }
+
+            if ($customTermsReplaced) {
+                $customColumns = array_diff_key(
+                    $customPricer->columnsFor($customTerms),
+                    array_flip(['is_custom_package', 'price_per_additional_at_booking'])
+                );
+
+                if ($customColumns['custom_package_terms'] == $booking->custom_package_terms) {
+                    unset($customColumns['custom_package_terms']);
+                }
+
+                $validated = array_merge($validated, $customColumns);
+            }
+        }
 
         // A package decides how long its booking runs, so swapping the package has to carry its
         // length with it — otherwise the booking keeps the old one and sits on the schedule over
@@ -2494,7 +2702,9 @@ class BookingController extends Controller
             'status', 'payment_status', 'total_amount', 'amount_paid', 'discount_amount',
             'applied_fees', 'booking_date', 'booking_time', 'participants', 'duration', 'duration_unit',
             'room_id', 'package_id', 'notes', 'internal_notes', 'special_requests',
-            'guest_of_honor_name', 'guest_of_honor_age', 'guest_of_honor_gender'
+            'guest_of_honor_name', 'guest_of_honor_age', 'guest_of_honor_gender',
+            'custom_package_name', 'custom_package_category', 'custom_package_terms',
+            'package_price_at_booking', 'package_pricing_type_at_booking'
         ]);
         $originalAddons = $booking->addOns()->get()->map(fn($a) => [
             'addon_id' => $a->id,
@@ -2535,7 +2745,7 @@ class BookingController extends Controller
         }
 
         $repricer = app(BookingRepricer::class);
-        $repriced = $targetStatus === 'cancelled' ? null : $repricer->reprice($booking, $this->repriceIntent($validated, $addOnLines, $attractionLines));
+        $repriced = $targetStatus === 'cancelled' || $customBooking ? null : $repricer->reprice($booking, $this->repriceIntent($validated, $addOnLines, $attractionLines));
 
         if ($repriced) {
             $clientTotal = isset($validated['total_amount']) ? round((float) $validated['total_amount'], 2) : null;
@@ -2672,7 +2882,7 @@ class BookingController extends Controller
                             'duration_unit' => $validated['duration_unit'] ?? $timeSlot->duration_unit,
                             'notes' => $validated['notes'] ?? $timeSlot->notes,
                         ]);
-                    } elseif ($booking->room_id && $booking->package_id) {
+                    } elseif ($booking->room_id && ($booking->package_id || $booking->isCustomPackage())) {
                         (new PackageTimeSlot())->allowOverlap($overlapLetThrough || ! $slotMoved)->fill([
                             'package_id' => $booking->package_id,
                             'booking_id' => $booking->id,
@@ -3051,10 +3261,12 @@ class BookingController extends Controller
                 'customer_name' => $customerName,
                 'checked_in_at' => now()->toIso8601String(),
                 'checked_in_by' => $authUser ? ($authUser->name ?? $authUser->email) : 'System',
-                'package' => $booking->package ? [
-                    'id' => $booking->package->id,
-                    'name' => $booking->package->name,
-                ] : null,
+                'package' => $booking->isCustomPackage()
+                    ? app(CustomPackagePricer::class)->activityMetadata($booking)['package']
+                    : ($booking->package ? [
+                        'id' => $booking->package->id,
+                        'name' => $booking->package->name,
+                    ] : null),
             ],
                 reason: $changeReason
             );
@@ -3206,6 +3418,18 @@ class BookingController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'This booking is assigned a room. Select a room at the destination location so it is not left unassigned.',
+            ], 422);
+        }
+
+        if ($customMove = app(CustomPackagePricer::class)->moveRefusal($booking, $newLocationId, $roomId)) {
+            return $this->customPackageRefusal($customMove[0], $customMove[1]);
+        }
+
+        if ($roomId && ! $booking->package_id && ! $booking->isCustomPackage()
+            && ! PackageTimeSlot::where('booking_id', $booking->id)->exists()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Choose a package for this booking before giving it a space.',
             ], 422);
         }
 
@@ -4362,11 +4586,22 @@ class BookingController extends Controller
 
         $query = Booking::with(['customer', 'package', 'location', 'location.company', 'room', 'attractions', 'addOns', 'payments']);
 
+        $reportPackageIds = null;
+        $reportWantsCustom = false;
+
         if ($validated['package_ids'] !== 'all') {
-            $packageIds = is_array($validated['package_ids'])
+            $reportPackageIds = is_array($validated['package_ids'])
                 ? $validated['package_ids']
                 : explode(',', $validated['package_ids']);
-            $query->whereIn('package_id', $packageIds);
+            $reportWantsCustom = in_array('custom', $reportPackageIds, true);
+            $reportPackageIds = array_values(array_diff($reportPackageIds, ['custom']));
+            $query->where(function ($q) use ($reportPackageIds, $reportWantsCustom) {
+                $q->whereIn('package_id', $reportPackageIds);
+
+                if ($reportWantsCustom) {
+                    $q->orWhere('is_custom_package', true);
+                }
+            });
         }
 
         $dateRange = null;
@@ -4477,11 +4712,13 @@ class BookingController extends Controller
         }
 
         $packageNames = 'All Packages';
-        if ($validated['package_ids'] !== 'all') {
-            $packageIds = is_array($validated['package_ids'])
-                ? $validated['package_ids']
-                : explode(',', $validated['package_ids']);
-            $packages = \App\Models\Package::whereIn('id', $packageIds)->pluck('name');
+        if ($reportPackageIds !== null) {
+            $packages = \App\Models\Package::whereIn('id', $reportPackageIds)->pluck('name');
+
+            if ($reportWantsCustom) {
+                $packages->push('Custom Package');
+            }
+
             $packageNames = $packages->join(', ');
         }
 

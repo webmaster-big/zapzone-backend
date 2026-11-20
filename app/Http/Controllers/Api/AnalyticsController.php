@@ -530,8 +530,10 @@ class AnalyticsController extends Controller
             ->where('is_active', true)
             ->get();
 
+        $customPackageRow = $this->getCustomPackagePerformance($locationId, $startDate, $endDate);
+
         if ($packages->isEmpty()) {
-            return collect([]);
+            return collect($customPackageRow ? [$customPackageRow] : []);
         }
 
         $packageIds = $packages->pluck('id')->toArray();
@@ -550,7 +552,7 @@ class AnalyticsController extends Controller
             ->get()
             ->keyBy('package_id');
 
-        return $packages->map(function ($package) use ($bookingStats) {
+        $performance = $packages->map(function ($package) use ($bookingStats) {
             $stats = $bookingStats->get($package->id);
 
             if (!$stats || $stats->bookings_count == 0) {
@@ -568,6 +570,49 @@ class AnalyticsController extends Controller
                 'price' => round($package->price, 2),
             ];
         })->filter()->sortByDesc('revenue')->values();
+
+        return $customPackageRow ? $performance->push($customPackageRow) : $performance;
+    }
+
+    private function getCustomPackagePerformance($locationId, $startDate, $endDate): ?array
+    {
+        $customBookings = Booking::where('location_id', $locationId)
+            ->where('is_custom_package', true)
+            ->whereBetween('booking_date', [$startDate->toDateString(), $endDate->toDateString()])
+            ->whereNotIn('status', ['cancelled']);
+
+        $stats = (clone $customBookings)
+            ->select(
+                DB::raw('COUNT(*) as bookings_count'),
+                DB::raw('COALESCE(SUM(amount_paid), 0) as total_revenue'),
+                DB::raw('COALESCE(SUM(participants), 0) as total_participants'),
+                DB::raw('COALESCE(AVG(participants), 0) as avg_party_size'),
+                DB::raw('COALESCE(AVG(package_price_at_booking), 0) as avg_price')
+            )
+            ->first();
+
+        if (!$stats || (int) $stats->bookings_count === 0) {
+            return null;
+        }
+
+        $categories = (clone $customBookings)
+            ->pluck('custom_package_category')
+            ->map(fn ($category) => VenueCategory::normalize($category))
+            ->filter()
+            ->unique()
+            ->sort()
+            ->values();
+
+        return [
+            'id' => null,
+            'name' => 'Custom Package',
+            'category' => $categories->implode(', '),
+            'bookings' => (int) $stats->bookings_count,
+            'revenue' => round((float) $stats->total_revenue, 2),
+            'participants' => (int) $stats->total_participants,
+            'avg_party_size' => round((float) $stats->avg_party_size, 1),
+            'price' => round((float) $stats->avg_price, 2),
+        ];
     }
 
     private function getAttractionPerformance($locationId, $startDate, $endDate)
@@ -1005,6 +1050,9 @@ class AnalyticsController extends Controller
         }
 
         $categoryGroups = $bookings->groupBy(function ($booking) {
+            if ($booking->isCustomPackage()) {
+                return VenueCategory::normalize($booking->custom_package_category) ?: 'Other';
+            }
             if (!$booking->package) {
                 return 'Other';
             }

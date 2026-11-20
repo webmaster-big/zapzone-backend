@@ -59,7 +59,9 @@ class StreamController extends Controller
             $bookings = Booking::select([
                     'id', 'reference_number', 'customer_id', 'package_id', 'location_id',
                     'room_id', 'guest_name', 'booking_date', 'booking_time', 'status',
-                    'total_amount', 'created_at', 'created_by'
+                    'total_amount', 'created_at', 'created_by',
+                    'is_custom_package', 'custom_package_name', 'custom_package_category', 'custom_package_terms',
+                    'package_price_at_booking', 'price_per_additional_at_booking', 'package_pricing_type_at_booking'
                 ])
                 ->with([
                     'customer:id,first_name,last_name',
@@ -83,7 +85,7 @@ class StreamController extends Controller
                     'customer_name' => $booking->customer
                         ? $booking->customer->first_name . ' ' . $booking->customer->last_name
                         : $booking->guest_name,
-                    'package_name' => $booking->package->name ?? null,
+                    'package_name' => $booking->packageLabel(),
                     'location_name' => $booking->location->name ?? null,
                     'booking_date' => $booking->booking_date,
                     'booking_time' => $booking->booking_time,

@@ -209,6 +209,22 @@ class LocationChangeRequestController extends Controller
             ], 422);
         }
 
+        if ($customMove = app(\App\Services\Checkout\CustomPackagePricer::class)->moveRefusal($booking, $newLocationId, $roomId)) {
+            return response()->json([
+                'success' => false,
+                'message' => $customMove[1],
+                'errors' => [$customMove[0] => [$customMove[1]]],
+            ], 422);
+        }
+
+        if ($roomId && ! $booking->package_id && ! $booking->isCustomPackage()
+            && ! PackageTimeSlot::where('booking_id', $booking->id)->exists()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Choose a package for this booking before giving it a space.',
+            ], 422);
+        }
+
         $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
         $blockedPeriods = collect();
         $blockDate = $booking->booking_date instanceof Carbon

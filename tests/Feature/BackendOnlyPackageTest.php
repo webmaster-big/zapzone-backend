@@ -950,7 +950,7 @@ class BackendOnlyPackageTest extends TestCase
 
         $this->assertSame(1, $attendantImport->json('data.imported_count'));
         $this->assertSame(1, $attendantImport->json('data.failed_count'));
-        $this->assertStringContainsString('Only a location manager or an administrator can import a backend-only package', $attendantImport->json('errors.0.error'));
+        $this->assertStringContainsString('Only a location manager or an administrator can import a package that is hidden from the booking site', $attendantImport->json('errors.0.error'));
     }
 
     public function test_an_attendant_pin_cannot_create_or_import_a_backend_only_package(): void
@@ -1001,7 +1001,7 @@ class BackendOnlyPackageTest extends TestCase
             ]])
             ->assertCreated();
 
-        $logged = DB::table('activity_logs')->where('action', 'Package Made Backend Only')->orderBy('id')->get();
+        $logged = DB::table('activity_logs')->where('action', 'Package Hidden From Booking Site')->orderBy('id')->get();
 
         $this->assertSame(
             [(int) $created->json('data.id'), (int) $imported->json('data.imported.0.id')],
@@ -1034,7 +1034,7 @@ class BackendOnlyPackageTest extends TestCase
             ->pluck('action')
             ->all();
 
-        $this->assertSame(['Package Available Online', 'Package Made Backend Only'], $logs, 'an unchanged value is not logged again');
+        $this->assertSame(['Package Available Online', 'Package Hidden From Booking Site'], $logs, 'an unchanged value is not logged again');
 
         $rows = DB::table('activity_logs')
             ->where('entity_type', 'package')
@@ -1049,7 +1049,7 @@ class BackendOnlyPackageTest extends TestCase
 
         $this->assertSame([
             "Package 'Birthday Bash' can be seen and booked online again",
-            "Package 'Birthday Bash' is backend only: hidden from the booking site and not bookable online",
+            "Package 'Birthday Bash' is hidden from the booking site and cannot be booked online",
         ], $rows->pluck('description')->all());
 
         $switchedOff = $this->makePackage($this->waterford, 'Retired Party', false);

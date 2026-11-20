@@ -237,7 +237,7 @@ class WaiverController extends Controller
             'customer:id,first_name,last_name,email,phone',
             'minors',
             'auditEvents',
-            'booking:id,reference_number,booking_date,package_id',
+            'booking:id,reference_number,booking_date,package_id,is_custom_package,custom_package_name,custom_package_category,custom_package_terms,package_price_at_booking,price_per_additional_at_booking,package_pricing_type_at_booking',
             'event:id,name',
             'creator:id,first_name,last_name',
             'assigner:id,first_name,last_name',

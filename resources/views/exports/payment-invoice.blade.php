@@ -179,7 +179,7 @@
             @endif
 
             <div class="event-banner">
-                <div class="event-title">{{ $payable->package->name ?? 'Party Package' }}</div>
+                <div class="event-title">{{ $payable->packageLabel() ?? 'Party Package' }}</div>
                 <div class="event-details">
                     {{ $payable->booking_date ? $payable->booking_date->format('l, F j, Y') : 'Date TBD' }}
                     @if($payable->booking_time) at {{ \Carbon\Carbon::parse($payable->booking_time)->format('g:i A') }}@endif
@@ -229,7 +229,7 @@
                 <tbody>
                     <tr>
                         <td>
-                            {{ $payable->package->name ?? 'Party Package' }}
+                            {{ $payable->packageLabel() ?? 'Party Package' }}
                             <div class="item-desc">{{ $payable->booking_date ? $payable->booking_date->format('M j') : '' }}@if($payable->room) · {{ $payable->room->name }}@endif</div>
                         </td>
 @php
@@ -256,6 +256,14 @@
                         </tr>
                         @endforeach
                     @endif
+@foreach($payable->oneTimeAddOns() as $oneTimeAddOn)
+                        <tr>
+                            <td>{{ $oneTimeAddOn['name'] }}</td>
+                            <td class="right">{{ $oneTimeAddOn['quantity'] }}</td>
+                            <td class="right">${{ number_format($oneTimeAddOn['unit_price'], 2) }}</td>
+                            <td class="right">${{ number_format($oneTimeAddOn['total'], 2) }}</td>
+                        </tr>
+@endforeach
                     @if($payable->attractions && $payable->attractions->count() > 0)
                         @foreach($payable->attractions as $attraction)
                         <tr>
@@ -266,6 +274,16 @@
                         </tr>
                         @endforeach
                     @endif
+@if($payable->isCustomPackage())
+@foreach(array_filter((array) ($payable->applied_fees ?? []), 'is_array') as $invoiceFee)
+                        <tr>
+                            <td>{{ ($invoiceFee['fee_name'] ?? '') . ((($invoiceFee['fee_calculation_type'] ?? null) === 'percentage' && !empty($invoiceFee['fee_label'])) ? ' (' . $invoiceFee['fee_label'] . ')' : '') }}</td>
+                            <td class="right">1</td>
+                            <td class="right">${{ number_format((float) ($invoiceFee['fee_amount'] ?? 0), 2) }}</td>
+                            <td class="right">${{ number_format((float) ($invoiceFee['fee_amount'] ?? 0), 2) }}</td>
+                        </tr>
+@endforeach
+@endif
                 </tbody>
             </table>
 

@@ -438,7 +438,7 @@
         <!-- Party Details Box -->
         <div class="party-details-box">
             <div class="party-package">
-                {{ $booking->package->name ?? 'Package Details' }}
+                {{ $booking->packageLabel() ?? 'Package Details' }}
             </div>
             <div class="party-datetime">
                 {{ $booking->booking_date ? $booking->booking_date->format('M d, Y') : 'TBD' }}
@@ -515,7 +515,7 @@
                 </div>
 
                 <!-- Add-ons if any -->
-                @if($booking->addOns && $booking->addOns->count() > 0)
+                @if(($booking->addOns && $booking->addOns->count() > 0) || $booking->oneTimeAddOns() !== [])
                 <div class="section">
                     <div class="section-title">Add-Ons</div>
                     <table class="items-table">
@@ -534,6 +534,13 @@
                                 <td class="text-right">${{ number_format($addOn->pivot->price_at_booking ?? $addOn->price, 2) }}</td>
                             </tr>
                             @endforeach
+@foreach($booking->oneTimeAddOns() as $oneTimeAddOn)
+                            <tr>
+                                <td>{{ $oneTimeAddOn['name'] }}</td>
+                                <td class="text-right">{{ $oneTimeAddOn['quantity'] }}</td>
+                                <td class="text-right">${{ number_format($oneTimeAddOn['unit_price'], 2) }}</td>
+                            </tr>
+@endforeach
                         </tbody>
                     </table>
                 </div>

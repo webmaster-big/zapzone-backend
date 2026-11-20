@@ -39,7 +39,7 @@ class PackageTimeSlotController extends Controller
 
     private function staffMaySee(\App\Models\User $staff, PackageTimeSlot $slot): bool
     {
-        $location = $slot->package?->location;
+        $location = $slot->package?->location ?? \App\Models\Location::find($this->slotLocationId($slot));
 
         if (in_array($staff->role, ['location_manager', 'attendant'], true) && $staff->location_id) {
             return $location && (int) $location->id === (int) $staff->location_id;
@@ -55,9 +55,17 @@ class PackageTimeSlotController extends Controller
 
         if ($staff) {
             if (in_array($staff->role, ['location_manager', 'attendant'], true) && $staff->location_id) {
-                $query->whereHas('package', fn($p) => $p->where('location_id', $staff->location_id));
+                $query->where(fn ($scoped) => $scoped
+                    ->whereHas('package', fn($p) => $p->where('location_id', $staff->location_id))
+                    ->orWhere(fn ($packageless) => $packageless
+                        ->whereNull('package_id')
+                        ->whereHas('booking', fn ($b) => $b->withTrashed()->where('location_id', $staff->location_id))));
             } elseif ($staff->company_id) {
-                $query->whereHas('package.location', fn($l) => $l->where('company_id', $staff->company_id));
+                $query->where(fn ($scoped) => $scoped
+                    ->whereHas('package.location', fn($l) => $l->where('company_id', $staff->company_id))
+                    ->orWhere(fn ($packageless) => $packageless
+                        ->whereNull('package_id')
+                        ->whereHas('booking', fn ($b) => $b->withTrashed()->whereIn('location_id', \App\Models\Location::where('company_id', $staff->company_id)->select('id')))));
             }
         }
 

@@ -329,7 +329,7 @@
                     <div class="details-grid">
                         <div class="detail-item">
                             <span class="detail-label">Package</span>
-                            <span class="detail-value">{{ $booking->package?->name ?? 'N/A' }}</span>
+                            <span class="detail-value">{{ $booking->packageLabel() ?? 'N/A' }}</span>
                         </div>
                         <div class="detail-item">
                             <span class="detail-label">Duration</span>
@@ -420,7 +420,7 @@
                 @endif
 
                 <!-- Add-ons -->
-                @if($booking->addOns->count() > 0)
+                @if($booking->addOns->count() > 0 || $booking->oneTimeAddOns() !== [])
                 <div class="details-section">
                     <div class="section-title">Add-ons</div>
                     <table>
@@ -441,6 +441,14 @@
                                 <td>${{ number_format($addon->pivot->quantity * $addon->pivot->price_at_booking, 2) }}</td>
                             </tr>
                             @endforeach
+@foreach($booking->oneTimeAddOns() as $oneTimeAddOn)
+                            <tr>
+                                <td>{{ $oneTimeAddOn['name'] }}</td>
+                                <td>{{ $oneTimeAddOn['quantity'] }}</td>
+                                <td>${{ number_format($oneTimeAddOn['unit_price'], 2) }}</td>
+                                <td>${{ number_format($oneTimeAddOn['total'], 2) }}</td>
+                            </tr>
+@endforeach
                         </tbody>
                     </table>
                 </div>

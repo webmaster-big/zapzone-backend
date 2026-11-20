@@ -170,7 +170,6 @@ class InvitationService
     protected function buildInvitationVariables(BookingInvitation $invitation, Booking $booking): array
     {
         $customer = $booking->customer;
-        $package = $booking->package;
         $location = $booking->location;
         $company = $location?->company;
 
@@ -191,7 +190,7 @@ class InvitationService
             'guest_first_name' => explode(' ', trim($invitation->guest_name ?? 'Guest'))[0],
             'guest_email' => $invitation->guest_email ?? '',
 
-            'package_name' => $package?->name ?? 'Party',
+            'package_name' => $booking->packageLabel() ?? 'Party',
             'booking_date' => $booking->booking_date?->format('F j, Y') ?? '',
             'booking_time' => $booking->booking_time ? $booking->booking_time->format('g:i A') : '',
             'booking_participants' => (string) ($booking->participants ?? 0),

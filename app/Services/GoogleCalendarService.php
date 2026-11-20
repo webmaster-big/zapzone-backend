@@ -484,7 +484,7 @@ class GoogleCalendarService
     protected function buildEventFromBooking(Booking $booking): Event
     {
         $customerName = $booking->customer_name ?? $booking->guest_name ?? 'Guest';
-        $packageName = $booking->package?->name ?? 'Booking';
+        $packageName = $booking->packageLabel() ?? 'Booking';
         $locationName = $booking->location?->name ?? 'Unknown Location';
         $roomName = $booking->room?->name ?? null;
 
@@ -506,6 +506,9 @@ class GoogleCalendarService
 
         $descriptionParts[] = "";
         $descriptionParts[] = "Package: {$packageName}";
+        if ($booking->isCustomPackage() && $booking->packageCategoryLabel()) {
+            $descriptionParts[] = "Category: {$booking->packageCategoryLabel()}";
+        }
         $descriptionParts[] = "Location: {$locationName}";
 
         if ($roomName) {
@@ -534,6 +537,15 @@ class GoogleCalendarService
             foreach ($booking->addOns as $addOn) {
                 $qty = $addOn->pivot->quantity ?? 1;
                 $descriptionParts[] = "  - {$addOn->name} (x{$qty})";
+            }
+        }
+
+        $oneTimeAddOns = $booking->oneTimeAddOns();
+        if ($oneTimeAddOns !== []) {
+            $descriptionParts[] = "";
+            $descriptionParts[] = "One-time add-ons:";
+            foreach ($oneTimeAddOns as $oneTimeAddOn) {
+                $descriptionParts[] = "  - {$oneTimeAddOn['name']} (x{$oneTimeAddOn['quantity']})";
             }
         }
 

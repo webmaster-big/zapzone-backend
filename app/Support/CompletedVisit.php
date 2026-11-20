@@ -45,7 +45,7 @@ final class CompletedVisit
             $booking->location,
             EmailNotification::ENTITY_PACKAGE,
             $booking->package_id ? (int) $booking->package_id : null,
-            (string) ($booking->package?->name ?? 'your visit'),
+            (string) ($booking->packageLabel() ?? 'your visit'),
             $booking->booking_date?->toDateString(),
             self::timeOf($booking->booking_time, $booking->getRawOriginal('booking_time')),
             $booking->completed_at,

@@ -63,7 +63,7 @@ class WaiverService
             $waiver->load('location');
         }
 
-        if ($waiver->booking && !array_key_exists('package_id', $waiver->booking->getAttributes())) {
+        if ($waiver->booking && array_diff(['package_id', 'is_custom_package', 'custom_package_name'], array_keys($waiver->booking->getAttributes())) !== []) {
             $waiver->load('booking.package');
         }
 
@@ -75,7 +75,7 @@ class WaiverService
         //  2. a name captured at assign time (manager-assigned, no concrete record)
         //  3. the template's sole assigned activity, when it maps to exactly one
         $activityName = $waiver->event?->name
-            ?? $waiver->booking?->package?->name
+            ?? $waiver->booking?->packageLabel()
             ?? $waiver->attractionPurchase?->attraction?->name
             ?? $waiver->manual_activity_name
             ?? $this->soleAssignedActivityName($waiver->template);

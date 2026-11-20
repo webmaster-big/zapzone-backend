@@ -193,7 +193,7 @@
                 </td>
                 <td>
                     @if($payment->payable_type === 'booking' && $payment->payable)
-                        {{ Str::limit($payment->payable->package->name ?? 'Package', 28) }}
+                        {{ Str::limit($payment->payable->packageLabel() ?? 'Package', 28) }}
                     @elseif($payment->payable_type === 'attraction_purchase' && $payment->payable)
                         {{ Str::limit($payment->payable->attraction->name ?? 'Attraction', 28) }}
                     @else

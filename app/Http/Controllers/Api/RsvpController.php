@@ -20,7 +20,7 @@ class RsvpController extends Controller
         try {
             $invitation = BookingInvitation::where('rsvp_token', $token)
                 ->with([
-                    'booking:id,customer_id,package_id,location_id,booking_date,booking_time,participants,guest_of_honor_name,guest_of_honor_age,guest_name',
+                    'booking:id,customer_id,package_id,is_custom_package,custom_package_name,custom_package_category,custom_package_terms,package_price_at_booking,price_per_additional_at_booking,package_pricing_type_at_booking,location_id,booking_date,booking_time,participants,guest_of_honor_name,guest_of_honor_age,guest_name',
                     'booking.customer:id,first_name,last_name',
                     'booking.package:id,name,description,invitation_download_link',
                     'booking.location:id,name,address,city,state,zip_code,phone,email',
@@ -47,7 +47,7 @@ class RsvpController extends Controller
                     'host_name' => $booking->customer
                         ? trim($booking->customer->first_name . ' ' . $booking->customer->last_name)
                         : ($booking->guest_name ?? 'Your Host'),
-                    'package_name' => $booking->package?->name ?? 'Party',
+                    'package_name' => $booking->packageLabel() ?? 'Party',
                     'package_description' => $booking->package?->description ?? '',
                     'date' => $booking->booking_date?->format('F j, Y') ?? '',
                     'time' => $booking->booking_time ?? '',

@@ -313,7 +313,7 @@
 
                 <div class="info-group">
                     <span class="info-label">Package</span>
-                    <span class="info-value">{{ $booking->package?->name ?? 'N/A' }}</span>
+                    <span class="info-value">{{ $booking->packageLabel() ?? 'N/A' }}</span>
                 </div>
 
                 <div class="info-group">
@@ -348,6 +348,9 @@
                     @if($booking->addOns->count() > 0)
                         <span class="extras-badge">{{ $booking->addOns->count() }} Add-ons</span>
                     @endif
+@if($booking->oneTimeAddOns() !== [])
+                        <span class="extras-badge">{{ count($booking->oneTimeAddOns()) }} One-time add-ons</span>
+@endif
                 </div>
 
                 @php($listBalance = round(((float) $booking->total_amount) - ((float) ($booking->amount_paid ?? 0)), 2))
