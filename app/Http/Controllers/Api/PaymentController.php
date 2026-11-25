@@ -12,6 +12,7 @@ use App\Services\Payments\PayableLedger;
 use App\Models\TicketOrder;
 use App\Services\TicketOrderService;
 use App\Models\Booking;
+use App\Models\PackageTimeSlot;
 use App\Models\AttractionPurchase;
 use App\Models\EventPurchase;
 use App\Models\Location;
@@ -1055,6 +1056,7 @@ class PaymentController extends Controller
                                     'cancelled_at' => now(),
                                     'amount_paid' => max(0, $payable->amount_paid - $refundAmount),
                                 ]);
+                                $this->releaseBookingSpace($payable);
                             } else {
                                 $payable->update([
                                     'amount_paid' => max(0, $payable->amount_paid - $refundAmount),
@@ -1273,6 +1275,7 @@ class PaymentController extends Controller
                                         'cancelled_at' => now(),
                                         'amount_paid' => max(0, $payable->amount_paid - $payment->amount),
                                     ]);
+                                    $this->releaseBookingSpace($payable);
                                 }
                             } elseif ($payment->payable_type === Payment::TYPE_ATTRACTION_PURCHASE && $payment->payable_id) {
                                 $payable = AttractionPurchase::withTrashed()->find($payment->payable_id);
@@ -1569,6 +1572,7 @@ class PaymentController extends Controller
                         'cancelled_at' => now(),
                         'amount_paid' => max(0, $payable->amount_paid - $refundAmount),
                     ]);
+                    $this->releaseBookingSpace($payable);
                 } else {
                     $payable->update([
                         'amount_paid' => max(0, $payable->amount_paid - $refundAmount),
@@ -1852,6 +1856,7 @@ class PaymentController extends Controller
                                 'cancelled_at' => now(),
                                 'amount_paid' => max(0, $payable->amount_paid - $voidAmount),
                             ]);
+                            $this->releaseBookingSpace($payable);
 
                             try {
                                 $gcalService = new GoogleCalendarService($payable->location_id);
@@ -3231,6 +3236,13 @@ class PaymentController extends Controller
             'message' => 'Your card payment was not approved, so nothing was booked. Please try a different card, or call us to book.',
             'error_code' => 'PAYMENT_NOT_APPROVED',
         ], 400);
+    }
+
+    private function releaseBookingSpace(Booking $booking): void
+    {
+        PackageTimeSlot::where('booking_id', $booking->id)->update([
+            'status' => 'cancelled',
+        ]);
     }
 
     private function forceDeletePayableOnFailure(?int $payableId, ?string $payableType, ?Request $request = null): void

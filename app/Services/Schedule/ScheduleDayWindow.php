@@ -40,7 +40,7 @@ class ScheduleDayWindow
         $rooms = Room::query()
             ->when($locationId !== null, fn ($q) => $q->where('location_id', $locationId))
             ->when($limitToAllowed, fn ($q) => $q->whereIn('location_id', $allowedLocationIds))
-            ->get(['id', 'location_id', 'name', 'is_available', 'booking_interval', 'area_group']);
+            ->get();
 
         // spaces in one area group start apart from each other by the strictest interval in the
         // group, which is the rule the server enforces on save
@@ -54,7 +54,7 @@ class ScheduleDayWindow
         $areaStagger = $rooms
             ->filter(fn ($room) => (string) $room->area_group !== '')
             ->groupBy(fn ($room) => $room->location_id . '|' . $room->area_group)
-            ->map(fn ($group) => (int) $group->max('booking_interval'));
+            ->map(fn ($group) => Room::areaStartGap($group));
 
         $locationClosed = $locationId !== null && DayOff::isDateBlocked($locationId, $day);
 

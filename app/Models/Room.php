@@ -32,13 +32,34 @@ class Room extends Model
         'break_time',
         'area_group',
         'booking_interval',
+        'area_allows_simultaneous_starts',
     ];
 
     protected $casts = [
         'is_available' => 'boolean',
         'break_time' => 'array',
         'booking_interval' => 'integer',
+        'area_allows_simultaneous_starts' => 'boolean',
     ];
+
+    public static function areaAllowsSimultaneousStarts(iterable $areaRooms): bool
+    {
+        $areaRooms = collect($areaRooms);
+
+        return $areaRooms->isNotEmpty()
+            && $areaRooms->every(fn (Room $room) => (bool) $room->area_allows_simultaneous_starts);
+    }
+
+    public static function areaStartGap(iterable $areaRooms): int
+    {
+        $areaRooms = collect($areaRooms);
+
+        if (static::areaAllowsSimultaneousStarts($areaRooms)) {
+            return 0;
+        }
+
+        return max(0, (int) $areaRooms->max('booking_interval'));
+    }
 
     public function location(): BelongsTo
     {

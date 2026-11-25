@@ -102,6 +102,7 @@ class RoomController extends Controller
             'break_time' => 'nullable|array',
             'area_group' => 'nullable|string|max:255',
             'booking_interval' => 'nullable|integer|min:0',
+            'area_allows_simultaneous_starts' => 'sometimes|filled|boolean',
         ]);
 
         $location = $this->scopedLocation($request, $validated['location_id']);
@@ -109,7 +110,7 @@ class RoomController extends Controller
             return $location;
         }
 
-        $room = Room::create($validated);
+        $room = Room::create($this->withAreaStartSetting($validated));
         $room->load(['location', 'packages']);
 
         return response()->json([
@@ -148,6 +149,7 @@ class RoomController extends Controller
             'break_time' => 'nullable|array',
             'area_group' => 'nullable|string|max:255',
             'booking_interval' => 'nullable|integer|min:0',
+            'area_allows_simultaneous_starts' => 'sometimes|filled|boolean',
         ]);
 
         if (array_key_exists('location_id', $validated) && (int) $validated['location_id'] !== (int) $room->location_id) {
@@ -157,7 +159,7 @@ class RoomController extends Controller
             }
         }
 
-        $room->update($validated);
+        $room->update($this->withAreaStartSetting($validated, $room));
         $room->load(['location', 'packages']);
 
         return response()->json([
@@ -170,7 +172,8 @@ class RoomController extends Controller
     public function updateBookingIntervalByAreaGroup(Request $request, string $areaGroup): JsonResponse
     {
         $validated = $request->validate([
-            'booking_interval' => 'required|integer|min:0',
+            'booking_interval' => 'required_without:area_allows_simultaneous_starts|filled|integer|min:0',
+            'area_allows_simultaneous_starts' => 'sometimes|filled|boolean',
         ]);
 
         $query = Room::where('area_group', $areaGroup);
@@ -193,13 +196,53 @@ class RoomController extends Controller
             }
         }
 
-        $updatedCount = $query->update(['booking_interval' => $validated['booking_interval']]);
+        $changes = [];
+
+        if (array_key_exists('booking_interval', $validated)) {
+            $changes['booking_interval'] = (int) $validated['booking_interval'];
+        }
+
+        if (array_key_exists('area_allows_simultaneous_starts', $validated)) {
+            $changes['area_allows_simultaneous_starts'] = (bool) $validated['area_allows_simultaneous_starts'];
+        }
+
+        $updatedCount = $query->update($changes);
+        $spaces = "{$updatedCount} space" . ($updatedCount === 1 ? '' : 's');
 
         return response()->json([
             'success' => true,
-            'message' => "Turnaround updated for {$updatedCount} space" . ($updatedCount === 1 ? '' : 's') . " in the {$areaGroup} area",
+            'message' => array_key_exists('area_allows_simultaneous_starts', $changes)
+                ? "Area settings updated for {$spaces} in the {$areaGroup} area"
+                : "Turnaround updated for {$spaces} in the {$areaGroup} area",
             'data' => ['updated_count' => $updatedCount],
         ]);
+    }
+
+    private function withAreaStartSetting(array $validated, ?Room $room = null): array
+    {
+        if (array_key_exists('area_allows_simultaneous_starts', $validated)) {
+            return $validated;
+        }
+
+        $areaGroup = array_key_exists('area_group', $validated) ? $validated['area_group'] : $room?->area_group;
+        $locationId = (int) ($validated['location_id'] ?? $room?->location_id);
+
+        if ($areaGroup === null || $areaGroup === '') {
+            return $validated;
+        }
+
+        if ($room && $areaGroup === $room->area_group && $locationId === (int) $room->location_id) {
+            return $validated;
+        }
+
+        $areaRooms = Room::where('location_id', $locationId)
+            ->where('area_group', $areaGroup)
+            ->when($room, fn ($query) => $query->whereKeyNot($room->id))
+            ->get();
+
+        $validated['area_allows_simultaneous_starts'] = Room::areaAllowsSimultaneousStarts($areaRooms);
+
+        return $validated;
     }
 
     public function destroy(Room $room): JsonResponse

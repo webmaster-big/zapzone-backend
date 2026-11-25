@@ -66,9 +66,11 @@ trait GeneratesAvailableTimeSlots
         $key = 'areastagger:' . $room->location_id . ':' . $room->area_group;
 
         if (! array_key_exists($key, $this->slotLookupCache)) {
-            $this->slotLookupCache[$key] = (int) Room::where('location_id', $room->location_id)
-                ->where('area_group', $room->area_group)
-                ->max('booking_interval');
+            $this->slotLookupCache[$key] = Room::areaStartGap(
+                Room::where('location_id', $room->location_id)
+                    ->where('area_group', $room->area_group)
+                    ->get()
+            );
         }
 
         return max(0, $this->slotLookupCache[$key]);
