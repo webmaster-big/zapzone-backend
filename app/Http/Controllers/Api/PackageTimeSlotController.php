@@ -296,6 +296,16 @@ class PackageTimeSlotController extends Controller
             ], 403);
         }
 
+        $movesTime = array_intersect_key($validated, array_flip(['booked_date', 'time_slot_start', 'duration', 'duration_unit'])) !== [];
+
+        if ($movesTime && $packageTimeSlot->booking_id
+            && PackageTimeSlot::where('booking_id', $packageTimeSlot->booking_id)->whereKeyNot($packageTimeSlot->id)->exists()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This booking uses several spaces. Move the booking itself so every space moves together.',
+            ], 422);
+        }
+
         $slotBlocks = collect();
 
         if (isset($validated['booked_date']) || isset($validated['time_slot_start']) ||

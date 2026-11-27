@@ -361,7 +361,7 @@ class BlockedPeriodBookingTest extends TestCase
         $this->assertSame(0, Booking::count());
 
         $this->asGuest()->postJson('/api/bookings', $this->bookingPayload())->assertSuccessful();
-        $this->asGuest()->postJson('/api/bookings', $this->bookingPayload(['booking_time' => '16:00'] + $laserTag))->assertSuccessful();
+        $this->asGuest()->postJson('/api/bookings', $this->bookingPayload(['booking_time' => '16:30'] + $laserTag))->assertSuccessful();
 
         $this->as($this->attendant)->postJson('/api/bookings', $this->bookingPayload(['booking_time' => '10:00'] + $laserTag))
             ->assertStatus(409)

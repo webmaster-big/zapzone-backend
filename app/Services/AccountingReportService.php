@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Support\VenueCategory;
+use App\Support\SchemaSupport;
 
 use App\Models\Booking;
 use App\Models\Location;
@@ -19,7 +20,9 @@ class AccountingReportService
     const CATEGORY_EVENTS = 'Events';
     const CATEGORY_ADDONS = 'Add-ons';
 
-    const TAX_KEYWORDS = ['tax', 'vat', 'gst', 'hst', 'pst', 'sales tax', 'state tax', 'local tax'];
+    private ?array $feeChargeTypes = null;
+
+    private ?array $feeChargeTypesByName = null;
 
     public function buildReportData(array $locationIds, Carbon $startDate, Carbon $endDate, string $viewMode, array $filters = []): array
     {
@@ -204,6 +207,7 @@ class AccountingReportService
         }
 
         $categoryRows = '';
+        $categorySalesRows = '';
         foreach ($categoryTotals as $name => $totals) {
             $categoryRows .= $this->reportRow([
                 [$name, 'left'],
@@ -211,9 +215,16 @@ class AccountingReportService
                 [$this->reportMoney($totals['net_sales']), 'right'],
                 [$this->reportMoney($totals['grand_total']), 'right'],
             ]);
+            $categorySalesRows .= $this->reportRow([
+                [$name, 'left'],
+                [$this->reportMoney($totals['gross_sales']), 'right'],
+                [$this->reportMoney($totals['net_sales']), 'right'],
+            ]);
         }
 
-        $collectedCash = max(0, $grand['grand_total'] - $grand['collected_via_gateway']);
+        $receipts = app(DailyReceiptsService::class)->daily($locations->pluck('id')->all(), $date->toDateString(), $date->toDateString(), 'location');
+        $receiptTotals = $receipts['totals'];
+        $receiptRows = collect($receipts['days'][0]['rows'] ?? [])->keyBy('key');
         $tz = config('app.timezone', 'America/Detroit');
 
         return [
@@ -230,21 +241,86 @@ class AccountingReportService
             'tax_total' => $this->reportMoney($grand['tax_amount']),
             'fee_total' => $this->reportMoney($grand['fee_amount']),
             'total_billed' => $this->reportMoney($grand['total_billed']),
-            'total_collected' => $this->reportMoney($grand['grand_total']),
+            'total_collected' => $this->reportMoney($receiptTotals['total']),
             'balance_due' => $this->reportMoney($grand['balance_due']),
-            'collected_card' => $this->reportMoney($grand['collected_via_gateway']),
-            'collected_cash' => $this->reportMoney($collectedCash),
+            'collected_card' => $this->reportMoney($receiptTotals['online'] + $receiptTotals['unclassified']),
+            'collected_cash' => $this->reportMoney($receiptTotals['in_store']),
+            'online_revenue' => $this->reportMoney($receiptTotals['online']),
+            'in_store_collected' => $this->reportMoney($receiptTotals['in_store']),
+            'unclassified_receipts' => $this->reportMoney($receiptTotals['unclassified']),
+            'receipts_total' => $this->reportMoney($receiptTotals['total']),
+            'unclassified_receipts_row' => $receipts['has_unclassified'] ? $this->receiptsSummaryRow('Unclassified Receipts', $receiptTotals['unclassified']) : '',
+            'receipts_location_table' => $this->receiptsLocationTable($locations, $receiptRows, $receiptTotals, $receipts['has_unclassified']),
             'location_breakdown_rows' => $locationRows !== '' ? $locationRows : $this->reportEmptyRow(),
             'category_breakdown_rows' => $categoryRows,
+            'category_sales_rows' => $categorySalesRows,
             'company_name' => $companyName,
             'current_year' => (string) Carbon::now($tz)->year,
             'current_date' => Carbon::now($tz)->format('F j, Y'),
         ];
     }
 
+    private function receiptsSummaryRow(string $label, float $amount): string
+    {
+        return '<tr><td style="padding: 12px 16px; border-top: 1px solid #e5e7eb; font-size: 14px;"><strong style="color: #6b7280;">' . e($label) . '</strong>'
+            . '<span style="color: #111827; float: right;">' . $this->reportMoney($amount) . '</span></td></tr>';
+    }
+
+    private function receiptsLocationTable($locations, $rows, array $totals, bool $showUnclassified): string
+    {
+        $cell = 'padding: 10px 16px; border-bottom: 1px solid #e5e7eb; font-size: 14px; color: #111827;';
+        $head = 'padding: 10px 16px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: #6b7280; border-bottom: 1px solid #e5e7eb;';
+        $headers = ['Location' => 'left', 'Online Revenue' => 'right', 'In-Store Collected' => 'right'];
+
+        if ($showUnclassified) {
+            $headers['Unclassified'] = 'right';
+        }
+
+        $html = '<table width="100%" cellpadding="0" cellspacing="0" style="border: 1px solid #e5e7eb; border-radius: 6px; margin: 0 0 24px 0; border-collapse: collapse;"><tr style="background: #f3f4f6;">';
+
+        foreach ($headers as $label => $align) {
+            $html .= '<th style="' . $head . ' text-align: ' . $align . ';">' . $label . '</th>';
+        }
+
+        $html .= '</tr>';
+
+        foreach ($locations as $location) {
+            $row = $rows->get('location:' . $location->id);
+            $values = [(float) ($row['online'] ?? 0), (float) ($row['in_store'] ?? 0)];
+
+            if ($showUnclassified) {
+                $values[] = (float) ($row['unclassified'] ?? 0);
+            }
+
+            $html .= '<tr><td style="' . $cell . ' text-align: left;">' . e($location->name) . '</td>';
+
+            foreach ($values as $value) {
+                $html .= '<td style="' . $cell . ' text-align: right;">' . $this->reportMoney($value) . '</td>';
+            }
+
+            $html .= '</tr>';
+        }
+
+        $totalsRow = [(float) $totals['online'], (float) $totals['in_store']];
+
+        if ($showUnclassified) {
+            $totalsRow[] = (float) $totals['unclassified'];
+        }
+
+        $html .= '<tr style="background: #f9fafb;"><td style="' . $cell . ' text-align: left; font-weight: 600;">Total</td>';
+
+        foreach ($totalsRow as $value) {
+            $html .= '<td style="' . $cell . ' text-align: right; font-weight: 600;">' . $this->reportMoney($value) . '</td>';
+        }
+
+        return $html . '</tr></table>';
+    }
+
     private function reportMoney($value): string
     {
-        return '$' . number_format((float) $value, 2);
+        $amount = round((float) $value, 2);
+
+        return ($amount < 0 ? '-$' : '$') . number_format(abs($amount), 2);
     }
 
     private function reportRow(array $cells): string
@@ -685,7 +761,7 @@ class AccountingReportService
         $taxAmount = 0;
         foreach ($appliedFees as $fee) {
             $feeValue = (float) ($fee['fee_amount'] ?? 0);
-            if ($this->isTaxFee(strtolower(trim($fee['fee_name'] ?? '')))) {
+            if ($this->isTaxCharge(is_array($fee) ? $fee : [])) {
                 $taxAmount += $feeValue;
             } else {
                 $feeAmount += $feeValue;
@@ -715,22 +791,39 @@ class AccountingReportService
             return [];
         }
 
-        $amounts = DB::table('payments')
-            ->where('payable_type', $payableType)
-            ->where('method', 'authorize.net')
-            ->where('status', 'completed')
-            ->whereNull('deleted_at')
-            ->whereIn('payable_id', $payableIds)
-            ->groupBy('payable_id')
-            ->pluck(DB::raw('SUM(amount) as gateway_amount'), 'payable_id')
-            ->map(fn($v) => (float) $v)
-            ->all();
+        $amounts = array_map(fn (int $cents) => $cents / 100, $this->gatewayNetCents($payableType, $payableIds));
 
         foreach ($this->getOrderGatewayAmounts($payableIds, $payableType) as $payableId => $amount) {
             $amounts[$payableId] = round(($amounts[$payableId] ?? 0) + $amount, 2);
         }
 
         return $amounts;
+    }
+
+    private function gatewayNetCents(string $payableType, array $payableIds): array
+    {
+        $net = [];
+
+        DB::table('payments')
+            ->where('payable_type', $payableType)
+            ->whereIn('payable_id', $payableIds)
+            ->where('method', 'authorize.net')
+            ->whereIn('status', ['completed', 'refunded'])
+            ->whereNull('deleted_at')
+            ->get(['payable_id', 'status', 'amount', 'transaction_id', 'reverses_payment_id', DB::raw("LEFT(COALESCE(notes, ''), 24) as notes_head")])
+            ->each(function ($row) use (&$net) {
+                $refundRow = $row->status === 'refunded'
+                    && ($row->reverses_payment_id || str_starts_with((string) $row->notes_head, 'Refund from Payment #'));
+
+                if ($row->status === 'refunded' && (!$refundRow || str_starts_with((string) $row->transaction_id, 'REFUND-'))) {
+                    return;
+                }
+
+                $cents = (int) round(((float) $row->amount) * 100);
+                $net[$row->payable_id] = ($net[$row->payable_id] ?? 0) + ($row->status === 'refunded' ? -$cents : $cents);
+            });
+
+        return $net;
     }
 
     private function getOrderGatewayAmounts(array $payableIds, string $payableType): array
@@ -745,25 +838,53 @@ class AccountingReportService
             return [];
         }
 
-        $gatewayOrderIds = DB::table('payments')
-            ->where('payable_type', Payment::TYPE_TICKET_ORDER)
-            ->where('method', 'authorize.net')
-            ->where('status', 'completed')
-            ->whereNull('deleted_at')
+        $orderIds = DB::table($table)
+            ->whereIn('id', $payableIds)
+            ->whereNotNull('ticket_order_id')
             ->distinct()
-            ->pluck('payable_id');
+            ->pluck('ticket_order_id')
+            ->all();
 
-        if ($gatewayOrderIds->isEmpty()) {
+        if ($orderIds === []) {
             return [];
         }
 
-        return DB::table($table)
-            ->whereIn('id', $payableIds)
-            ->whereIn('ticket_order_id', $gatewayOrderIds)
-            ->whereNull('deleted_at')
-            ->pluck('amount_paid', 'id')
-            ->map(fn ($v) => (float) $v)
-            ->all();
+        $orderCents = $this->gatewayNetCents(Payment::TYPE_TICKET_ORDER, $orderIds);
+        $amounts = [];
+
+        if ($orderCents === []) {
+            return $amounts;
+        }
+
+        $wanted = array_flip(array_map('intval', $payableIds));
+        $linesByOrder = [];
+
+        foreach (['attraction_purchases' => Payment::TYPE_ATTRACTION_PURCHASE, 'event_purchases' => Payment::TYPE_EVENT_PURCHASE] as $lineTable => $lineType) {
+            if (!SchemaSupport::hasColumn($lineTable, 'ticket_order_id')) {
+                continue;
+            }
+
+            DB::table($lineTable)
+                ->whereIn('ticket_order_id', array_keys($orderCents))
+                ->whereNull('deleted_at')
+                ->orderBy('id')
+                ->get(['id', 'ticket_order_id', 'total_amount'])
+                ->each(function ($line) use (&$linesByOrder, $lineType) {
+                    $linesByOrder[(int) $line->ticket_order_id][$lineType . ':' . $line->id] = (int) round(((float) $line->total_amount) * 100);
+                });
+        }
+
+        foreach ($orderCents as $orderId => $cents) {
+            foreach (DailyReceiptsService::allocateCents((int) $cents, $linesByOrder[(int) $orderId] ?? []) as $key => $share) {
+                [$lineType, $lineId] = explode(':', $key);
+
+                if ($lineType === $payableType && isset($wanted[(int) $lineId])) {
+                    $amounts[(int) $lineId] = $share / 100;
+                }
+            }
+        }
+
+        return $amounts;
     }
 
     private function buildCategoryResult(string $categoryName, array $grouped): array
@@ -803,14 +924,50 @@ class AccountingReportService
         ];
     }
 
-    private function isTaxFee(string $feeName): bool
+    private function isTaxCharge(array $fee): bool
     {
-        foreach (self::TAX_KEYWORDS as $keyword) {
-            if (str_contains($feeName, $keyword)) {
-                return true;
-            }
+        $type = $fee['charge_type'] ?? null;
+
+        if (!in_array($type, [\App\Models\FeeSupport::CHARGE_FEE, \App\Models\FeeSupport::CHARGE_TAX], true) && !empty($fee['fee_support_id'])) {
+            $type = $this->feeChargeTypes()[(int) $fee['fee_support_id']] ?? null;
         }
-        return false;
+
+        if (!in_array($type, [\App\Models\FeeSupport::CHARGE_FEE, \App\Models\FeeSupport::CHARGE_TAX], true)) {
+            $type = $this->feeChargeTypesByName()[mb_strtolower(trim((string) ($fee['fee_name'] ?? '')))] ?? null;
+        }
+
+        if (in_array($type, [\App\Models\FeeSupport::CHARGE_FEE, \App\Models\FeeSupport::CHARGE_TAX], true)) {
+            return $type === \App\Models\FeeSupport::CHARGE_TAX;
+        }
+
+        return \App\Models\FeeSupport::nameLooksLikeTax((string) ($fee['fee_name'] ?? ''));
+    }
+
+    private function feeChargeTypesByName(): array
+    {
+        if ($this->feeChargeTypesByName === null) {
+            $this->feeChargeTypesByName = \App\Support\SchemaSupport::hasColumn('fee_supports', 'charge_type')
+                ? DB::table('fee_supports')->get(['fee_name', 'charge_type'])
+                    ->groupBy(fn ($row) => mb_strtolower(trim((string) $row->fee_name)))
+                    ->map(fn ($rows) => $rows->pluck('charge_type')->map(fn ($type) => (string) $type)->unique()->values())
+                    ->filter(fn ($types) => $types->count() === 1)
+                    ->map(fn ($types) => $types->first())
+                    ->all()
+                : [];
+        }
+
+        return $this->feeChargeTypesByName;
+    }
+
+    private function feeChargeTypes(): array
+    {
+        if ($this->feeChargeTypes === null) {
+            $this->feeChargeTypes = \App\Support\SchemaSupport::hasColumn('fee_supports', 'charge_type')
+                ? DB::table('fee_supports')->pluck('charge_type', 'id')->map(fn ($type) => (string) $type)->all()
+                : [];
+        }
+
+        return $this->feeChargeTypes;
     }
 
     private function ensureArray($value): array

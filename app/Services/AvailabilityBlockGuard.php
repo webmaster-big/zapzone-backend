@@ -86,15 +86,29 @@ class AvailabilityBlockGuard
             ->addMinutes(self::durationMinutes($booking->duration ?? 2, $booking->duration_unit ?? 'hours'))
             ->format('H:i');
 
-        return $this->forPackageBooking(
-            (int) $booking->location_id,
-            $booking->package_id ? (int) $booking->package_id : null,
-            $booking->room_id ? (int) $booking->room_id : null,
-            $date,
-            $start,
-            $end,
-            $booking->attractions()->pluck('attractions.id')->all()
-        );
+        $roomIds = \App\Models\PackageTimeSlot::where('booking_id', $booking->id)->orderBy('id')->pluck('room_id')
+            ->filter()->map(fn ($id) => (int) $id)->unique()->values()->all();
+
+        if ($roomIds === []) {
+            $roomIds = [$booking->room_id ? (int) $booking->room_id : null];
+        }
+
+        $attractionIds = $booking->attractions()->pluck('attractions.id')->all();
+        $found = collect();
+
+        foreach ($roomIds as $roomId) {
+            $found = $found->merge($this->forPackageBooking(
+                (int) $booking->location_id,
+                $booking->package_id ? (int) $booking->package_id : null,
+                $roomId,
+                $date,
+                $start,
+                $end,
+                $attractionIds
+            ));
+        }
+
+        return $found->unique('id')->sortBy('id')->values();
     }
 
     public function forExistingAttractionPurchase(AttractionPurchase $purchase): Collection

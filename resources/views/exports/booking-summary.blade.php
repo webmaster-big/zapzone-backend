@@ -451,8 +451,8 @@
             </div>
             <div class="party-room">
                 @if($booking->room)
-                    Room: <strong>{{ $booking->room->name }}</strong>
-                    @if($booking->room->capacity)
+                    Room: <strong>{{ $booking->spaceNames() }}</strong>
+                    @if($booking->room?->capacity && count($booking->room_ids) <= 1)
                         (Capacity: {{ $booking->room->capacity }})
                     @endif
                 @endif

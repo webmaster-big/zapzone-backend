@@ -816,9 +816,41 @@ class PageAnalyticsController extends Controller
     }
 
 
+    private const PRIVATE_QUERY_KEYS = ['k'];
+
+    private static function withoutPrivateKeys(?string $url): ?string
+    {
+        if ($url === null || (! str_contains($url, 'k=') && ! str_contains(strtolower($url), 'k%3d'))) {
+            return $url;
+        }
+
+        $parts = parse_url($url);
+
+        if ($parts === false || empty($parts['query'])) {
+            return $url;
+        }
+
+        parse_str($parts['query'], $query);
+
+        foreach (self::PRIVATE_QUERY_KEYS as $key) {
+            unset($query[$key]);
+        }
+
+        if (isset($query['next']) && is_string($query['next'])) {
+            $query['next'] = self::withoutPrivateKeys($query['next']);
+        }
+
+        return (isset($parts['scheme']) ? $parts['scheme'] . '://' : '')
+            . ($parts['host'] ?? '')
+            . (isset($parts['port']) ? ':' . $parts['port'] : '')
+            . ($parts['path'] ?? '')
+            . ($query !== [] ? '?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986) : '')
+            . (isset($parts['fragment']) ? '#' . $parts['fragment'] : '');
+    }
+
     protected function validateEvent(Request $request): array
     {
-        return $request->validate([
+        return $this->scrubPrivateKeys($request->validate([
             'event_type'      => ['sometimes', Rule::in(PageView::EVENT_TYPES)],
             'event_name'      => 'sometimes|string|max:64',
             'page_type'       => ['sometimes', 'nullable', Rule::in(PageView::PAGE_TYPES)],
@@ -857,7 +889,26 @@ class PageAnalyticsController extends Controller
             'scroll_depth'    => 'sometimes|nullable|integer|min:0|max:100',
 
             'metadata'        => 'sometimes|nullable|array',
-        ]);
+        ]));
+    }
+
+    private function scrubPrivateKeys(array $payload): array
+    {
+        foreach (['page_url', 'referrer'] as $field) {
+            if (isset($payload[$field]) && is_string($payload[$field])) {
+                $payload[$field] = self::withoutPrivateKeys($payload[$field]);
+            }
+        }
+
+        if (isset($payload['metadata']) && is_array($payload['metadata'])) {
+            foreach ($payload['metadata'] as $key => $value) {
+                if (is_string($value) && preg_match('#^(/|https?://)#i', $value)) {
+                    $payload['metadata'][$key] = self::withoutPrivateKeys($value);
+                }
+            }
+        }
+
+        return $payload;
     }
 
     protected function tenantScope(Request $request, $q)

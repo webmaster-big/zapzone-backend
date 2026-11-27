@@ -125,7 +125,7 @@ class CustomPackageConsumersTest extends TestCase
         $variables = $this->bookingVariables($booking);
 
         $this->assertSame('Team Outing', $variables['package_name']);
-        $this->assertSame('Corporate Event', $variables['package_description']);
+        $this->assertSame('Custom: Work', $variables['package_description']);
         $this->assertSame('1 hr 30 min', $variables['package_duration']);
         $this->assertSame('$20.00 per guest', $variables['package_price']);
         $this->assertSame('8', $variables['package_min_participants']);
@@ -197,7 +197,7 @@ class CustomPackageConsumersTest extends TestCase
         $parties = $this->reportCategory($report, 'Parties');
 
         $this->assertSame(
-            [['Corporate Event', 'Custom Package'], ['Party', 'Arcade Party']],
+            [['Custom: Work', 'Custom Package'], ['Party', 'Arcade Party']],
             array_map(fn (array $item) => [$item['sub_category'], $item['name']], $parties['items'])
         );
 
@@ -222,12 +222,13 @@ class CustomPackageConsumersTest extends TestCase
         $this->assertEquals(375.20, $report['summary']['grand_total']);
         $this->assertEquals(40.40, $report['summary']['fee_amount']);
 
-        $this->assertSame(['Custom Package'], array_column($this->reportCategory($this->accountingReport(['category_filter' => 'Corporate Event']), 'Parties')['items'], 'name'));
+        $this->assertSame(['Custom Package'], array_column($this->reportCategory($this->accountingReport(['category_filter' => 'Custom: Work']), 'Parties')['items'], 'name'));
         $this->assertSame(['Arcade Party'], array_column($this->reportCategory($this->accountingReport(['category_filter' => 'Party']), 'Parties')['items'], 'name'));
 
         $endOfDay = app(AccountingReportService::class)->buildDailyReportVariables(Carbon::now(), 'Consumers Co', $this->company->id);
         $this->assertSame('$650.40', $endOfDay['total_billed']);
-        $this->assertSame('$375.20', $endOfDay['total_collected']);
+        $this->assertSame($endOfDay['receipts_total'], $endOfDay['total_collected']);
+        $this->assertSame('$0.00', $endOfDay['total_collected'], 'receipts come from the payment ledger, and this fixture records no payments');
         $this->assertSame('$40.40', $endOfDay['fee_total']);
     }
 
@@ -239,7 +240,7 @@ class CustomPackageConsumersTest extends TestCase
         $this->orphanBooking(['discount_amount' => 5]);
 
         $this->assertEquals(5, $this->accountingReport()['summary']['discount_by_source']['other']);
-        $this->assertEquals(2, $this->accountingReport(['category_filter' => 'Corporate Event'])['summary']['discount_by_source']['other']);
+        $this->assertEquals(2, $this->accountingReport(['category_filter' => 'Custom: Work'])['summary']['discount_by_source']['other']);
         $this->assertEquals(3, $this->accountingReport(['category_filter' => 'Party'])['summary']['discount_by_source']['other']);
     }
 
@@ -290,7 +291,7 @@ class CustomPackageConsumersTest extends TestCase
         $this->assertSame(['Arcade Party', 'Custom Package'], array_column($performance, 'name'));
         $customRow = $performance[1];
         $this->assertNull($customRow['id']);
-        $this->assertSame('Corporate Event', $customRow['category']);
+        $this->assertSame('Custom: Work', $customRow['category']);
         $this->assertSame(2, $customRow['bookings']);
         $this->assertEquals(275.20, $customRow['revenue']);
         $this->assertSame(22, $customRow['participants']);
@@ -304,7 +305,7 @@ class CustomPackageConsumersTest extends TestCase
             ->assertOk()
             ->getContent();
         $rows = array_map('str_getcsv', array_filter(explode("\n", $csv)));
-        $this->assertContains(['Custom Package', 'Corporate Event', '2', '275.2', '22', '11'], $rows);
+        $this->assertContains(['Custom Package', 'Custom: Work', '2', '275.2', '22', '11'], $rows);
 
         $distribution = $this->as($this->admin)
             ->getJson('/api/analytics/company?' . http_build_query(['company_id' => $this->company->id, 'date_range' => '30d']))
@@ -312,7 +313,7 @@ class CustomPackageConsumersTest extends TestCase
             ->json('package_distribution');
 
         $this->assertEquals(
-            ['Corporate Event Package' => 2, 'Party Package' => 1, 'Other Package' => 1],
+            ['Custom: Work Package' => 2, 'Party Package' => 1, 'Other Package' => 1],
             collect($distribution)->pluck('count', 'name')->all()
         );
     }
@@ -552,7 +553,7 @@ class CustomPackageConsumersTest extends TestCase
         $shown = $this->as($this->admin)->getJson("/api/waivers/{$waiver->id}")->assertOk()->json('data');
         $this->assertTrue($shown['waiver']['booking']['is_custom_package']);
         $this->assertSame('Team Outing', $shown['waiver']['booking']['custom_package_name']);
-        $this->assertSame('Corporate Event', $shown['waiver']['booking']['custom_package_category']);
+        $this->assertSame('Custom: Work', $shown['waiver']['booking']['custom_package_category']);
         $this->assertSame(16, $shown['waiver']['booking']['custom_package_terms']['max_guests']);
         $this->assertSame('20.00', $shown['waiver']['booking']['package_price_at_booking']);
         $this->assertSame('0.00', $shown['waiver']['booking']['price_per_additional_at_booking']);
@@ -628,7 +629,7 @@ class CustomPackageConsumersTest extends TestCase
         $event = $build->invoke(new GoogleCalendarService($this->location->id), $custom->fresh($relations));
 
         $this->assertSame("Team Outing - Jordan Planner ({$custom->reference_number})", $event->getSummary());
-        $this->assertStringContainsString("Package: Team Outing\nCategory: Corporate Event\nLocation: Brighton\nRoom: Party Room 1", $event->getDescription());
+        $this->assertStringContainsString("Package: Team Outing\nCategory: Custom: Work\nLocation: Brighton\nRoom: Party Room 1", $event->getDescription());
         $this->assertStringContainsString("One-time add-ons:\n  - Glow Bracelets (x3)", $event->getDescription());
 
         $regularEvent = $build->invoke(new GoogleCalendarService($this->location->id), $regular->fresh($relations));
@@ -682,7 +683,7 @@ class CustomPackageConsumersTest extends TestCase
     {
         return array_merge([
             'name' => 'Team Outing',
-            'category' => 'Corporate Event',
+            'category' => 'Custom: Work',
             'duration_minutes' => 90,
             'min_guests' => 8,
             'max_guests' => 16,

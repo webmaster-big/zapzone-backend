@@ -15,6 +15,7 @@ use App\Models\Payment;
 use App\Models\TicketOrder;
 use App\Models\User;
 use App\Models\Waiver;
+use App\Support\PartyOrganizerLink;
 use App\Support\TemplatePlaceholders;
 use Database\Seeders\DefaultEmailNotificationSeeder;
 use Illuminate\Support\Facades\Log;
@@ -374,9 +375,20 @@ class EmailNotificationService
                 ]) : null;
 
                 $variables = $this->buildVariables($entity, $type, $notification->include_qr_code);
+                $template = $notification->getEffectiveBody();
+
+                if ($type === 'booking') {
+                    if (($recipient['type'] ?? null) !== 'customer') {
+                        $variables['party_section'] = '';
+                        $variables['party_line'] = '';
+                        $variables['party_link'] = '';
+                    } elseif (in_array($notification->trigger_type, [EmailNotification::TRIGGER_BOOKING_CREATED, EmailNotification::TRIGGER_BOOKING_CONFIRMED], true)) {
+                        $template = $this->withPartySection($template, $variables);
+                    }
+                }
 
                 $subject = $this->replaceVariables($notification->getEffectiveSubject(), $variables);
-                $body = $this->renderBody($notification->getEffectiveBody(), $variables);
+                $body = $this->renderBody($template, $variables);
 
                 $htmlBody = $this->generateHtmlEmail($body);
 
@@ -708,6 +720,15 @@ class EmailNotificationService
 
             $checkInLink = $type === 'booking' ? $this->escapeRoomCheckInLinkFor($entity) : '';
 
+            if ($type === 'booking') {
+                $partyLink = $this->partyLinkFor($entity);
+                $variables['party_link'] = $partyLink;
+                $variables['party_section'] = $partyLink !== '' ? $this->partySectionHtml($partyLink) : '';
+                $variables['party_line'] = $partyLink !== ''
+                    ? 'Sign in to invite your party guests, send waiver links and see who has signed: ' . $partyLink
+                    : '';
+            }
+
             if ($checkInLink !== '') {
                 $variables['escape_room_checkin_link'] = $checkInLink;
                 $variables['waiver_section'] = $this->escapeRoomWaiverSectionHtml($link, $checkInLink);
@@ -719,6 +740,86 @@ class EmailNotificationService
         }
 
         return $variables;
+    }
+
+    protected function bookingRoomNames($booking, $room): string
+    {
+        if (! $booking instanceof Booking || empty($booking->id)) {
+            return $room?->name ?? '';
+        }
+
+        $names = $booking->loadMissing('timeSlots.room')->timeSlots
+            ->sortBy('id')
+            ->map(fn ($slot) => $slot->room?->name)
+            ->filter()
+            ->unique()
+            ->values();
+
+        if ($names->count() <= 1) {
+            return $room?->name ?? ($names->first() ?? '');
+        }
+
+        if ($room?->name && $names->contains($room->name)) {
+            $names = collect([$room->name])->merge($names->reject(fn ($name) => $name === $room->name))->values();
+        }
+
+        return $names->implode(', ');
+    }
+
+    protected function partyLinkFor($booking): string
+    {
+        if (! $booking instanceof Booking || empty($booking->id) || $booking->status === 'cancelled') {
+            return '';
+        }
+
+        $booking->loadMissing('package');
+
+        if (! $booking->package?->party_invites_enabled) {
+            return '';
+        }
+
+        if (! \App\Models\WaiverBulkInvite::where('booking_id', $booking->id)->exists() && ! PartyOrganizerLink::template($booking)) {
+            return '';
+        }
+
+        return PartyOrganizerLink::url($booking);
+    }
+
+    public function partySectionHtml(string $link): string
+    {
+        $link = e($link);
+
+        return <<<HTML
+<div style="margin: 24px 0; padding: 20px; background: #f5f3ff; border: 1px solid #ddd6fe; border-radius: 8px; text-align: center;">
+    <p style="margin: 0 0 14px 0; font-size: 14px; color: #4c1d95; line-height: 1.5;">Sign in to invite your party guests, send waiver links and see who has signed.</p>
+    <a href="{$link}" style="display: inline-block; background-color: #6d28d9; color: #ffffff; padding: 11px 26px; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 14px;">Manage party invitations and waivers</a>
+</div>
+HTML;
+    }
+
+    public function withPartySection(string $template, array $variables): string
+    {
+        if (($variables['party_section'] ?? '') === '' || preg_match('/\{\{\s*party_(section|link|line)\s*\}\}/', $template)) {
+            return $template;
+        }
+
+        if (preg_match('/\{\{\s*waiver_section\s*\}\}/', $template, $match, PREG_OFFSET_CAPTURE)) {
+            $end = $match[0][1] + strlen($match[0][0]);
+
+            return substr_replace($template, "\n{{party_section}}", $end, 0);
+        }
+
+        $bodyClose = stripos($template, '</body>');
+
+        if ($bodyClose !== false) {
+            return substr_replace($template, "{{party_section}}\n", $bodyClose, 0);
+        }
+
+        $lastDiv = strripos($template, '</div>');
+
+        return $lastDiv !== false && trim(substr($template, $lastDiv + 6)) === ''
+            ? substr_replace($template, "{{party_section}}\n", $lastDiv, 0)
+            : $template . "\n{{party_section}}";
     }
 
     protected function escapeRoomCheckInLinkFor($booking): string
@@ -747,7 +848,7 @@ HTML;
     protected function waiverLinkFor($entity, string $type): string
     {
         $waiver = match ($type) {
-            'booking' => Waiver::where('booking_id', $entity->id)->exceptEscapeRoomSignIns()->latest('id')->first(),
+            'booking' => Waiver::where('booking_id', $entity->id)->whereNull('bulk_invite_id')->exceptEscapeRoomSignIns()->latest('id')->first(),
             'event' => $this->eventWaiverFor($entity),
             'purchase' => Waiver::where('attraction_purchase_id', $entity->id)->latest('id')->first(),
             default => null,
@@ -958,7 +1059,7 @@ HTML;
             'booking_kind' => $package?->isEscapeRoom() ? 'escape room game' : 'party',
             'booking_kind_title' => $package?->isEscapeRoom() ? 'Escape room game' : 'Party',
 
-            'room_name' => $room?->name ?? '',
+            'room_name' => $this->bookingRoomNames($booking, $room),
             'room_description' => $room?->description ?? '',
 
             'location_name' => $location?->name ?? '',
@@ -1126,7 +1227,7 @@ HTML;
         return '-$' . number_format($amount, 2) . ($names !== '' ? " ({$names})" : '');
     }
 
-    public const HTML_VARIABLES = ['waiver_section', 'qr_code', 'addons_list', 'location_breakdown_rows', 'category_breakdown_rows'];
+    public const HTML_VARIABLES = ['waiver_section', 'qr_code', 'addons_list', 'location_breakdown_rows', 'category_breakdown_rows', 'receipts_location_table', 'unclassified_receipts_row', 'category_sales_rows', 'party_section'];
 
     public function replaceVariables(string $content, array $variables): string
     {
@@ -1274,12 +1375,12 @@ HTML;
 
             if ($defaultNotification && $defaultNotification->is_active) {
                 $subject = $this->replaceVariables($defaultNotification->getEffectiveSubject(), $variables);
-                $body = $this->renderBody($defaultNotification->getEffectiveBody(), $variables);
+                $body = $this->renderBody($this->withPartySection($defaultNotification->getEffectiveBody(), $variables), $variables);
 
                 $this->createDefaultLog($defaultNotification, $customerEmail, $booking);
             } else {
                 $subject = "Booking Confirmation - {$variables['booking_reference']}";
-                $body = $this->renderBody($this->getDefaultBookingEmailBody(), $variables);
+                $body = $this->renderBody($this->withPartySection($this->getDefaultBookingEmailBody(), $variables), $variables);
             }
 
             $htmlBody = $this->generateHtmlEmail($body);
@@ -1409,6 +1510,8 @@ HTML;
         <p style="color: #666; font-size: 12px;">Show this QR code at check-in</p>
     </div>
 
+    {{party_section}}
+
     <p>If you have any questions, please contact us at {{location_email}} or {{location_phone}}.</p>
 
     <p>We look forward to seeing you!</p>
@@ -1515,6 +1618,9 @@ HTML;
                 ],
                 'Waiver' => [
                     'waiver_section' => 'Box with a Complete Your Waiver button; empty when no waiver applies',
+                    'party_section' => 'Box with a Manage party invitations and waivers button; empty unless the package sends party invitations and waivers',
+                    'party_link' => 'Link to the party organizer page (sign-in required); empty unless the package sends party invitations and waivers',
+                    'party_line' => 'One plain-text sentence with the party organizer link, for text messages',
                     'waiver_link' => 'Link to sign the waiver; empty when no waiver applies',
                     'waiver_line' => 'One sentence with the waiver link, handy for plain text; empty when no waiver applies',
                     'escape_room_checkin_link' => 'Escape rooms only: link each player uses to sign and join the game',
@@ -1655,12 +1761,21 @@ HTML;
                     'total_billed' => 'Total amount billed',
                     'total_collected' => 'Total amount collected today',
                     'balance_due' => 'Outstanding balance due',
-                    'collected_card' => 'Collected via card (gateway)',
-                    'collected_cash' => 'Collected via cash / in-store',
+                    'collected_card' => 'Online revenue plus unclassified receipts posted today, so card + cash = total',
+                    'collected_cash' => 'In-store collected today (same as in_store_collected)',
+                ],
+                'Daily receipts' => [
+                    'online_revenue' => 'Online payments posted today, less online refunds posted today',
+                    'in_store_collected' => 'Cash and venue-terminal payments recorded today, less in-store refunds posted today',
+                    'unclassified_receipts' => 'Payments and refunds posted today whose collection channel still needs checking',
+                    'receipts_total' => 'All payments posted today, less all refunds posted today',
+                    'unclassified_receipts_row' => 'HTML summary row for unclassified receipts (empty when there are none)',
+                    'receipts_location_table' => 'HTML table: online and in-store receipts per location',
                 ],
                 'Breakdown' => [
                     'location_breakdown_rows' => 'HTML table rows: per-location breakdown',
                     'category_breakdown_rows' => 'HTML table rows: per-category breakdown',
+                    'category_sales_rows' => 'HTML table rows: per-category gross sales and total billed',
                 ],
             ],
             'visit_completed' => [

@@ -11,6 +11,7 @@ use App\Http\Controllers\Api\AuthorizeNetAccountController;
 use App\Http\Controllers\Api\BookingController;
 use App\Http\Controllers\Api\LocationChangeRequestController;
 use App\Http\Controllers\Api\BookingInvitationController;
+use App\Http\Controllers\Api\PartyOrganizerController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\CompanyController;
 use App\Http\Controllers\Api\ClientErrorController;
@@ -531,6 +532,7 @@ Route::middleware('auth:sanctum')->group(function () {
         // so these must not sit on bare auth:sanctum.
         // Venue-only booking changes (see the note on the bookings apiResource below).
         Route::post('bookings/bulk-restore', [BookingController::class, 'bulkRestore']);
+        Route::get('bookings/custom-package/categories', [BookingController::class, 'customPackageCategories']);
         Route::post('bookings/bulk-import-csv', [BookingController::class, 'bulkImportCsv']);
         Route::post('bookings/check-in', [BookingController::class, 'checkIn']);
         Route::patch('bookings/{booking}/complete', [BookingController::class, 'complete']);
@@ -609,6 +611,11 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('bookings/{booking}/invitations/{invitation}/resend', [BookingInvitationController::class, 'resend']);
     Route::delete('bookings/{booking}/invitations/{invitation}', [BookingInvitationController::class, 'destroy']);
     Route::get('bookings/{booking}/invitation-preview', [BookingInvitationController::class, 'preview']);
+
+    Route::get('customer/party/{booking}', [PartyOrganizerController::class, 'show'])->middleware('throttle:party-organizer');
+    Route::post('customer/party/{booking}/guests', [PartyOrganizerController::class, 'addGuests'])->middleware('throttle:party-organizer-add');
+    Route::post('customer/party/{booking}/guests/{recipientId}/resend', [PartyOrganizerController::class, 'resend'])->middleware('throttle:party-organizer-send')->whereNumber('recipientId');
+    Route::patch('customer/party/{booking}/guests/{recipientId}', [PartyOrganizerController::class, 'update'])->middleware('throttle:party-organizer-send')->whereNumber('recipientId');
 
     Route::get('payments/invoices/report', [PaymentController::class, 'invoicesReport'])->middleware('staff');
     Route::get('payments/invoices/export', [PaymentController::class, 'invoicesExport'])->middleware('staff');

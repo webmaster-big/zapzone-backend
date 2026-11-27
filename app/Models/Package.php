@@ -60,6 +60,7 @@ class Package extends Model
         'add_ons_order',
         'customer_notes',
         'invitation_download_link',
+        'party_invites_enabled',
         'invitation_file',
         'booking_window_days',
         'min_booking_notice_hours',
@@ -83,6 +84,7 @@ class Package extends Model
         'available_online' => 'boolean',
         'display_order' => 'integer',
         'has_guest_of_honor' => 'boolean',
+        'party_invites_enabled' => 'boolean',
         'booking_window_days' => 'integer',
         'min_booking_notice_hours' => 'integer',
         'is_escape_room' => 'boolean',
@@ -166,6 +168,62 @@ class Package extends Model
     public static function tracksOnlineAvailability(): bool
     {
         return \App\Support\SchemaSupport::hasColumn('packages', 'available_online');
+    }
+
+    public static function imageStoragePath(mixed $reference): ?string
+    {
+        if (!is_string($reference) || trim($reference) === '' || DataUriImage::isDataUri($reference)) {
+            return null;
+        }
+
+        $path = parse_url(trim($reference), PHP_URL_PATH);
+
+        if (!is_string($path) || $path === '') {
+            return null;
+        }
+
+        $path = '/' . ltrim(rawurldecode($path), '/');
+        $folder = '/images/packages/';
+
+        if (str_starts_with($path, $folder)) {
+            $file = substr($path, strlen($folder));
+        } else {
+            $at = strpos($path, '/storage' . $folder);
+
+            if ($at === false) {
+                return null;
+            }
+
+            $file = substr($path, $at + strlen('/storage' . $folder));
+        }
+
+        return $file === '' || str_contains($file, '..') ? null : 'images/packages/' . $file;
+    }
+
+    public static function imageIsUsedByAnotherPackage(string $reference, int $packageId): bool
+    {
+        $storagePath = self::imageStoragePath($reference);
+
+        $candidates = self::withTrashed()
+            ->where('id', '!=', $packageId)
+            ->where(function ($query) use ($reference, $storagePath) {
+                $query->whereJsonContains('image', $reference);
+
+                if ($storagePath !== null) {
+                    $fileName = basename($storagePath);
+                    $query->orWhere('image', 'like', '%' . addcslashes($fileName, '%_\\') . '%');
+
+                    if (rawurlencode($fileName) !== $fileName) {
+                        $query->orWhere('image', 'like', '%' . addcslashes(rawurlencode($fileName), '%_\\') . '%');
+                    }
+                }
+            })
+            ->get(['id', 'image']);
+
+        return $candidates->contains(function (Package $other) use ($reference, $storagePath) {
+            return collect(is_array($other->image) ? $other->image : [$other->image])
+                ->contains(fn ($stored) => $stored === $reference || ($storagePath !== null && self::imageStoragePath($stored) === $storagePath));
+        });
     }
 
     public static function canChangeOnlineAvailability(mixed $actor): bool

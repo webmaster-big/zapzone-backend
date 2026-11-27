@@ -27,6 +27,7 @@ class PageView extends Model
         'my_gift_cards',         // /customer/gift-cards
         'my_notifications',      // /customer/notifications
         'my_membership',         // /customer/membership
+        'party_organizer',
         'membership_purchase',   // /customer/membership/purchase
         'membership_update_payment', // /customer/membership/update-payment
         'waiver_kiosk',          // /waiver/kiosk/:id

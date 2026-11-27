@@ -252,15 +252,24 @@ class SmsNotificationService
 
         $variables = $this->variableSource->buildVariables($entity, $type, false);
         $message = $this->toPlainText($this->replaceVariables($notification->getEffectiveBody(), $variables));
+        $othersMessage = ($variables['party_link'] ?? '') === ''
+            ? $message
+            : $this->toPlainText($this->replaceVariables($notification->getEffectiveBody(), array_merge($variables, ['party_link' => '', 'party_line' => '', 'party_section' => ''])));
 
-        if ($message === '') {
+        if ($message === '' && $othersMessage === '') {
             return 0;
         }
 
-        $segments = SmsNotification::segmentCount($message);
         $sent = 0;
 
         foreach ($recipients as $recipient) {
+            $text = $recipient['type'] === 'customer' ? $message : $othersMessage;
+
+            if ($text === '') {
+                continue;
+            }
+
+            $segments = SmsNotification::segmentCount($text);
             $log = null;
             try {
                 $log = $entity->exists ? SmsNotificationLog::create([
@@ -273,7 +282,7 @@ class SmsNotificationService
                     'segments' => $segments,
                 ]) : null;
 
-                $sid = $this->smsService->sendSms($recipient['phone'], $message);
+                $sid = $this->smsService->sendSms($recipient['phone'], $text);
                 $log?->markAsSent($sid, $segments);
 
                 if ($recipient['type'] === 'customer') {

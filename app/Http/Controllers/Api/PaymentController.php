@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Traits\RecordsPageAnalytics;
 use App\Http\Traits\ScopesByAuthUser;
 use App\Models\Payment;
+use App\Models\GiftCard;
 use App\Services\Payments\AuthorizeNetGateway;
 use App\Services\Payments\PayableLedger;
 use App\Models\TicketOrder;
@@ -24,6 +25,7 @@ use App\Models\CustomerNotification;
 use App\Models\Notification;
 use App\Models\User;
 use Illuminate\Http\Request;
+use App\Support\SchemaSupport;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
@@ -172,7 +174,12 @@ class PaymentController extends Controller
             'location_id' => 'nullable|exists:locations,id',
             'signature_image' => 'nullable|string',
             'terms_accepted' => 'nullable|boolean',
+            'external_reference' => 'nullable|string|max:100',
         ]);
+
+        $validated['external_reference'] = isset($validated['external_reference']) && trim($validated['external_reference']) !== ''
+            ? trim($validated['external_reference'])
+            : null;
 
         if (isset($validated['booking_id']) && !isset($validated['payable_id'])) {
             $validated['payable_id'] = $validated['booking_id'];
@@ -203,7 +210,11 @@ class PaymentController extends Controller
                 ->where('payable_type', $validated['payable_type'])
                 ->where('amount', $validated['amount'])
                 ->where('status', 'completed')
+                ->where('method', $validated['method'])
                 ->where('created_at', '>=', now()->subMinutes(2))
+                ->when(SchemaSupport::hasColumn('payments', 'external_reference'), fn ($query) => $validated['external_reference'] !== null
+                    ? $query->where('external_reference', $validated['external_reference'])
+                    : $query->whereNull('external_reference'))
                 ->first();
 
             if ($existingPayment) {
@@ -239,7 +250,24 @@ class PaymentController extends Controller
             }
         }
 
+        if ($validated['external_reference'] !== null && !empty($validated['payable_id']) && !empty($validated['payable_type'])) {
+            $sameReceipt = Payment::where('payable_type', $validated['payable_type'])
+                ->where('payable_id', $validated['payable_id'])
+                ->where('external_reference', $validated['external_reference'])
+                ->whereIn('status', ['completed', 'pending'])
+                ->first();
+
+            if ($sameReceipt) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "Receipt {$validated['external_reference']} is already recorded on this booking or purchase (payment #{$sameReceipt->id}).",
+                    'error_code' => 'DUPLICATE_RECEIPT',
+                ], 409);
+            }
+        }
+
         $validated['transaction_id'] = 'TXN' . now()->format('YmdHis') . strtoupper(Str::random(6));
+        $validated['recorded_by'] = \App\Support\StaffActor::id() ?? $request->user()?->id;
 
         if (isset($validated['signature_image']) && !empty($validated['signature_image'])) {
             $validated['signature_image'] = $this->handleSignatureUpload($validated['signature_image']);
@@ -770,6 +798,61 @@ class PaymentController extends Controller
         ]);
     }
 
+    private function holdGiftCardValue(Payment $payment, float $amount, bool $wholeCharge = false): JsonResponse|array|null
+    {
+        if ($payment->payable_type !== Payment::TYPE_GIFT_CARD || ! $payment->payable_id) {
+            return null;
+        }
+
+        return \Illuminate\Support\Facades\DB::transaction(function () use ($payment, $amount, $wholeCharge) {
+            $card = GiftCard::whereKey($payment->payable_id)->lockForUpdate()->first();
+
+            if (! $card) {
+                return null;
+            }
+
+            $balance = round((float) $card->balance, 2);
+            $amount = round($amount, 2);
+
+            if ($balance < $amount) {
+                $left = '$' . number_format($balance, 2);
+
+                return response()->json([
+                    'success' => false,
+                    'message' => $wholeCharge
+                        ? "This gift card has {$left} left on it, so the whole charge cannot be voided. Once the charge settles (usually within a day), refund the {$left} that is left."
+                        : "This gift card has {$left} left on it, so only up to that amount can be refunded. The rest has already been spent.",
+                ], 422);
+            }
+
+            $status = (string) $card->status;
+            $remaining = round($balance - $amount, 2);
+
+            $card->update([
+                'balance' => $remaining,
+                'status' => $remaining <= 0 && $status === 'active' ? 'redeemed' : $status,
+            ]);
+
+            return ['amount' => $amount, 'status' => $status];
+        });
+    }
+
+    private function releaseGiftCardHold(Payment $payment, array $hold): void
+    {
+        \Illuminate\Support\Facades\DB::transaction(function () use ($payment, $hold) {
+            $card = GiftCard::whereKey($payment->payable_id)->lockForUpdate()->first();
+
+            if (! $card) {
+                return;
+            }
+
+            $card->update([
+                'balance' => round((float) $card->balance + (float) $hold['amount'], 2),
+                'status' => $card->status === 'redeemed' && $hold['status'] !== 'redeemed' ? $hold['status'] : $card->status,
+            ]);
+        });
+    }
+
     public function refund(Request $request, Payment $payment): JsonResponse
     {
         if ($denied = $this->denyForeignPayment($payment)) {
@@ -811,6 +894,14 @@ class PaymentController extends Controller
                 ],
             ], 400);
         }
+
+        $giftCardHold = $this->holdGiftCardValue($payment, (float) $refundAmount);
+
+        if ($giftCardHold instanceof JsonResponse) {
+            return $giftCardHold;
+        }
+
+        $giftCardSettled = false;
 
         try {
             $account = AuthorizeNetAccount::where('location_id', $payment->location_id)
@@ -913,6 +1004,7 @@ class PaymentController extends Controller
                 $tresponse = $response->getTransactionResponse();
 
                 if ($tresponse != null && $tresponse->getMessages() != null) {
+                    $giftCardSettled = true;
                     $refundTransactionId = $tresponse->getTransId();
                     $isFullRefund = ($refundAmount + $totalAlreadyRefunded) >= $payment->amount;
 
@@ -920,6 +1012,8 @@ class PaymentController extends Controller
                         'payable_id' => $payment->payable_id,
                         'payable_type' => $payment->payable_type,
                         'customer_id' => $payment->customer_id,
+                        'reverses_payment_id' => $payment->id,
+                        'recorded_by' => \App\Support\StaffActor::id(),
                         'transaction_id' => $refundTransactionId,
                         'amount' => $refundAmount,
                         'currency' => $payment->currency ?? 'USD',
@@ -1127,6 +1221,8 @@ class PaymentController extends Controller
                         if ($payable) {
                             $payable = app(TicketOrderService::class)->applyRefund($payable, (float) $refundAmount, (bool) $isCancelled);
                         }
+                    } elseif ($payment->payable_type === Payment::TYPE_GIFT_CARD && $payment->payable_id) {
+                        $payable = GiftCard::find($payment->payable_id);
                     }
 
                     if ($isCancelled && $payable) {
@@ -1236,6 +1332,7 @@ class PaymentController extends Controller
                     if ($voidResponse != null && $voidResponse->getMessages()->getResultCode() == 'Ok') {
                         $voidTresponse = $voidResponse->getTransactionResponse();
                         if ($voidTresponse != null && $voidTresponse->getMessages() != null) {
+                            $giftCardSettled = true;
                             Log::info('Void fallback successful (unsettled refund → void)', [
                                 'payment_id' => $payment->id,
                                 'transaction_id' => $payment->transaction_id,
@@ -1250,6 +1347,8 @@ class PaymentController extends Controller
                                 'payable_id' => $payment->payable_id,
                                 'payable_type' => $payment->payable_type,
                                 'customer_id' => $payment->customer_id,
+                                'reverses_payment_id' => $payment->id,
+                                'recorded_by' => \App\Support\StaffActor::id(),
                                 'transaction_id' => 'VOID-' . $payment->transaction_id,
                                 'amount' => $payment->amount,
                                 'currency' => $payment->currency ?? 'USD',
@@ -1300,6 +1399,8 @@ class PaymentController extends Controller
                                 if ($payable) {
                                     $payable = app(TicketOrderService::class)->applyRefund($payable, (float) $payment->amount, false, 'void');
                                 }
+                            } elseif ($payment->payable_type === Payment::TYPE_GIFT_CARD && $payment->payable_id) {
+                                $payable = GiftCard::find($payment->payable_id);
                             }
 
                             if ($payable) {
@@ -1390,6 +1491,10 @@ class PaymentController extends Controller
                 'success' => false,
                 'message' => 'Refund processing failed: ' . $e->getMessage(),
             ], 500);
+        } finally {
+            if (is_array($giftCardHold) && ! $giftCardSettled) {
+                $this->releaseGiftCardHold($payment, $giftCardHold);
+            }
         }
     }
 
@@ -1435,22 +1540,38 @@ class PaymentController extends Controller
             ], 400);
         }
 
+        $giftCardHold = $this->holdGiftCardValue($payment, (float) $refundAmount);
+
+        if ($giftCardHold instanceof JsonResponse) {
+            return $giftCardHold;
+        }
+
         $isFullRefund = ($refundAmount + $totalAlreadyRefunded) >= $payment->amount;
 
-        $refundPayment = Payment::create([
-            'payable_id' => $payment->payable_id,
-            'payable_type' => $payment->payable_type,
-            'customer_id' => $payment->customer_id,
-            'transaction_id' => 'REFUND-' . $payment->transaction_id . '-' . strtoupper(Str::random(4)),
-            'amount' => $refundAmount,
-            'currency' => $payment->currency ?? 'USD',
-            'method' => $payment->method,
-            'status' => 'refunded',
-            'notes' => "Refund from Payment #{$payment->id} (Original TXN: {$payment->transaction_id}) — {$validated['notes']}",
-            'refunded_at' => now(),
-            'payment_id' => null,
-            'location_id' => $payment->location_id,
-        ]);
+        try {
+            $refundPayment = Payment::create([
+                'payable_id' => $payment->payable_id,
+                'payable_type' => $payment->payable_type,
+                'customer_id' => $payment->customer_id,
+                'reverses_payment_id' => $payment->id,
+                'recorded_by' => \App\Support\StaffActor::id(),
+                'transaction_id' => 'REFUND-' . $payment->transaction_id . '-' . strtoupper(Str::random(4)),
+                'amount' => $refundAmount,
+                'currency' => $payment->currency ?? 'USD',
+                'method' => $payment->method,
+                'status' => 'refunded',
+                'notes' => "Refund from Payment #{$payment->id} (Original TXN: {$payment->transaction_id}) — {$validated['notes']}",
+                'refunded_at' => now(),
+                'payment_id' => null,
+                'location_id' => $payment->location_id,
+            ]);
+        } catch (\Throwable $e) {
+            if (is_array($giftCardHold)) {
+                $this->releaseGiftCardHold($payment, $giftCardHold);
+            }
+
+            throw $e;
+        }
 
         $payment->update([
             'notes' => trim(($payment->notes ?? '') . "\nManual refund of $" . number_format($refundAmount, 2) . " issued → Refund Payment #{$refundPayment->id}"),
@@ -1643,6 +1764,8 @@ class PaymentController extends Controller
             if ($payable) {
                 $payable = app(TicketOrderService::class)->applyRefund($payable, (float) $refundAmount, (bool) $isCancelled);
             }
+        } elseif ($payment->payable_type === Payment::TYPE_GIFT_CARD && $payment->payable_id) {
+            $payable = GiftCard::find($payment->payable_id);
         }
 
         if ($isCancelled && $payable) {
@@ -1697,6 +1820,14 @@ class PaymentController extends Controller
             return response()->json(['success' => false, 'message' => 'Only Authorize.Net payments can be voided through this endpoint'], 400);
         }
 
+        $giftCardHold = $this->holdGiftCardValue($payment, (float) $payment->amount, true);
+
+        if ($giftCardHold instanceof JsonResponse) {
+            return $giftCardHold;
+        }
+
+        $giftCardSettled = false;
+
         try {
             $account = AuthorizeNetAccount::where('location_id', $payment->location_id)
                 ->where('is_active', true)
@@ -1732,6 +1863,7 @@ class PaymentController extends Controller
                 $tresponse = $response->getTransactionResponse();
 
                 if ($tresponse != null && $tresponse->getMessages() != null) {
+                    $giftCardSettled = true;
                     $previousStatus = $payment->status;
                     $voidAmount = $payment->amount;
 
@@ -1744,6 +1876,8 @@ class PaymentController extends Controller
                         'payable_id' => $payment->payable_id,
                         'payable_type' => $payment->payable_type,
                         'customer_id' => $payment->customer_id,
+                        'reverses_payment_id' => $payment->id,
+                        'recorded_by' => \App\Support\StaffActor::id(),
                         'transaction_id' => 'VOID-' . $payment->transaction_id,
                         'amount' => $voidAmount,
                         'currency' => $payment->currency ?? 'USD',
@@ -1908,6 +2042,8 @@ class PaymentController extends Controller
                         if ($payable) {
                             $payable = app(TicketOrderService::class)->applyRefund($payable, (float) $voidAmount, false, 'void');
                         }
+                    } elseif ($payment->payable_type === Payment::TYPE_GIFT_CARD && $payment->payable_id) {
+                        $payable = GiftCard::find($payment->payable_id);
                     }
 
                     if ($payable) {
@@ -2008,6 +2144,10 @@ class PaymentController extends Controller
                 'success' => false,
                 'message' => 'Void processing failed: ' . $e->getMessage(),
             ], 500);
+        } finally {
+            if (is_array($giftCardHold) && ! $giftCardSettled) {
+                $this->releaseGiftCardHold($payment, $giftCardHold);
+            }
         }
     }
 
@@ -2536,6 +2676,7 @@ class PaymentController extends Controller
                     $payment = Payment::create([
                         'customer_id' => $request->customer_id,
                         'location_id' => $request->location_id,
+                        'recorded_by' => $staffPayer ? $request->user('sanctum')?->id : null,
                         'amount' => $request->amount,
                         'currency' => 'USD',
                         'method' => 'authorize.net',

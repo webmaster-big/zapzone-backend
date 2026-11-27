@@ -24,6 +24,44 @@ class Payment extends Model
         static::saved($touchBooking);
         static::deleted($touchBooking);
         static::restored($touchBooking);
+
+        static::creating(function (Payment $payment) {
+            if (!$payment->channel && \App\Support\SchemaSupport::hasColumn('payments', 'channel')) {
+                $payment->channel = self::channelFor($payment);
+            }
+
+            foreach (['recorded_by', 'reverses_payment_id', 'external_reference'] as $column) {
+                if (array_key_exists($column, $payment->getAttributes()) && !\App\Support\SchemaSupport::hasColumn('payments', $column)) {
+                    unset($payment->{$column});
+                }
+            }
+        });
+    }
+
+    public const CHANNEL_ONLINE = 'online';
+    public const CHANNEL_IN_STORE = 'in_store';
+    public const CHANNEL_STAFF_CARD = 'staff_card';
+    public const CHANNEL_UNVERIFIED = 'unverified';
+
+    public static function channelFor(Payment $payment): string
+    {
+        if ($payment->reverses_payment_id) {
+            $original = self::withTrashed()->find($payment->reverses_payment_id);
+
+            if ($original?->channel) {
+                return $original->channel;
+            }
+        }
+
+        if (in_array($payment->method, ['cash', 'card', 'in-store'], true)) {
+            return self::CHANNEL_IN_STORE;
+        }
+
+        if ($payment->method === 'authorize.net') {
+            return $payment->recorded_by ? self::CHANNEL_STAFF_CARD : self::CHANNEL_ONLINE;
+        }
+
+        return self::CHANNEL_UNVERIFIED;
     }
 
     public const TYPE_BOOKING = 'booking';
@@ -52,6 +90,10 @@ class Payment extends Model
         'avs_result_code',
         'cvv_result_code',
         'location_id',
+        'channel',
+        'reverses_payment_id',
+        'external_reference',
+        'recorded_by',
     ];
 
     protected $appends = ['card_label'];

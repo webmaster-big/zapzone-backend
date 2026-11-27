@@ -37,6 +37,7 @@ class PackageResource extends JsonResource
             'add_ons_order' => $this->add_ons_order,
             'customer_notes' => $this->customer_notes,
             'invitation_download_link' => $this->invitation_download_link,
+            'party_invites_enabled' => (bool) $this->party_invites_enabled,
             'invitation_file' => $this->invitation_file,
             'booking_window_days' => $this->booking_window_days,
             'min_booking_notice_hours' => $this->min_booking_notice_hours,

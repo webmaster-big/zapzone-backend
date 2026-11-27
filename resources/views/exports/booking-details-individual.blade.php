@@ -341,7 +341,7 @@
                         </div>
                         <div class="detail-item">
                             <span class="detail-label">Space</span>
-                            <span class="detail-value">{{ $booking->room?->name ?? 'Not assigned' }}</span>
+                            <span class="detail-value">{{ $booking->spaceNames() ?: 'Not assigned' }}</span>
                         </div>
                     </div>
                 </div>

@@ -605,6 +605,7 @@ class GiftCardController extends Controller
                 'payable_id' => $card->id,
                 'payable_type' => Payment::TYPE_GIFT_CARD,
                 'customer_id' => $customerId,
+                'recorded_by' => $staff?->id,
                 'transaction_id' => $transactionId,
                 'amount' => $amount,
                 'currency' => 'USD',

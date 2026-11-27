@@ -563,7 +563,7 @@
                                         <div class="info-block-title">Package & Room</div>
                                         <div class="info-block-value">
                                             <strong>{{ $booking->packageLabel() ?? 'N/A' }}</strong><br>
-                                            {{ $booking->room->name ?? 'TBD' }}
+                                            {{ $booking->spaceNames() ?: 'TBD' }}
                                             @if($booking->participants) · {{ $booking->participants }} guests{{ '' }}@endif
                                         </div>
                                     </div>
@@ -655,7 +655,7 @@
                             @if($booking->duration) {{ $booking->duration }} {{ $booking->duration_unit ?? 'hours' }}@endif
                         </div>
                         <div style="font-size: 9pt; color: #666;">
-                            @if($booking->room)Room: <strong>{{ $booking->room->name }}</strong>@endif
+                            @if($booking->room)Room: <strong>{{ $booking->spaceNames() }}</strong>@endif
                             @if($booking->participants) Guests: <strong>{{ $booking->participants }}</strong>@endif
                         </div>
                     </div>

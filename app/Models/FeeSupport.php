@@ -14,6 +14,7 @@ class FeeSupport extends Model
         'company_id',
         'location_id',
         'fee_name',
+        'charge_type',
         'fee_amount',
         'fee_calculation_type',
         'fee_application_type',
@@ -35,6 +36,9 @@ class FeeSupport extends Model
 
     const APPLICATION_ADDITIVE = 'additive';
     const APPLICATION_INCLUSIVE = 'inclusive';
+
+    const CHARGE_FEE = 'fee';
+    const CHARGE_TAX = 'tax';
 
     const ENTITY_PACKAGE = 'package';
     const ENTITY_ATTRACTION = 'attraction';
@@ -86,6 +90,16 @@ class FeeSupport extends Model
         return $query->where('entity_type', self::ENTITY_MEMBERSHIP);
     }
 
+    public static function nameLooksLikeTax(string $name): bool
+    {
+        return (bool) preg_match('/\b(?:tax|taxes|vat|gst|hst|pst|qst)\b/i', $name);
+    }
+
+    public function chargeType(): string
+    {
+        return $this->charge_type === self::CHARGE_TAX ? self::CHARGE_TAX : self::CHARGE_FEE;
+    }
+
     public function calculateFee(float $basePrice): float
     {
         if ($this->fee_calculation_type === self::CALCULATION_FIXED) {
@@ -110,6 +124,7 @@ class FeeSupport extends Model
             return [
                 'fee_support_id' => $this->id,
                 'fee_name' => $this->fee_name,
+                'charge_type' => $this->chargeType(),
                 'fee_label' => $feeLabel,
                 'fee_calculation_type' => $this->fee_calculation_type,
                 'fee_application_type' => $this->fee_application_type,
@@ -122,6 +137,7 @@ class FeeSupport extends Model
         return [
             'fee_support_id' => $this->id,
             'fee_name' => $this->fee_name,
+            'charge_type' => $this->chargeType(),
             'fee_label' => $feeLabel,
             'fee_calculation_type' => $this->fee_calculation_type,
             'fee_application_type' => $this->fee_application_type,

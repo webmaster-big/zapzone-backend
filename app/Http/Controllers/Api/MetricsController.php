@@ -204,6 +204,8 @@ class MetricsController extends Controller
         $totalEventTickets = (int) ((clone $soldEventQuery)->sum('quantity') ?? 0);
 
         $totalRevenue = $bookingRevenue + $purchaseRevenue + $eventPurchaseRevenue;
+        [$receiptsFrom, $receiptsTo] = \App\Services\DailyReceiptsService::window($dateFrom, $dateTo);
+        $receipts = app(\App\Services\DailyReceiptsService::class)->totals($locationId ? [$locationId] : null, $receiptsFrom, $receiptsTo);
 
         Log::info('Total revenue calculated', [
             'booking_revenue' => $bookingRevenue,
@@ -643,6 +645,10 @@ class MetricsController extends Controller
             'metrics' => [
                 'totalBookings' => $totalBookings,
                 'totalRevenue' => round($totalRevenue, 2),
+                'onlineRevenue' => $receipts['online'],
+                'inStoreCollected' => $receipts['in_store'],
+                'unclassifiedReceipts' => $receipts['unclassified'],
+                'receiptsTotal' => $receipts['total'],
                 'totalCustomers' => $totalCustomers,
                 'newCustomers' => $newCustomers,
                 'returningCustomers' => $returningCustomers,
@@ -816,7 +822,7 @@ class MetricsController extends Controller
 
         $response = $this->buildScopedPayload($authUser, $locationId, $timeframe, $dateFrom, $dateTo, $useDateTime, $timezone);
 
-        $recentBookingsQuery = Booking::with(['customer', 'package', 'location', 'room']);
+        $recentBookingsQuery = Booking::with(['customer', 'package', 'location', 'room', 'timeSlots:id,booking_id,room_id,status', 'timeSlots.room:id,name']);
         if ($locationId) {
             $recentBookingsQuery->where('location_id', $locationId);
         }
@@ -851,7 +857,7 @@ class MetricsController extends Controller
                         : $booking->guest_email,
                     'package_name' => $booking->packageLabel(),
                     'location_name' => $booking->location->name ?? null,
-                    'room_name' => $booking->room->name ?? null,
+                    'room_name' => $booking->spaceNames() ?: null,
                     'booking_date' => $booking->booking_date,
                     'booking_time' => $booking->booking_time,
                     'participants' => $booking->participants,
@@ -982,6 +988,8 @@ class MetricsController extends Controller
 
         $locationStats = [];
         $locations = Location::where('is_active', true)->get();
+        [$receiptsFrom, $receiptsTo] = \App\Services\DailyReceiptsService::window($dateFrom, $dateTo);
+        $locationReceipts = app(\App\Services\DailyReceiptsService::class)->totalsByLocation($locations->pluck('id')->all(), $receiptsFrom, $receiptsTo);
 
         Log::info('Processing location stats', ['locations_count' => $locations->count()]);
 
@@ -1014,6 +1022,9 @@ class MetricsController extends Controller
                 'bookingRevenue' => round($bookingRevenue, 2),
                 'purchaseRevenue' => round($purchaseRevenue, 2),
                 'eventPurchaseRevenue' => round($eventRevenue, 2),
+                'onlineRevenue' => $locationReceipts[$location->id]['online'] ?? 0,
+                'inStoreCollected' => $locationReceipts[$location->id]['in_store'] ?? 0,
+                'unclassifiedReceipts' => $locationReceipts[$location->id]['unclassified'] ?? 0,
                 'waivers' => (int) ($waiverRows->get($location->id)->waivers_total ?? 0),
                 'waiversSigned' => (int) ($waiverRows->get($location->id)->waivers_signed ?? 0),
             ];

@@ -1263,9 +1263,16 @@ class PackageController extends Controller
     private function deleteReplacedImages(mixed $oldImages, ?array $newImages, int $packageId): void
     {
         $old = is_array($oldImages) ? $oldImages : (is_string($oldImages) ? [$oldImages] : []);
+        $keptFiles = array_values(array_filter(array_map(fn ($image) => Package::imageStoragePath($image), $newImages ?? [])));
 
         foreach ($old as $image) {
             if (!is_string($image) || DataUriImage::isDataUri($image) || in_array($image, $newImages ?? [], true)) {
+                continue;
+            }
+
+            $file = Package::imageStoragePath($image);
+
+            if ($file !== null && in_array($file, $keptFiles, true)) {
                 continue;
             }
 
@@ -1279,12 +1286,7 @@ class PackageController extends Controller
             return;
         }
 
-        $stillInUse = Package::withTrashed()
-            ->where('id', '!=', $packageId)
-            ->whereJsonContains('image', $image)
-            ->exists();
-
-        if ($stillInUse) {
+        if (Package::imageIsUsedByAnotherPackage($image, $packageId)) {
             return;
         }
 

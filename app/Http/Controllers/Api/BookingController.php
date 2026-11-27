@@ -68,6 +68,8 @@ class BookingController extends Controller
 
     private const SYNC_UNSUPPORTED_FILTERS = ['status', 'search', 'booking_date', 'date_from', 'date_to', 'customer_id', 'reference_number'];
 
+    private const SPACE_RELATIONS = ['timeSlots:id,booking_id,room_id,status', 'timeSlots.room:id,name'];
+
     private static function redactedChange($oldValue, $newValue): array
     {
         $describe = static function ($value): string {
@@ -293,6 +295,8 @@ class BookingController extends Controller
                     'addOns:id,name',       // BelongsToMany - pivot data loaded automatically
                     'customFieldResponses:id,respondable_type,respondable_id,label,value',
                     'payments:id,payable_id,payable_type,status,method,card_last_four,card_type,amount,currency,paid_at,created_at',
+                    'timeSlots:id,booking_id,room_id,status',
+                    'timeSlots.room:id,name',
                 ]);
 
             if ($refusal = $this->limitListingToRequester($query, $request)) {
@@ -589,6 +593,8 @@ class BookingController extends Controller
             ],
             'location_id' => 'required|exists:locations,id',
             'room_id' => 'nullable|exists:rooms,id',
+            'room_ids' => 'nullable|array|max:20',
+            'room_ids.*' => 'integer|distinct|exists:rooms,id',
             'created_by' => 'nullable|exists:users,id',
             'gift_card_id' => 'nullable|exists:gift_cards,id',
             'promo_id' => 'nullable|exists:promos,id',
@@ -663,6 +669,25 @@ class BookingController extends Controller
         $customPackageInput = $validated['custom_package'] ?? null;
         unset($validated['custom_package']);
 
+        $roomIds = array_values(array_unique(array_map('intval', array_filter((array) ($validated['room_ids'] ?? [])))));
+        unset($validated['room_ids']);
+
+        if (count($roomIds) > 1 && ! $customRequested) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only a custom package booking can use more than one space.',
+                'errors' => ['room_ids' => ['Only a custom package booking can use more than one space.']],
+            ], 422);
+        }
+
+        if ($roomIds === [] && ! empty($validated['room_id'])) {
+            $roomIds = [(int) $validated['room_id']];
+        }
+
+        if ($roomIds !== []) {
+            $validated['room_id'] = $roomIds[0];
+        }
+
         $customFieldAnswers = $validated['custom_fields'] ?? null;
         unset($validated['custom_fields']);
 
@@ -695,6 +720,7 @@ class BookingController extends Controller
             $customAssessment = $customPricer->assess($customTerms, [
                 'location_id' => (int) $validated['location_id'],
                 'room_id' => $validated['room_id'] ?? null,
+                'room_ids' => $roomIds,
                 'participants' => (int) $validated['participants'],
                 'add_on_lines' => $addOnLines,
                 'client_total' => $validated['total_amount'],
@@ -828,6 +854,12 @@ class BookingController extends Controller
             $bookingEndTime,
             $addedAttractionIds
         );
+        foreach (array_slice($roomIds, 1) as $extraRoomId) {
+            $blockedPeriods = $blockedPeriods
+                ->merge($blockGuard->forPackageBooking($bookingLocationId, $blockedPackageId, $extraRoomId, $bookingDate, $bookingTime, $bookingEndTime, $addedAttractionIds))
+                ->unique('id')
+                ->values();
+        }
         $closedMessage = $blockGuard->addedAttractionsMessage($blockedPeriods, $blockedPackageId, $blockedRoomId, $addedAttractionIds)
             ?? 'The selected date or time is closed. Please choose another slot.';
         if ($refusal = $blockGuard->refusal($request, $blockedPeriods, $closedMessage)) {
@@ -922,7 +954,7 @@ class BookingController extends Controller
             }
         }
 
-        if ($earlierAttempt && !$requestCarriesCode && $this->isUnchangedRetryOf($earlierAttempt, $validated, $addOnLines, $attractionLines)) {
+        if ($earlierAttempt && !$requestCarriesCode && $this->isUnchangedRetryOf($earlierAttempt, $validated, $addOnLines, $attractionLines, $roomIds)) {
             $earlierAttempt->load($isStaff
                 ? ['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']
                 : ['package', 'location', 'room', 'attractions', 'addOns']);
@@ -933,6 +965,9 @@ class BookingController extends Controller
                 if (! $checkoutKey && ! ($replayAsker instanceof \App\Models\Customer && (int) $earlierAttempt->customer_id === (int) $replayAsker->id)) {
                     $earlierAttempt->makeHidden(['reference_number']);
                 }
+            }
+            if ($isStaff) {
+                $earlierAttempt->loadMissing(self::SPACE_RELATIONS);
             }
             Log::info('Duplicate booking prevented (existing pending found)', [
                 'existing_booking_id' => $earlierAttempt->id,
@@ -984,23 +1019,18 @@ class BookingController extends Controller
         $overlapLetThrough = false;
 
         if (!empty($validated['room_id'])) {
-            $slotConflicts = [];
-
-            if ($this->checkTimeSlotConflict((int) $validated['room_id'], $bookingDate, $bookingTime, $validated['duration'], $validated['duration_unit'])) {
-                $slotConflicts[] = 'another booking already occupies this space';
-            }
-
-            if ($this->checkBreakTimeConflict((int) $validated['room_id'], $bookingDate, $bookingTime, $validated['duration'], $validated['duration_unit'])) {
-                $slotConflicts[] = 'this time overlaps a scheduled break';
-            }
+            $slotConflicts = $this->roomConflicts($roomIds, $bookingDate, $bookingTime, $validated['duration'], $validated['duration_unit']);
 
             // Spaces in one area group start apart from each other so staff can run them. This is a
             // comfort rule, not a double booking: at a ten-table venue one party at 3pm would block
             // every table for a quarter of an hour, which would make walk-ins nearly impossible. So
             // it is recorded and shown, never refused — the schedules warn before staff even click.
-            if ($this->checkAreaGroupStaggerConflict((int) $validated['room_id'], $bookingDate, $bookingTime)) {
+            $staggeredRooms = array_values(array_filter($roomIds, fn (int $staggerRoomId) => $this->checkAreaGroupStaggerConflict($staggerRoomId, $bookingDate, $bookingTime)));
+
+            if ($staggeredRooms !== []) {
                 Log::info('Booking starts close to another space in the same area', [
                     'room_id' => $validated['room_id'],
+                    'room_ids' => $staggeredRooms,
                     'location_id' => $bookingLocationId,
                     'booking_date' => $bookingDate,
                     'booking_time' => $bookingTime,
@@ -1018,6 +1048,15 @@ class BookingController extends Controller
                     $validated['overlap_override_token'] ?? null,
                     $bookingLocationId
                 );
+
+                if (! $overlapApprovedBy && count($roomIds) > 1) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'These spaces are not free then: ' . implode('; ', $slotConflicts) . '. Nothing was saved.',
+                        'requires_override' => \App\Http\Controllers\Api\OverridePinController::locationHasApprover($bookingLocationId),
+                        'conflicts' => $slotConflicts,
+                    ], 409);
+                }
 
                 $enforcing = (string) config('booking_rules.slot_conflict', 'log') === 'enforce';
                 // never refuse a booking nobody at this venue can approve
@@ -1167,7 +1206,21 @@ class BookingController extends Controller
 
         try {
             $serverExpectedTotal = $serverExpectedTotal ?? null;
-            $booking = DB::transaction(function () use (&$validated, $discountItems, $request, $discounts, $customFieldAnswers, $rules, $isStaff, $addOnLines, $attractionLines, $serverExpectedTotal, $overlapOverride, $overlapLetThrough) {
+            $booking = DB::transaction(function () use (&$validated, $discountItems, $request, $discounts, $customFieldAnswers, $rules, $isStaff, $addOnLines, $attractionLines, $serverExpectedTotal, $overlapOverride, $overlapLetThrough, $roomIds, $bookingDate, $bookingTime) {
+            if ($roomIds !== []) {
+                \App\Models\Room::query()->whereIn('id', $roomIds)->orderBy('id')->lockForUpdate()->pluck('id');
+
+                if (! $overlapLetThrough && Carbon::parse($bookingDate)->gte(Carbon::today())) {
+                    $lateConflicts = $this->roomConflicts($roomIds, $bookingDate, $bookingTime, $validated['duration'], $validated['duration_unit']);
+
+                    if ($lateConflicts !== []) {
+                        throw new \App\Exceptions\SlotTakenException(count($roomIds) > 1
+                            ? 'These spaces are not free then: ' . implode('; ', $lateConflicts) . '. Nothing was saved.'
+                            : null);
+                    }
+                }
+            }
+
             $capPackage = null;
 
             if (!empty($validated['package_id'])) {
@@ -1314,11 +1367,11 @@ class BookingController extends Controller
                 );
             }
 
-            if (!empty($validated['room_id'])) {
+            foreach ($roomIds as $slotRoomId) {
                 (new PackageTimeSlot([
                     'package_id' => $validated['package_id'] ?? null,
                     'booking_id' => $created->id,
-                    'room_id' => $validated['room_id'],
+                    'room_id' => $slotRoomId,
                     'customer_id' => $validated['customer_id'] ?? null,
                     'user_id' => $validated['created_by'] ?? null,
                     'booked_date' => $validated['booking_date'],
@@ -1378,7 +1431,7 @@ class BookingController extends Controller
             ]);
         }
 
-        $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
+        $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns', 'timeSlots:id,booking_id,room_id,status', 'timeSlots.room:id,name']);
 
         $this->recordMembershipRedemptions($booking, $validated);
 
@@ -1474,7 +1527,9 @@ class BookingController extends Controller
                 'status' => $booking->status,
                 'addons_count' => $booking->addOns->count(),
                 'attractions_count' => $booking->attractions->count(),
-            ], $customMetadata ? ['custom_package' => $customMetadata['custom_package']] : [])
+            ], $customMetadata ? ['custom_package' => $customMetadata['custom_package']] : [], count($booking->room_ids) > 1 ? [
+                'rooms' => $booking->timeSlots->sortBy('id')->map(fn ($slot) => ['id' => (int) $slot->room_id, 'name' => $slot->room?->name])->unique('id')->values()->all(),
+            ] : [])
           );
         }
 
@@ -1631,6 +1686,8 @@ class BookingController extends Controller
                 'package:id,name,price,category,display_label' . (\App\Models\Package::supportsEscapeRoomFlag() ? ',is_escape_room' : ''),
                 'location:id,name',
                 'room:id,name',
+                'timeSlots:id,booking_id,room_id,status',
+                'timeSlots.room:id,name',
                 'creator:id,first_name,last_name,email',
                 'checkedInByUser:id,first_name,last_name',
                 'attractions:id,name,price',  // BelongsToMany - pivot data loaded automatically
@@ -1867,8 +1924,15 @@ class BookingController extends Controller
             || $this->bookingWasCharged($booking);
     }
 
-    private function isUnchangedRetryOf(Booking $earlier, array $validated, array $addOnLines = [], array $attractionLines = []): bool
+    private function isUnchangedRetryOf(Booking $earlier, array $validated, array $addOnLines = [], array $attractionLines = [], array $roomIds = []): bool
     {
+        $heldRooms = PackageTimeSlot::where('booking_id', $earlier->id)->pluck('room_id')->filter()->map(fn ($id) => (int) $id)->unique()->sort()->values()->all();
+        $askedRooms = collect($roomIds)->map(fn ($id) => (int) $id)->unique()->sort()->values()->all();
+
+        if ($heldRooms !== [] && $askedRooms !== [] && $heldRooms !== $askedRooms) {
+            return false;
+        }
+
         $sameLines = fn ($stored, array $lines) => $stored
             ->map(fn ($item) => $item->id . 'x' . (int) $item->pivot->quantity)
             ->sort()->values()->all()
@@ -2143,9 +2207,17 @@ class BookingController extends Controller
         ]);
     }
 
+    public function customPackageCategories(): JsonResponse
+    {
+        return response()->json([
+            'success' => true,
+            'data' => CustomPackagePricer::CUSTOM_CATEGORIES,
+        ]);
+    }
+
     public function show(Request $request, Booking $booking): JsonResponse
     {
-        $booking->load(['customer', 'package', 'location', 'room', 'creator', 'giftCard', 'promo', 'attractions', 'addOns', 'payments:id,payable_id,payable_type,status,method,card_last_four,card_type,amount,currency,notes,paid_at,created_at', 'customFieldResponses']);
+        $booking->load(['customer', 'package', 'location', 'room', 'creator', 'giftCard', 'promo', 'attractions', 'addOns', 'payments:id,payable_id,payable_type,status,method,card_last_four,card_type,amount,currency,notes,paid_at,created_at', 'customFieldResponses', 'timeSlots:id,booking_id,room_id,status', 'timeSlots.room:id,name']);
 
         if (!$this->authorizeRecordScope($booking)) {
             return response()->json([
@@ -2283,6 +2355,8 @@ class BookingController extends Controller
             ],
             'location_id' => 'sometimes|exists:locations,id',
             'room_id' => 'sometimes|nullable|exists:rooms,id',
+            'room_ids' => 'sometimes|nullable|array|max:20',
+            'room_ids.*' => 'integer|distinct|exists:rooms,id',
             'gift_card_id' => 'sometimes|nullable|exists:gift_cards,id',
             'promo_id' => 'sometimes|nullable|exists:promos,id',
             'booking_date' => 'sometimes|date',
@@ -2338,6 +2412,42 @@ class BookingController extends Controller
 
         $customPackageInput = $validated['custom_package'] ?? null;
         unset($validated['custom_package']);
+
+        $currentRoomIds = $this->assignedRoomIds($booking);
+        $requestedRoomIds = array_key_exists('room_ids', $validated)
+            ? array_values(array_unique(array_map('intval', array_filter((array) ($validated['room_ids'] ?? [])))))
+            : null;
+        unset($validated['room_ids']);
+
+        if ($requestedRoomIds !== null && count($requestedRoomIds) > 1 && ! $booking->isCustomPackage()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only a custom package booking can use more than one space.',
+                'errors' => ['room_ids' => ['Only a custom package booking can use more than one space.']],
+            ], 422);
+        }
+
+        if ($requestedRoomIds === null && array_key_exists('room_id', $validated) && count($currentRoomIds) > 1
+            && ! empty($validated['room_id']) && (int) $validated['room_id'] !== (int) $currentRoomIds[0]) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This booking uses several spaces. Change its spaces in Edit Booking.',
+                'errors' => ['room_id' => ['This booking uses several spaces. Change its spaces in Edit Booking.']],
+            ], 422);
+        }
+
+        if ($requestedRoomIds === null && array_key_exists('room_id', $validated) && count($currentRoomIds) > 1) {
+            $requestedRoomIds = empty($validated['room_id'])
+                ? []
+                : array_values(array_unique(array_merge([(int) $validated['room_id']], array_slice($currentRoomIds, 1))));
+        }
+
+        if ($requestedRoomIds !== null) {
+            $validated['room_id'] = $requestedRoomIds[0] ?? null;
+        }
+
+        $targetRoomIds = $requestedRoomIds
+            ?? (array_key_exists('room_id', $validated) ? (empty($validated['room_id']) ? [] : [(int) $validated['room_id']]) : $currentRoomIds);
 
         if (array_key_exists('location_id', $validated)
             && (int) $validated['location_id'] !== (int) $booking->location_id) {
@@ -2432,13 +2542,15 @@ class BookingController extends Controller
             $customPricingInputs = $customTermsReplaced
                 || (isset($validated['participants']) && (int) $validated['participants'] !== (int) $booking->participants)
                 || array_key_exists('additional_addons', $validated);
-            $customPlaceInputs = array_intersect_key($validated, array_flip(['room_id', 'location_id'])) !== [];
+            $customPlaceInputs = array_intersect_key($validated, array_flip(['room_id', 'location_id'])) !== [] || $requestedRoomIds !== null;
             $customAssessment = null;
 
             if ($customPricingInputs || $customPlaceInputs) {
                 $customAssessment = $customPricer->assess($customTerms, [
                     'location_id' => (int) ($validated['location_id'] ?? $booking->location_id),
                     'room_id' => array_key_exists('room_id', $validated) ? $validated['room_id'] : $booking->room_id,
+                    'room_ids' => $targetRoomIds,
+                    'kept_room_ids' => $currentRoomIds,
                     'participants' => (int) ($validated['participants'] ?? $booking->participants),
                     'add_on_lines' => $addOnLines,
                     'stored_lines' => $customPricer->storedLines($booking),
@@ -2539,11 +2651,14 @@ class BookingController extends Controller
 
         // only when the booking would occupy different minutes, or a different space. Editing a
         // note or a phone number must never be able to fail on a clash.
-        $slotMoved = (int) $targetRoomId !== (int) $booking->room_id
-            || $targetDate !== $currentDate
+        $sortedRooms = fn (array $ids) => collect($ids)->map(fn ($id) => (int) $id)->sort()->values()->all();
+        $timeMoved = $targetDate !== $currentDate
             || $targetTime !== $currentTime
             || (float) $targetDuration !== (float) $booking->duration
             || (string) $targetDurationUnit !== (string) $booking->duration_unit;
+        $slotMoved = (int) $targetRoomId !== (int) $booking->room_id
+            || $sortedRooms($targetRoomIds) !== $sortedRooms($currentRoomIds)
+            || $timeMoved;
 
         $leavesTheSpace = fn (?string $status) => in_array((string) $status, ['cancelled', 'completed'], true);
         $reoccupying = $leavesTheSpace($booking->status) && ! $leavesTheSpace($targetStatus);
@@ -2585,6 +2700,13 @@ class BookingController extends Controller
                 $targetAttractionIds
             );
 
+            foreach (array_slice($targetRoomIds, 1) as $extraRoomId) {
+                $blockedPeriods = $blockedPeriods
+                    ->merge($blockGuard->forPackageBooking($targetLocationId, $blockedPackageId, $extraRoomId, $targetDate, $targetTime, $targetEndTime, $targetAttractionIds))
+                    ->unique('id')
+                    ->values();
+            }
+
             $packageLocationId = $blockedPackageId
                 ? (int) \App\Models\Package::query()->whereKey($blockedPackageId)->value('location_id')
                 : null;
@@ -2608,27 +2730,27 @@ class BookingController extends Controller
         $overlapOverride = [];
         $overlapLetThrough = false;
 
+        $placedRoomIds = $targetRoomIds !== [] ? $targetRoomIds : (! empty($targetRoomId) ? [(int) $targetRoomId] : []);
+        $roomsToCheck = $timeMoved || $reoccupying
+            ? $placedRoomIds
+            : array_values(array_diff($placedRoomIds, $currentRoomIds));
+
         if (($slotMoved || $reoccupying) && $targetRoomId && $targetStatus !== 'cancelled') {
-            $slotConflicts = [];
-            $ownSlotId = PackageTimeSlot::where('booking_id', $booking->id)->value('id');
-
-            if ($this->checkTimeSlotConflict((int) $targetRoomId, $targetDate, $targetTime, $targetDuration, $targetDurationUnit, $ownSlotId)) {
-                $slotConflicts[] = 'another booking already occupies this space';
-            }
-
-            if ($this->checkBreakTimeConflict((int) $targetRoomId, $targetDate, $targetTime, $targetDuration, $targetDurationUnit)) {
-                $slotConflicts[] = 'this time overlaps a scheduled break';
-            }
+            $ownSlotIds = PackageTimeSlot::where('booking_id', $booking->id)->pluck('id')->map(fn ($id) => (int) $id)->all();
+            $ownSlotId = $ownSlotIds[0] ?? null;
+            $slotConflicts = $roomsToCheck === [] ? [] : $this->roomConflicts($roomsToCheck, $targetDate, $targetTime, $targetDuration, $targetDurationUnit, $ownSlotIds, count($placedRoomIds) > 1);
 
             // as on the create path, the area rule is a comfort rule: recorded, never refused
-            if ($this->checkAreaGroupStaggerConflict((int) $targetRoomId, $targetDate, $targetTime, $ownSlotId)) {
-                Log::info('Booking moved close to another space in the same area', [
-                    'booking_id' => $booking->id,
-                    'room_id' => $targetRoomId,
-                    'location_id' => $targetLocationId,
-                    'booking_date' => $targetDate,
-                    'booking_time' => $targetTime,
-                ]);
+            foreach ($roomsToCheck as $spacingRoomId) {
+                if ($this->staggerClashingSlots((int) $spacingRoomId, $targetDate, $targetTime, $ownSlotId)->whereNotIn('id', $ownSlotIds)->isNotEmpty()) {
+                    Log::info('Booking moved close to another space in the same area', [
+                        'booking_id' => $booking->id,
+                        'room_id' => $spacingRoomId,
+                        'location_id' => $targetLocationId,
+                        'booking_date' => $targetDate,
+                        'booking_time' => $targetTime,
+                    ]);
+                }
             }
 
             $recordingThePast = Carbon::parse($targetDate)->lt(Carbon::today());
@@ -2639,6 +2761,15 @@ class BookingController extends Controller
                     $validated['overlap_override_token'] ?? null,
                     $targetLocationId
                 );
+
+                if (! $overlapApprovedBy && count($targetRoomIds) > 1) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'These spaces are not free then: ' . implode('; ', $slotConflicts) . '. Nothing was changed.',
+                        'requires_override' => \App\Http\Controllers\Api\OverridePinController::locationHasApprover($targetLocationId),
+                        'conflicts' => $slotConflicts,
+                    ], 409);
+                }
 
                 $enforcing = (string) config('booking_rules.slot_conflict', 'log') === 'enforce';
                 $approvable = $enforcing && \App\Http\Controllers\Api\OverridePinController::locationHasApprover($targetLocationId);
@@ -2808,9 +2939,29 @@ class BookingController extends Controller
         }
 
         $roomBefore = $booking->room_id;
+        $raceRoomIds = (($slotMoved || $reoccupying) && $targetStatus !== 'cancelled')
+            ? ($targetRoomIds !== [] ? $targetRoomIds : (! empty($targetRoomId) ? [(int) $targetRoomId] : []))
+            : [];
+        $raceRecheck = $raceRoomIds !== [] && $roomsToCheck !== [] && ! $overlapLetThrough && Carbon::parse($targetDate)->gte(Carbon::today());
+        $raceOwnSlotIds = $raceRecheck ? PackageTimeSlot::where('booking_id', $booking->id)->pluck('id')->map(fn ($id) => (int) $id)->all() : [];
+        $roomSetChanged = $sortedRooms($targetRoomIds) !== $sortedRooms($currentRoomIds);
 
         try {
-            DB::transaction(function () use (&$validated, $booking, $slotFieldsTouched, $targetPackageId, $targetStatus, $rules, $isStaff, $addOnLines, $attractionLines, $overlapLetThrough, $roomBefore, $slotMoved, $slotStatusChanges, $slotStatusForTarget) {
+            DB::transaction(function () use (&$validated, $booking, $slotFieldsTouched, $targetPackageId, $targetStatus, $rules, $isStaff, $addOnLines, $attractionLines, $overlapLetThrough, $roomBefore, $slotMoved, $slotStatusChanges, $slotStatusForTarget, $targetRoomIds, $currentRoomIds, $raceRoomIds, $raceRecheck, $raceOwnSlotIds, $roomSetChanged, $roomsToCheck, $targetDate, $targetTime, $targetDuration, $targetDurationUnit) {
+                if ($raceRoomIds !== []) {
+                    \App\Models\Room::query()->whereIn('id', $raceRoomIds)->orderBy('id')->lockForUpdate()->pluck('id');
+
+                    if ($raceRecheck) {
+                        $lateConflicts = $this->roomConflicts($roomsToCheck, $targetDate, $targetTime, $targetDuration, $targetDurationUnit, $raceOwnSlotIds, count($raceRoomIds) > 1);
+
+                        if ($lateConflicts !== []) {
+                            throw new \App\Exceptions\SlotTakenException(count($raceRoomIds) > 1
+                                ? 'These spaces are not free then: ' . implode('; ', $lateConflicts) . '. Nothing was changed.'
+                                : null);
+                        }
+                    }
+                }
+
                 if ($slotFieldsTouched && $targetPackageId && $targetStatus !== 'cancelled') {
                     $capPackage = \App\Models\Package::where('id', $targetPackageId)->lockForUpdate()->first();
 
@@ -2869,6 +3020,18 @@ class BookingController extends Controller
 
                 if (array_key_exists('room_id', $validated) && empty($validated['room_id'])) {
                     PackageTimeSlot::where('booking_id', $booking->id)->delete();
+                } elseif ((count($targetRoomIds) > 1 || count($currentRoomIds) > 1) && ($slotMoved || isset($validated['notes']) || ! empty($validated['package_id']))) {
+                    $this->syncRoomSlots(
+                        $booking,
+                        $targetRoomIds,
+                        Carbon::parse($validated['booking_date'] ?? $booking->booking_date)->toDateString(),
+                        substr((string) ($validated['booking_time'] ?? (Carbon::parse($booking->booking_time)->format('H:i'))), 0, 5),
+                        $validated['duration'] ?? $booking->duration,
+                        $validated['duration_unit'] ?? $booking->duration_unit,
+                        $overlapLetThrough || ! $slotMoved,
+                        $slotStatusForTarget,
+                        $validated['notes'] ?? null
+                    );
                 } elseif (isset($validated['room_id']) || isset($validated['booking_date']) || isset($validated['booking_time']) || isset($validated['duration']) || isset($validated['duration_unit']) || ! empty($validated['package_id'])) {
                     $timeSlot = PackageTimeSlot::where('booking_id', $booking->id)->first();
 
@@ -2904,6 +3067,10 @@ class BookingController extends Controller
                 if ($slotStatusChanges) {
                     PackageTimeSlot::where('booking_id', $booking->id)->update(['status' => $slotStatusForTarget]);
                 }
+
+                if ($roomSetChanged) {
+                    $booking->touch();
+                }
             });
         } catch (\App\Exceptions\SlotTakenException $e) {
             return response()->json([
@@ -2921,7 +3088,7 @@ class BookingController extends Controller
             return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
         }
 
-        $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
+        $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns', 'timeSlots:id,booking_id,room_id,status', 'timeSlots.room:id,name']);
 
         $blockGuard->recordBookedInside($request, $blockedPeriods, 'booking', (int) $booking->id, [
             'label' => 'Booking',
@@ -2982,6 +3149,12 @@ class BookingController extends Controller
                         'to' => $newAttractions,
                     ];
                 }
+            }
+
+            if ($roomSetChanged && (count($currentRoomIds) > 1 || count($targetRoomIds) > 1)) {
+                $spaceNames = \App\Models\Room::query()->whereIn('id', array_merge($currentRoomIds, $targetRoomIds))->pluck('name', 'id');
+                $namesOf = fn (array $ids) => array_map(fn ($id) => $spaceNames[$id] ?? "Space #{$id}", array_values($ids));
+                $changes['rooms'] = ['from' => $namesOf($currentRoomIds), 'to' => $namesOf($targetRoomIds)];
             }
 
             $customerName = $booking->customer ? "{$booking->customer->first_name} {$booking->customer->last_name}" : $booking->guest_name;
@@ -3060,6 +3233,85 @@ class BookingController extends Controller
         ], fn ($value) => $value !== null));
     }
 
+    private function roomConflicts(array $roomIds, string $date, string $time, $duration, $durationUnit, array $ownSlotIds = [], ?bool $named = null): array
+    {
+        $conflicts = [];
+        $named ??= count($roomIds) > 1;
+        $names = $named ? \App\Models\Room::query()->whereIn('id', $roomIds)->pluck('name', 'id') : collect();
+        $this->forgetSlotLookups();
+
+        foreach ($roomIds as $roomId) {
+            $reasons = [];
+
+            if ($this->clashingSlots((int) $roomId, $date, $time, $duration, $durationUnit)->whereNotIn('id', $ownSlotIds)->isNotEmpty()) {
+                $reasons[] = 'another booking already occupies this space';
+            }
+
+            if ($this->checkBreakTimeConflict((int) $roomId, $date, $time, $duration, $durationUnit)) {
+                $reasons[] = 'this time overlaps a scheduled break';
+            }
+
+            foreach ($reasons as $reason) {
+                $conflicts[] = $named ? ($names[$roomId] ?? 'A space') . ': ' . $reason : $reason;
+            }
+        }
+
+        return $conflicts;
+    }
+
+    private function assignedRoomIds(Booking $booking): array
+    {
+        $primary = $booking->room_id ? (int) $booking->room_id : null;
+        $assigned = PackageTimeSlot::where('booking_id', $booking->id)->orderBy('id')->pluck('room_id')
+            ->filter()->map(fn ($id) => (int) $id)->unique()->values()->all();
+
+        if ($assigned === []) {
+            return $primary !== null ? [$primary] : [];
+        }
+
+        return $primary !== null && in_array($primary, $assigned, true)
+            ? array_values(array_unique(array_merge([$primary], $assigned)))
+            : $assigned;
+    }
+
+    private function syncRoomSlots(Booking $booking, array $roomIds, string $date, string $time, $duration, $durationUnit, bool $allowOverlap, string $status, ?string $notes): void
+    {
+        $existing = PackageTimeSlot::where('booking_id', $booking->id)->orderBy('id')->get();
+        $byRoom = $existing->groupBy(fn (PackageTimeSlot $slot) => (int) $slot->room_id);
+        $placement = [
+            'package_id' => $booking->package_id,
+            'booked_date' => $date,
+            'time_slot_start' => $time,
+            'duration' => $duration,
+            'duration_unit' => $durationUnit,
+        ];
+
+        foreach ($existing as $slot) {
+            if (! in_array((int) $slot->room_id, $roomIds, true) || ($byRoom[(int) $slot->room_id]->first()->id !== $slot->id)) {
+                $slot->delete();
+            }
+        }
+
+        foreach ($roomIds as $roomId) {
+            $slot = $byRoom->get($roomId)?->first();
+
+            if ($slot) {
+                $slot->allowOverlap($allowOverlap)->update($placement + ($notes !== null ? ['notes' => $notes] : []));
+
+                continue;
+            }
+
+            (new PackageTimeSlot())->allowOverlap($allowOverlap)->fill($placement + [
+                'booking_id' => $booking->id,
+                'room_id' => $roomId,
+                'customer_id' => $booking->customer_id,
+                'user_id' => $booking->created_by,
+                'status' => $status,
+                'notes' => $notes,
+            ])->save();
+        }
+    }
+
     private function releaseSpaceHeldBy(int $bookingId): void
     {
         PackageTimeSlot::where('booking_id', $bookingId)
@@ -3085,6 +3337,7 @@ class BookingController extends Controller
         $capacity = app(\App\Services\SlotCapacityGuard::class);
         $ownSlotIds = $released->pluck('id');
         $clashes = [];
+        $areaNeighbours = collect();
 
         foreach ($released as $slot) {
             $date = Carbon::parse($slot->booked_date)->toDateString();
@@ -3099,16 +3352,20 @@ class BookingController extends Controller
                     $clashes[] = ($slot->room?->name ?? 'This space') . ' is also booked then by ' . $this->referencesHolding($sameSpace)->implode(', ');
                 }
 
-                if ($sameArea->isNotEmpty()) {
-                    $references = $this->referencesHolding($sameArea);
-                    $clashes[] = $references->implode(', ') . ($references->count() === 1 ? ' starts' : ' start') . ' too close to it in the same area';
-                }
+                $areaNeighbours = $areaNeighbours->merge($sameArea);
             }
 
             $slot->update(['status' => 'booked']);
         }
 
         $this->forgetSlotLookups();
+
+        if ($areaNeighbours->isNotEmpty()) {
+            $references = $this->referencesHolding($areaNeighbours->unique()->values());
+            $clashes[] = $references->implode(', ') . ($references->count() === 1 ? ' starts' : ' start') . ' too close to it in the same area';
+        }
+
+        $clashes = array_values(array_unique($clashes));
 
         if ($clashes === []) {
             return null;
@@ -3285,6 +3542,8 @@ class BookingController extends Controller
             reason: $changeReason
         );
 
+        $booking->loadMissing(self::SPACE_RELATIONS);
+
         return response()->json([
             'success' => true,
             'message' => 'Booking cancelled successfully',
@@ -3330,7 +3589,7 @@ class BookingController extends Controller
             'status' => 'booked',
         ]);
 
-        $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
+        $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns', ...self::SPACE_RELATIONS]);
 
         $customerName = $booking->customer
             ? ($booking->customer->first_name . ' ' . $booking->customer->last_name)
@@ -3433,6 +3692,8 @@ class BookingController extends Controller
         );
 
         $followUp = $this->followUpAfterStatusChange($booking, $previousStatus);
+
+        $booking->loadMissing(self::SPACE_RELATIONS);
 
         return response()->json(array_filter([
             'success' => true,
@@ -3584,9 +3845,10 @@ class BookingController extends Controller
                 $booking->room_id = $roomId;
                 $booking->save();
 
-                $timeSlot = PackageTimeSlot::where('booking_id', $booking->id)->first();
+                $timeSlot = PackageTimeSlot::where('booking_id', $booking->id)->orderBy('id')->first();
                 if ($roomId) {
                     if ($timeSlot) {
+                        PackageTimeSlot::where('booking_id', $booking->id)->whereKeyNot($timeSlot->id)->delete();
                         $timeSlot->allowOverlap($overlapLetThrough)->update(['room_id' => $roomId]);
                     } else {
                         (new PackageTimeSlot())->allowOverlap($overlapLetThrough)->fill([
@@ -3639,7 +3901,7 @@ class BookingController extends Controller
             $changeReason
         );
 
-        $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
+        $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns', ...self::SPACE_RELATIONS]);
 
         $blockGuard->recordBookedInside($request, $blockedPeriods, 'booking', (int) $booking->id, [
             'label' => 'Booking',
@@ -3841,6 +4103,8 @@ class BookingController extends Controller
 
         $followUp = $this->followUpAfterStatusChange($booking, $previousStatus, $request);
 
+        $booking->loadMissing(self::SPACE_RELATIONS);
+
         return response()->json(array_filter([
             'success' => true,
             'message' => 'Booking status updated successfully',
@@ -3913,6 +4177,8 @@ class BookingController extends Controller
                 reason: $changeReason
             );
 
+        $booking->loadMissing(self::SPACE_RELATIONS);
+
         return response()->json([
             'success' => true,
             'message' => 'Booking payment status updated successfully',
@@ -3932,7 +4198,7 @@ class BookingController extends Controller
             return $denied;
         }
 
-        $bookings = Booking::with(['customer', 'package', 'room'])
+        $bookings = Booking::with(['customer', 'package', 'room', ...self::SPACE_RELATIONS])
             ->byLocation($validated['location_id'])
             ->byDate($validated['date'])
             ->orderBy('booking_time')
@@ -4021,6 +4287,7 @@ class BookingController extends Controller
             'package',
             'room',
             'payments:id,payable_id,payable_type,status,method,card_last_four,card_type,amount,currency,paid_at,created_at',
+            ...self::SPACE_RELATIONS,
         ]);
 
         $this->applyBookingSearch($query, $validated['query']);
@@ -4533,7 +4800,7 @@ class BookingController extends Controller
 
     public function summariesExport(Request $request)
     {
-        $query = Booking::with(['customer', 'package', 'location', 'room', 'attractions', 'addOns', 'payments']);
+        $query = Booking::with(['customer', 'package', 'location', 'room', 'attractions', 'addOns', 'payments', ...self::SPACE_RELATIONS]);
 
         $dateRange = null;
         $location = null;
@@ -4675,7 +4942,7 @@ class BookingController extends Controller
             'view_mode' => $validated['view_mode'] ?? 'individual',
         ]);
 
-        $query = Booking::with(['customer', 'package', 'location', 'location.company', 'room', 'attractions', 'addOns', 'payments']);
+        $query = Booking::with(['customer', 'package', 'location', 'location.company', 'room', 'attractions', 'addOns', 'payments', ...self::SPACE_RELATIONS]);
 
         $reportPackageIds = null;
         $reportWantsCustom = false;
@@ -5024,7 +5291,7 @@ class BookingController extends Controller
             return $this->retakeSpaceAfterRestore($booking, $deletedAt);
         });
         $blockGuard->recordBookedInside(request(), $restoredInside, 'booking', (int) $booking->id, $this->blockLogDetails($booking, ['restored' => true]));
-        $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
+        $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns', ...self::SPACE_RELATIONS]);
         $this->followUpAfterRestore($booking);
 
         try {
@@ -5147,6 +5414,11 @@ class BookingController extends Controller
         }
 
         foreach ($bookings as $booking) {
+            if ($this->giftCardWasReversedFor(\App\Models\Payment::TYPE_BOOKING, (int) $booking->id)) {
+                $blocked[] = ['id' => $booking->id, 'reference_number' => $booking->reference_number, 'message' => "This record's gift card was already refunded when it was cancelled. Restore is blocked - rebook it instead so the card is charged again."];
+                continue;
+            }
+
             if ($booking->status !== 'cancelled') {
                 try {
                     $guard->assertBookingFits($booking, 'booking.bulkRestore');

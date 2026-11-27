@@ -323,7 +323,7 @@
 
                 <div class="info-group">
                     <span class="info-label">Space</span>
-                    <span class="info-value">{{ $booking->room?->name ?? 'Not assigned' }}</span>
+                    <span class="info-value">{{ $booking->spaceNames() ?: 'Not assigned' }}</span>
                 </div>
 
                 <div class="info-group">

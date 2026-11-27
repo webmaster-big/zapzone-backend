@@ -156,7 +156,7 @@ class CustomPackageBookingTest extends TestCase
     {
         return array_merge([
             'name' => 'Team Outing',
-            'category' => 'Corporate Event',
+            'category' => 'Custom: Work',
             'duration_minutes' => 90,
             'min_guests' => 8,
             'max_guests' => 16,
@@ -220,7 +220,7 @@ class CustomPackageBookingTest extends TestCase
         $this->assertTrue($booking->is_custom_package);
         $this->assertNull($booking->package_id);
         $this->assertSame('Team Outing', $booking->custom_package_name);
-        $this->assertSame('Corporate Event', $booking->custom_package_category);
+        $this->assertSame('Custom: Work', $booking->custom_package_category);
         $this->assertSame('275.20', $booking->total_amount);
         $this->assertSame('0.00', $booking->discount_amount);
         $this->assertNull($booking->applied_discounts);
@@ -277,7 +277,7 @@ class CustomPackageBookingTest extends TestCase
 
         $response->assertJsonPath('data.is_custom_package', true)
             ->assertJsonPath('data.custom_package_name', 'Team Outing')
-            ->assertJsonPath('data.custom_package_category', 'Corporate Event')
+            ->assertJsonPath('data.custom_package_category', 'Custom: Work')
             ->assertJsonPath('data.custom_package_terms.max_guests', 16)
             ->assertJsonPath('data.applied_fees.0.fee_amount', 10.2);
 
@@ -286,7 +286,7 @@ class CustomPackageBookingTest extends TestCase
             $booking->oneTimeAddOns()
         );
         $this->assertSame('Team Outing', $booking->packageLabel());
-        $this->assertSame('Corporate Event', $booking->packageCategoryLabel());
+        $this->assertSame('Custom: Work', $booking->packageCategoryLabel());
         $this->assertSame(['min' => 8, 'max' => 16], $booking->customGuestRange());
         $this->assertSame([
             ['name' => 'Venue Fee', 'type' => 'percent', 'amount' => 4.0],
@@ -295,7 +295,7 @@ class CustomPackageBookingTest extends TestCase
 
         $log = ActivityLog::where('action', 'Booking Created')->where('entity_id', $booking->id)->firstOrFail();
         $this->assertEquals(['id' => null, 'name' => 'Team Outing', 'custom' => true], $log->metadata['package']);
-        $this->assertSame('Corporate Event', $log->metadata['custom_package']['category']);
+        $this->assertSame('Custom: Work', $log->metadata['custom_package']['category']);
         $this->assertSame('per_guest', $log->metadata['custom_package']['pricing']);
         $this->assertEquals(20, $log->metadata['custom_package']['price']);
         $this->assertSame('Venue Fee', $log->metadata['custom_package']['fees'][0]['name']);
@@ -434,9 +434,9 @@ class CustomPackageBookingTest extends TestCase
 
     public function test_custom_terms_are_trimmed_validated_and_need_a_known_category(): void
     {
-        $booking = $this->createCustom([], ['name' => '  Team Outing  ', 'category' => ' Corporate Event ', 'price' => '20.00']);
+        $booking = $this->createCustom([], ['name' => '  Team Outing  ', 'category' => ' Custom: Work ', 'price' => '20.00']);
         $this->assertSame('Team Outing', $booking->custom_package_name);
-        $this->assertSame('Corporate Event', $booking->custom_package_category);
+        $this->assertSame('Custom: Work', $booking->custom_package_category);
 
         $this->as($this->admin)->postJson('/api/bookings', $this->payload(['booking_time' => '17:00'], ['category' => 'Not A Category']))
             ->assertStatus(422)
@@ -678,7 +678,7 @@ class CustomPackageBookingTest extends TestCase
         $this->as($this->admin)->putJson("/api/bookings/{$booking->id}", [
             'custom_package' => [
                 'name' => 'Board Retreat',
-                'category' => 'Birthday',
+                'category' => 'Custom: Kid',
                 'duration_minutes' => 120,
                 'min_guests' => null,
                 'max_guests' => 20,
@@ -696,7 +696,7 @@ class CustomPackageBookingTest extends TestCase
         $booking->refresh();
         $this->assertTrue($booking->is_custom_package);
         $this->assertSame('Board Retreat', $booking->custom_package_name);
-        $this->assertSame('Birthday', $booking->custom_package_category);
+        $this->assertSame('Custom: Kid', $booking->custom_package_category);
         $this->assertSame('300.00', $booking->package_price_at_booking);
         $this->assertSame('base', $booking->package_pricing_type_at_booking);
         $this->assertEquals(['min_guests' => 1, 'max_guests' => 20, 'fees' => [], 'one_time_add_ons' => []], $booking->custom_package_terms);
@@ -707,7 +707,7 @@ class CustomPackageBookingTest extends TestCase
         $log = ActivityLog::where('action', 'Booking Edited')->where('entity_id', $booking->id)->latest('id')->firstOrFail();
         $changes = $log->metadata['changes'];
         $this->assertEquals(['from' => 'Team Outing', 'to' => 'Board Retreat'], $changes['custom_package_name']);
-        $this->assertEquals(['from' => 'Corporate Event', 'to' => 'Birthday'], $changes['custom_package_category']);
+        $this->assertEquals(['from' => 'Custom: Work', 'to' => 'Custom: Kid'], $changes['custom_package_category']);
         $this->assertEquals(['from' => '20.00', 'to' => '300.00'], $changes['package_price_at_booking']);
         $this->assertEquals(['from' => 'per_person', 'to' => 'base'], $changes['package_pricing_type_at_booking']);
         $this->assertSame(16, $changes['custom_package_terms']['from']['max_guests']);
@@ -715,13 +715,13 @@ class CustomPackageBookingTest extends TestCase
         $this->assertArrayNotHasKey('is_custom_package', $changes);
     }
 
-    public function test_an_unchanged_category_may_have_been_removed_since_but_a_new_one_must_exist(): void
+    public function test_an_unchanged_legacy_category_is_kept_but_a_new_one_must_be_a_custom_category(): void
     {
         $booking = $this->createCustom();
-        Category::where('name', 'Corporate Event')->delete();
+        DB::table('bookings')->where('id', $booking->id)->update(['custom_package_category' => 'Corporate Event']);
 
         $this->as($this->admin)->putJson("/api/bookings/{$booking->id}", [
-            'custom_package' => $this->terms(['name' => 'Team Outing Plus']),
+            'custom_package' => $this->terms(['name' => 'Team Outing Plus', 'category' => 'Corporate Event']),
             'change_reason' => 'Renamed',
         ])->assertOk();
 
@@ -1045,7 +1045,7 @@ class CustomPackageBookingTest extends TestCase
         $this->assertSame($quote['fees'], $quote['persist_fees']);
         $this->assertSame(8.6, $quote['fees'][0]['fee_amount']);
         $this->assertSame('4%', $quote['fees'][0]['fee_label']);
-        $this->assertEquals(['type' => 'package', 'id' => null, 'category' => 'Corporate Event', 'unit_price' => 200, 'quantity' => 1, 'line_total' => 200, 'client_unit' => null], $quote['lines'][0]);
+        $this->assertEquals(['type' => 'package', 'id' => null, 'category' => 'Custom: Work', 'unit_price' => 200, 'quantity' => 1, 'line_total' => 200, 'client_unit' => null], $quote['lines'][0]);
         $this->assertSame(['type', 'id', 'category', 'unit_price', 'quantity', 'line_total', 'client_unit'], array_keys($quote['lines'][0]));
         $this->assertEquals(['type' => 'one_time_addon', 'id' => null, 'category' => null, 'unit_price' => 5, 'quantity' => 3, 'line_total' => 15, 'client_unit' => null], $quote['lines'][1]);
 
@@ -1074,7 +1074,7 @@ class CustomPackageBookingTest extends TestCase
             $this->assertSame($booking->id, (int) $row['id']);
             $this->assertTrue($row['is_custom_package']);
             $this->assertSame('Team Outing', $row['custom_package_name']);
-            $this->assertSame('Corporate Event', $row['custom_package_category']);
+            $this->assertSame('Custom: Work', $row['custom_package_category']);
             $this->assertSame(16, $row['custom_package_terms']['max_guests']);
             $this->assertSame('20.00', $row['package_price_at_booking']);
             $this->assertSame('0.00', $row['price_per_additional_at_booking']);
@@ -1106,12 +1106,12 @@ class CustomPackageBookingTest extends TestCase
         $this->assertNotSame($first->json('data.id'), $changed->json('data.id'));
         $this->assertSame('Team Outing (VIP)', Booking::findOrFail((int) $changed->json('data.id'))->custom_package_name);
 
-        $this->as($this->admin)->postJson('/api/bookings', $this->payload(['checkout_key' => 'cpkg-key-1'], ['name' => 'Team Outing (VIP)', 'category' => 'Birthday']))
+        $this->as($this->admin)->postJson('/api/bookings', $this->payload(['checkout_key' => 'cpkg-key-1'], ['name' => 'Team Outing (VIP)', 'category' => 'Custom: Kid']))
             ->assertCreated();
 
         $this->as($this->admin)->postJson('/api/bookings', $this->payload(['checkout_key' => 'cpkg-key-1', 'total_amount' => 301.20], [
             'name' => 'Team Outing (VIP)',
-            'category' => 'Birthday',
+            'category' => 'Custom: Kid',
             'one_time_add_ons' => [['name' => 'Glow Bracelets', 'quantity' => 8, 'unit_price' => 5]],
         ]))->assertCreated();
 
@@ -1144,7 +1144,7 @@ class CustomPackageBookingTest extends TestCase
             ->assertJsonPath('message', 'Booking already exists')
             ->assertJsonPath('data.id', $first);
 
-        $this->as($this->admin)->postJson('/api/bookings', $this->payload([], ['category' => 'Birthday']))
+        $this->as($this->admin)->postJson('/api/bookings', $this->payload([], ['category' => 'Custom: Kid']))
             ->assertCreated();
 
         $this->assertSame(2, Booking::count());

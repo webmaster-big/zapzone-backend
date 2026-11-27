@@ -430,7 +430,7 @@ class WaiverController extends Controller
             return null;
         }
 
-        $existing = Waiver::where('booking_id', $booking->id)->exceptEscapeRoomSignIns()->first();
+        $existing = Waiver::where('booking_id', $booking->id)->whereNull('bulk_invite_id')->exceptEscapeRoomSignIns()->first();
         if ($existing) {
             return $existing;
         }

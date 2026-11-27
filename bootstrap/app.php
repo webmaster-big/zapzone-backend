@@ -48,6 +48,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $schedule->command('email-campaigns:send')->everyMinute()->withoutOverlapping(10)->runInBackground();
 
         $schedule->command('checkouts:cleanup-abandoned')->everyThirtyMinutes()->withoutOverlapping(10);
+        $schedule->command('payments:classify-channels')->hourly()->withoutOverlapping(10);
 
         // Ask Expo what became of recent pushes and retire the tokens it reports as gone.
         $schedule->command('push:check-receipts')->everyFifteenMinutes()->withoutOverlapping(10);

@@ -243,6 +243,21 @@ class AppServiceProvider extends ServiceProvider
 
     private function registerWaiverAdRateLimiters(): void
     {
+        RateLimiter::for('party-organizer', fn (Request $request) => [
+            Limit::perMinute(30)->by('party:cust:' . ($request->user()?->id ?? $request->ip())),
+            Limit::perMinute(60)->by('party:ip:' . $request->ip()),
+        ]);
+
+        RateLimiter::for('party-organizer-add', fn (Request $request) => [
+            Limit::perMinute(10)->by('party-add:cust:' . ($request->user()?->id ?? $request->ip())),
+            Limit::perMinute(20)->by('party-add:ip:' . $request->ip()),
+        ]);
+
+        RateLimiter::for('party-organizer-send', fn (Request $request) => [
+            Limit::perMinute(10)->by('party-send:cust:' . ($request->user()?->id ?? $request->ip())),
+            Limit::perMinute(20)->by('party-send:ip:' . $request->ip()),
+        ]);
+
         RateLimiter::for('gift-card-claim', fn (Request $request) => [
             Limit::perMinute(6)->by('gc-claim:ip:' . $request->ip()),
             Limit::perHour(20)->by('gc-claim:hr:' . $request->ip()),

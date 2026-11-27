@@ -107,6 +107,14 @@ class LocationChangeRequestController extends Controller
             }
         }
 
+        if ($booking->isCustomPackage() && PackageTimeSlot::where('booking_id', $booking->id)->distinct()->count('room_id') > 1) {
+            return response()->json([
+                'success' => false,
+                'message' => \App\Services\Checkout\CustomPackagePricer::MULTI_ROOM_MOVE_MESSAGE,
+                'errors' => ['room_id' => [\App\Services\Checkout\CustomPackagePricer::MULTI_ROOM_MOVE_MESSAGE]],
+            ], 422);
+        }
+
         $existing = LocationChangeRequest::where('booking_id', $booking->id)
             ->where('status', LocationChangeRequest::STATUS_PENDING)
             ->first();

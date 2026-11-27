@@ -494,7 +494,7 @@ class WaiverService
      */
     public function ensureForBooking(Booking $booking): ?Waiver
     {
-        $existing = Waiver::where('booking_id', $booking->id)->exceptEscapeRoomSignIns()->first();
+        $existing = Waiver::where('booking_id', $booking->id)->whereNull('bulk_invite_id')->exceptEscapeRoomSignIns()->first();
         if ($existing) {
             return $existing;
         }

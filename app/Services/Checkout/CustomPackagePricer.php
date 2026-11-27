@@ -4,7 +4,6 @@ namespace App\Services\Checkout;
 
 use App\Models\AddOn;
 use App\Models\Booking;
-use App\Models\Category;
 use App\Models\Room;
 use App\Services\AddOnRuleService;
 use Illuminate\Support\Facades\Validator;
@@ -40,6 +39,14 @@ class CustomPackagePricer
     public const TOTAL_TOO_LARGE_MESSAGE = 'The total for this custom package is too large. Please check the price and quantities.';
 
     public const CATEGORY_MESSAGE = 'Choose a category from the list.';
+
+    public const ROOMS_MESSAGE = 'Choose spaces at this location.';
+
+    public const ROOM_SWITCHED_OFF_MESSAGE = 'One of the chosen spaces is switched off. Turn it back on in Spaces, or choose another space.';
+
+    public const MULTI_ROOM_MOVE_MESSAGE = 'This booking uses several spaces. Open Edit Booking to move it, so you can choose its spaces at the new location.';
+
+    public const CUSTOM_CATEGORIES = ['Custom: School', 'Custom: Work', 'Custom: Adult', 'Custom: Kid', 'Custom: Group'];
 
     public const PERCENT_FEE_MESSAGE = 'A percent fee must be between 0 and 100.';
 
@@ -163,7 +170,7 @@ class CustomPackagePricer
 
         $category = $keptCategory !== null && $clean['category'] === $keptCategory
             ? $keptCategory
-            : Category::query()->where('name', $clean['category'])->value('name');
+            : (in_array($clean['category'], self::CUSTOM_CATEGORIES, true) ? $clean['category'] : null);
 
         if ($category === null) {
             $errors['custom_package.category'] = self::CATEGORY_MESSAGE;
@@ -389,10 +396,21 @@ class CustomPackagePricer
         $participants = (int) $input['participants'];
         $stored = $input['stored_lines'] ?? [];
         $lineInput = $input['add_on_lines'] ?? array_values($stored);
-        $roomId = (int) ($input['room_id'] ?? 0);
+        $roomIds = array_values(array_unique(array_filter(array_map('intval', (array) ($input['room_ids'] ?? [$input['room_id'] ?? 0])), fn (int $id) => $id > 0)));
 
-        if ($roomId < 1 || ! Room::query()->whereKey($roomId)->where('location_id', $locationId)->exists()) {
-            return $this->refusal('room_id', self::ROOM_MESSAGE);
+        if ($roomIds === [] || Room::query()->whereIn('id', $roomIds)->where('location_id', $locationId)->count() !== count($roomIds)) {
+            return count($roomIds) > 1
+                ? $this->refusal('room_ids', self::ROOMS_MESSAGE)
+                : $this->refusal('room_id', self::ROOM_MESSAGE);
+        }
+
+        $keptRoomIds = array_map('intval', (array) ($input['kept_room_ids'] ?? []));
+        $switchedOff = Room::query()->whereIn('id', $roomIds)->where('is_available', false)->pluck('id')
+            ->map(fn ($id) => (int) $id)
+            ->reject(fn (int $id) => in_array($id, $keptRoomIds, true));
+
+        if ($switchedOff->isNotEmpty()) {
+            return $this->refusal(count($roomIds) > 1 ? 'room_ids' : 'room_id', self::ROOM_SWITCHED_OFF_MESSAGE);
         }
 
         if ($message = $this->participantsError($terms, $participants)) {
@@ -541,6 +559,10 @@ class CustomPackagePricer
 
         if (empty($roomId)) {
             return ['room_id', self::ROOM_MESSAGE];
+        }
+
+        if (\App\Models\PackageTimeSlot::where('booking_id', $booking->id)->distinct()->count('room_id') > 1) {
+            return ['room_id', self::MULTI_ROOM_MOVE_MESSAGE];
         }
 
         $foreignAddOn = $booking->addOns()

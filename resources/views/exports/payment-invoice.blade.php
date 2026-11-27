@@ -185,7 +185,7 @@
                     @if($payable->booking_time) at {{ \Carbon\Carbon::parse($payable->booking_time)->format('g:i A') }}@endif
                 </div>
                 <div class="event-meta">
-                    @if($payable->room)Room: {{ $payable->room->name }}@if($payable->room->capacity) ({{ $payable->room->capacity }} capacity)@endif · @endif
+                    @if($payable->room)Room: {{ $payable instanceof \App\Models\Booking ? $payable->spaceNames() : $payable->room->name }}@if($payable->room->capacity && ! ($payable instanceof \App\Models\Booking && count($payable->room_ids) > 1)) ({{ $payable->room->capacity }} capacity)@endif · @endif
                     @if($payable->participants){{ $payable->participants }} guests · @endif
                     Ref: {{ $payable->reference_number ?? 'N/A' }}
                     @if($payable->created_at) · Booked: {{ $payable->created_at->format('M j, Y g:i A') }}@endif
@@ -230,7 +230,7 @@
                     <tr>
                         <td>
                             {{ $payable->packageLabel() ?? 'Party Package' }}
-                            <div class="item-desc">{{ $payable->booking_date ? $payable->booking_date->format('M j') : '' }}@if($payable->room) · {{ $payable->room->name }}@endif</div>
+                            <div class="item-desc">{{ $payable->booking_date ? $payable->booking_date->format('M j') : '' }}@if($payable->room) · {{ $payable instanceof \App\Models\Booking ? $payable->spaceNames() : $payable->room->name }}@endif</div>
                         </td>
 @php
     $invoiceParticipants = max(1, (int) ($payable->participants ?? 1));

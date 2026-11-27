@@ -14,6 +14,8 @@ class Booking extends Model
 {
     use HasFactory, SoftDeletes;
 
+    protected $appends = ['room_ids'];
+
     protected static function booted(): void
     {
         static::updated(function (Booking $booking) {
@@ -189,6 +191,54 @@ class Booking extends Model
     public function room(): BelongsTo
     {
         return $this->belongsTo(Room::class);
+    }
+
+    public function timeSlots(): HasMany
+    {
+        return $this->hasMany(PackageTimeSlot::class);
+    }
+
+    public function getRoomIdsAttribute(): array
+    {
+        $primary = $this->room_id ? (int) $this->room_id : null;
+
+        if ($this->relationLoaded('timeSlots')) {
+            $assigned = $this->timeSlots->sortBy('id')->pluck('room_id')->filter()->map(fn ($id) => (int) $id)->unique()->values()->all();
+
+            if ($assigned !== []) {
+                return $primary !== null && in_array($primary, $assigned, true)
+                    ? array_values(array_unique(array_merge([$primary], $assigned)))
+                    : $assigned;
+            }
+        }
+
+        return $primary !== null ? [$primary] : [];
+    }
+
+    public function spaceNames(): string
+    {
+        $primary = $this->room?->name;
+
+        if (empty($this->id)) {
+            return $primary ?? '';
+        }
+
+        $names = $this->loadMissing('timeSlots.room')->timeSlots
+            ->sortBy('id')
+            ->map(fn ($slot) => $slot->room?->name)
+            ->filter()
+            ->unique()
+            ->values();
+
+        if ($names->count() <= 1) {
+            return $primary ?? ($names->first() ?? '');
+        }
+
+        if ($primary && $names->contains($primary)) {
+            $names = collect([$primary])->merge($names->reject(fn ($name) => $name === $primary))->values();
+        }
+
+        return $names->implode(', ');
     }
 
     public function creator(): BelongsTo

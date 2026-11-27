@@ -486,7 +486,7 @@ class GoogleCalendarService
         $customerName = $booking->customer_name ?? $booking->guest_name ?? 'Guest';
         $packageName = $booking->packageLabel() ?? 'Booking';
         $locationName = $booking->location?->name ?? 'Unknown Location';
-        $roomName = $booking->room?->name ?? null;
+        $roomName = $booking->spaceNames() ?: null;
 
         $title = "{$packageName} - {$customerName}";
         if ($booking->reference_number) {

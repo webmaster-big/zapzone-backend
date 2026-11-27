@@ -94,6 +94,7 @@ class AccountingAnalyticsController extends Controller
             'payment_status' => ['nullable', Rule::in(['paid', 'partial', 'pending', 'all'])],
             'include_addons_breakdown' => 'nullable|boolean',
             'category_filter' => 'nullable|string', // Filter by specific package/attraction category
+            'receipts_group_by' => ['nullable', Rule::in(['location', 'item'])],
         ]);
 
         $scope = $this->resolveReportScope($request);
@@ -117,10 +118,11 @@ class AccountingAnalyticsController extends Controller
         $paymentStatus = $request->get('payment_status', 'all');
         $includeAddonsBreakdown = $request->boolean('include_addons_breakdown', true);
         $categoryFilter = $request->get('category_filter');
+        $receiptsGroupBy = $request->get('receipts_group_by', 'location');
 
         $cacheKey = 'dashboards:accounting:' . implode('-', $scope['ids']) . ':' . md5(json_encode([
             $request->start_date, $request->end_date, $request->compare_start_date, $request->compare_end_date,
-            $viewMode, $paymentStatus, $includeAddonsBreakdown, $categoryFilter,
+            $viewMode, $paymentStatus, $includeAddonsBreakdown, $categoryFilter, $receiptsGroupBy,
         ]));
         if (($cached = \App\Support\CacheGroups::get([\App\Support\CacheGroups::DASHBOARDS], $cacheKey)) !== null) {
             return response()->json(['success' => true, 'data' => $cached]);
@@ -133,11 +135,14 @@ class AccountingAnalyticsController extends Controller
                 'category_filter' => $categoryFilter,
             ];
 
+            $receipts = app(\App\Services\DailyReceiptsService::class);
             $primaryData = $this->reportService->buildReportData($scope['ids'], $startDate, $endDate, $viewMode, $filters);
+            $primaryData['receipts'] = $receipts->daily($scope['ids'], $startDate->toDateString(), $endDate->toDateString(), $receiptsGroupBy);
 
             $comparisonData = null;
             if ($compareStartDate) {
                 $comparisonData = $this->reportService->buildReportData($scope['ids'], $compareStartDate, $compareEndDate, $viewMode, $filters);
+                $comparisonData['receipts'] = $receipts->daily($scope['ids'], $compareStartDate->toDateString(), $compareEndDate->toDateString(), $receiptsGroupBy);
             }
 
             $data = [
@@ -273,6 +278,7 @@ class AccountingAnalyticsController extends Controller
             'view_mode' => ['nullable', Rule::in(['booked_on', 'booked_for'])],
             'category_filter' => 'nullable|string',
             'format' => ['required', Rule::in(['json', 'csv'])],
+            'receipts_group_by' => ['nullable', Rule::in(['location', 'item'])],
         ]);
 
         $startDate = Carbon::parse($request->start_date)->startOfDay();
@@ -291,6 +297,8 @@ class AccountingAnalyticsController extends Controller
         $reportData = $this->reportService->buildReportData($scope['ids'], $startDate, $endDate, $viewMode, [
             'category_filter' => $request->get('category_filter'),
         ]);
+        $reportData['receipts'] = app(\App\Services\DailyReceiptsService::class)
+            ->daily($scope['ids'], $startDate->toDateString(), $endDate->toDateString(), $request->get('receipts_group_by', 'location'));
 
         if ($format === 'json') {
             return response()->json([
@@ -326,22 +334,50 @@ class AccountingAnalyticsController extends Controller
             fputcsv($file, ['Generated:', now()->format('Y-m-d H:i:s')]);
             fputcsv($file, []);
 
-            fputcsv($file, ['OVERALL SUMMARY']);
+            $money = fn ($value) => ((float) $value < 0 ? '-$' : '$') . number_format(abs((float) $value), 2);
+            $receipts = $reportData['receipts'];
+            $showUnclassified = $receipts['has_unclassified'];
+            $receiptHeader = [$receipts['group_by'] === 'item' ? 'Item' : 'Location', 'Online Revenue', 'In-Store Collected'];
+            if ($showUnclassified) {
+                $receiptHeader[] = 'Unclassified Receipts';
+            }
+            $receiptHeader[] = 'Total';
+            $receiptCells = function (array $row) use ($money, $showUnclassified) {
+                $cells = [$money($row['online']), $money($row['in_store'])];
+                if ($showUnclassified) {
+                    $cells[] = $money($row['unclassified']);
+                }
+                $cells[] = $money($row['total']);
+
+                return $cells;
+            };
+
+            fputcsv($file, ['DAILY RECEIPTS (by the business day each payment or refund posts)']);
+            fputcsv($file, array_merge(['Date'], $receiptHeader));
+            foreach ($receipts['days'] as $day) {
+                foreach ($day['rows'] as $row) {
+                    fputcsv($file, array_merge([$day['date'], $row['label']], $receiptCells($row)));
+                }
+                fputcsv($file, array_merge([$day['date'], 'DAY TOTAL'], $receiptCells($day['totals'])));
+            }
+            fputcsv($file, array_merge(['', 'TOTAL'], $receiptCells($receipts['totals'])));
+            fputcsv($file, []);
+
+            fputcsv($file, ['SALES SUMMARY (' . ($viewMode === 'booked_on' ? 'Created On' : 'Booked For') . ')']);
             fputcsv($file, ['Metric', 'Value']);
             fputcsv($file, ['Quantity Sold', $reportData['summary']['quantity_sold']]);
             fputcsv($file, ['Gross Sales', '$' . number_format($reportData['summary']['gross_sales'], 2)]);
             fputcsv($file, ['Discounts', '$' . number_format($reportData['summary']['discount_amount'], 2)]);
-            fputcsv($file, ['Net Sales', '$' . number_format($reportData['summary']['net_sales'], 2)]);
-            fputcsv($file, ['Fees', '$' . number_format($reportData['summary']['fee_amount'], 2)]);
-            fputcsv($file, ['Tax', '$' . number_format($reportData['summary']['tax_amount'], 2)]);
-            fputcsv($file, ['Amount Due', '$' . number_format($reportData['summary']['total_billed'], 2)]);
-            fputcsv($file, ['Amount Collected', '$' . number_format($reportData['summary']['grand_total'], 2)]);
-            fputcsv($file, ['Balance Due', '$' . number_format($reportData['summary']['balance_due'], 2)]);
+            fputcsv($file, ['Customer Fees', '$' . number_format($reportData['summary']['fee_amount'], 2)]);
+            fputcsv($file, ['Tax Charged', '$' . number_format($reportData['summary']['tax_amount'], 2)]);
+            fputcsv($file, ['Total Billed', '$' . number_format($reportData['summary']['total_billed'], 2)]);
+            fputcsv($file, ['Collected', '$' . number_format($reportData['summary']['grand_total'], 2)]);
+            fputcsv($file, ['Open Balance', '$' . number_format($reportData['summary']['balance_due'], 2)]);
             fputcsv($file, []);
 
             foreach ($reportData['categories'] as $category) {
                 fputcsv($file, [strtoupper($category['name'])]);
-                fputcsv($file, ['Item', 'Sub-Category', 'Qty', 'Gross Sales', 'Discounts', 'Net Sales', 'Fees', 'Tax', 'Amount Due', 'Collected', 'Balance Due']);
+                fputcsv($file, ['Item', 'Sub-Category', 'Qty', 'Gross Sales', 'Discounts', 'Customer Fees', 'Tax Charged', 'Total Billed', 'Collected', 'Open Balance']);
 
                 $byLabel = [];
 
@@ -359,7 +395,6 @@ class AccountingAnalyticsController extends Controller
                             $item['quantity_sold'],
                             '$' . number_format($item['gross_sales'], 2),
                             '$' . number_format($item['discount_amount'], 2),
-                            '$' . number_format($item['net_sales'], 2),
                             '$' . number_format($item['fee_amount'], 2),
                             '$' . number_format($item['tax_amount'], 2),
                             '$' . number_format($item['total_billed'], 2),
@@ -377,7 +412,6 @@ class AccountingAnalyticsController extends Controller
                             $sum('quantity_sold'),
                             '$' . number_format($sum('gross_sales'), 2),
                             '$' . number_format($sum('discount_amount'), 2),
-                            '$' . number_format($sum('net_sales'), 2),
                             '$' . number_format($sum('fee_amount'), 2),
                             '$' . number_format($sum('tax_amount'), 2),
                             '$' . number_format($sum('total_billed'), 2),
@@ -393,7 +427,6 @@ class AccountingAnalyticsController extends Controller
                     $category['summary']['quantity_sold'],
                     '$' . number_format($category['summary']['gross_sales'], 2),
                     '$' . number_format($category['summary']['discount_amount'], 2),
-                    '$' . number_format($category['summary']['net_sales'], 2),
                     '$' . number_format($category['summary']['fee_amount'], 2),
                     '$' . number_format($category['summary']['tax_amount'], 2),
                     '$' . number_format($category['summary']['total_billed'], 2),
