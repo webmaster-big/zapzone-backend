@@ -1325,7 +1325,7 @@ class PaymentController extends Controller
                                 ],
                                 'void_amount' => $payment->amount,
                                 'was_void_fallback' => true,
-                                'payable_cancelled' => true,
+                                'payable_cancelled' => $payable !== null && $payable->status === 'cancelled',
                                 'payable' => $payable?->fresh(),
                             ]);
                         }
@@ -3340,6 +3340,7 @@ class PaymentController extends Controller
                     $fallback = Booking::find($payableId);
                     if ($untouched($fallback) && $fallback->status === 'pending') {
                         $fallback->delete();
+                        $this->releaseBookingSpace($fallback);
                     }
                 } elseif ($payableType === Payment::TYPE_ATTRACTION_PURCHASE) {
                     $fallback = AttractionPurchase::find($payableId);

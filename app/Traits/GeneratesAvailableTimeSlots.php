@@ -399,6 +399,11 @@ trait GeneratesAvailableTimeSlots
 
     private function checkTimeSlotConflict($roomId, $date, $startTime, $duration, $durationUnit, $excludeId = null)
     {
+        return $this->clashingSlots($roomId, $date, $startTime, $duration, $durationUnit, $excludeId)->isNotEmpty();
+    }
+
+    private function clashingSlots($roomId, $date, $startTime, $duration, $durationUnit, $excludeId = null)
+    {
         $start = Carbon::parse($date . ' ' . $startTime);
         $durationInMinutes = $this->getDurationInMinutes($duration, $durationUnit);
         $end = (clone $start)->addMinutes($durationInMinutes);
@@ -406,7 +411,7 @@ trait GeneratesAvailableTimeSlots
         $existingSlots = $this->bookedSlotsForRoom($roomId, $date)
             ->when($excludeId, fn ($rows) => $rows->where('id', '!=', $excludeId));
 
-        foreach ($existingSlots as $slot) {
+        return $existingSlots->filter(function ($slot) use ($roomId, $date, $start, $end) {
             $existingStart = Carbon::parse($date . ' ' . $slot->time_slot_start);
             $existingDurationInMinutes = $this->getDurationInMinutes($slot->duration, $slot->duration_unit);
             $existingEnd = (clone $existingStart)->addMinutes($existingDurationInMinutes);
@@ -415,12 +420,8 @@ trait GeneratesAvailableTimeSlots
             $existingEndWithBuffer = (clone $existingEnd)->addMinutes($turnaround);
             $endWithBuffer = (clone $end)->addMinutes($turnaround);
 
-            if ($start->lt($existingEndWithBuffer) && $endWithBuffer->gt($existingStart)) {
-                return true;
-            }
-        }
-
-        return false;
+            return $start->lt($existingEndWithBuffer) && $endWithBuffer->gt($existingStart);
+        })->values();
     }
 
     private function checkBreakTimeConflict($roomId, $date, $startTime, $duration, $durationUnit)
@@ -471,16 +472,21 @@ trait GeneratesAvailableTimeSlots
 
     private function checkAreaGroupStaggerConflict($roomId, $date, $startTime, $excludeId = null)
     {
+        return $this->staggerClashingSlots($roomId, $date, $startTime, $excludeId)->isNotEmpty();
+    }
+
+    private function staggerClashingSlots($roomId, $date, $startTime, $excludeId = null)
+    {
         $room = $this->cachedRoom($roomId);
 
         if (!$room) {
-            return false;
+            return collect();
         }
 
         $bookingInterval = $this->areaStaggerMinutes($room);
 
         if ($bookingInterval <= 0) {
-            return false; // No stagger interval configured
+            return collect();
         }
 
         $bookingStart = Carbon::parse($date . ' ' . $startTime);
@@ -491,7 +497,7 @@ trait GeneratesAvailableTimeSlots
             ->flatMap(fn ($id) => $this->bookedSlotsForRoom($id, $date))
             ->when($excludeId, fn ($rows) => $rows->where('id', '!=', $excludeId));
 
-        foreach ($existingSlots as $slot) {
+        return $existingSlots->filter(function ($slot) use ($date, $bookingStart, $bookingInterval) {
             $existingStart = Carbon::parse($date . ' ' . $slot->time_slot_start);
 
             if ($bookingStart->eq($existingStart)) {
@@ -506,11 +512,7 @@ trait GeneratesAvailableTimeSlots
 
             $newIntervalEnd = (clone $bookingStart)->addMinutes($bookingInterval);
 
-            if ($existingStart->gt($bookingStart) && $existingStart->lt($newIntervalEnd)) {
-                return true;
-            }
-        }
-
-        return false;
+            return $existingStart->gt($bookingStart) && $existingStart->lt($newIntervalEnd);
+        })->values();
     }
 }

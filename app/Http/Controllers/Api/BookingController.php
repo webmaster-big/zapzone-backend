@@ -3060,6 +3060,94 @@ class BookingController extends Controller
         ], fn ($value) => $value !== null));
     }
 
+    private function releaseSpaceHeldBy(int $bookingId): void
+    {
+        PackageTimeSlot::where('booking_id', $bookingId)
+            ->where('status', 'booked')
+            ->update(['status' => 'cancelled']);
+    }
+
+    private function retakeSpaceAfterRestore(Booking $booking, mixed $deletedAt = null): ?string
+    {
+        if (in_array($booking->status, ['cancelled', 'completed'], true)) {
+            return null;
+        }
+
+        $released = PackageTimeSlot::with('room')
+            ->where('booking_id', $booking->id)
+            ->where('status', 'cancelled')
+            ->get();
+
+        if ($released->isEmpty()) {
+            return null;
+        }
+
+        $capacity = app(\App\Services\SlotCapacityGuard::class);
+        $ownSlotIds = $released->pluck('id');
+        $clashes = [];
+
+        foreach ($released as $slot) {
+            $date = Carbon::parse($slot->booked_date)->toDateString();
+
+            if (! $capacity->isPast($date)) {
+                $start = substr((string) $slot->time_slot_start, 0, 5);
+                $this->forgetSlotLookups();
+                $sameSpace = $this->takenSince($this->clashingSlots($slot->room_id, $date, $start, $slot->duration, $slot->duration_unit, $slot->id)->pluck('id')->diff($ownSlotIds), $deletedAt);
+                $sameArea = $this->takenSince($this->staggerClashingSlots($slot->room_id, $date, $start, $slot->id)->pluck('id')->diff($ownSlotIds)->diff($sameSpace), $deletedAt);
+
+                if ($sameSpace->isNotEmpty()) {
+                    $clashes[] = ($slot->room?->name ?? 'This space') . ' is also booked then by ' . $this->referencesHolding($sameSpace)->implode(', ');
+                }
+
+                if ($sameArea->isNotEmpty()) {
+                    $references = $this->referencesHolding($sameArea);
+                    $clashes[] = $references->implode(', ') . ($references->count() === 1 ? ' starts' : ' start') . ' too close to it in the same area';
+                }
+            }
+
+            $slot->update(['status' => 'booked']);
+        }
+
+        $this->forgetSlotLookups();
+
+        if ($clashes === []) {
+            return null;
+        }
+
+        return 'Booking restored, but its time was taken while it was deleted: ' . implode('; ', $clashes) . '. Move one of the bookings so they do not clash.';
+    }
+
+    private function takenSince($slotIds, mixed $deletedAt)
+    {
+        $slotIds = collect($slotIds)->values();
+
+        if ($deletedAt === null || $slotIds->isEmpty()) {
+            return $slotIds;
+        }
+
+        $since = Carbon::parse($deletedAt);
+
+        return PackageTimeSlot::whereIn('id', $slotIds->all())
+            ->where(fn ($query) => $query->whereNull('created_at')
+                ->orWhere('created_at', '>=', $since)
+                ->orWhere('updated_at', '>=', $since))
+            ->pluck('id')
+            ->values();
+    }
+
+    private function referencesHolding($slotIds)
+    {
+        $references = Booking::withTrashed()
+            ->whereIn('id', PackageTimeSlot::whereIn('id', collect($slotIds)->all())->pluck('booking_id'))
+            ->orderBy('reference_number')
+            ->pluck('reference_number')
+            ->filter()
+            ->unique()
+            ->values();
+
+        return $references->isEmpty() ? collect(['another booking']) : $references;
+    }
+
     private function followUpAfterRestore(Booking $booking): void
     {
         try {
@@ -3991,6 +4079,7 @@ class BookingController extends Controller
 
             $this->reverseGiftCardFor($booking, \App\Models\Payment::TYPE_BOOKING, 'booking_deleted');
             $booking->delete();
+            $this->releaseSpaceHeldBy((int) $booking->id);
             $deletedCount++;
         }
 
@@ -4367,6 +4456,8 @@ class BookingController extends Controller
                 Log::warning('Booking soft delete did not persist, forcing via query', ['id' => $bookingId]);
                 Booking::where('id', $bookingId)->update(['deleted_at' => now()]);
             }
+
+            $this->releaseSpaceHeldBy($bookingId);
 
             $deletedByName = $user ? "{$user->first_name} {$user->last_name}" : 'system/public';
             ActivityLog::log(
@@ -4926,7 +5017,12 @@ class BookingController extends Controller
             }
         }
 
-        $booking->restore();
+        $spaceWarning = DB::transaction(function () use ($booking) {
+            $deletedAt = $booking->deleted_at;
+            $booking->restore();
+
+            return $this->retakeSpaceAfterRestore($booking, $deletedAt);
+        });
         $blockGuard->recordBookedInside(request(), $restoredInside, 'booking', (int) $booking->id, $this->blockLogDetails($booking, ['restored' => true]));
         $booking->load(['customer', 'package', 'location', 'room', 'creator', 'attractions', 'addOns']);
         $this->followUpAfterRestore($booking);
@@ -4960,13 +5056,15 @@ class BookingController extends Controller
                 ],
                 'restored_at' => now()->toIso8601String(),
                 'reference_number' => $booking->reference_number,
+                'space_warning' => $spaceWarning,
             ],
                 reason: $changeReason
             );
 
         return response()->json([
             'success' => true,
-            'message' => 'Booking restored successfully',
+            'message' => $spaceWarning ?? 'Booking restored successfully',
+            'space_warning' => $spaceWarning,
             'data' => $booking,
         ]);
     }
@@ -5036,6 +5134,7 @@ class BookingController extends Controller
         $bookings = Booking::onlyTrashed()->whereIn('id', $validated['ids'])->whereIn('location_id', $this->staffLocationIds($request))->get();
         $restoredCount = 0;
         $blocked = [];
+        $spaceWarnings = [];
         $guard = app(\App\Services\SlotCapacityGuard::class);
         $blockGuard = app(\App\Services\AvailabilityBlockGuard::class);
         $insideBlocks = $bookings
@@ -5057,7 +5156,16 @@ class BookingController extends Controller
                 }
             }
 
-            $booking->restore();
+            $spaceWarning = DB::transaction(function () use ($booking) {
+                $deletedAt = $booking->deleted_at;
+                $booking->restore();
+
+                return $this->retakeSpaceAfterRestore($booking, $deletedAt);
+            });
+
+            if ($spaceWarning !== null) {
+                $spaceWarnings[] = ['id' => $booking->id, 'reference_number' => $booking->reference_number, 'message' => $spaceWarning];
+            }
 
             if ($insideBlocks->has($booking->id)) {
                 $blockGuard->recordBookedInside($request, $insideBlocks->get($booking->id), 'booking', (int) $booking->id, $this->blockLogDetails($booking, ['restored' => true]));
@@ -5094,6 +5202,7 @@ class BookingController extends Controller
                 'restored_at' => now()->toIso8601String(),
                 'restored_count' => $restoredCount,
                 'booking_ids' => $validated['ids'],
+                'space_warnings' => $spaceWarnings,
             ],
                 reason: $changeReason
             );
@@ -5101,7 +5210,7 @@ class BookingController extends Controller
         return response()->json([
             'success' => true,
             'message' => "{$restoredCount} bookings restored successfully",
-            'data' => ['restored_count' => $restoredCount, 'blocked' => $blocked],
+            'data' => ['restored_count' => $restoredCount, 'blocked' => $blocked, 'space_warnings' => $spaceWarnings],
         ]);
     }
 

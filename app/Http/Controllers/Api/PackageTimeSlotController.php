@@ -301,7 +301,7 @@ class PackageTimeSlotController extends Controller
         if (isset($validated['booked_date']) || isset($validated['time_slot_start']) ||
             isset($validated['duration']) || isset($validated['duration_unit'])) {
 
-            $newDate = $validated['booked_date'] ?? $packageTimeSlot->booked_date;
+            $newDate = \Carbon\Carbon::parse($validated['booked_date'] ?? $packageTimeSlot->booked_date)->toDateString();
             $newStartTime = $validated['time_slot_start'] ?? $packageTimeSlot->time_slot_start;
             $blockStart = substr((string) $newStartTime, 0, 5);
 

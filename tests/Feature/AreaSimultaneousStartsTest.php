@@ -825,4 +825,272 @@ class AreaSimultaneousStartsTest extends TestCase
         $response->assertStatus(422);
         $this->assertSame('19:15', substr((string) $slot->fresh()->time_slot_start, 0, 5));
     }
+
+    public function test_moving_a_slot_without_sending_its_date_keeps_the_date(): void
+    {
+        [$package, $rooms] = $this->venue(startsTogether: true, oneStartEach: false);
+        $booking = (int) $this->book($package, $rooms['A'], '19:15')->assertCreated()->json('data.id');
+        $slot = PackageTimeSlot::where('booking_id', $booking)->firstOrFail();
+
+        $this->asManager()->patchJson('/api/package-time-slots/' . $slot->id, [
+            'time_slot_start' => '19:30',
+            'change_reason' => 'Guests running late',
+        ])->assertOk();
+
+        $this->assertSame($this->date, $slot->fresh()->booked_date->toDateString());
+        $this->assertSame('19:30', substr((string) $slot->fresh()->time_slot_start, 0, 5));
+    }
+
+    private function deleteBooking(int $bookingId): void
+    {
+        $this->asManager()->deleteJson('/api/bookings/' . $bookingId, ['change_reason' => 'Booked by mistake'])->assertOk();
+        $this->assertSoftDeleted('bookings', ['id' => $bookingId]);
+    }
+
+    private function restoreBooking(int $bookingId): TestResponse
+    {
+        return $this->asManager()->postJson('/api/bookings/' . $bookingId . '/restore', ['change_reason' => 'Deleted by mistake'])->assertOk();
+    }
+
+    public function test_deleting_a_booking_brings_the_hidden_starts_back(): void
+    {
+        [$package, $rooms] = $this->venue(startsTogether: false);
+        $booking = $this->bookRoomB($package, $rooms['B']);
+        $this->assertArrayNotHasKey('18:30', $this->offered($package));
+
+        $this->deleteBooking($booking);
+
+        $this->assertSame('cancelled', PackageTimeSlot::where('booking_id', $booking)->value('status'));
+        $after = $this->offered($package);
+        $this->assertArrayHasKey('18:30', $after);
+        $this->assertArrayHasKey('18:45', $after);
+        $this->assertArrayHasKey('19:00', $after);
+    }
+
+    public function test_bulk_deleting_bookings_frees_their_spaces(): void
+    {
+        [$package, $rooms] = $this->venue(startsTogether: true, oneStartEach: false);
+        $inB = $this->bookRoomB($package, $rooms['B']);
+        $inC = (int) $this->book($package, $rooms['C'], '19:00')->assertCreated()->json('data.id');
+
+        $this->asManager()->postJson('/api/bookings/bulk-delete', [
+            'ids' => [$inB, $inC],
+            'change_reason' => 'Test bookings',
+        ])->assertOk()->assertJsonPath('data.deleted_count', 2);
+
+        $this->assertSame(0, PackageTimeSlot::whereIn('booking_id', [$inB, $inC])->where('status', 'booked')->count());
+        $after = $this->offered($package);
+        $this->assertContains($rooms['B']->id, $after['18:45']['available_room_ids']);
+        $this->assertContains($rooms['C']->id, $after['19:00']['available_room_ids']);
+    }
+
+    public function test_restoring_a_deleted_booking_takes_its_space_back(): void
+    {
+        [$package, $rooms] = $this->venue(startsTogether: false);
+        $booking = $this->bookRoomB($package, $rooms['B']);
+        $this->deleteBooking($booking);
+
+        $response = $this->restoreBooking($booking);
+
+        $response->assertJsonPath('message', 'Booking restored successfully')->assertJsonPath('space_warning', null);
+        $this->assertSame('booked', PackageTimeSlot::where('booking_id', $booking)->value('status'));
+        $after = $this->offered($package);
+        $this->assertArrayNotHasKey('18:30', $after);
+        $this->assertArrayNotHasKey('18:45', $after);
+        $this->assertArrayNotHasKey('19:00', $after);
+    }
+
+    public function test_restoring_warns_when_another_booking_took_the_space(): void
+    {
+        [$package, $rooms] = $this->venue(startsTogether: false, oneStartEach: false);
+        $booking = $this->bookRoomB($package, $rooms['B']);
+        $this->deleteBooking($booking);
+        $taker = (int) $this->book($package, $rooms['B'], '18:45')->assertCreated()->json('data.id');
+        $takerReference = Booking::find($taker)->reference_number;
+
+        $warning = (string) $this->restoreBooking($booking)->json('space_warning');
+
+        $this->assertStringContainsString('Room B is also booked then by ' . $takerReference, $warning);
+        $this->assertStringNotContainsString('same area', $warning);
+        $this->assertNull(Booking::find($booking)->deleted_at);
+        $this->assertSame(2, PackageTimeSlot::where('room_id', $rooms['B']->id)->where('status', 'booked')->count());
+    }
+
+    public function test_restoring_warns_when_a_neighbour_now_starts_too_close(): void
+    {
+        [$package, $rooms] = $this->venue(startsTogether: false, oneStartEach: false);
+        $booking = $this->bookRoomB($package, $rooms['B']);
+        $this->deleteBooking($booking);
+        $neighbour = (int) $this->book($package, $rooms['A'], '18:45')->assertCreated()->json('data.id');
+
+        $warning = (string) $this->restoreBooking($booking)->json('space_warning');
+
+        $this->assertStringContainsString(Booking::find($neighbour)->reference_number . ' starts too close to it in the same area', $warning);
+        $this->assertStringNotContainsString('is also booked', $warning);
+        $this->assertSame('booked', PackageTimeSlot::where('booking_id', $booking)->value('status'));
+    }
+
+    public function test_restoring_does_not_blame_a_neighbour_that_was_already_there(): void
+    {
+        [$package, $rooms] = $this->venue(startsTogether: false, oneStartEach: false);
+        $booking = $this->bookRoomB($package, $rooms['B']);
+        $neighbour = Booking::create([
+            'reference_number' => 'NEIGHBOUR-1',
+            'booking_date' => $this->date,
+            'booking_time' => '18:45',
+            'duration' => 105,
+            'duration_unit' => 'minutes',
+            'location_id' => $this->location->id,
+            'package_id' => $package->id,
+            'room_id' => $rooms['A']->id,
+            'participants' => 1,
+            'total_amount' => 0,
+            'status' => 'confirmed',
+        ]);
+        PackageTimeSlot::create([
+            'package_id' => $package->id,
+            'room_id' => $rooms['A']->id,
+            'booking_id' => $neighbour->id,
+            'booked_date' => $this->date,
+            'time_slot_start' => '18:45',
+            'duration' => 105,
+            'duration_unit' => 'minutes',
+            'status' => 'booked',
+        ]);
+        $this->travel(5)->minutes();
+        $this->deleteBooking($booking);
+        $this->travel(5)->minutes();
+
+        $this->restoreBooking($booking)
+            ->assertJsonPath('space_warning', null)
+            ->assertJsonPath('message', 'Booking restored successfully');
+        $this->assertSame('booked', PackageTimeSlot::where('booking_id', $booking)->value('status'));
+    }
+
+    public function test_restoring_a_cancelled_booking_leaves_its_space_free(): void
+    {
+        [$package, $rooms] = $this->venue(startsTogether: false);
+        $booking = $this->bookRoomB($package, $rooms['B']);
+        $this->asManager()->patchJson('/api/bookings/' . $booking . '/cancel', ['change_reason' => 'Guest called to cancel'])->assertOk();
+        $this->deleteBooking($booking);
+
+        $this->restoreBooking($booking)->assertJsonPath('space_warning', null);
+
+        $this->assertSame('cancelled', PackageTimeSlot::where('booking_id', $booking)->value('status'));
+        $this->assertArrayHasKey('18:45', $this->offered($package));
+    }
+
+    public function test_bulk_restore_lists_each_booking_that_now_clashes(): void
+    {
+        [$package, $rooms] = $this->venue(startsTogether: true, oneStartEach: false);
+        $inB = $this->bookRoomB($package, $rooms['B']);
+        $inC = (int) $this->book($package, $rooms['C'], '19:00')->assertCreated()->json('data.id');
+        $this->asManager()->postJson('/api/bookings/bulk-delete', ['ids' => [$inB, $inC], 'change_reason' => 'Cleanup'])->assertOk();
+        $taker = (int) $this->book($package, $rooms['B'], '18:45')->assertCreated()->json('data.id');
+
+        $response = $this->asManager()->postJson('/api/bookings/bulk-restore', [
+            'ids' => [$inB, $inC],
+            'change_reason' => 'Deleted by mistake',
+        ])->assertOk();
+
+        $response->assertJsonPath('data.restored_count', 2);
+        $warnings = collect($response->json('data.space_warnings'));
+        $this->assertCount(1, $warnings);
+        $this->assertSame($inB, $warnings->first()['id']);
+        $this->assertStringContainsString(Booking::find($taker)->reference_number, $warnings->first()['message']);
+        $this->assertSame(0, PackageTimeSlot::whereIn('booking_id', [$inB, $inC])->where('status', '!=', 'booked')->count());
+    }
+
+    public function test_a_failed_checkout_that_falls_back_to_a_soft_delete_frees_the_space(): void
+    {
+        [$package, $rooms] = $this->venue(startsTogether: false);
+        $booking = $this->bookRoomB($package, $rooms['B']);
+        Booking::whereKey($booking)->update(['status' => 'pending']);
+        \Illuminate\Support\Facades\Event::listen('eloquent.forceDeleting: ' . Booking::class, function () {
+            throw new \RuntimeException('force delete refused');
+        });
+        $request = \Illuminate\Http\Request::create('/api/payments/charge', 'POST');
+        $request->setUserResolver(fn () => $this->manager);
+
+        $cleanup = new \ReflectionMethod(\App\Http\Controllers\Api\PaymentController::class, 'forceDeletePayableOnFailure');
+        $cleanup->invoke(app(\App\Http\Controllers\Api\PaymentController::class), $booking, Payment::TYPE_BOOKING, $request);
+
+        $this->assertSoftDeleted('bookings', ['id' => $booking]);
+        $this->assertSame('cancelled', PackageTimeSlot::where('booking_id', $booking)->value('status'));
+        $this->assertArrayHasKey('18:30', $this->offered($package));
+    }
+
+    public function test_a_deleted_bookings_space_is_kept_while_a_live_booking_there_that_day_has_none_of_its_own(): void
+    {
+        [$package, $rooms] = $this->venue(startsTogether: false);
+        $deletedInB = $this->bookRoomB($package, $rooms['B']);
+        $deletedInC = (int) $this->book($package, $rooms['C'], '19:00')->assertCreated()->json('data.id');
+        Booking::whereKey([$deletedInB, $deletedInC])->update(['deleted_at' => now()]);
+        Booking::create([
+            'reference_number' => 'NO-SLOT-1',
+            'booking_date' => $this->date,
+            'booking_time' => '18:45',
+            'duration' => 105,
+            'duration_unit' => 'minutes',
+            'location_id' => $this->location->id,
+            'package_id' => $package->id,
+            'room_id' => $rooms['B']->id,
+            'participants' => 1,
+            'total_amount' => 0,
+            'status' => 'confirmed',
+        ]);
+
+        $migration = require database_path('migrations/2026_11_26_000001_release_spaces_held_by_deleted_bookings.php');
+        $migration->up();
+
+        $this->assertSame('booked', PackageTimeSlot::where('booking_id', $deletedInB)->value('status'), 'it still keeps that live booking off the booking site');
+        $this->assertSame('cancelled', PackageTimeSlot::where('booking_id', $deletedInC)->value('status'));
+    }
+
+    public function test_spaces_still_held_by_deleted_bookings_are_released_once(): void
+    {
+        [$package, $rooms] = $this->venue(startsTogether: false);
+        $deleted = $this->bookRoomB($package, $rooms['B']);
+        Booking::whereKey($deleted)->update(['deleted_at' => now()]);
+        $live = (int) $this->book($package, $rooms['C'], '19:00')->assertCreated()->json('data.id');
+        $this->assertArrayNotHasKey('18:30', $this->offered($package));
+
+        $past = Booking::create([
+            'reference_number' => 'PAST-DELETED',
+            'booking_date' => Carbon::now('America/Detroit')->subDays(10)->toDateString(),
+            'booking_time' => '18:45',
+            'duration' => 105,
+            'duration_unit' => 'minutes',
+            'location_id' => $this->location->id,
+            'package_id' => $package->id,
+            'room_id' => $rooms['B']->id,
+            'participants' => 1,
+            'total_amount' => 0,
+            'status' => 'confirmed',
+        ]);
+        PackageTimeSlot::create([
+            'package_id' => $package->id,
+            'room_id' => $rooms['B']->id,
+            'booking_id' => $past->id,
+            'booked_date' => $past->booking_date,
+            'time_slot_start' => '18:45',
+            'duration' => 105,
+            'duration_unit' => 'minutes',
+            'status' => 'booked',
+        ]);
+        $past->delete();
+
+        $migration = require database_path('migrations/2026_11_26_000001_release_spaces_held_by_deleted_bookings.php');
+        $migration->up();
+        $migration->up();
+
+        $this->assertSame('cancelled', PackageTimeSlot::where('booking_id', $deleted)->value('status'));
+        $this->assertSame('booked', PackageTimeSlot::where('booking_id', $live)->value('status'), 'a live booking keeps its space');
+        $this->assertSame('booked', PackageTimeSlot::where('booking_id', $past->id)->value('status'), 'past dates are left alone');
+        $this->assertArrayHasKey('18:30', $this->offered($package));
+
+        $warning = (string) $this->restoreBooking($deleted)->json('space_warning');
+        $this->assertSame('booked', PackageTimeSlot::where('booking_id', $deleted)->value('status'));
+        $this->assertStringContainsString(Booking::find($live)->reference_number . ' starts too close to it in the same area', $warning, 'Room C took 7:00 while Room B was deleted');
+    }
 }
